@@ -19,10 +19,10 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,md,yml,yaml}": [
-      "prettier --write"
+      "node node_modules/prettier/bin/prettier.cjs --write"
     ],
     "*.{ts,tsx,js,jsx}": [
-      "eslint --fix"
+      "node node_modules/eslint/bin/eslint.js --fix"
     ]
   },
   "devDependencies": {

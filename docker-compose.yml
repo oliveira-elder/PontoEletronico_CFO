@@ -45,5 +45,17 @@ services:
       - postgres
       - keycloak
 
+  web:
+    build:
+      context: .
+      dockerfile: packages/web/Dockerfile
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "11010:11010"
+    depends_on:
+      - backend
+
 volumes:
   postgres_data:
