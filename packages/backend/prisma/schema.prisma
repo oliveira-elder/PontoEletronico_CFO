@@ -1,0 +1,161 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PublicationStatus {
+  DRAFT
+  APPROVED
+  PUBLISHED
+}
+
+model User {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  name        String
+  externalId  String?       @unique
+  memberships Membership[]
+  chatSession ChatSession[]
+  createdAt   DateTime      @default(now())
+}
+
+model Role {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  memberships Membership[]
+}
+
+model Area {
+  id           String           @id @default(cuid())
+  code         String           @unique
+  name         String
+  memberships  Membership[]
+  moduleConfig ModuleAreaConfig[]
+  chatRules    ChatRule[]
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  userId String
+  roleId String
+  areaId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  area   Area   @relation(fields: [areaId], references: [id], onDelete: Cascade)
+}
+
+model Module {
+  id         String           @id @default(cuid())
+  code       String           @unique
+  name       String
+  configs    ModuleAreaConfig[]
+  createdAt  DateTime         @default(now())
+}
+
+model ModuleAreaConfig {
+  id               String  @id @default(cuid())
+  moduleId         String
+  areaId           String
+  allowPublicIndex Boolean @default(false)
+  module           Module  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  area             Area    @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  @@unique([moduleId, areaId])
+}
+
+model PublicContent {
+  id          String            @id @default(cuid())
+  areaId      String
+  title       String
+  body        String
+  status      PublicationStatus @default(DRAFT)
+  publishedAt DateTime?
+  area        Area              @relation(fields: [areaId], references: [id], onDelete: Cascade)
+}
+
+model Banner {
+  id          String  @id @default(cuid())
+  title       String
+  imageUrl    String
+  redirectUrl String?
+  active      Boolean @default(true)
+}
+
+model ChatIntent {
+  id       String     @id @default(cuid())
+  code     String     @unique
+  patterns String[]
+  rules    ChatRule[]
+}
+
+model ChatRule {
+  id          String     @id @default(cuid())
+  areaId      String?
+  intentId    String
+  answer      String
+  priority    Int        @default(100)
+  area        Area?      @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  intent      ChatIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  userId    String
+  messages  ChatMessage[]
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  content   String
+  sender    String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+}
+
+model GlpiTicketLink {
+  id          String   @id @default(cuid())
+  userId      String
+  glpiTicketId String
+  createdAt   DateTime @default(now())
+}
+
+model FeatureToggle {
+  id      String @id @default(cuid())
+  key     String @unique
+  enabled Boolean @default(false)
+}
+
+model MeetingRoom {
+  id          String               @id @default(cuid())
+  roomCode    String               @unique
+  title       String
+  participants MeetingParticipant[]
+}
+
+model MeetingParticipant {
+  id      String      @id @default(cuid())
+  roomId  String
+  userId  String
+  room    MeetingRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+}
+
+model MeetingAudit {
+  id        String   @id @default(cuid())
+  roomId    String
+  action    String
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorUserId String?
+  action     String
+  payload    Json?
+  createdAt  DateTime @default(now())
+}

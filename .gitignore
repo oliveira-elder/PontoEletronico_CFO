@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+coverage
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+packages/backend/prisma/migrations
+packages/mobile/.expo
+packages/mobile/.expo-shared

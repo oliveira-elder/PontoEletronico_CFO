@@ -1,0 +1,22 @@
+{
+  "name": "@intranet/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo \"Build gerenciado pelo Expo\"",
+    "dev": "echo \"Iniciar com npx expo start\"",
+    "lint": "eslint . --ext .ts,.tsx",
+    "test": "echo \"Configurar testes mobile\""
+  },
+  "dependencies": {
+    "@intranet/shared": "file:../shared",
+    "@tanstack/react-query": "^5.59.0",
+    "axios": "^1.7.7",
+    "expo": "^50.0.21",
+    "expo-router": "^3.5.23",
+    "expo-secure-store": "^13.0.2",
+    "react": "^18.2.0",
+    "react-native": "^0.73.6",
+    "zustand": "^4.5.5"
+  }
+}
