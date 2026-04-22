@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "echo \"Configurar build Vite\"",
-    "dev": "echo \"Configurar dev Vite\"",
+    "build": "vite build",
+    "dev": "vite",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "echo \"Configurar Vitest\""
+    "test": "echo \"Configurar Vitest\"",
+    "preview": "vite preview --port 11010"
   },
   "dependencies": {
     "@intranet/shared": "file:../shared",
@@ -15,5 +16,11 @@
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.27.0",
     "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "vite": "^5.4.10"
   }
 }
