@@ -1,0 +1,10 @@
+{
+  "name": "api-audience",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-audience-mapper",
+  "config": {
+    "included.client.audience": "pontoeletronico-api",
+    "id.token.claim": "false",
+    "access.token.claim": "true"
+  }
+}

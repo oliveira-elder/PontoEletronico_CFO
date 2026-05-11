@@ -7,7 +7,11 @@
     "dev": "nest start --watch",
     "start": "node dist/main.js",
     "lint": "eslint src --ext .ts",
-    "test": "echo \"No tests yet\""
+    "test": "echo \"No tests yet\"",
+    "seed": "ts-node -e \"require('ts-node/register'); require('./prisma/seed.ts')\""
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.8",
@@ -23,6 +27,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "passport": "^0.7.0",
+    "jwks-rsa": "^3.1.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
     "reflect-metadata": "^0.2.2",

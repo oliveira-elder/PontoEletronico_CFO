@@ -1,0 +1,65 @@
+/* ═══════════════════════════════════════════════
+   CFO Design System — Tokens
+   Conselho Federal de Odontologia
+   Manual de Identidade Visual 2014 · edição digital
+═══════════════════════════════════════════════ */
+:root {
+  /* ─── Burgundy ─── */
+  --burgundy-500: #9a2832;
+  --burgundy-600: #7a1e26;
+  --burgundy-700: #5c1519;
+  --burgundy-800: #3d0e10;
+  --burgundy-900: #2a0b0d;
+  --cfo-bar:       #8b1d23;
+
+  /* ─── Gray CFO ─── */
+  --gray-cfo: #6d6e71;
+
+  /* ─── Cream ─── */
+  --cream-50:  #fbf8f4;
+  --cream-100: #f5ede0;
+  --cream-200: #eaddcb;
+
+  /* ─── Gold ─── */
+  --gold-400: #d4a574;
+  --gold-500: #b88a56;
+
+  /* ─── Functional ─── */
+  --amber:    #f7c437;
+  --green:    #2f7d4f;
+  --red:      #c8393f;
+  --blue-ink: #1e4a7a;
+
+  /* ─── Ink (warm blacks) ─── */
+  --ink-900: #0a0506;
+  --ink-700: rgba(20, 10, 12, 0.70);
+  --ink-500: rgba(20, 10, 12, 0.50);
+
+  /* ─── Typography ─── */
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-body:    'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ─── Spacing (8pt grid) ─── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* ─── Border Radius ─── */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-xl:   20px;
+  --radius-full: 100px;
+
+  /* ─── Layout ─── */
+  --topbar-h:          132px;
+  --topbar-bar-h:      44px;
+  --sidebar-collapsed: 64px;
+  --sidebar-expanded:  240px;
+}

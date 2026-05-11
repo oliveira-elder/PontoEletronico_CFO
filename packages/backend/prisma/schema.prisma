@@ -20,6 +20,7 @@ model User {
   externalId  String?       @unique
   memberships Membership[]
   chatSession ChatSession[]
+  funcionario Funcionario?
   createdAt   DateTime      @default(now())
 }
 
@@ -30,12 +31,13 @@ model Role {
 }
 
 model Area {
-  id           String           @id @default(cuid())
-  code         String           @unique
-  name         String
-  memberships  Membership[]
-  moduleConfig ModuleAreaConfig[]
-  chatRules    ChatRule[]
+  id             String             @id @default(cuid())
+  code           String             @unique
+  name           String
+  memberships    Membership[]
+  moduleConfig   ModuleAreaConfig[]
+  chatRules      ChatRule[]
+  publicContents PublicContent[]
 }
 
 model Membership {
@@ -158,4 +160,273 @@ model AuditLog {
   action     String
   payload    Json?
   createdAt  DateTime @default(now())
+}
+
+// ════════════════════════════════════════
+// PONTO ELETRÔNICO
+// ════════════════════════════════════════
+
+enum TipoPonto {
+  ENTRADA
+  INICIO_INTERVALO
+  FIM_INTERVALO
+  SAIDA
+}
+
+enum OrigemPonto {
+  WEB
+  MOBILE
+  DESKTOP
+  TOTEM
+}
+
+enum StatusPeriodo {
+  ABERTO
+  FECHADO
+  APROVADO
+}
+
+enum TipoAfastamento {
+  FERIAS
+  LICENCA_MEDICA
+  ATESTADO
+  LICENCA_MATERNIDADE
+  LICENCA_PATERNIDADE
+  FALTA_JUSTIFICADA
+  FALTA_INJUSTIFICADA
+  ABONO
+}
+
+enum StatusSolicitacao {
+  PENDENTE
+  APROVADA
+  REJEITADA
+}
+
+enum ModoRegistro {
+  DESKTOP
+  MOBILE
+  HIBRIDO
+  VIAGEM
+}
+
+enum TipoFlexibilidade {
+  FIXO
+  ELASTICO
+  BANCO_HORAS
+}
+
+enum CategoriaFuncional {
+  ESTAGIARIO
+  CONCURSADO
+  ASSESSOR
+}
+
+model ConfiguracaoSistema {
+  id                     String            @id @default("singleton")
+  // Instituição
+  nome                   String            @default("Conselho Federal de Odontologia")
+  cnpj                   String            @default("33.368.957/0001-00")
+  endereco               String?
+  numero                 String?
+  bairro                 String?
+  cidade                 String?
+  uf                     String?
+  cep                    String?
+  telefone               String?
+  emailInstitucional     String?
+  // Geolocalização
+  lat                    Float             @default(-15.7876)
+  lng                    Float             @default(-47.9040)
+  raioMetros             Int               @default(200)
+  // Modos de registro
+  modoDesktop            Boolean           @default(true)
+  modoMobile             Boolean           @default(true)
+  modoHibrido            Boolean           @default(false)
+  modoViagem             Boolean           @default(false)
+  desktopCheckSubrede    Boolean           @default(true)
+  desktopCheckGeo        Boolean           @default(false)
+  mobileCheckSubrede     Boolean           @default(true)
+  mobileCheckGeo         Boolean           @default(true)
+  mobileExigirFoto       Boolean           @default(true)
+  hibridoExigirFoto      Boolean           @default(true)
+  // Jornada padrão
+  horaEntrada            String            @default("08:00")
+  horaSaida              String            @default("17:00")
+  jornadaDiariaMin       Int               @default(480)
+  jornadaSemanalMin      Int               @default(2400)
+  diasUteis              String            @default("[false,true,true,true,true,true,false]")
+  // Flexibilidade / tolerâncias
+  tipoFlexibilidade      TipoFlexibilidade @default(FIXO)
+  toleranciaEntradaMin   Int               @default(15)
+  toleranciaSaidaMin     Int               @default(15)
+  toleranciaHoraExtraMin Int               @default(10)
+  toleranciaCalculoMin   Int               @default(5)
+  // Intervalo do almoço
+  almocoPodeIniciarA     String            @default("11:30")
+  almocoPodeIniciarAte   String            @default("13:00")
+  almocoMinMin           Int               @default(60)
+  almocoMaxMin           Int               @default(90)
+  // Modo híbrido
+  hibridoMaxDiasSemana   Int               @default(2)
+  hibridoExigeAprovacao  Boolean           @default(true)
+  // Modo viagem
+  viagemJanelaMinutos    Int               @default(120)
+  viagemExigeAprovacao   Boolean           @default(true)
+  // Banco de horas
+  bancoHorasLimiteMin    Int               @default(120)
+  bancoHorasVigenciaDias Int               @default(30)
+  updatedAt              DateTime          @updatedAt
+  createdAt              DateTime          @default(now())
+}
+
+model Gerencia {
+  id           String        @id @default(cuid())
+  nome         String
+  sigla        String        @unique
+  responsavel  String?
+  descricao    String?
+  ativa        Boolean       @default(true)
+  funcionarios Funcionario[]
+  createdAt    DateTime      @default(now())
+}
+
+model ProvedorInternet {
+  id          String   @id @default(cuid())
+  nome        String
+  ip          String
+  isPrincipal Boolean  @default(false)
+  ativo       Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model SubredeConfigurada {
+  id        String   @id @default(cuid())
+  cidr      String
+  descricao String?
+  createdAt DateTime @default(now())
+}
+
+model AreaViagem {
+  id         String   @id @default(cuid())
+  nome       String
+  descricao  String?
+  lat        Float
+  lng        Float
+  raioMetros Int      @default(500)
+  ativa      Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+model EnderecoResidencial {
+  id            String      @id @default(cuid())
+  funcionarioId String      @unique
+  cep           String?
+  logradouro    String?
+  numero        String?
+  complemento   String?
+  bairro        String?
+  cidade        String?
+  uf            String?
+  lat           Float?
+  lng           Float?
+  raioMetros    Int         @default(100)
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  updatedAt     DateTime    @updatedAt
+}
+
+model Funcionario {
+  id                  String             @id @default(cuid())
+  userId              String             @unique
+  matricula           String             @unique
+  cargo               String
+  departamento        String?
+  gerenciaId          String?
+  categoria           CategoriaFuncional @default(CONCURSADO)
+  ativo               Boolean            @default(true)
+  jornadaHorasDia     Int                @default(8)
+  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gerencia            Gerencia?          @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
+  registros           RegistroPonto[]
+  periodos            PeriodoPonto[]
+  afastamentos        Afastamento[]
+  solicitacoes        Solicitacao[]
+  jornadas            JornadaTrabalho[]
+  enderecoResidencial EnderecoResidencial?
+  createdAt           DateTime           @default(now())
+}
+
+model JornadaTrabalho {
+  id               String      @id @default(cuid())
+  funcionarioId    String
+  diaSemana        Int         // 0=Dom, 1=Seg ... 6=Sáb
+  horaEntrada      String      // "08:00"
+  horaSaida        String      // "17:00"
+  horaInicioInterv String      // "12:00"
+  horaFimInterv    String      // "13:00"
+  funcionario      Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  @@unique([funcionarioId, diaSemana])
+}
+
+model RegistroPonto {
+  id            String       @id @default(cuid())
+  funcionarioId String
+  tipo          TipoPonto
+  dataHora      DateTime
+  latitude      Float?
+  longitude     Float?
+  origem        OrigemPonto  @default(WEB)
+  modoRegistro  ModoRegistro @default(DESKTOP)
+  ipOrigem      String?
+  fotoUrl       String?
+  dentroPerimetro Boolean    @default(false)
+  observacao    String?
+  ajustado      Boolean      @default(false)
+  ajustadoPor   String?
+  funcionario   Funcionario  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+  @@index([funcionarioId, dataHora])
+}
+
+model PeriodoPonto {
+  id                     String        @id @default(cuid())
+  funcionarioId          String
+  mes                    Int           // 1–12
+  ano                    Int
+  horasTrabalhadasMinutos Int          @default(0)
+  horasExtrasMinutos     Int           @default(0)
+  horasFaltaMinutos      Int           @default(0)
+  diasTrabalhados        Int           @default(0)
+  status                 StatusPeriodo @default(ABERTO)
+  fechadoEm              DateTime?
+  aprovadoPor            String?
+  funcionario            Funcionario   @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  @@unique([funcionarioId, mes, ano])
+}
+
+model Afastamento {
+  id            String          @id @default(cuid())
+  funcionarioId String
+  tipo          TipoAfastamento
+  dataInicio    DateTime
+  dataFim       DateTime
+  justificativa String?
+  documentoUrl  String?
+  aprovadoPor   String?
+  funcionario   Funcionario     @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt     DateTime        @default(now())
+}
+
+model Solicitacao {
+  id              String            @id @default(cuid())
+  funcionarioId   String
+  tipo            String            // CORRECAO_PONTO | ATESTADO | FERIAS | LICENCA | ABONO
+  dataReferencia  DateTime
+  descricao       String
+  status          StatusSolicitacao @default(PENDENTE)
+  observacaoGestor String?
+  resolvidoPor    String?
+  resolvidoEm     DateTime?
+  funcionario     Funcionario       @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt       DateTime          @default(now())
 }

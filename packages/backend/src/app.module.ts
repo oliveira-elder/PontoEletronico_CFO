@@ -9,6 +9,7 @@ import { ContentModule } from "./modules/content/content.module";
 import { GlpiModule } from "./modules/glpi/glpi.module";
 import { ChatModule } from "./modules/chat/chat.module";
 import { RealtimeModule } from "./modules/realtime/realtime.module";
+import { PontoModule } from "./modules/ponto/ponto.module";
 
 @Module({
   imports: [
@@ -21,7 +22,8 @@ import { RealtimeModule } from "./modules/realtime/realtime.module";
     ContentModule,
     GlpiModule,
     ChatModule,
-    RealtimeModule
+    RealtimeModule,
+    PontoModule
   ]
 })
 export class AppModule {}

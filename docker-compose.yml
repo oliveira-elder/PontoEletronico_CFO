@@ -1,49 +1,35 @@
-version: "3.9"
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: intranet
-      POSTGRES_PASSWORD: intranet
-      POSTGRES_DB: intranet
+      POSTGRES_USER: pontoeletronico
+      POSTGRES_PASSWORD: pontoeletronico
+      POSTGRES_DB: pontoeletronico
     ports:
-      - "11001:5432"
+      - "12001:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:25.0
-    command: start-dev
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/intranet
-      KC_DB_USERNAME: intranet
-      KC_DB_PASSWORD: intranet
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-    ports:
-      - "11002:8080"
-    depends_on:
-      - postgres
 
   backend:
     image: node:20
     working_dir: /app
-    command: sh -c "npm install && npm run dev -w @intranet/backend"
+    command: sh -c "npm install && npx prisma generate --schema=packages/backend/prisma/schema.prisma && npm run dev -w @intranet/backend"
     environment:
-      DATABASE_URL: postgresql://intranet:intranet@postgres:5432/intranet
-      KEYCLOAK_ISSUER: http://localhost:11002/realms/intranet
-      KEYCLOAK_AUDIENCE: intranet-api
+      DATABASE_URL: postgresql://pontoeletronico:pontoeletronico@postgres:5432/pontoeletronico
+      KEYCLOAK_ISSUER: https://sso.cfo.org.br/realms/cfo
+      KEYCLOAK_JWKS_URI: https://sso.cfo.org.br/realms/cfo/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: pontoeletronico-dev
+      KEYCLOAK_CLIENT_SECRET: cDKJYtIN0179FKX4NNkCdDzn6k0lVINp
       JWT_SECRET: dev-secret
       GLPI_BASE_URL: http://glpi.local
       VIDEO_CONFERENCE_ENABLED: "false"
     volumes:
       - ./:/app
+      - /app/node_modules
     ports:
-      - "11003:3000"
+      - "12003:3000"
     depends_on:
       - postgres
-      - keycloak
 
   web:
     build:
@@ -52,8 +38,9 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+      - /app/node_modules
     ports:
-      - "11010:11010"
+      - "12010:12010"
     depends_on:
       - backend
 

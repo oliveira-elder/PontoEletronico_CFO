@@ -1,0 +1,1291 @@
+import React, { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import {
+  ClockIcon,
+  TrendingUpIcon,
+  CheckCircleIcon,
+  AlertCircleIcon,
+  ArrowRightIcon,
+  SunriseIcon,
+  SunsetIcon,
+  CoffeeIcon,
+  LogInIcon
+} from "../../components/icons";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import { useAuth } from "../../auth/AuthContext";
+import { api } from "../../hooks/useApi";
+
+/* ─── Helpers ─── */
+const pad = (n: number) => String(n).padStart(2, "0");
+const fmt = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const fmtDate = (d: Date) =>
+  d.toLocaleDateString("pt-BR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric"
+  });
+const toHM = (m: number) => {
+  const sign = m < 0 ? "-" : "";
+  const abs = Math.abs(m);
+  return `${sign}${Math.floor(abs / 60)}h${pad(abs % 60)}`;
+};
+
+/* ─── Types ─── */
+interface ApiStatus {
+  estado: "FORA" | "TRABALHANDO" | "INTERVALO";
+  registrosHoje: { tipo: string; dataHora: string }[];
+  horasTrabalhadasMinutos: number;
+  jornadaMinutos: number;
+  proximaAcao: string;
+}
+
+interface ApiRelatorio {
+  diasTrabalhados: number;
+  horasTrabalhadasMinutos: number;
+  horasEsperadasMinutos: number;
+  horasExtrasMinutos: number;
+  horasFaltaMinutos: number;
+  saldoMinutos: number;
+}
+
+interface DiaSemana {
+  dia: string;
+  data: string;
+  isHoje: boolean;
+  horasMin: number;
+  status: "OK" | "PARCIAL" | "FALTA" | "FUTURO";
+}
+
+/* ─── Computa a semana atual a partir dos registros do mês ─── */
+function computeSemana(registros: { tipo: string; dataHora: string }[], today: Date): DiaSemana[] {
+  const dow = today.getDay();
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + mondayOffset);
+  monday.setHours(0, 0, 0, 0);
+
+  const toMin = (iso: string) => {
+    const d = new Date(iso);
+    return d.getHours() * 60 + d.getMinutes();
+  };
+  const nomes = ["Seg", "Ter", "Qua", "Qui", "Sex"];
+
+  return nomes.map((dia, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    const isoKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const dayRegs = registros.filter((r) => r.dataHora.slice(0, 10) === isoKey);
+    const isFuture = d > today;
+    const isHoje = d.toDateString() === today.toDateString();
+
+    let horasMin = 0;
+    const entradaR = dayRegs.find((r) => r.tipo === "ENTRADA");
+    const saidaR = dayRegs.find((r) => r.tipo === "SAIDA");
+    const iniAlmR = dayRegs.find((r) => r.tipo === "INICIO_INTERVALO");
+    const fimAlmR = dayRegs.find((r) => r.tipo === "FIM_INTERVALO");
+
+    if (entradaR && saidaR) {
+      const intervalo = iniAlmR && fimAlmR ? toMin(fimAlmR.dataHora) - toMin(iniAlmR.dataHora) : 0;
+      horasMin = toMin(saidaR.dataHora) - toMin(entradaR.dataHora) - intervalo;
+    } else if (entradaR) {
+      const nowMin = today.getHours() * 60 + today.getMinutes();
+      const intervalo = iniAlmR && fimAlmR ? toMin(fimAlmR.dataHora) - toMin(iniAlmR.dataHora) : 0;
+      horasMin = nowMin - toMin(entradaR.dataHora) - intervalo;
+    }
+
+    const status: DiaSemana["status"] = isFuture
+      ? "FUTURO"
+      : !entradaR
+        ? "FALTA"
+        : saidaR
+          ? "OK"
+          : "PARCIAL";
+
+    return { dia, data: pad(d.getDate()), isHoje, horasMin: Math.max(0, horasMin), status };
+  });
+}
+
+/* ─── Config visual de estado ─── */
+const ESTADO_COR = { TRABALHANDO: "var(--green)", INTERVALO: "#8a6a00", FORA: "var(--gray-cfo)" };
+const ESTADO_BG = {
+  TRABALHANDO: "rgba(47,125,79,0.12)",
+  INTERVALO: "rgba(247,196,55,0.14)",
+  FORA: "rgba(109,110,113,0.12)"
+};
+const ESTADO_LABEL = { TRABALHANDO: "Trabalhando", INTERVALO: "Em intervalo", FORA: "Fora" };
+
+const PROXIMA_LABEL: Record<string, string> = {
+  ENTRADA: "Entrada",
+  INICIO_INTERVALO: "Início do Almoço",
+  FIM_INTERVALO: "Fim do Almoço",
+  SAIDA: "Encerrar Jornada"
+};
+
+function getIconForTipo(tipo: string): React.ElementType {
+  if (tipo === "ENTRADA") return SunriseIcon;
+  if (tipo === "INICIO_INTERVALO") return CoffeeIcon;
+  if (tipo === "FIM_INTERVALO") return LogInIcon;
+  return SunsetIcon;
+}
+
+function fmtHoraCurta(iso: string) {
+  const d = new Date(iso);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+const TIPO_LABEL: Record<string, string> = {
+  ENTRADA: "Entrada",
+  INICIO_INTERVALO: "Início Intervalo",
+  FIM_INTERVALO: "Fim Intervalo",
+  SAIDA: "Saída"
+};
+
+/* ─── Stat pill (mobile) ─── */
+function StatPill({
+  label,
+  value,
+  sub,
+  color
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  color?: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "#fff",
+        borderRadius: "var(--radius-lg)",
+        border: "1px solid rgba(122,30,38,0.08)",
+        padding: "14px",
+        flex: 1,
+        minWidth: 0
+      }}
+    >
+      <p
+        style={{
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
+          color: "var(--ink-500)",
+          marginBottom: 6,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis"
+        }}
+      >
+        {label}
+      </p>
+      <p
+        style={{
+          fontFamily: "var(--font-display)",
+          fontSize: 22,
+          color: color ?? "var(--ink-900)",
+          lineHeight: 1
+        }}
+      >
+        {value}
+      </p>
+      {sub && <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>{sub}</p>}
+    </div>
+  );
+}
+
+/* ─── Day card ─── */
+function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
+  const pct = status === "FUTURO" ? 0 : Math.min(100, (horasMin / 480) * 100);
+  return (
+    <div
+      style={{
+        flex: "0 0 56px",
+        width: 56,
+        background:
+          status === "OK"
+            ? "rgba(47,125,79,0.08)"
+            : isHoje
+              ? "rgba(122,30,38,0.06)"
+              : "transparent",
+        border: isHoje
+          ? "2px solid var(--burgundy-600)"
+          : status === "OK"
+            ? "1px solid rgba(47,125,79,0.20)"
+            : "1px solid rgba(122,30,38,0.08)",
+        borderRadius: "var(--radius-md)",
+        padding: "8px 4px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 5
+      }}
+    >
+      <p
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: "var(--ink-500)"
+        }}
+      >
+        {dia}
+      </p>
+      <p
+        style={{
+          fontSize: 14,
+          fontWeight: 700,
+          color: isHoje ? "var(--burgundy-600)" : "var(--ink-900)"
+        }}
+      >
+        {data}
+      </p>
+      <div style={{ width: "80%", height: 3, background: "rgba(122,30,38,0.08)", borderRadius: 2 }}>
+        <div
+          style={{
+            width: `${pct}%`,
+            height: "100%",
+            background: status === "OK" ? "var(--green)" : "var(--burgundy-600)",
+            borderRadius: 2,
+            transition: "width 400ms ease"
+          }}
+        />
+      </div>
+      <p
+        style={{
+          fontSize: 10,
+          color: status === "FUTURO" ? "var(--ink-500)" : "var(--ink-700)",
+          fontFamily: "var(--font-mono)"
+        }}
+      >
+        {status === "FUTURO" ? "—" : toHM(horasMin)}
+      </p>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════ */
+export function DashboardPage() {
+  const isMobile = useIsMobile(768);
+  const { token, user } = useAuth();
+  const [now, setNow] = useState(new Date());
+
+  const [status, setStatus] = useState<ApiStatus | null>(null);
+  const [relatorio, setRelatorio] = useState<ApiRelatorio | null>(null);
+  const [semana, setSemana] = useState<DiaSemana[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1_000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const tk = token();
+    if (!tk) {
+      setLoading(false);
+      return;
+    }
+
+    const hoje = new Date();
+    const mes = hoje.getMonth() + 1;
+    const ano = hoje.getFullYear();
+
+    Promise.all([
+      api.get<ApiStatus>("/ponto/status", tk),
+      api.get<ApiRelatorio>(`/ponto/relatorio?mes=${mes}&ano=${ano}`, tk),
+      api.get<{ registros: { tipo: string; dataHora: string }[] }>(
+        `/ponto/historico?mes=${mes}&ano=${ano}`,
+        tk
+      )
+    ])
+      .then(([statusData, relData, histData]) => {
+        setStatus(statusData);
+        setRelatorio(relData);
+        const todos = [
+          ...(statusData?.registrosHoje ?? []),
+          ...(histData?.registros ?? []).filter(
+            (r) => !statusData?.registrosHoje?.some((h) => h.dataHora === r.dataHora)
+          )
+        ];
+        setSemana(computeSemana(todos, new Date()));
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const hora = now.getHours();
+  const saudacao = hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
+  const primeiroNome = (user?.name ?? "").split(" ")[0] || "Olá";
+
+  const estado = status?.estado ?? "FORA";
+  const horasHoje = status?.horasTrabalhadasMinutos ?? 0;
+  const jornada = status?.jornadaMinutos ?? 480;
+  const saldoHoje = horasHoje - jornada;
+
+  const trabMes = relatorio?.horasTrabalhadasMinutos ?? 0;
+  const esperMes = relatorio?.horasEsperadasMinutos ?? 0;
+  const extrasMes = relatorio?.horasExtrasMinutos ?? 0;
+  const diasTrab = relatorio?.diasTrabalhados ?? 0;
+  const saldoMes = relatorio?.saldoMinutos ?? 0;
+
+  /* Dias úteis do mês atual até hoje */
+  const diasUteisMes = (() => {
+    const h = new Date();
+    let c = 0;
+    for (let d = 1; d <= h.getDate(); d++) {
+      const dow = new Date(h.getFullYear(), h.getMonth(), d).getDay();
+      if (dow !== 0 && dow !== 6) c++;
+    }
+    return c;
+  })();
+
+  const proximaLabel = status?.proximaAcao
+    ? (PROXIMA_LABEL[status.proximaAcao] ?? status.proximaAcao)
+    : null;
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: 300,
+          color: "var(--ink-500)",
+          fontSize: 14
+        }}
+      >
+        Carregando painel…
+      </div>
+    );
+  }
+
+  /* ════════════ MOBILE ════════════ */
+  if (isMobile) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          width: "100%",
+          boxSizing: "border-box",
+          overflowX: "hidden"
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <h1
+              style={{
+                fontFamily: "var(--font-display)",
+                fontStyle: "italic",
+                fontSize: 20,
+                lineHeight: 1.1,
+                color: "var(--ink-900)",
+                margin: 0
+              }}
+            >
+              {saudacao}! 👋
+            </h1>
+            <p
+              style={{
+                fontSize: 11,
+                color: "var(--ink-500)",
+                marginTop: 2,
+                textTransform: "capitalize"
+              }}
+            >
+              {fmtDate(now)}
+            </p>
+          </div>
+          <Link
+            to="/ponto/registrar"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "9px 14px",
+              borderRadius: "var(--radius-md)",
+              background: "var(--burgundy-600)",
+              color: "#fff",
+              textDecoration: "none",
+              fontSize: 13,
+              fontWeight: 700,
+              flexShrink: 0,
+              whiteSpace: "nowrap"
+            }}
+          >
+            <ClockIcon size={15} /> Bater Ponto
+          </Link>
+        </div>
+
+        <div
+          style={{
+            background: "var(--burgundy-900)",
+            borderRadius: "var(--radius-xl)",
+            padding: "20px 16px",
+            textAlign: "center",
+            position: "relative",
+            overflow: "hidden"
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: -40,
+              right: -40,
+              width: 120,
+              height: 120,
+              borderRadius: "50%",
+              background: "rgba(122,30,38,0.25)",
+              pointerEvents: "none"
+            }}
+          />
+          <p
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "clamp(40px,14vw,56px)",
+              color: "#fff",
+              letterSpacing: "-0.02em",
+              lineHeight: 1,
+              marginBottom: 12
+            }}
+          >
+            {fmt(now)}
+          </p>
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "5px 14px",
+              borderRadius: "var(--radius-full)",
+              background: ESTADO_BG[estado],
+              border: `1px solid ${ESTADO_COR[estado]}40`
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: ESTADO_COR[estado],
+                flexShrink: 0
+              }}
+            />
+            <span style={{ fontSize: 13, fontWeight: 600, color: ESTADO_COR[estado] }}>
+              {ESTADO_LABEL[estado]}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <StatPill label="Hoje" value={toHM(horasHoje)} sub={`de ${toHM(jornada)}`} />
+          <StatPill
+            label="Saldo"
+            value={toHM(saldoHoje)}
+            sub={saldoHoje >= 0 ? "extras" : "a cumprir"}
+            color={saldoHoje >= 0 ? "var(--green)" : "var(--red)"}
+          />
+        </div>
+
+        {/* Semana */}
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "14px"
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 12
+            }}
+          >
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontStyle: "italic",
+                color: "var(--burgundy-600)",
+                fontSize: 15
+              }}
+            >
+              Esta Semana
+            </p>
+            <Link
+              to="/ponto/historico"
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                display: "flex",
+                alignItems: "center",
+                gap: 3
+              }}
+            >
+              Ver tudo <ArrowRightIcon size={11} />
+            </Link>
+          </div>
+          <div
+            style={
+              {
+                display: "flex",
+                gap: 8,
+                overflowX: "auto",
+                paddingBottom: 4,
+                WebkitOverflowScrolling: "touch"
+              } as React.CSSProperties
+            }
+          >
+            {semana.length > 0 ? (
+              semana.map((d) => <DayCard key={d.dia} {...d} />)
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
+            )}
+          </div>
+        </div>
+
+        {/* Registros hoje */}
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "14px"
+          }}
+        >
+          <p
+            style={{
+              fontFamily: "var(--font-display)",
+              fontStyle: "italic",
+              color: "var(--burgundy-600)",
+              fontSize: 15,
+              marginBottom: 12
+            }}
+          >
+            Registros de Hoje
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(status?.registrosHoje ?? []).map((r, i) => {
+              const Ic = getIconForTipo(r.tipo);
+              return (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "9px 12px",
+                    background: "var(--cream-50)",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.07)"
+                  }}
+                >
+                  <Ic size={16} style={{ color: "var(--burgundy-600)", flexShrink: 0 }} />
+                  <p
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "var(--ink-700)",
+                      flex: 1
+                    }}
+                  >
+                    {TIPO_LABEL[r.tipo] ?? r.tipo}
+                  </p>
+                  <p
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 14,
+                      color: "var(--ink-900)",
+                      fontWeight: 600,
+                      flexShrink: 0
+                    }}
+                  >
+                    {fmtHoraCurta(r.dataHora)}
+                  </p>
+                </div>
+              );
+            })}
+            {proximaLabel && (
+              <Link
+                to="/ponto/registrar"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 12px",
+                  background: "rgba(122,30,38,0.03)",
+                  borderRadius: "var(--radius-md)",
+                  border: "1.5px dashed rgba(122,30,38,0.18)",
+                  textDecoration: "none"
+                }}
+              >
+                <SunsetIcon
+                  size={16}
+                  style={{ color: "var(--burgundy-600)", opacity: 0.5, flexShrink: 0 }}
+                />
+                <p style={{ fontSize: 12, color: "var(--ink-500)", flex: 1 }}>
+                  Próximo: {proximaLabel}
+                </p>
+                <ArrowRightIcon size={13} style={{ color: "var(--burgundy-600)", flexShrink: 0 }} />
+              </Link>
+            )}
+          </div>
+        </div>
+
+        {/* Resumo mês */}
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "14px"
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 14
+            }}
+          >
+            <div>
+              <p className="eyebrow" style={{ marginBottom: 2 }}>
+                Resumo
+              </p>
+              <p
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontStyle: "italic",
+                  color: "var(--burgundy-600)",
+                  fontSize: 15
+                }}
+              >
+                {new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
+              </p>
+            </div>
+            <Link
+              to="/ponto/relatorios"
+              style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
+            >
+              Ver relatório →
+            </Link>
+          </div>
+          <div
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}
+          >
+            {[
+              {
+                label: "Horas Trabalhadas",
+                value: toHM(trabMes),
+                sub: `de ${toHM(esperMes)}`,
+                ok: true
+              },
+              { label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true },
+              {
+                label: "Dias Trabalhados",
+                value: `${diasTrab}`,
+                sub: `de ${diasUteisMes} úteis`,
+                ok: true
+              },
+              {
+                label: "Saldo Mensal",
+                value: toHM(saldoMes),
+                sub: saldoMes >= 0 ? "a favor" : "negativo",
+                ok: saldoMes >= 0
+              }
+            ].map((item) => (
+              <div
+                key={item.label}
+                style={{
+                  background: "var(--cream-50)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px"
+                }}
+              >
+                <p
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    color: "var(--ink-500)",
+                    marginBottom: 6
+                  }}
+                >
+                  {item.label}
+                </p>
+                <p
+                  style={{
+                    fontFamily: "var(--font-display)",
+                    fontSize: 20,
+                    color: item.ok ? "var(--ink-900)" : "var(--red)"
+                  }}
+                >
+                  {item.value}
+                </p>
+                <p style={{ fontSize: 10.5, color: "var(--ink-500)", marginTop: 2 }}>{item.sub}</p>
+              </div>
+            ))}
+          </div>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+              <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                {diasTrab} de {diasUteisMes} dias úteis
+              </span>
+              <span
+                style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}
+              >
+                {diasUteisMes > 0 ? Math.round((diasTrab / diasUteisMes) * 100) : 0}%
+              </span>
+            </div>
+            <div style={{ height: 5, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
+              <div
+                style={{
+                  width: `${diasUteisMes > 0 ? (diasTrab / diasUteisMes) * 100 : 0}%`,
+                  height: "100%",
+                  background: "var(--burgundy-600)",
+                  borderRadius: 3
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              padding: "12px 14px",
+              background: "rgba(47,125,79,0.06)",
+              border: "1px solid rgba(47,125,79,0.15)",
+              borderRadius: "var(--radius-md)"
+            }}
+          >
+            <CheckCircleIcon
+              size={16}
+              style={{ color: "var(--green)", flexShrink: 0, marginTop: 1 }}
+            />
+            <p style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.55 }}>
+              {saldoMes >= 0
+                ? "Ponto em dia — nenhuma pendência registrada."
+                : `Saldo negativo de ${toHM(Math.abs(saldoMes))} — verifique seus registros.`}
+            </p>
+          </div>
+          {proximaLabel && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                padding: "12px 14px",
+                background: "rgba(247,196,55,0.08)",
+                border: "1px solid rgba(247,196,55,0.25)",
+                borderRadius: "var(--radius-md)"
+              }}
+            >
+              <AlertCircleIcon
+                size={16}
+                style={{ color: "#8a6a00", flexShrink: 0, marginTop: 1 }}
+              />
+              <p style={{ fontSize: 13, color: "var(--ink-700)", lineHeight: 1.55 }}>
+                Próximo registro pendente: <strong>{proximaLabel}</strong>.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  /* ════════════ DESKTOP ════════════ */
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ marginBottom: 28 }}>
+        <p className="eyebrow" style={{ marginBottom: 6 }}>
+          Painel Principal
+        </p>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap"
+          }}
+        >
+          <div>
+            <h1
+              style={{
+                fontSize: "clamp(22px,3vw,30px)",
+                fontFamily: "var(--font-display)",
+                lineHeight: 1.1
+              }}
+            >
+              {saudacao}, <em>{primeiroNome}</em>!
+            </h1>
+            <p
+              style={{
+                color: "var(--ink-500)",
+                marginTop: 4,
+                fontSize: 14,
+                textTransform: "capitalize"
+              }}
+            >
+              {fmtDate(now)}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span
+              className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" ? "amber" : "gray"}`}
+              style={{ fontSize: 12, padding: "4px 10px" }}
+            >
+              <span
+                className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" ? "amber" : "gray"}`}
+                style={{ width: 6, height: 6 }}
+              />
+              {ESTADO_LABEL[estado]}
+            </span>
+            <Link to="/ponto/registrar" className="btn btn-primary btn-sm">
+              <ClockIcon size={15} /> Bater Ponto
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* Grid topo */}
+      <div
+        style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}
+      >
+        <div
+          className="card-flat"
+          style={{
+            background: "var(--burgundy-900)",
+            border: "none",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "28px 16px",
+            gap: 8
+          }}
+        >
+          <p className="eyebrow" style={{ color: "var(--gold-500)" }}>
+            Agora
+          </p>
+          <p
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 38,
+              color: "#fff",
+              letterSpacing: "-0.02em",
+              lineHeight: 1
+            }}
+          >
+            {fmt(now)}
+          </p>
+          <span
+            className={`badge badge-${estado === "TRABALHANDO" ? "green" : "gray"}`}
+            style={{ fontSize: 12 }}
+          >
+            <span
+              className={`dot dot-${estado === "TRABALHANDO" ? "green" : "gray"}`}
+              style={{ width: 6, height: 6 }}
+            />
+            {ESTADO_LABEL[estado]}
+          </span>
+        </div>
+        <div className="card-flat" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <p
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)"
+              }}
+            >
+              Horas Hoje
+            </p>
+            <span
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                background: "rgba(122,30,38,0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--burgundy-600)"
+              }}
+            >
+              <ClockIcon size={18} />
+            </span>
+          </div>
+          <div>
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 26,
+                color: "var(--ink-900)",
+                lineHeight: 1
+              }}
+            >
+              {toHM(horasHoje)}
+            </p>
+            <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
+              de {toHM(jornada)} esperadas
+            </p>
+          </div>
+        </div>
+        <div className="card-flat" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <p
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)"
+              }}
+            >
+              Saldo Hoje
+            </p>
+            <span
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 10,
+                background: saldoHoje >= 0 ? "rgba(47,125,79,0.08)" : "rgba(200,57,63,0.08)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: saldoHoje >= 0 ? "var(--green)" : "var(--red)"
+              }}
+            >
+              <TrendingUpIcon size={18} />
+            </span>
+          </div>
+          <div>
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 26,
+                color: saldoHoje >= 0 ? "var(--ink-900)" : "var(--red)",
+                lineHeight: 1
+              }}
+            >
+              {toHM(saldoHoje)}
+            </p>
+            <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
+              {saldoHoje >= 0 ? "horas extras" : "horas a cumprir"}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Semana + Registros hoje */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginBottom: 24 }}>
+        <div className="card-flat">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 14
+            }}
+          >
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 16,
+                fontStyle: "italic",
+                color: "var(--burgundy-600)"
+              }}
+            >
+              Esta Semana
+            </p>
+            <Link
+              to="/ponto/historico"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 12,
+                color: "var(--ink-500)"
+              }}
+            >
+              Ver histórico <ArrowRightIcon size={12} />
+            </Link>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {semana.length > 0 ? (
+              semana.map((d) => <DayCard key={d.dia} {...d} />)
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="card-flat">
+          <p
+            style={{
+              fontFamily: "var(--font-display)",
+              fontSize: 16,
+              fontStyle: "italic",
+              color: "var(--burgundy-600)",
+              marginBottom: 14
+            }}
+          >
+            Registros de Hoje
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {(status?.registrosHoje ?? []).map((r, i) => {
+              const Ic = getIconForTipo(r.tipo);
+              return (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "9px 12px",
+                    background: "var(--cream-50)",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.07)"
+                  }}
+                >
+                  <Ic size={16} style={{ color: "var(--burgundy-600)", flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <p
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        color: "var(--ink-500)"
+                      }}
+                    >
+                      {TIPO_LABEL[r.tipo] ?? r.tipo}
+                    </p>
+                  </div>
+                  <p
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 14,
+                      color: "var(--ink-900)",
+                      fontWeight: 500
+                    }}
+                  >
+                    {fmtHoraCurta(r.dataHora)}
+                  </p>
+                </div>
+              );
+            })}
+            {proximaLabel && (
+              <Link
+                to="/ponto/registrar"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "9px 12px",
+                  background: "rgba(122,30,38,0.04)",
+                  borderRadius: "var(--radius-md)",
+                  border: "1.5px dashed rgba(122,30,38,0.20)",
+                  textDecoration: "none"
+                }}
+              >
+                <SunsetIcon size={16} style={{ color: "var(--burgundy-600)", opacity: 0.5 }} />
+                <p style={{ fontSize: 12, color: "var(--ink-500)", flex: 1 }}>
+                  Próximo: {proximaLabel}
+                </p>
+                <ArrowRightIcon size={14} style={{ color: "var(--burgundy-600)" }} />
+              </Link>
+            )}
+            {!proximaLabel && (status?.registrosHoje?.length ?? 0) === 0 && (
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--ink-500)",
+                  textAlign: "center",
+                  padding: "12px 0"
+                }}
+              >
+                Nenhum registro hoje.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Resumo mês */}
+      <div className="card-flat">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 20
+          }}
+        >
+          <div>
+            <p className="eyebrow">Resumo do Mês</p>
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 18,
+                fontStyle: "italic",
+                color: "var(--burgundy-600)",
+                marginTop: 4
+              }}
+            >
+              {new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
+            </p>
+          </div>
+          <Link to="/ponto/relatorios" className="btn btn-ghost btn-sm">
+            Ver relatório completo
+          </Link>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+          {[
+            {
+              label: "Horas Trabalhadas",
+              value: toHM(trabMes),
+              sub: `de ${toHM(esperMes)}`,
+              ok: true
+            },
+            { label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true },
+            {
+              label: "Dias Trabalhados",
+              value: `${diasTrab}`,
+              sub: `de ${diasUteisMes} dias`,
+              ok: true
+            },
+            {
+              label: "Saldo Mensal",
+              value: toHM(saldoMes),
+              sub: saldoMes >= 0 ? "a favor" : "negativo",
+              ok: saldoMes >= 0
+            }
+          ].map((item) => (
+            <div
+              key={item.label}
+              style={{
+                background: "var(--cream-50)",
+                borderRadius: "var(--radius-md)",
+                padding: "14px",
+                border: "1px solid rgba(122,30,38,0.08)"
+              }}
+            >
+              <p
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase",
+                  color: "var(--ink-500)",
+                  marginBottom: 8
+                }}
+              >
+                {item.label}
+              </p>
+              <p
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontSize: 22,
+                  color: item.ok ? "var(--ink-900)" : "var(--red)"
+                }}
+              >
+                {item.value}
+              </p>
+              <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>{item.sub}</p>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+              Progresso ({diasTrab} de {diasUteisMes} dias úteis)
+            </span>
+            <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}>
+              {diasUteisMes > 0 ? Math.round((diasTrab / diasUteisMes) * 100) : 0}%
+            </span>
+          </div>
+          <div style={{ height: 6, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
+            <div
+              style={{
+                width: `${diasUteisMes > 0 ? (diasTrab / diasUteisMes) * 100 : 0}%`,
+                height: "100%",
+                background: "var(--burgundy-600)",
+                borderRadius: 3
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Avisos */}
+      <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+        <div
+          style={{
+            flex: 1,
+            minWidth: 260,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 16px",
+            background: "rgba(47,125,79,0.06)",
+            border: "1px solid rgba(47,125,79,0.15)",
+            borderRadius: "var(--radius-md)"
+          }}
+        >
+          <CheckCircleIcon size={18} style={{ color: "var(--green)", flexShrink: 0 }} />
+          <p style={{ fontSize: 13, color: "var(--ink-700)" }}>
+            {saldoMes >= 0
+              ? "Ponto em dia — nenhuma pendência registrada para o período atual."
+              : `Saldo negativo de ${toHM(Math.abs(saldoMes))} — verifique seus registros no histórico.`}
+          </p>
+        </div>
+        {proximaLabel && (
+          <div
+            style={{
+              flex: 1,
+              minWidth: 260,
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "12px 16px",
+              background: "rgba(247,196,55,0.08)",
+              border: "1px solid rgba(247,196,55,0.25)",
+              borderRadius: "var(--radius-md)"
+            }}
+          >
+            <AlertCircleIcon size={18} style={{ color: "#8a6a00", flexShrink: 0 }} />
+            <p style={{ fontSize: 13, color: "var(--ink-700)" }}>
+              Próximo registro pendente: <strong>{proximaLabel}</strong>.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
