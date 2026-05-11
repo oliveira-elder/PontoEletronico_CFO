@@ -86,39 +86,7 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
     >
       {/* ── Brand area — espelha o topbar ── */}
       <div style={{ marginBottom: 8, flexShrink: 0 }}>
-        {/* Faixa 1 espelhada — bordô */}
-        <div
-          style={{
-            background: "var(--cfo-bar)",
-            borderRadius: "var(--radius-lg)",
-            height: 34,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: expanded ? "flex-start" : "center",
-            padding: expanded ? "0 12px" : "0",
-            marginBottom: 4,
-            boxShadow: "0 2px 8px rgba(0,0,0,0.20)",
-            overflow: "hidden",
-            transition: "padding 220ms cubic-bezier(0.16, 1, 0.3, 1)"
-          }}
-        >
-          <span
-            style={{
-              fontFamily: "var(--font-body)",
-              color: "rgba(255,255,255,0.80)",
-              fontSize: 10,
-              fontWeight: 600,
-              letterSpacing: expanded ? "0.16em" : "0",
-              textTransform: "uppercase",
-              whiteSpace: "nowrap",
-              transition: "letter-spacing 220ms ease"
-            }}
-          >
-            {expanded ? "Conselho Federal de Odontologia" : "CFO"}
-          </span>
-        </div>
-
-        {/* Faixa 2 espelhada — branca */}
+        {/* Faixa branca com identidade */}
         <div
           style={{
             background: "#ffffff",
