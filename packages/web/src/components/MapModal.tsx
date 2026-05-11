@@ -1,25 +1,31 @@
 import React, { useEffect, useRef, useState } from "react";
 import { XIcon } from "./icons";
 
-interface LeafletObj {
-  map(el: HTMLDivElement, opts: object): LeafletObj;
-  tileLayer(url: string, opts: object): LeafletObj;
-  addTo(map: LeafletObj): LeafletObj;
-  divIcon(opts: object): LeafletObj;
-  marker(ll: [number, number], opts: object): LeafletObj;
-  circle(ll: [number, number], opts: object): LeafletObj;
+interface LeafletLayer {
+  addTo(map: LeafletMap): LeafletLayer;
   on(event: string, handler: (e: LeafletEvent) => void): void;
-  setView(ll: [number, number], zoom?: number): void;
-  remove(): void;
   setLatLng(ll: [number, number]): void;
   setRadius(r: number): void;
   getLatLng(): { lat: number; lng: number };
+  remove(): void;
+}
+interface LeafletMap {
+  setView(ll: [number, number], zoom?: number): LeafletMap;
+  on(event: string, handler: (e: LeafletEvent) => void): void;
+  remove(): void;
+}
+interface LeafletStatic {
+  map(el: HTMLDivElement, opts: object): LeafletMap;
+  tileLayer(url: string, opts: object): LeafletLayer;
+  divIcon(opts: object): object;
+  marker(ll: [number, number], opts: object): LeafletLayer;
+  circle(ll: [number, number], opts: object): LeafletLayer;
 }
 interface LeafletEvent {
   target: { getLatLng(): { lat: number; lng: number } };
   latlng: { lat: number; lng: number };
 }
-declare const L: LeafletObj;
+declare const L: LeafletStatic;
 
 export interface MapResult {
   lat: number;
@@ -46,9 +52,9 @@ export function MapModal({
   onClose
 }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const leafletRef = useRef<LeafletObj | null>(null);
-  const markerRef = useRef<LeafletObj | null>(null);
-  const circleRef = useRef<LeafletObj | null>(null);
+  const leafletRef = useRef<LeafletMap | null>(null);
+  const markerRef = useRef<LeafletLayer | null>(null);
+  const circleRef = useRef<LeafletLayer | null>(null);
 
   const [pos, setPos] = useState({ lat, lng });
   const [raioM, setRaioM] = useState(raio);

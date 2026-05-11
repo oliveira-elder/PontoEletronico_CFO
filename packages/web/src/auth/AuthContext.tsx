@@ -75,15 +75,22 @@ interface AuthContextType {
 
 /* ─── Helpers ─── */
 
+interface KcToken {
+  sub?: string;
+  name?: string;
+  preferred_username?: string;
+  email?: string;
+  realm_access?: { roles: string[] };
+}
 function parseUser(): AuthUser | null {
-  const p = keycloak.tokenParsed as Record<string, unknown> | undefined;
+  const p = keycloak.tokenParsed as KcToken | undefined;
   if (!p) return null;
   return {
-    id: p["sub"] ?? "",
-    name: p["name"] ?? p["preferred_username"] ?? "",
-    email: p["email"] ?? "",
-    username: p["preferred_username"] ?? "",
-    roles: p["realm_access"]?.roles ?? []
+    id: p.sub ?? "",
+    name: p.name ?? p.preferred_username ?? "",
+    email: p.email ?? "",
+    username: p.preferred_username ?? "",
+    roles: p.realm_access?.roles ?? []
   };
 }
 
@@ -138,7 +145,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         checkLoginIframe: false,
         responseMode: "query"
       })
-      .then((auth) => {
+      .then((auth: boolean) => {
         setAuthenticated(auth);
         if (auth) {
           setUser(parseUser());
@@ -147,13 +154,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setInitialized(true);
         return auth;
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.warn("[Auth] Keycloak init falhou:", err);
         setInitialized(true);
         return false;
       });
 
-    return initPromiseRef.current;
+    return initPromiseRef.current as Promise<boolean>;
   }, [startTokenRefresh, authenticated]);
 
   /* Apenas inicializa automaticamente se a URL for um callback do Keycloak.

@@ -36,6 +36,53 @@ interface AreaViagem {
   ativa: boolean;
 }
 
+interface SistemaApi {
+  nome: string;
+  cnpj: string;
+  endereco?: string;
+  numero?: string;
+  bairro?: string;
+  cidade?: string;
+  uf?: string;
+  cep?: string;
+  telefone?: string;
+  emailInstitucional?: string;
+  lat: number;
+  lng: number;
+  raioMetros: number;
+  modoDesktop: boolean;
+  modoMobile: boolean;
+  modoHibrido: boolean;
+  modoViagem: boolean;
+  desktopCheckSubrede: boolean;
+  desktopCheckGeo: boolean;
+  mobileCheckSubrede: boolean;
+  mobileCheckGeo: boolean;
+  mobileExigirFoto: boolean;
+  hibridoExigirFoto: boolean;
+  // Períodos / jornada (retornados pelo backend com defaults)
+  horaEntrada: string;
+  horaSaida: string;
+  jornadaDiariaMin: number;
+  jornadaSemanalMin: number;
+  diasUteis: boolean[] | string;
+  toleranciaEntradaMin: number;
+  toleranciaSaidaMin: number;
+  toleranciaHoraExtraMin: number;
+  toleranciaCalculoMin: number;
+  tipoFlexibilidade: string;
+  almocoPodeIniciarA: string;
+  almocoPodeIniciarAte: string;
+  almocoMinMin: number;
+  almocoMaxMin: number;
+  hibridoMaxDiasSemana: number;
+  hibridoExigeAprovacao: boolean;
+  viagemJanelaMinutos: number;
+  viagemExigeAprovacao: boolean;
+  bancoHorasLimiteMin: number;
+  bancoHorasVigenciaDias: number;
+}
+
 interface Config {
   // Instituição
   nome: string;
@@ -289,7 +336,7 @@ export function ConfiguracoesPage() {
   /* Carrega dados da API ao montar */
   useEffect(() => {
     Promise.all([
-      api.get<Record<string, unknown>>("/ponto/config/sistema"),
+      api.get<SistemaApi>("/ponto/config/sistema"),
       api.get<Provedor[]>("/ponto/config/provedores"),
       api.get<Subrede[]>("/ponto/config/subredes"),
       api.get<AreaViagem[]>("/ponto/config/areas")
