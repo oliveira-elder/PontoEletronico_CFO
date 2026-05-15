@@ -1,20 +1,24 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
+import { Roles } from "../auth/roles.decorator";
+import { RolesGuard } from "../auth/roles.guard";
 import { GestaoService } from "./gestao.service";
 
 @Controller("ponto/gestao")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), RolesGuard)
 export class GestaoController {
   constructor(private readonly gestaoService: GestaoService) {}
 
   /* ─── Gerências ─── */
 
   @Get("gerencias")
+  @Roles("gestor", "ponto-admin")
   listGerencias() {
     return this.gestaoService.listGerencias();
   }
 
   @Post("gerencias")
+  @Roles("ponto-admin")
   createGerencia(
     @Body() body: { nome: string; sigla: string; responsavel?: string; descricao?: string }
   ) {
@@ -22,6 +26,7 @@ export class GestaoController {
   }
 
   @Put("gerencias/:id")
+  @Roles("ponto-admin")
   updateGerencia(
     @Param("id") id: string,
     @Body()
@@ -37,6 +42,7 @@ export class GestaoController {
   }
 
   @Delete("gerencias/:id")
+  @Roles("ponto-admin")
   deleteGerencia(@Param("id") id: string) {
     return this.gestaoService.deleteGerencia(id);
   }
@@ -44,11 +50,13 @@ export class GestaoController {
   /* ─── Funcionários ─── */
 
   @Get("funcionarios")
+  @Roles("gestor", "ponto-admin")
   listFuncionarios() {
     return this.gestaoService.listFuncionarios();
   }
 
   @Post("funcionarios")
+  @Roles("gestor", "ponto-admin")
   createFuncionario(
     @Body()
     body: {
@@ -65,6 +73,7 @@ export class GestaoController {
   }
 
   @Put("funcionarios/:id")
+  @Roles("gestor", "ponto-admin")
   updateFuncionario(
     @Param("id") id: string,
     @Body()
@@ -81,6 +90,7 @@ export class GestaoController {
   }
 
   @Delete("funcionarios/:id")
+  @Roles("ponto-admin")
   deleteFuncionario(@Param("id") id: string) {
     return this.gestaoService.deleteFuncionario(id);
   }

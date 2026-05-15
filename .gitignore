@@ -8,5 +8,8 @@ coverage
 .DS_Store
 *.log
 packages/backend/prisma/migrations
+packages/backend/prisma/seed.js
+packages/backend/prisma/seed.js.map
+packages/backend/prisma/seed.d.ts
 packages/mobile/.expo
 packages/mobile/.expo-shared

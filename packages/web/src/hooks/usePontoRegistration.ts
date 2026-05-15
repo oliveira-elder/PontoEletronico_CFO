@@ -62,7 +62,11 @@ async function getCurrentPosition(): Promise<GeolocationPosition | null> {
     navigator.geolocation.getCurrentPosition(
       (p) => resolve(p),
       () => resolve(null),
-      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 30_000 }
+      {
+        enableHighAccuracy: true,
+        timeout: 15_000,
+        maximumAge: 0 // sempre leitura nova — evita cache de localização anterior
+      }
     )
   );
 }
@@ -117,19 +121,50 @@ export function usePontoRegistration() {
 
       if (needGeo) {
         const pos = await getCurrentPosition();
+
+        /* Mobile com geo obrigatório: GPS indisponível bloqueia o registro.
+           VPN, permissão negada ou timeout não são justificativa para bypassar. */
+        if (!pos && modo === "MOBILE" && cfg.mobileCheckGeo) {
+          setErro(
+            "Não foi possível obter sua localização GPS. " +
+              "Certifique-se de que o GPS está ativo e que o navegador tem permissão de localização, e tente novamente."
+          );
+          setLoading(false);
+          return null;
+        }
+
         if (pos) {
           latitude = pos.coords.latitude;
           longitude = pos.coords.longitude;
+          const accuracy = Math.round(pos.coords.accuracy);
           const dist = haversine(latitude, longitude, cfg.lat, cfg.lng);
           distanciaMetros = Math.round(dist);
           dentroPerimetro = dist <= cfg.raioMetros;
 
-          if (modo === "MOBILE" && cfg.mobileCheckGeo && !dentroPerimetro) {
-            setErro(
-              `Você está a ${distanciaMetros}m do CFO. O registro presencial exige que você esteja dentro do raio de ${cfg.raioMetros}m.`
-            );
-            setLoading(false);
-            return null;
+          if (modo === "MOBILE" && cfg.mobileCheckGeo) {
+            /* Precisão insuficiente — indica "Localização Aproximada" (Android 12+)
+               ou triangulação por torres de celular (erro típico de 300–2000 m).
+               A margem de erro supera o raio configurado; verificação inconfiável. */
+            if (accuracy > cfg.raioMetros * 4) {
+              setErro(
+                `Precisão do GPS insuficiente (±${accuracy}m) para verificar o perímetro de ${cfg.raioMetros}m.\n\n` +
+                  `Corrija nas configurações do celular:\n` +
+                  `• Android: Configurações → Apps → [Navegador] → Permissões → Localização` +
+                  ` → alterar de "Localização aproximada" para "Localização precisa"\n` +
+                  `• Ative também: Configurações → Localização → Precisão de localização`
+              );
+              setLoading(false);
+              return null;
+            }
+
+            if (!dentroPerimetro) {
+              setErro(
+                `Você está a ${distanciaMetros}m do CFO. ` +
+                  `O registro mobile exige estar dentro do raio de ${cfg.raioMetros}m.`
+              );
+              setLoading(false);
+              return null;
+            }
           }
         }
       }
@@ -154,7 +189,8 @@ export function usePontoRegistration() {
               longitude,
               origem: modo,
               modoRegistro: modo,
-              ipOrigem: ipOrigem || undefined
+              ipOrigem: ipOrigem || undefined,
+              fotoBase64: params.foto || undefined
             },
             bearerToken
           );

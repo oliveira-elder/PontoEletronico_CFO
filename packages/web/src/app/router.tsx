@@ -11,6 +11,8 @@ import { SolicitacoesPage } from "../pages/ponto/SolicitacoesPage";
 import { GestaoPage } from "../pages/ponto/GestaoPage";
 import { GerenciasPage } from "../pages/ponto/GerenciasPage";
 import { ConfiguracoesPage } from "../pages/ponto/ConfiguracoesPage";
+import { GestaoUsuariosPage } from "../pages/ponto/GestaoUsuariosPage";
+import { AuditoriaPage } from "../pages/ponto/AuditoriaPage";
 
 export const router = createBrowserRouter([
   /* Página de login — pública */
@@ -35,7 +37,9 @@ export const router = createBrowserRouter([
       { path: "solicitacoes", element: <SolicitacoesPage /> },
       { path: "gestao", element: <GestaoPage /> },
       { path: "gerencias", element: <GerenciasPage /> },
-      { path: "configuracoes", element: <ConfiguracoesPage /> }
+      { path: "usuarios", element: <GestaoUsuariosPage /> },
+      { path: "configuracoes", element: <ConfiguracoesPage /> },
+      { path: "auditoria", element: <AuditoriaPage /> }
     ]
   }
 ]);

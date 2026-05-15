@@ -155,11 +155,34 @@ model MeetingAudit {
 }
 
 model AuditLog {
-  id         String   @id @default(cuid())
+  id          String   @id @default(cuid())
   actorUserId String?
-  action     String
-  payload    Json?
-  createdAt  DateTime @default(now())
+  username    String?
+  method      String?
+  path        String?
+  action      String
+  statusCode  Int?
+  durationMs  Int?
+  ipAddress   String?
+  userAgent   String?
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorUserId])
+  @@index([path])
+}
+
+// ════════════════════════════════════════
+// GESTÃO DE USUÁRIOS / GRUPOS KEYCLOAK
+// ════════════════════════════════════════
+
+model GrupoSistema {
+  grupoId   String   @id
+  grupoNome String
+  papeis    String[] // ex: ["PONTO_ADMIN","GESTOR_APROVACAO","RH_AUDITORIA"]
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
 }
 
 // ════════════════════════════════════════
@@ -352,8 +375,10 @@ model Funcionario {
   afastamentos        Afastamento[]
   solicitacoes        Solicitacao[]
   jornadas            JornadaTrabalho[]
-  enderecoResidencial EnderecoResidencial?
-  createdAt           DateTime           @default(now())
+  enderecoResidencial      EnderecoResidencial?
+  fotoPerfilUrl            String?
+  solicitarAtualizacaoFoto Boolean            @default(false)
+  createdAt                DateTime           @default(now())
 }
 
 model JornadaTrabalho {

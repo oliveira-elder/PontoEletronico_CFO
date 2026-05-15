@@ -8,7 +8,9 @@
       "Bash(docker exec *)",
       "Bash(npx tsc *)",
       "Bash(npm run *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(dir *)",
+      "PowerShell(docker restart pontoeletronico_cfo-backend-1 *)"
     ]
   }
 }

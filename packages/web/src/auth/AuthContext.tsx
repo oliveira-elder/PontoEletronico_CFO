@@ -33,7 +33,8 @@ async function createDevJWT(): Promise<string> {
         name: "Desenvolvedor CFO",
         email: "dev@cfo.org.br",
         preferred_username: "dev",
-        realm_access: { roles: ["funcionario", "admin", "gestor", "intranet_admin"] }
+        realm_access: { roles: ["funcionario", "gestor", "ponto-admin"] },
+        groups: ["funcionario", "gestor", "ponto-admin"]
       })
     )
   );
@@ -58,19 +59,79 @@ export interface AuthUser {
   email: string;
   username: string;
   roles: string[];
+  groups: string[];
+  isSuperAdmin: boolean;
+  funcionario: {
+    id: string;
+    matricula: string;
+    cargo: string;
+    departamento: string | null;
+    fotoPerfilUrl: string | null;
+    solicitarAtualizacaoFoto: boolean;
+  } | null;
 }
 
 interface AuthContextType {
   initialized: boolean;
   authenticated: boolean;
   user: AuthUser | null;
+  initError: string | null;
   token: () => string | undefined;
   ensureInitialized: () => Promise<boolean>;
-  login: () => void;
-  loginToBaterPonto: () => void;
+  login: () => Promise<void>;
+  loginToBaterPonto: () => Promise<void>;
   logout: () => void;
   hasRole: (role: string) => boolean;
+  hasGroup: (group: string) => boolean;
   devLogin: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
+}
+
+const KC_SESSION_KEY = "kc-persisted-session";
+
+function saveKcSession() {
+  try {
+    if (keycloak.token && keycloak.refreshToken) {
+      sessionStorage.setItem(
+        KC_SESSION_KEY,
+        JSON.stringify({
+          token: keycloak.token,
+          refreshToken: keycloak.refreshToken,
+          idToken: keycloak.idToken
+        })
+      );
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadKcSession(): { token?: string; refreshToken?: string; idToken?: string } | null {
+  try {
+    const raw = sessionStorage.getItem(KC_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearKcSession() {
+  try {
+    sessionStorage.removeItem(KC_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/* Limpa estado obsoleto do keycloak-js no sessionStorage. */
+function clearStaleKeycloakState() {
+  try {
+    Object.keys(sessionStorage)
+      .filter((k) => k.startsWith("kc-callback-") || k === "oauthRedirect")
+      .forEach((k) => sessionStorage.removeItem(k));
+  } catch {
+    /* ignore */
+  }
 }
 
 /* ─── Helpers ─── */
@@ -78,19 +139,48 @@ interface AuthContextType {
 interface KcToken {
   sub?: string;
   name?: string;
+  given_name?: string;
+  family_name?: string;
   preferred_username?: string;
   email?: string;
   realm_access?: { roles: string[] };
+  groups?: string[];
 }
+
+const SUPER_ADMIN_USERNAMES = (import.meta.env.VITE_SUPER_ADMIN_USERNAMES ?? "")
+  .split(",")
+  .map((s: string) => s.trim())
+  .filter(Boolean);
+
+const SUPER_ADMIN_ROLES = [
+  "ponto-admin",
+  "PONTO_ADMIN",
+  "gestor",
+  "GESTOR_APROVACAO",
+  "RH_AUDITORIA",
+  "funcionario"
+];
+
 function parseUser(): AuthUser | null {
   const p = keycloak.tokenParsed as KcToken | undefined;
   if (!p) return null;
+  const username = p.preferred_username ?? "";
+  const fullName = p.name || [p.given_name, p.family_name].filter(Boolean).join(" ") || username;
+  const baseRoles = p.realm_access?.roles ?? [];
+  const isSuperAdmin = SUPER_ADMIN_USERNAMES.includes(username.toLowerCase());
+  // Todo usuário autenticado é "funcionario" por padrão
+  const roles = isSuperAdmin
+    ? [...new Set([...baseRoles, ...SUPER_ADMIN_ROLES])]
+    : [...new Set(["funcionario", ...baseRoles])];
   return {
     id: p.sub ?? "",
-    name: p.name ?? p.preferred_username ?? "",
+    name: fullName,
     email: p.email ?? "",
-    username: p.preferred_username ?? "",
-    roles: p.realm_access?.roles ?? []
+    username,
+    roles,
+    groups: p.groups ?? [],
+    isSuperAdmin,
+    funcionario: null
   };
 }
 
@@ -110,6 +200,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
 
   // Guards e estado interno (não causam re-render)
   const initPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -121,12 +212,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (refreshTimer.current) clearInterval(refreshTimer.current);
     refreshTimer.current = setInterval(async () => {
       try {
-        await keycloak.updateToken(60);
+        const refreshed = await keycloak.updateToken(60);
+        if (refreshed) saveKcSession();
       } catch {
+        clearKcSession();
         try {
-          keycloak.logout({ redirectUri: window.location.origin + "/login" });
+          keycloak.logout({
+            redirectUri: import.meta.env.VITE_APP_BASE_URL ?? window.location.origin
+          });
         } catch {
-          /* logout failure is non-fatal */
+          window.location.assign("/login");
         }
       }
     }, 30_000);
@@ -139,29 +234,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (authenticated) return Promise.resolve(true);
     if (initPromiseRef.current) return initPromiseRef.current;
 
+    // keycloak-js v25 só permite chamar init() uma vez por instância.
+    // Se já foi inicializado, retorna estado atual sem reinicializar.
+    const kc = keycloak as unknown as { didInitialize?: boolean };
+    if (kc.didInitialize) {
+      const auth = !!keycloak.authenticated;
+      setAuthenticated(auth);
+      if (auth) setUser(parseUser());
+      setInitialized(true);
+      initPromiseRef.current = Promise.resolve(auth);
+      return initPromiseRef.current;
+    }
+
+    const stored = loadKcSession();
+    const appBaseUrl = import.meta.env.VITE_APP_BASE_URL ?? window.location.origin;
+
     initPromiseRef.current = keycloak
       .init({
         pkceMethod: "S256",
         checkLoginIframe: false,
-        responseMode: "query"
+        responseMode: "query",
+        onLoad: "check-sso",
+        silentCheckSsoRedirectUri: appBaseUrl + "/silent-check-sso.html",
+        // Restaura tokens persistidos para evitar redirect no F5
+        token: stored?.token,
+        refreshToken: stored?.refreshToken,
+        idToken: stored?.idToken
       })
       .then((auth: boolean) => {
-        setAuthenticated(auth);
         if (auth) {
+          saveKcSession();
           setUser(parseUser());
           startTokenRefresh();
         }
+        setAuthenticated(auth);
         setInitialized(true);
         return auth;
       })
       .catch((err: unknown) => {
-        console.warn("[Auth] Keycloak init falhou:", err);
+        const msg =
+          err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+        console.error("[Auth] Keycloak init falhou:", err);
+        setInitError(msg || "Erro desconhecido");
         setInitialized(true);
         return false;
       });
 
     return initPromiseRef.current as Promise<boolean>;
   }, [startTokenRefresh, authenticated]);
+
+  /* Sincroniza perfil do backend após autenticação bem-sucedida.
+     Usa token() para funcionar tanto com SSO quanto com Login Dev. */
+  useEffect(() => {
+    if (!authenticated) return;
+    const tk = devTokenRef.current ?? keycloak.token;
+    if (!tk) return;
+    let cancelled = false;
+    fetch("/api/auth/me", { headers: { Authorization: `Bearer ${tk}` } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((profile) => {
+        if (!cancelled && profile) setUser(profile);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated]);
 
   /* Apenas inicializa automaticamente se a URL for um callback do Keycloak.
      Caso contrário, mantém estado "não inicializado" sem rodar nenhuma rede,
@@ -191,32 +329,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   /* ─── Actions ─── */
 
-  function login() {
+  const appBaseUrl = import.meta.env.VITE_APP_BASE_URL ?? window.location.origin;
+
+  async function login() {
     try {
-      keycloak.login({ redirectUri: window.location.origin + "/ponto" });
+      clearStaleKeycloakState();
+      await ensureInitialized();
+      keycloak.login({ redirectUri: appBaseUrl + "/ponto" });
     } catch (e) {
       console.error("[Auth] Falha ao iniciar login:", e);
       alert(
-        `Não foi possível conectar ao servidor de autenticação.\nURL: ${import.meta.env.VITE_KEYCLOAK_URL}\nRealm: ${import.meta.env.VITE_KEYCLOAK_REALM}\n\nVerifique se o servidor SSO está acessível e se o realm e o client "ponto-web" foram criados.`
+        `Não foi possível conectar ao servidor de autenticação.\nURL: ${import.meta.env.VITE_KEYCLOAK_URL}\nRealm: ${import.meta.env.VITE_KEYCLOAK_REALM}\n\nVerifique se o servidor SSO está acessível e se o realm e o client "${import.meta.env.VITE_KEYCLOAK_CLIENT_ID ?? "pontoeletronico-dev"}" foram criados.`
       );
     }
   }
 
-  function loginToBaterPonto() {
+  async function loginToBaterPonto() {
     try {
-      keycloak.login({ redirectUri: window.location.origin + "/ponto/registrar" });
+      clearStaleKeycloakState();
+      await ensureInitialized();
+      keycloak.login({ redirectUri: appBaseUrl + "/ponto/registrar" });
     } catch (e) {
       console.error("[Auth] Falha ao iniciar login:", e);
       alert(
-        `Não foi possível conectar ao servidor de autenticação.\nURL: ${import.meta.env.VITE_KEYCLOAK_URL}\nRealm: ${import.meta.env.VITE_KEYCLOAK_REALM}\n\nVerifique se o servidor SSO está acessível e se o realm e o client "ponto-web" foram criados.`
+        `Não foi possível conectar ao servidor de autenticação.\nURL: ${import.meta.env.VITE_KEYCLOAK_URL}\nRealm: ${import.meta.env.VITE_KEYCLOAK_REALM}\n\nVerifique se o servidor SSO está acessível e se o realm e o client "${import.meta.env.VITE_KEYCLOAK_CLIENT_ID ?? "pontoeletronico-dev"}" foram criados.`
       );
     }
   }
 
   function logout() {
     if (refreshTimer.current) clearInterval(refreshTimer.current);
+    clearKcSession();
+    const appBaseUrl = import.meta.env.VITE_APP_BASE_URL ?? window.location.origin;
     try {
-      keycloak.logout({ redirectUri: window.location.origin + "/login" });
+      keycloak.logout({ redirectUri: appBaseUrl });
     } catch {
       window.location.assign("/login");
     }
@@ -224,6 +370,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   function hasRole(role: string): boolean {
     return user?.roles.includes(role) ?? false;
+  }
+
+  function hasGroup(group: string): boolean {
+    const groups = user?.groups ?? [];
+    return groups.some((g) => g === group || g === `/${group}` || g.endsWith(`/${group}`));
   }
 
   function token() {
@@ -237,6 +388,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthTokenProvider(token);
   }, []);
 
+  async function refreshProfile() {
+    const tk = devTokenRef.current ?? keycloak.token;
+    if (!tk) return;
+    const profile = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${tk}` } })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    if (profile) setUser(profile);
+  }
+
   async function devLogin() {
     if (!import.meta.env.DEV) return;
     // Gera o JWT ANTES de marcar como autenticado para que requests
@@ -248,7 +408,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       name: "Desenvolvedor CFO",
       email: "dev@cfo.org.br",
       username: "dev",
-      roles: ["funcionario", "admin"]
+      roles: ["funcionario", "gestor", "ponto-admin"],
+      groups: ["funcionario", "gestor", "ponto-admin"],
+      isSuperAdmin: true,
+      funcionario: {
+        id: "dev-func-001",
+        matricula: "dev",
+        cargo: "Desenvolvedor",
+        departamento: null,
+        fotoPerfilUrl: null,
+        solicitarAtualizacaoFoto: false
+      }
     });
     setAuthenticated(true);
     setInitialized(true);
@@ -260,13 +430,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         initialized,
         authenticated,
         user,
+        initError,
         token,
         ensureInitialized,
         login,
         loginToBaterPonto,
         logout,
         hasRole,
-        devLogin
+        hasGroup,
+        devLogin,
+        refreshProfile
       }}
     >
       {children}

@@ -37,4 +37,8 @@ export class CreateRegistroDto {
   @IsOptional()
   @IsString()
   observacao?: string;
+
+  @IsOptional()
+  @IsString()
+  fotoBase64?: string;
 }

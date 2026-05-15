@@ -1,20 +1,17 @@
 import { Controller, Get, Req, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
-import { Roles } from "./roles.decorator";
-import { RolesGuard } from "./roles.guard";
+import { AuthContext } from "./auth.service";
+import { AuthService } from "./auth.service";
 
 @Controller("auth")
 export class AuthController {
-  @Get("me")
-  @UseGuards(AuthGuard("jwt"), RolesGuard)
-  me(@Req() req: { user: unknown }) {
-    return req.user;
-  }
+  constructor(private readonly authService: AuthService) {}
 
-  @Get("admin")
-  @UseGuards(AuthGuard("jwt"), RolesGuard)
-  @Roles("intranet_admin")
-  admin() {
-    return { ok: true };
+  /* Sincroniza o usuário SSO na base local e retorna o perfil completo.
+     Chamado pelo frontend logo após cada login bem-sucedido. */
+  @Get("me")
+  @UseGuards(AuthGuard("jwt"))
+  me(@Req() req: { user: AuthContext }) {
+    return this.authService.syncUser(req.user);
   }
 }

@@ -1,15 +1,21 @@
 import { Controller, Get, Put, Post, Delete, Patch, Body, Param, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
+import { Roles } from "../auth/roles.decorator";
+import { RolesGuard } from "../auth/roles.guard";
 import { ConfigService } from "./config.service";
 
 @Controller("ponto/config")
-@UseGuards(AuthGuard("jwt"))
+@UseGuards(AuthGuard("jwt"), RolesGuard)
+@Roles("ponto-admin")
 export class ConfigController {
   constructor(private readonly configService: ConfigService) {}
 
   /* ─── ConfiguracaoSistema ─── */
 
+  /* Config do sistema: leitura aberta para qualquer usuário SSO autenticado
+     (necessária para a tela de registro de ponto). Escrita continua restrita. */
   @Get("sistema")
+  @Roles()
   getSistema() {
     return this.configService.getSistema();
   }
@@ -22,6 +28,7 @@ export class ConfigController {
   /* ─── Provedores ─── */
 
   @Get("provedores")
+  @Roles("gestor", "ponto-admin")
   listProvedores() {
     return this.configService.listProvedores();
   }
@@ -44,6 +51,7 @@ export class ConfigController {
   /* ─── Subredes ─── */
 
   @Get("subredes")
+  @Roles("gestor", "ponto-admin")
   listSubredes() {
     return this.configService.listSubredes();
   }
@@ -61,6 +69,7 @@ export class ConfigController {
   /* ─── Áreas de Viagem ─── */
 
   @Get("areas")
+  @Roles("gestor", "ponto-admin")
   listAreas() {
     return this.configService.listAreas();
   }

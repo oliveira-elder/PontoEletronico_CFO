@@ -1,7 +1,8 @@
-import React from "react";
-import { MapPinIcon, MailIcon, PhoneIcon, SearchIcon, BellIcon, UserIcon } from "../icons";
+import React, { useRef, useState } from "react";
+import { MapPinIcon, MailIcon, PhoneIcon, BellIcon } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { api } from "../../hooks/useApi";
 
 /* ─── Chip (faixa 1) ─── */
 function TopChip({
@@ -55,6 +56,239 @@ function TopChip({
     );
   }
   return <span style={base}>{content}</span>;
+}
+
+/* ─── Avatar com foto de perfil e popover ─── */
+function AvatarPerfil() {
+  const { user, token, refreshProfile } = useAuth();
+  const [aberto, setAberto] = useState(false);
+  const [solicitando, setSolicitando] = useState(false);
+  const [confirmado, setConfirmado] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const fotoUrl = user?.funcionario?.fotoPerfilUrl ?? null;
+  const flagAtiva = user?.funcionario?.solicitarAtualizacaoFoto ?? false;
+  const inicial = (user?.name?.[0] ?? user?.username?.[0] ?? "?").toUpperCase();
+
+  /* Fecha ao clicar fora */
+  React.useEffect(() => {
+    if (!aberto) return;
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setAberto(false);
+        setConfirmado(false);
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [aberto]);
+
+  async function solicitarAtualizacao() {
+    setSolicitando(true);
+    try {
+      await api.post("/ponto/minha-foto/solicitar-atualizacao", {}, token());
+      await refreshProfile();
+      setConfirmado(true);
+    } finally {
+      setSolicitando(false);
+    }
+  }
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      {/* Botão avatar */}
+      <button
+        onClick={() => {
+          setAberto((v) => !v);
+          setConfirmado(false);
+        }}
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: "50%",
+          border: fotoUrl ? "2px solid var(--burgundy-600)" : "2px solid rgba(122,30,38,0.20)",
+          background: fotoUrl ? "transparent" : "var(--burgundy-600)",
+          cursor: "pointer",
+          padding: 0,
+          overflow: "hidden",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          transition: "border-color 150ms"
+        }}
+        title="Foto de perfil"
+        aria-label="Foto de perfil"
+      >
+        {fotoUrl ? (
+          <img
+            src={fotoUrl}
+            alt="Foto de perfil"
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = "none";
+            }}
+          />
+        ) : (
+          <span style={{ color: "#fff", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>
+            {inicial}
+          </span>
+        )}
+      </button>
+
+      {/* Popover */}
+      {aberto && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 10px)",
+            right: 0,
+            width: 260,
+            background: "#fff",
+            borderRadius: "var(--radius-xl)",
+            boxShadow: "0 8px 32px rgba(10,5,6,0.18)",
+            border: "1px solid rgba(122,30,38,0.10)",
+            overflow: "hidden",
+            zIndex: 200
+          }}
+        >
+          {/* Cabeçalho do popover */}
+          <div
+            style={{
+              background:
+                "linear-gradient(135deg, var(--burgundy-700) 0%, var(--burgundy-600) 100%)",
+              padding: "16px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10
+            }}
+          >
+            {/* Foto grande no popover */}
+            <div
+              style={{
+                width: 72,
+                height: 72,
+                borderRadius: "50%",
+                border: "3px solid rgba(255,255,255,0.50)",
+                overflow: "hidden",
+                background: "rgba(255,255,255,0.15)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0
+              }}
+            >
+              {fotoUrl ? (
+                <img
+                  src={fotoUrl}
+                  alt="Foto de perfil"
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ) : (
+                <span style={{ fontSize: 28, fontWeight: 700, color: "#fff" }}>{inicial}</span>
+              )}
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <p
+                style={{ color: "#fff", fontWeight: 600, fontSize: 13, margin: 0, lineHeight: 1.3 }}
+              >
+                {user?.name || user?.username}
+              </p>
+              <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, margin: "2px 0 0" }}>
+                {user?.email}
+              </p>
+            </div>
+          </div>
+
+          {/* Corpo do popover */}
+          <div style={{ padding: "14px 16px" }}>
+            {!fotoUrl ? (
+              /* Sem foto ainda */
+              <div style={{ textAlign: "center" }}>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-500)",
+                    margin: "0 0 4px",
+                    lineHeight: 1.5
+                  }}
+                >
+                  Sem foto de perfil
+                </p>
+                <p style={{ fontSize: 11, color: "var(--ink-400)", margin: 0, lineHeight: 1.5 }}>
+                  Sua foto será definida automaticamente no primeiro registro de ponto com câmera.
+                </p>
+              </div>
+            ) : confirmado || flagAtiva ? (
+              /* Solicitação já enviada */
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius-md)",
+                  background: "rgba(47,125,79,0.08)",
+                  border: "1px solid rgba(47,125,79,0.20)"
+                }}
+              >
+                <span style={{ fontSize: 16, flexShrink: 0 }}>✓</span>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: "#2f7d4f",
+                    margin: 0,
+                    lineHeight: 1.5,
+                    fontWeight: 600
+                  }}
+                >
+                  Foto será atualizada no próximo registro de entrada com câmera.
+                </p>
+              </div>
+            ) : (
+              /* Com foto, sem solicitação pendente */
+              <button
+                onClick={solicitarAtualizacao}
+                disabled={solicitando}
+                style={{
+                  width: "100%",
+                  padding: "9px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.20)",
+                  background: "transparent",
+                  color: "var(--burgundy-600)",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: solicitando ? "not-allowed" : "pointer",
+                  opacity: solicitando ? 0.6 : 1,
+                  textAlign: "center",
+                  transition: "all 150ms",
+                  fontFamily: "var(--font-body)"
+                }}
+              >
+                {solicitando ? "Registrando…" : "Atualizar foto no próximo registro"}
+              </button>
+            )}
+            <p
+              style={{
+                fontSize: 10.5,
+                color: "var(--ink-400)",
+                margin: "10px 0 0",
+                lineHeight: 1.5,
+                textAlign: "center"
+              }}
+            >
+              A foto de perfil é registrada exclusivamente via câmera no momento do ponto.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─── Topbar ─── */
@@ -113,20 +347,7 @@ export function Topbar() {
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: "50%",
-              background: "var(--burgundy-600)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#fff"
-            }}
-          >
-            <UserIcon size={15} />
-          </div>
+          <AvatarPerfil />
           <button
             onClick={logout}
             title="Sair"
@@ -197,8 +418,8 @@ export function Topbar() {
 
         <div style={{ flex: 1 }} />
 
-        {/* LAI — obrigatório por lei */}
-        <TopChip variant="amber">⚖ Acesso à Informação — LAI 12.527/2011</TopChip>
+        {/* LGPD — obrigatório por lei */}
+        <TopChip variant="amber">🔒 Lei Geral de Proteção de Dados — LGPD 13.709/2018</TopChip>
       </div>
 
       {/* ── Faixa 2 — Branca com identidade ── */}
@@ -262,9 +483,6 @@ export function Topbar() {
         <div style={{ flex: 1 }} />
 
         {/* Ações do header */}
-        <button className="btn-icon" aria-label="Pesquisar" title="Pesquisar">
-          <SearchIcon size={18} />
-        </button>
         <button
           className="btn-icon"
           aria-label="Notificações"
@@ -286,7 +504,7 @@ export function Topbar() {
           />
         </button>
 
-        {/* Avatar do usuário autenticado */}
+        {/* Avatar + info do usuário autenticado */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div
             style={{
@@ -300,21 +518,7 @@ export function Topbar() {
               minHeight: 44
             }}
           >
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: "50%",
-                background: "var(--burgundy-600)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "white",
-                flexShrink: 0
-              }}
-            >
-              <UserIcon size={16} />
-            </div>
+            <AvatarPerfil />
             <div style={{ textAlign: "left" }}>
               <p
                 style={{

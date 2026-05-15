@@ -9,11 +9,24 @@ services:
       - "12001:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pontoeletronico -d pontoeletronico"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   backend:
     image: node:20
     working_dir: /app
-    command: sh -c "npm install && npx prisma generate --schema=packages/backend/prisma/schema.prisma && npm run dev -w @intranet/backend"
+    command: >
+      sh -c "
+        npm install &&
+        npx prisma generate --schema=packages/backend/prisma/schema.prisma &&
+        npx prisma db push --schema=packages/backend/prisma/schema.prisma --accept-data-loss &&
+        (cd packages/backend && npx ts-node --project tsconfig.seed.json prisma/seed.ts) || echo 'Seed ignorado (já executado)' &&
+        npm run dev -w @intranet/backend
+      "
     environment:
       DATABASE_URL: postgresql://pontoeletronico:pontoeletronico@postgres:5432/pontoeletronico
       KEYCLOAK_ISSUER: https://sso.cfo.org.br/realms/cfo
@@ -23,13 +36,38 @@ services:
       JWT_SECRET: dev-secret
       GLPI_BASE_URL: http://glpi.local
       VIDEO_CONFERENCE_ENABLED: "false"
+      SUPER_ADMIN_USERNAMES: elder.oliveira
+      # Polling de arquivos para o file-watcher funcionar no Docker/Windows
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      # Credenciais opcionais da API Admin do Keycloak (lista grupos/usuários do AD).
+      # Deixe em branco para desabilitar — o sistema funciona normalmente sem elas.
+      # KEYCLOAK_ADMIN_USER: admin
+      # KEYCLOAK_ADMIN_PASSWORD: senha_aqui
     volumes:
       - ./:/app
       - /app/node_modules
+      - uploads_fotos:/app/uploads
     ports:
       - "12003:3000"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+    healthcheck:
+      # Qualquer resposta HTTP (mesmo 401) confirma que o NestJS está no ar.
+      test:
+        - "CMD-SHELL"
+        - >
+          node -e "
+            require('http').get('http://localhost:3000/api/auth/me', r => {
+              process.exit(r.statusCode ? 0 : 1);
+            }).on('error', () => process.exit(1));
+          "
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 240s
 
   web:
     build:
@@ -39,10 +77,13 @@ services:
     volumes:
       - ./:/app
       - /app/node_modules
+      - /app/packages/web/node_modules
     ports:
       - "12010:12010"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  uploads_fotos:

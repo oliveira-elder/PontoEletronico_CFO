@@ -532,8 +532,8 @@ export function RegistroPontoPage() {
   const [geoloc, setGeoloc] = useState(true);
   const [geoStatus, setGeoStatus] = useState<"pendente" | "ok" | "fora">("pendente");
 
-  /* Configuração do sistema — carregada exclusivamente da API */
   const [cfg, setCfg] = useState<SistemaConfig | null>(null);
+  const [erroCfg, setErroCfg] = useState(false);
 
   /* Modo detectado pelo viewport */
   const modo: ModoRegistro = isMobile ? "MOBILE" : "DESKTOP";
@@ -553,14 +553,14 @@ export function RegistroPontoPage() {
     return () => clearInterval(t);
   }, []);
 
-  /* ── Carrega config do sistema ── */
   useEffect(() => {
     api
       .get<SistemaConfig>("/ponto/config/sistema")
       .then((data) => {
         if (data) setCfg(data);
+        else setErroCfg(true);
       })
-      .catch(() => {});
+      .catch(() => setErroCfg(true));
   }, []);
 
   /* ── Carrega registros de hoje do backend ── */
@@ -698,7 +698,49 @@ export function RegistroPontoPage() {
     return <ConfirmacaoRegistro registro={confirmado} onVoltar={() => setConfirmado(null)} />;
   }
 
-  /* ── Loading: aguarda configuração do sistema antes de renderizar a UI ── */
+  if (erroCfg) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: 300,
+          gap: 8,
+          color: "var(--red)",
+          fontSize: 14,
+          textAlign: "center",
+          padding: "0 24px"
+        }}
+      >
+        <span style={{ fontSize: 24 }}>⚠️</span>
+        <strong>Não foi possível carregar as configurações do sistema.</strong>
+        <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
+          Verifique se o backend está rodando e se o banco de dados foi inicializado.
+        </span>
+        <button
+          onClick={() => {
+            setErroCfg(false);
+            setCfg(null);
+          }}
+          style={{
+            marginTop: 8,
+            padding: "8px 20px",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid var(--red)",
+            background: "transparent",
+            color: "var(--red)",
+            cursor: "pointer",
+            fontSize: 13
+          }}
+        >
+          Tentar novamente
+        </button>
+      </div>
+    );
+  }
+
   if (!cfg) {
     return (
       <div

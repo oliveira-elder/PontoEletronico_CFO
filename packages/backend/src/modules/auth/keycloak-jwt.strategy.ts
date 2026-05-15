@@ -65,11 +65,15 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
       return done(null, jwtSecret);
     };
 
+    /* Audience: Keycloak por padrão não inclui o clientId em `aud` do access token.
+       Validamos apenas se KEYCLOAK_VALIDATE_AUDIENCE=true estiver explícito. */
+    const validateAudience = configService.get<string>("KEYCLOAK_VALIDATE_AUDIENCE") === "true";
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       issuer: issuer || undefined,
-      audience,
+      audience: validateAudience ? audience : undefined,
       algorithms: ["RS256", "HS256"],
       secretOrKeyProvider
     });

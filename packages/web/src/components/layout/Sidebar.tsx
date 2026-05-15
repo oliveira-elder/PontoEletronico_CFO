@@ -8,14 +8,15 @@ import {
   InboxIcon,
   UsersIcon,
   SettingsIcon,
-  LogOutIcon
+  LogOutIcon,
+  ShieldCheckIcon
 } from "../icons";
+import { useAuth } from "../../auth/AuthContext";
 
 interface NavItem {
   path: string;
   label: string;
   icon: React.ReactNode;
-  adminOnly?: boolean;
 }
 
 const mainNav: NavItem[] = [
@@ -26,11 +27,19 @@ const mainNav: NavItem[] = [
   { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> }
 ];
 
-const adminNav: NavItem[] = [
-  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} />, adminOnly: true }
+/* Itens de Gestão: exibidos para gestores e admins */
+const gestaoNav: NavItem[] = [
+  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} /> },
+  { path: "/ponto/auditoria", label: "Auditoria", icon: <ShieldCheckIcon size={18} /> }
 ];
 
-const bottomNav: NavItem[] = [
+/* Itens administrativos: apenas para admins/super admin */
+const adminNav: NavItem[] = [
+  { path: "/ponto/usuarios", label: "Usuários / Grupos", icon: <UsersIcon size={18} /> }
+];
+
+/* Configurações: apenas admin */
+const adminBottomNav: NavItem[] = [
   { path: "/ponto/configuracoes", label: "Configurações", icon: <SettingsIcon size={18} /> }
 ];
 
@@ -57,6 +66,15 @@ function SidebarLink({ item, expanded }: { item: NavItem; expanded: boolean }) {
 /* ─── Sidebar ─── */
 export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
+  const { user, hasRole, logout } = useAuth();
+
+  const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  const isGestor =
+    isAdmin || hasRole("gestor") || hasRole("GESTOR_APROVACAO") || hasRole("RH_AUDITORIA");
+
+  const visibleGestaoNav = isGestor ? gestaoNav : [];
+  const visibleAdminNav = isAdmin ? adminNav : [];
+  const visibleAdminBottomNav = isAdmin ? adminBottomNav : [];
 
   function setExp(v: boolean) {
     setExpanded(v);
@@ -172,8 +190,8 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
           <SidebarLink key={item.path} item={item} expanded={expanded} />
         ))}
 
-        {/* Seção admin */}
-        {adminNav.length > 0 && (
+        {/* Seção administração — visível apenas para gestor/admin */}
+        {(visibleGestaoNav.length > 0 || visibleAdminNav.length > 0) && (
           <>
             {expanded && (
               <p
@@ -192,7 +210,10 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
               </p>
             )}
             {!expanded && <div style={{ height: 12 }} />}
-            {adminNav.map((item) => (
+            {visibleGestaoNav.map((item) => (
+              <SidebarLink key={item.path} item={item} expanded={expanded} />
+            ))}
+            {visibleAdminNav.map((item) => (
               <SidebarLink key={item.path} item={item} expanded={expanded} />
             ))}
           </>
@@ -210,13 +231,14 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
           flexShrink: 0
         }}
       >
-        {bottomNav.map((item) => (
+        {visibleAdminBottomNav.map((item) => (
           <SidebarLink key={item.path} item={item} expanded={expanded} />
         ))}
 
         {/* Sair */}
         <button
           className="sidebar-item"
+          onClick={logout}
           data-tooltip={!expanded ? "Sair" : undefined}
           style={{
             padding: expanded ? "10px 12px" : "10px 0",

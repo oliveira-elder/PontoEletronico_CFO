@@ -76,11 +76,12 @@ a:hover { color: var(--burgundy-700); }
 }
 .btn-primary {
   background: var(--burgundy-600);
-  color: var(--cream-50);
+  color: #fff;
   box-shadow: 0 12px 30px -10px rgba(122, 30, 38, 0.35);
 }
 .btn-primary:hover {
   background: var(--burgundy-700);
+  color: #fff;
   box-shadow: 0 16px 32px -10px rgba(122, 30, 38, 0.45);
   transform: translateY(-1px);
 }
