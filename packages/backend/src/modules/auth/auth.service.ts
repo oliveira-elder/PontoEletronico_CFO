@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 
 export interface AuthContext {
@@ -17,16 +17,19 @@ export interface UserProfile {
   username: string;
   name: string;
   email: string;
+  emailReal: string | null;
   roles: string[];
   groups: string[];
   isSuperAdmin: boolean;
   funcionario: {
     id: string;
-    matricula: string;
+    matricula: string | null;
     cargo: string;
     departamento: string | null;
     fotoPerfilUrl: string | null;
     solicitarAtualizacaoFoto: boolean;
+    isManager: boolean;
+    section: string | null;
   } | null;
 }
 
@@ -34,6 +37,9 @@ const SUPER_ADMINS = (process.env.SUPER_ADMIN_USERNAMES ?? "elder.oliveira")
   .split(",")
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
+
+const REAL_EMAIL_DOMAIN = process.env.REAL_EMAIL_DOMAIN ?? "cfo.org.br";
+const SSO_FAKE_DOMAINS = ["sso.local", "pending.local"];
 
 const ALL_ROLES = [
   "funcionario",
@@ -78,23 +84,36 @@ export class AuthService {
     let user = await this.prisma.user.findUnique({ where: { externalId: ctx.sub } });
 
     if (!user) {
+      // Calcula emailReal para novos usuários com email mascarado
+      const newEmailDomain = email.split("@")[1] ?? "";
+      const emailReal =
+        SSO_FAKE_DOMAINS.includes(newEmailDomain) && ctx.username
+          ? `${ctx.username}@${REAL_EMAIL_DOMAIN}`
+          : undefined;
       // Tenta criar; se email já existir (de outro usuário), usa sub como email
       user = await this.prisma.user
-        .create({ data: { externalId: ctx.sub, email, name } })
+        .create({ data: { externalId: ctx.sub, email, name, emailReal } })
         .catch(() =>
           this.prisma.user.create({
-            data: { externalId: ctx.sub, email: `${ctx.sub}@sso.local`, name }
+            data: { externalId: ctx.sub, email: `${ctx.sub}@sso.local`, name, emailReal }
           })
         );
     } else {
       // Atualiza nome e corrige email temporário se necessário
-      const updates: Record<string, string> = {};
+      const updates: Record<string, string | null> = {};
       if (user.name !== name) updates.name = name;
       if (
         ctx.email &&
         (user.email.endsWith("@pending.local") || user.email.endsWith("@sso.local"))
       ) {
         updates.email = ctx.email;
+      }
+      // Auto-preenche emailReal quando ainda é nulo e o email é mascarado
+      if (!user.emailReal && ctx.username) {
+        const emailDomain = user.email.split("@")[1] ?? "";
+        if (SSO_FAKE_DOMAINS.includes(emailDomain)) {
+          updates.emailReal = `${ctx.username}@${REAL_EMAIL_DOMAIN}`;
+        }
       }
       if (Object.keys(updates).length > 0) {
         user = await this.prisma.user.update({ where: { id: user.id }, data: updates });
@@ -110,9 +129,18 @@ export class AuthService {
         cargo: true,
         departamento: true,
         fotoPerfilUrl: true,
-        solicitarAtualizacaoFoto: true
+        solicitarAtualizacaoFoto: true,
+        ativo: true,
+        isManager: true,
+        section: true
       }
     });
+
+    // Bloqueia acesso se o funcionário foi desativado pelo RH/admin.
+    // Super admins não são bloqueados mesmo que o registro esteja inativo.
+    if (funcionario && !funcionario.ativo && !ctx.isSuperAdmin) {
+      throw new ForbiddenException("CONTA_DESATIVADA");
+    }
 
     if (!funcionario) {
       const matriculaBase = ctx.username || ctx.sub.slice(0, 12);
@@ -136,6 +164,9 @@ export class AuthService {
             matricula: true,
             cargo: true,
             departamento: true,
+            ativo: true,
+            isManager: true,
+            section: true,
             fotoPerfilUrl: true,
             solicitarAtualizacaoFoto: true
           }
@@ -149,6 +180,7 @@ export class AuthService {
       username: ctx.username,
       name: user.name,
       email: user.email,
+      emailReal: user.emailReal ?? null,
       roles: ctx.roles,
       groups: ctx.groups,
       isSuperAdmin: ctx.isSuperAdmin,

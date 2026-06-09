@@ -2,7 +2,14 @@ import { Injectable, BadRequestException, NotFoundException, Logger } from "@nes
 import { TipoPonto, OrigemPonto } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { FotoService } from "./foto.service";
+import { DocumentoService } from "./documento.service";
 import { CreateRegistroDto } from "./dto/create-registro.dto";
+import {
+  horarioDeDataBrasilia,
+  hojeBrasiliaISO,
+  intervaloDiaBrasilia,
+  validarHorarioPermitido
+} from "../../utils/horario-brasilia";
 
 @Injectable()
 export class PontoService {
@@ -10,7 +17,8 @@ export class PontoService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly fotoService: FotoService
+    private readonly fotoService: FotoService,
+    private readonly documentoService: DocumentoService
   ) {}
 
   /* ─── Helpers ─── */
@@ -53,16 +61,25 @@ export class PontoService {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  private startOfDay(date: Date) {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d;
+  private async obterLimitesHorarioPonto() {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { pontoHorarioMinimo: true, pontoHorarioMaximo: true }
+    });
+    return {
+      min: cfg?.pontoHorarioMinimo ?? "06:00",
+      max: cfg?.pontoHorarioMaximo ?? "23:59"
+    };
   }
 
-  private endOfDay(date: Date) {
-    const d = new Date(date);
-    d.setHours(23, 59, 59, 999);
-    return d;
+  private validarHorarioAtualPonto() {
+    return this.obterLimitesHorarioPonto().then((limites) => {
+      const agora = horarioDeDataBrasilia(new Date());
+      const validacao = validarHorarioPermitido(agora, limites.min, limites.max);
+      if (!validacao.ok) {
+        throw new BadRequestException(validacao.message);
+      }
+    });
   }
 
   private getAcoesPermitidas(registros: { tipo: string }[]) {
@@ -78,14 +95,14 @@ export class PontoService {
 
   async getStatusAtual(keycloakSub: string) {
     const func = await this.getFuncionario(keycloakSub);
-    const hoje = new Date();
+    const { inicio, fim } = intervaloDiaBrasilia(hojeBrasiliaISO());
 
     const registros = await this.prisma.registroPonto.findMany({
       where: {
         funcionarioId: func.id,
         dataHora: {
-          gte: this.startOfDay(hoje),
-          lte: this.endOfDay(hoje)
+          gte: inicio,
+          lte: fim
         }
       },
       orderBy: { dataHora: "asc" }
@@ -146,6 +163,7 @@ export class PontoService {
 
   async baterPonto(keycloakSub: string, dto: CreateRegistroDto) {
     const func = await this.getFuncionario(keycloakSub);
+    await this.validarHorarioAtualPonto();
     const status = await this.getStatusAtual(keycloakSub);
 
     /* Validação de sequência */
@@ -192,7 +210,7 @@ export class PontoService {
     if (dto.fotoBase64) {
       try {
         fotoUrl = await this.fotoService.salvarFoto({
-          matricula: func.matricula,
+          matricula: func.matricula ?? func.id,
           tipo: dto.tipo,
           fotoBase64: dto.fotoBase64
         });
@@ -238,15 +256,27 @@ export class PontoService {
 
   async getHistorico(keycloakSub: string, mes: number, ano: number) {
     const func = await this.getFuncionario(keycloakSub);
-    const inicio = new Date(ano, mes - 1, 1, 0, 0, 0);
-    const fim = new Date(ano, mes, 0, 23, 59, 59);
+    const mm = String(mes).padStart(2, "0");
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const primeiroDia = `${ano}-${mm}-01`;
+    const ultimoDiaIso = `${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`;
+    const { inicio } = intervaloDiaBrasilia(primeiroDia);
+    const { fim } = intervaloDiaBrasilia(ultimoDiaIso);
 
     const registros = await this.prisma.registroPonto.findMany({
       where: {
         funcionarioId: func.id,
         dataHora: { gte: inicio, lte: fim }
       },
-      orderBy: { dataHora: "asc" }
+      orderBy: { dataHora: "asc" },
+      select: {
+        id: true,
+        tipo: true,
+        dataHora: true,
+        ajustado: true,
+        observacao: true,
+        observacoes: true
+      }
     });
 
     return { mes, ano, registros };
@@ -291,17 +321,65 @@ export class PontoService {
     });
   }
 
+  async getRegistrosDoDia(keycloakSub: string, data: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    const { inicio, fim } = intervaloDiaBrasilia(data);
+    return this.prisma.registroPonto.findMany({
+      where: { funcionarioId: func.id, dataHora: { gte: inicio, lte: fim } },
+      orderBy: { dataHora: "asc" },
+      select: { id: true, tipo: true, dataHora: true, ajustado: true, observacao: true }
+    });
+  }
+
   async criarSolicitacao(
     keycloakSub: string,
-    body: { tipo: string; dataReferencia: string; descricao: string }
+    body: {
+      tipo: string;
+      dataReferencia: string;
+      dataInicio?: string;
+      dataFim?: string;
+      descricao: string;
+      metadados?: Record<string, unknown>;
+    }
   ) {
     const func = await this.getFuncionario(keycloakSub);
+
+    let metadados = body.metadados ?? null;
+
+    if (body.tipo === "CORRECAO_PONTO" && metadados) {
+      const horario = metadados.horarioSolicitado as string | undefined;
+      if (horario) {
+        const limites = await this.obterLimitesHorarioPonto();
+        const validacao = validarHorarioPermitido(horario, limites.min, limites.max);
+        if (!validacao.ok) {
+          throw new BadRequestException(validacao.message);
+        }
+      }
+    }
+
+    // Salva documento de atestado se enviado em base64
+    if (body.tipo === "ATESTADO" && metadados && typeof metadados.documentoBase64 === "string") {
+      const url = await this.documentoService.salvarDocumento({
+        funcionarioId: func.id,
+        solicitacaoId: `${func.id}-${Date.now()}`,
+        arquivoBase64: metadados.documentoBase64 as string,
+        mimeType: (metadados.documentoMime as string) ?? undefined
+      });
+      const resto = { ...(metadados as Record<string, unknown>) };
+      delete resto.documentoBase64;
+      delete resto.documentoMime;
+      metadados = { ...resto, documentoUrl: url };
+    }
+
     return this.prisma.solicitacao.create({
       data: {
         funcionarioId: func.id,
         tipo: body.tipo,
         dataReferencia: new Date(body.dataReferencia),
-        descricao: body.descricao
+        dataInicio: body.dataInicio ? new Date(body.dataInicio) : null,
+        dataFim: body.dataFim ? new Date(body.dataFim) : null,
+        descricao: body.descricao,
+        metadados: metadados ? JSON.parse(JSON.stringify(metadados)) : undefined
       }
     });
   }

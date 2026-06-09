@@ -199,7 +199,7 @@ function AvatarPerfil() {
                 {user?.name || user?.username}
               </p>
               <p style={{ color: "rgba(255,255,255,0.65)", fontSize: 11, margin: "2px 0 0" }}>
-                {user?.email}
+                {user?.emailReal ?? user?.email?.replace(/@(sso|pending)\.local$/, "@cfo.org.br")}
               </p>
             </div>
           </div>
@@ -532,7 +532,9 @@ export function Topbar() {
                 {user?.name || user?.username || "Usuário"}
               </p>
               <p style={{ fontSize: 11, color: "var(--ink-500)", lineHeight: 1, margin: 0 }}>
-                {user?.email || "Autenticado via SSO"}
+                {user?.emailReal ??
+                  user?.email?.replace(/@(sso|pending)\.local$/, "@cfo.org.br") ??
+                  "Autenticado via SSO"}
               </p>
             </div>
           </div>

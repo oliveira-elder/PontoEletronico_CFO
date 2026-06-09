@@ -1,5 +1,12 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, BadRequestException, ForbiddenException } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import {
+  aplicarHorarioBrasilia,
+  horarioDeDataBrasilia,
+  validarHorarioPermitido
+} from "../../utils/horario-brasilia";
+import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
 
 export interface PeriodoPontoRaw {
   id: string;
@@ -29,6 +36,39 @@ export class AuditoriaService {
     const d = new Date(date);
     d.setHours(23, 59, 59, 999);
     return d;
+  }
+
+  private readonly solicitacaoFuncionarioInclude = {
+    funcionario: {
+      select: {
+        id: true,
+        matricula: true,
+        cargo: true,
+        fotoPerfilUrl: true,
+        user: { select: { name: true, email: true, emailReal: true } },
+        gerencia: { select: { nome: true, sigla: true } }
+      }
+    }
+  };
+
+  private async enriquecerSolicitacoesComGestor<T extends { gestorUserId: string | null }>(
+    solicitacoes: T[]
+  ): Promise<(T & { gestorUser: { name: string } | null })[]> {
+    const ids = [
+      ...new Set(solicitacoes.map((s) => s.gestorUserId).filter((id): id is string => !!id))
+    ];
+    if (!ids.length) {
+      return solicitacoes.map((s) => ({ ...s, gestorUser: null }));
+    }
+    const gestores = await this.prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true }
+    });
+    const map = new Map(gestores.map((g) => [g.id, g]));
+    return solicitacoes.map((s) => ({
+      ...s,
+      gestorUser: s.gestorUserId ? (map.get(s.gestorUserId) ?? null) : null
+    }));
   }
 
   private formatMinutes(min: number): string {
@@ -377,7 +417,13 @@ export class AuditoriaService {
     const skip = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
-    if (filtros.status) where.status = filtros.status;
+    if (filtros.status) {
+      const statusList = filtros.status
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      where.status = statusList.length === 1 ? statusList[0] : { in: statusList };
+    }
     if (filtros.tipo) where.tipo = filtros.tipo;
     if (filtros.funcionarioId) where.funcionarioId = filtros.funcionarioId;
     if (filtros.dataInicio || filtros.dataFim) {
@@ -390,27 +436,18 @@ export class AuditoriaService {
       where.funcionario = { gerenciaId: filtros.gerenciaId };
     }
 
-    const [total, solicitacoes] = await Promise.all([
+    const [total, rows] = await Promise.all([
       this.prisma.solicitacao.count({ where }),
       this.prisma.solicitacao.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip,
         take: limit,
-        include: {
-          funcionario: {
-            select: {
-              id: true,
-              matricula: true,
-              cargo: true,
-              user: { select: { name: true, email: true } },
-              gerencia: { select: { nome: true, sigla: true } }
-            }
-          }
-        }
+        include: this.solicitacaoFuncionarioInclude
       })
     ]);
 
+    const solicitacoes = await this.enriquecerSolicitacoesComGestor(rows);
     return { total, page, limit, solicitacoes };
   }
 
@@ -429,6 +466,399 @@ export class AuditoriaService {
         resolvidoEm: new Date()
       }
     });
+  }
+
+  /* ─── Fluxo Bifásico: Gestor ─── */
+
+  async getEquipeDoGestor(keycloakSub: string, isSuperAdmin = false, temRoleGestor = false) {
+    const includeBase = {
+      user: { select: { name: true, email: true, emailReal: true } },
+      gerencia: true
+    };
+
+    // Super admin vê todos os funcionários ativos sem restrição
+    if (isSuperAdmin) {
+      return this.prisma.funcionario.findMany({
+        where: { ativo: true },
+        include: includeBase,
+        orderBy: { createdAt: "asc" }
+      });
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) return [];
+
+    // Fluxo principal: gerência vinculada via responsavelUserId
+    const gerencias = await this.prisma.gerencia.findMany({
+      where: { responsavelUserId: user.id }
+    });
+    if (gerencias.length) {
+      return this.prisma.funcionario.findMany({
+        where: { gerenciaId: { in: gerencias.map((g) => g.id) }, ativo: true },
+        include: includeBase
+      });
+    }
+
+    // PROVISÓRIO: ativa o fallback se o usuário tem isManager=true no DB (via sync da API Extensions)
+    // OU se possui o papel GESTOR_APROVACAO/gestor no Keycloak (mas ainda não passou pelo sync).
+    // Remover quando gerências estiverem configuradas via responsavelUserId.
+    const funcGestor = await this.prisma.funcionario.findUnique({
+      where: { userId: user.id },
+      select: { isManager: true, section: true }
+    });
+
+    const ehGestorProvisorio = funcGestor?.isManager || temRoleGestor; // PROVISÓRIO
+
+    if (ehGestorProvisorio) {
+      return this.prisma.funcionario.findMany({
+        where: {
+          isManager: false,
+          ativo: true,
+          section: "TI - Desenvolvimento", // PROVISÓRIO: hardcoded — remover quando gerências estiverem configuradas
+          NOT: { userId: user.id }
+        },
+        include: includeBase
+      });
+    }
+
+    return [];
+  }
+
+  async getSolicitacoesGestor(
+    keycloakSub: string,
+    filtros: {
+      status?: string;
+      tipo?: string;
+      dataInicio?: string;
+      dataFim?: string;
+      page?: number;
+      limit?: number;
+    },
+    isSuperAdmin = false,
+    temRoleGestor = false
+  ) {
+    const equipe = await this.getEquipeDoGestor(keycloakSub, isSuperAdmin, temRoleGestor);
+    const ids = equipe.map((f) => f.id);
+    if (!ids.length) return { total: 0, page: 1, limit: 50, solicitacoes: [] };
+
+    const page = filtros.page ?? 1;
+    const limit = Math.min(filtros.limit ?? 50, 200);
+    const skip = (page - 1) * limit;
+
+    const statusFiltro = filtros.status ?? "PENDENTE";
+    const statusList = statusFiltro
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const historicoGestor = statusFiltro === "HISTORICO_GESTOR";
+
+    const where: Record<string, unknown> = { funcionarioId: { in: ids } };
+
+    if (historicoGestor) {
+      // Todas as solicitações em que o gestor já decidiu (inclui fluxo finalizado pelo RH)
+      where.OR = [
+        { gestorResolvidoEm: { not: null } },
+        {
+          gestorResolvidoEm: null,
+          observacaoGestor: { not: null },
+          status: { not: "PENDENTE" }
+        }
+      ];
+    } else {
+      where.status = statusList.length === 1 ? statusList[0] : { in: statusList };
+    }
+
+    if (filtros.tipo) where.tipo = filtros.tipo;
+    if (filtros.dataInicio || filtros.dataFim) {
+      where.createdAt = {
+        ...(filtros.dataInicio ? { gte: new Date(filtros.dataInicio) } : {}),
+        ...(filtros.dataFim ? { lte: new Date(filtros.dataFim + "T23:59:59") } : {})
+      };
+    }
+
+    const orderBy = historicoGestor
+      ? [{ gestorResolvidoEm: "desc" as const }, { createdAt: "desc" as const }]
+      : { createdAt: "desc" as const };
+
+    const [total, rows] = await Promise.all([
+      this.prisma.solicitacao.count({ where }),
+      this.prisma.solicitacao.findMany({
+        where,
+        orderBy,
+        skip,
+        take: limit,
+        include: {
+          funcionario: {
+            select: {
+              id: true,
+              matricula: true,
+              cargo: true,
+              fotoPerfilUrl: true,
+              user: { select: { name: true, email: true, emailReal: true } },
+              gerencia: { select: { nome: true, sigla: true } }
+            }
+          }
+        }
+      })
+    ]);
+
+    const solicitacoes = await this.enriquecerSolicitacoesComGestor(rows);
+    return { total, page, limit, solicitacoes };
+  }
+
+  async gestorResolverSolicitacao(
+    id: string,
+    decisao: "APROVAR" | "REJEITAR",
+    observacao: string,
+    keycloakSub: string,
+    isSuperAdmin = false
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    if (solicitacao.status !== "PENDENTE") {
+      throw new BadRequestException(
+        "Apenas solicitações com status PENDENTE podem ser resolvidas pelo gestor."
+      );
+    }
+
+    // Super admin tem autoridade sobre qualquer funcionário
+    if (!isSuperAdmin) {
+      const equipe = await this.getEquipeDoGestor(keycloakSub);
+      const pertenceEquipe = equipe.some((f) => f.id === solicitacao.funcionarioId);
+      if (!pertenceEquipe) {
+        throw new ForbiddenException("Você não tem autoridade sobre este funcionário.");
+      }
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
+
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        status: novoStatus,
+        gestorUserId: user?.id,
+        gestorObservacao: observacao,
+        gestorResolvidoEm: new Date()
+      }
+    });
+  }
+
+  /* ─── Fluxo Bifásico: RH ─── */
+
+  async getSolicitacoesParaRH(filtros: {
+    tipo?: string;
+    funcionarioId?: string;
+    gerenciaId?: string;
+    dataInicio?: string;
+    dataFim?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = filtros.page ?? 1;
+    const limit = Math.min(filtros.limit ?? 50, 200);
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, unknown> = { status: "AGUARDANDO_RH" };
+    if (filtros.tipo) where.tipo = filtros.tipo;
+    if (filtros.funcionarioId) where.funcionarioId = filtros.funcionarioId;
+    if (filtros.gerenciaId) where.funcionario = { gerenciaId: filtros.gerenciaId };
+    if (filtros.dataInicio || filtros.dataFim) {
+      where.createdAt = {
+        ...(filtros.dataInicio ? { gte: new Date(filtros.dataInicio) } : {}),
+        ...(filtros.dataFim ? { lte: new Date(filtros.dataFim + "T23:59:59") } : {})
+      };
+    }
+
+    const [total, rows] = await Promise.all([
+      this.prisma.solicitacao.count({ where }),
+      this.prisma.solicitacao.findMany({
+        where,
+        orderBy: { gestorResolvidoEm: "asc" },
+        skip,
+        take: limit,
+        include: this.solicitacaoFuncionarioInclude
+      })
+    ]);
+
+    const solicitacoes = await this.enriquecerSolicitacoesComGestor(rows);
+    return { total, page, limit, solicitacoes };
+  }
+
+  async rhResolverSolicitacao(
+    id: string,
+    decisao: "APROVAR" | "REJEITAR",
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({
+      where: { id }
+    });
+
+    if (solicitacao.status !== "AGUARDANDO_RH") {
+      throw new BadRequestException(
+        "Apenas solicitações aguardando RH podem ser resolvidas nesta etapa."
+      );
+    }
+
+    const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    const agora = new Date();
+
+    if (decisao === "REJEITAR") {
+      return this.prisma.solicitacao.update({
+        where: { id },
+        data: {
+          status: "REJEITADA_RH",
+          rhUserId: rhUser?.id,
+          rhObservacao: observacao,
+          rhResolvidoEm: agora,
+          resolvidoPor: keycloakSub,
+          resolvidoEm: agora
+        }
+      });
+    }
+
+    // Aprovar: aplicar a mudança conforme o tipo
+    await this.aplicarMudancaSolicitacao(solicitacao, keycloakSub);
+
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        status: "APROVADA",
+        rhUserId: rhUser?.id,
+        rhObservacao: observacao,
+        rhResolvidoEm: agora,
+        resolvidoPor: keycloakSub,
+        resolvidoEm: agora
+      }
+    });
+  }
+
+  private async obterLimitesHorarioPonto() {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { pontoHorarioMinimo: true, pontoHorarioMaximo: true }
+    });
+    return {
+      min: cfg?.pontoHorarioMinimo ?? "06:00",
+      max: cfg?.pontoHorarioMaximo ?? "23:59"
+    };
+  }
+
+  private async aplicarMudancaSolicitacao(
+    solicitacao: {
+      id: string;
+      tipo: string;
+      funcionarioId: string;
+      dataReferencia: Date;
+      dataInicio: Date | null;
+      dataFim: Date | null;
+      descricao: string;
+      metadados: unknown;
+    },
+    rhKeycloakSub: string
+  ) {
+    const tipo = solicitacao.tipo;
+    const funcId = solicitacao.funcionarioId;
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const ref = solicitacao.dataInicio ?? solicitacao.dataReferencia;
+    const fim = solicitacao.dataFim ?? ref;
+    const obs = `Aprovado via solicitação #${solicitacao.id}`;
+
+    if (tipo === "CORRECAO_PONTO") {
+      const acao = meta.acao as string;
+      const horario = meta.horarioSolicitado as string;
+      const tipoRegistro = (meta.tipoRegistro as string) ?? "ENTRADA";
+      const limites = await this.obterLimitesHorarioPonto();
+      const validacao = validarHorarioPermitido(horario, limites.min, limites.max);
+      if (!validacao.ok) {
+        throw new BadRequestException(validacao.message);
+      }
+
+      if (acao === "CORRIGIR" && meta.registroId) {
+        const registroAtual = await this.prisma.registroPonto.findUnique({
+          where: { id: meta.registroId as string }
+        });
+        if (registroAtual) {
+          const horarioAnterior =
+            (meta.horarioOriginal as string | undefined) ??
+            horarioDeDataBrasilia(registroAtual.dataHora);
+          const novaDataHora = aplicarHorarioBrasilia(registroAtual.dataHora, horario);
+          const novaObs = criarObservacaoAjuste({
+            tipoRegistro,
+            horarioAnterior,
+            horarioNovo: horario,
+            solicitacaoId: solicitacao.id,
+            acao: "CORRIGIR"
+          });
+          const observacoes = appendObservacao(registroAtual.observacoes, novaObs);
+          await this.prisma.registroPonto.update({
+            where: { id: registroAtual.id },
+            data: {
+              dataHora: novaDataHora,
+              ajustado: true,
+              ajustadoPor: rhKeycloakSub,
+              observacao: obs,
+              observacoes: observacoes as unknown as Prisma.InputJsonValue
+            }
+          });
+        }
+      } else if (acao === "INCLUIR") {
+        const dataHora = aplicarHorarioBrasilia(solicitacao.dataReferencia, horario);
+        const novaObs = criarObservacaoAjuste({
+          tipoRegistro,
+          horarioNovo: horario,
+          solicitacaoId: solicitacao.id,
+          acao: "INCLUIR"
+        });
+        await this.prisma.registroPonto.create({
+          data: {
+            funcionarioId: funcId,
+            tipo: tipoRegistro as import("@prisma/client").TipoPonto,
+            dataHora,
+            origem: "WEB",
+            modoRegistro: "DESKTOP",
+            ajustado: true,
+            ajustadoPor: rhKeycloakSub,
+            observacao: obs,
+            observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+          }
+        });
+      }
+    } else if (tipo === "FERIAS") {
+      await this.prisma.afastamento.create({
+        data: {
+          funcionarioId: funcId,
+          tipo: "FERIAS",
+          dataInicio: ref,
+          dataFim: fim,
+          justificativa: solicitacao.descricao || obs,
+          aprovadoPor: rhKeycloakSub
+        }
+      });
+    } else if (tipo === "ATESTADO") {
+      await this.prisma.afastamento.create({
+        data: {
+          funcionarioId: funcId,
+          tipo: "ATESTADO",
+          dataInicio: ref,
+          dataFim: fim,
+          justificativa: solicitacao.descricao || obs,
+          aprovadoPor: rhKeycloakSub
+        }
+      });
+    } else if (tipo === "LICENCA") {
+      await this.prisma.afastamento.create({
+        data: {
+          funcionarioId: funcId,
+          tipo: "LICENCA_MEDICA",
+          dataInicio: ref,
+          dataFim: fim,
+          justificativa: solicitacao.descricao || obs,
+          aprovadoPor: rhKeycloakSub
+        }
+      });
+    }
+    // ABONO: apenas registrado como aprovado; não há ação automática adicional
   }
 
   /* ─── Afastamentos ─── */

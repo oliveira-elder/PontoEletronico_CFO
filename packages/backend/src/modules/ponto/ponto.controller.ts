@@ -11,12 +11,16 @@ import {
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { PontoService } from "./ponto.service";
+import { FeriadosService } from "./feriados.service";
 import { CreateRegistroDto } from "./dto/create-registro.dto";
 
 @Controller("ponto")
 @UseGuards(AuthGuard("jwt"))
 export class PontoController {
-  constructor(private readonly pontoService: PontoService) {}
+  constructor(
+    private readonly pontoService: PontoService,
+    private readonly feriadosService: FeriadosService
+  ) {}
 
   @Get("status")
   getStatus(@Req() req: { user: { sub: string } }) {
@@ -54,9 +58,28 @@ export class PontoController {
   @Post("solicitacoes")
   criarSolicitacao(
     @Req() req: { user: { sub: string } },
-    @Body() body: { tipo: string; dataReferencia: string; descricao: string }
+    @Body()
+    body: {
+      tipo: string;
+      dataReferencia: string;
+      dataInicio?: string;
+      dataFim?: string;
+      descricao: string;
+      metadados?: Record<string, unknown>;
+    }
   ) {
     return this.pontoService.criarSolicitacao(req.user.sub, body);
+  }
+
+  @Get("registros-do-dia")
+  getRegistrosDoDia(@Req() req: { user: { sub: string } }, @Query("data") data: string) {
+    return this.pontoService.getRegistrosDoDia(req.user.sub, data);
+  }
+
+  @Get("feriados")
+  getFeriados(@Query("ano") anoStr?: string) {
+    const ano = anoStr ? parseInt(anoStr) : new Date().getFullYear();
+    return this.feriadosService.getFeriadosDoAno(ano);
   }
 
   @Post("minha-foto/solicitar-atualizacao")

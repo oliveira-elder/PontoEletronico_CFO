@@ -19,6 +19,8 @@ export interface SistemaConfig {
   mobileCheckGeo: boolean;
   mobileExigirFoto: boolean;
   hibridoExigirFoto: boolean;
+  pontoHorarioMinimo?: string;
+  pontoHorarioMaximo?: string;
 }
 
 export interface RegistroConfirmado {

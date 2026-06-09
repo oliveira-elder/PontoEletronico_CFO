@@ -10,13 +10,12 @@ import {
   DownloadIcon,
   SearchIcon,
   RefreshCwIcon,
-  CheckCircleIcon,
-  XCircleIcon,
   AlertCircleIcon,
   ShieldCheckIcon,
   ArrowLeftIcon,
   ChevronDownIcon
 } from "../../components/icons";
+import { LogTimelineGestor, SolicitacaoResumo, textoResumo } from "./solicitacaoUi";
 
 /* ═══════════════════════════════════════════════
    TIPOS
@@ -107,21 +106,24 @@ interface Registro {
   };
 }
 
-interface Solicitacao {
-  id: string;
-  tipo: string;
-  dataReferencia: string;
-  descricao: string;
+interface Solicitacao extends SolicitacaoResumo {
   status: string;
+  // Legado
   observacaoGestor: string | null;
   resolvidoPor: string | null;
   resolvidoEm: string | null;
-  createdAt: string;
+  // Bifásico — Gestor
+  gestorUserId: string | null;
+  // Bifásico — RH
+  rhUserId: string | null;
+  rhObservacao: string | null;
+  rhResolvidoEm: string | null;
   funcionario: {
     id: string;
-    matricula: string;
+    matricula: string | null;
     cargo: string;
-    user: { name: string; email: string };
+    fotoPerfilUrl: string | null;
+    user: { name: string; email: string; emailReal?: string | null };
     gerencia: { nome: string; sigla: string } | null;
   };
 }
@@ -454,9 +456,15 @@ function tipoPontoCor(tipo: string) {
 
 function statusSolBadge(status: string) {
   if (status === "PENDENTE")
-    return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Pendente" };
+    return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Aguardando Gestor" };
+  if (status === "AGUARDANDO_RH")
+    return { bg: "rgba(37,99,235,0.12)", color: "#2563eb", label: "Aguardando RH" };
   if (status === "APROVADA")
-    return { bg: "rgba(47,125,79,0.12)", color: "#2f7d4f", label: "Aprovada" };
+    return { bg: "rgba(47,125,79,0.12)", color: "#2f7d4f", label: "Aprovada pelo RH" };
+  if (status === "REJEITADA_GESTOR")
+    return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo Gestor" };
+  if (status === "REJEITADA_RH")
+    return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo RH" };
   return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada" };
 }
 
@@ -1976,11 +1984,7 @@ function DetalhesFuncionario({
       ) : subAba === "registros" ? (
         <RegistrosPorDia registros={registros} />
       ) : subAba === "solicitacoes" ? (
-        <TabelaSolicitacoes
-          solicitacoes={solicitacoes}
-          token={token}
-          onReload={carregarSolicitacoes}
-        />
+        <TabelaSolicitacoes solicitacoes={solicitacoes} />
       ) : (
         <TabelaAfastamentos afastamentos={afastamentos} />
       )}
@@ -2916,9 +2920,12 @@ function TabSolicitacoes({ token }: { token: string }) {
           onChange={setStatusFiltro}
           options={[
             { value: "", label: "Todos" },
-            { value: "PENDENTE", label: "Pendentes" },
-            { value: "APROVADA", label: "Aprovadas" },
-            { value: "REJEITADA", label: "Rejeitadas" }
+            { value: "PENDENTE", label: "Aguardando Gestor" },
+            { value: "AGUARDANDO_RH", label: "Aguardando RH" },
+            { value: "APROVADA", label: "Aprovadas pelo RH" },
+            { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Gestor" },
+            { value: "REJEITADA_RH", label: "Rejeitadas pelo RH" },
+            { value: "REJEITADA", label: "Rejeitadas (legado)" }
           ]}
         />
         <SelectField
@@ -2941,53 +2948,21 @@ function TabSolicitacoes({ token }: { token: string }) {
       {erro && <ErroBox msg={erro} />}
 
       <CardTabela>
-        <TabelaSolicitacoes
-          solicitacoes={loading ? [] : solicitacoes}
-          token={token}
-          onReload={() => carregar(page)}
-          loading={loading}
-        />
+        <TabelaSolicitacoes solicitacoes={loading ? [] : solicitacoes} loading={loading} />
         <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
       </CardTabela>
     </div>
   );
 }
 
-/* ─── Tabela de solicitações reutilizável ─── */
+/* ─── Tabela de solicitações reutilizável (somente consulta) ─── */
 function TabelaSolicitacoes({
   solicitacoes,
-  token,
-  onReload,
   loading = false
 }: {
   solicitacoes: Solicitacao[];
-  token: string;
-  onReload: () => void;
   loading?: boolean;
 }) {
-  const [modal, setModal] = useState<{ sol: Solicitacao; acao: "APROVADA" | "REJEITADA" } | null>(
-    null
-  );
-  const [obs, setObs] = useState("");
-  const [salvando, setSalvando] = useState(false);
-
-  async function confirmar() {
-    if (!modal) return;
-    setSalvando(true);
-    try {
-      await api.put(
-        `/auditoria/solicitacoes/${modal.sol.id}/status`,
-        { status: modal.acao, observacaoGestor: obs },
-        token
-      );
-      setModal(null);
-      setObs("");
-      onReload();
-    } finally {
-      setSalvando(false);
-    }
-  }
-
   if (loading) return <Loading />;
   if (!solicitacoes.length)
     return (
@@ -3000,6 +2975,7 @@ function TabelaSolicitacoes({
     <>
       {solicitacoes.map((s) => {
         const bd = statusSolBadge(s.status);
+        const resumo = textoResumo(s);
         return (
           <div
             key={s.id}
@@ -3065,12 +3041,39 @@ function TabelaSolicitacoes({
                   fontSize: 12.5,
                   color: "var(--ink-700)",
                   margin: "6px 0 0",
-                  lineHeight: 1.5
+                  lineHeight: 1.5,
+                  fontWeight: 500
                 }}
               >
-                {s.descricao}
+                {resumo}
               </p>
-              {s.observacaoGestor && (
+              {s.status === "AGUARDANDO_RH" && <LogTimelineGestor s={s} />}
+              {s.descricao && (
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink-600)",
+                    margin: "6px 0 0",
+                    fontStyle: "italic",
+                    lineHeight: 1.5
+                  }}
+                >
+                  "{s.descricao}"
+                </p>
+              )}
+              {s.rhObservacao && (
+                <p
+                  style={{
+                    fontSize: 11.5,
+                    color: "#065f46",
+                    margin: "4px 0 0",
+                    fontStyle: "italic"
+                  }}
+                >
+                  RH: {s.rhObservacao}
+                </p>
+              )}
+              {s.observacaoGestor && !s.gestorObservacao && (
                 <p
                   style={{
                     fontSize: 11.5,
@@ -3084,57 +3087,10 @@ function TabelaSolicitacoes({
               )}
             </div>
 
-            {/* Status + ações */}
             <div
               style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}
             >
               <Badge label={bd.label} bg={bd.bg} color={bd.color} />
-              {s.status === "PENDENTE" && (
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button
-                    onClick={() => {
-                      setModal({ sol: s, acao: "APROVADA" });
-                      setObs("");
-                    }}
-                    style={{
-                      padding: "5px 12px",
-                      borderRadius: "var(--radius-md)",
-                      border: "none",
-                      background: "rgba(47,125,79,0.12)",
-                      color: "#2f7d4f",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4
-                    }}
-                  >
-                    <CheckCircleIcon size={12} /> Aprovar
-                  </button>
-                  <button
-                    onClick={() => {
-                      setModal({ sol: s, acao: "REJEITADA" });
-                      setObs("");
-                    }}
-                    style={{
-                      padding: "5px 12px",
-                      borderRadius: "var(--radius-md)",
-                      border: "none",
-                      background: "rgba(200,57,63,0.10)",
-                      color: "#c8393f",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4
-                    }}
-                  >
-                    <XCircleIcon size={12} /> Rejeitar
-                  </button>
-                </div>
-              )}
               {s.resolvidoEm && (
                 <span style={{ fontSize: 10.5, color: "var(--ink-400)" }}>
                   {fmtDate(s.resolvidoEm)}
@@ -3144,80 +3100,6 @@ function TabelaSolicitacoes({
           </div>
         );
       })}
-
-      {/* Modal de confirmação */}
-      {modal && (
-        <Modal
-          title={modal.acao === "APROVADA" ? "Aprovar solicitação" : "Rejeitar solicitação"}
-          subtitle={`${modal.sol.tipo} · ${modal.sol.funcionario.user.name}`}
-          onClose={() => setModal(null)}
-        >
-          <p style={{ fontSize: 12.5, color: "var(--ink-700)", marginBottom: 16, lineHeight: 1.6 }}>
-            {modal.sol.descricao}
-          </p>
-          <label style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.12em",
-                color: "var(--ink-500)"
-              }}
-            >
-              Observação
-            </span>
-            <textarea
-              value={obs}
-              onChange={(e) => setObs(e.target.value)}
-              rows={3}
-              placeholder="Motivo ou comentário (opcional)"
-              style={{
-                padding: "8px 10px",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.18)",
-                fontSize: 13,
-                fontFamily: "var(--font-body)",
-                resize: "vertical"
-              }}
-            />
-          </label>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <button
-              onClick={() => setModal(null)}
-              style={{
-                padding: "9px 18px",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.15)",
-                background: "transparent",
-                color: "var(--ink-500)",
-                fontSize: 13,
-                cursor: "pointer"
-              }}
-            >
-              Cancelar
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmar}
-              disabled={salvando}
-              style={{
-                padding: "9px 20px",
-                fontSize: 13,
-                opacity: salvando ? 0.7 : 1,
-                background: modal.acao === "APROVADA" ? "#2f7d4f" : "#c8393f",
-                borderColor: modal.acao === "APROVADA" ? "#2f7d4f" : "#c8393f"
-              }}
-            >
-              {salvando
-                ? "Salvando…"
-                : modal.acao === "APROVADA"
-                  ? "Confirmar aprovação"
-                  : "Confirmar rejeição"}
-            </button>
-          </div>
-        </Modal>
-      )}
     </>
   );
 }
@@ -4323,14 +4205,13 @@ export function AuditoriaPage() {
   const [aba, setAba] = useState<Aba>("dashboard");
 
   const tk = token();
-
-  const temAcesso =
+  const isRH =
     !!user?.isSuperAdmin ||
     hasRole("RH_AUDITORIA") ||
     hasRole("ponto-admin") ||
-    hasRole("PONTO_ADMIN") ||
-    hasRole("gestor") ||
-    hasRole("GESTOR_APROVACAO");
+    hasRole("PONTO_ADMIN");
+
+  const temAcesso = isRH || hasRole("gestor") || hasRole("GESTOR_APROVACAO");
 
   if (!temAcesso) {
     return (

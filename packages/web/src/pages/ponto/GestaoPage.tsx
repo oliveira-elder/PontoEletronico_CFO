@@ -1,19 +1,18 @@
-import React, { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../../hooks/useApi";
+import { useAuth } from "../../auth/AuthContext";
 import {
   UsersIcon,
-  PlusIcon,
   SearchIcon,
-  BuildingIcon,
   Edit2Icon,
   Trash2Icon,
   XIcon,
-  ExternalLinkIcon,
   GraduationCapIcon,
   ShieldCheckIcon,
   BriefcaseIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  CheckCircleIcon,
+  XCircleIcon
 } from "../../components/icons";
 
 /* ─── Types ─── */
@@ -26,14 +25,28 @@ interface Gerencia {
 }
 interface Funcionario {
   id: string;
-  matricula: string;
+  matricula: string | null;
   email: string;
   cargo: string;
   categoria: Categoria;
   gerenciaId: string;
   ativo: boolean;
-  user: { id: string; name: string; email: string };
+  section?: string | null;
+  isManager?: boolean;
+  user: { id: string; name: string; email: string; emailReal: string | null };
   gerencia?: { id: string; nome: string; sigla: string } | null;
+}
+
+const SSO_FAKE_SUFFIXES = ["@sso.local", "@pending.local"];
+
+function resolveEmail(u: { email: string; emailReal: string | null }): string {
+  if (u.emailReal) return u.emailReal;
+  for (const suffix of SSO_FAKE_SUFFIXES) {
+    if (u.email.endsWith(suffix)) {
+      return u.email.replace(suffix, "@cfo.org.br");
+    }
+  }
+  return u.email;
 }
 
 /* ─── Config de categoria ─── */
@@ -135,8 +148,24 @@ function CategoriaBadge({ cat }: { cat: Categoria }) {
   );
 }
 
+interface SyncStatus {
+  id: string;
+  source: string;
+  status: string;
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: number;
+  createdAt: string;
+}
+
 /* ─── Página ─── */
 export function GestaoPage() {
+  const { user, hasRole } = useAuth();
+  const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  const isRH = isAdmin || hasRole("RH_AUDITORIA");
+  const podeToggleAtivo = isRH;
+
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
   const [busca, setBusca] = useState("");
@@ -147,7 +176,22 @@ export function GestaoPage() {
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+
+  const carregarSyncStatus = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const data = await api.get<SyncStatus>("/admin/extensions/sync/status");
+      setSyncStatus(data);
+    } catch {
+      /* opcional */
+    }
+  }, [isAdmin]);
+
   useEffect(() => {
+    void carregarSyncStatus();
     Promise.all([
       api.get<Funcionario[]>("/ponto/gestao/funcionarios"),
       api.get<(Gerencia & { _count: { funcionarios: number } })[]>("/ponto/gestao/gerencias")
@@ -157,7 +201,31 @@ export function GestaoPage() {
         setGerencias(gers ?? []);
       })
       .catch(() => {});
-  }, []);
+  }, [carregarSyncStatus]);
+
+  async function sincronizarExtensions() {
+    setSyncLoading(true);
+    setSyncMsg("");
+    try {
+      const res = await api.post<{
+        total: number;
+        created: number;
+        updated: number;
+        skipped: number;
+        errors: number;
+      }>("/admin/extensions/sync", {});
+      setSyncMsg(
+        `Sync concluído: ${res.updated} atualizados, ${res.created} gerências criadas, ${res.skipped} ignorados.`
+      );
+      await carregarSyncStatus();
+      const funcs = await api.get<Funcionario[]>("/ponto/gestao/funcionarios");
+      setFuncionarios(funcs ?? []);
+    } catch {
+      setSyncMsg("Erro ao sincronizar com a API de ramais.");
+    } finally {
+      setSyncLoading(false);
+    }
+  }
 
   /* Filtro */
   const lista = funcionarios.filter((f) => {
@@ -165,23 +233,17 @@ export function GestaoPage() {
     const matchBusca =
       !q ||
       (f.user?.name ?? "").toLowerCase().includes(q) ||
-      f.matricula.includes(q) ||
+      (f.matricula ?? "").includes(q) ||
       (f.user?.email ?? "").toLowerCase().includes(q);
     const matchCat = !filtroCategoria || f.categoria === filtroCategoria;
     const matchGer = !filtroGerencia || f.gerenciaId === filtroGerencia;
     return matchBusca && matchCat && matchGer;
   });
 
-  function abrirNovo() {
-    setForm(FORM_VAZIO);
-    setEditandoId(null);
-    setPainel("novo");
-  }
-
   function abrirEditar(f: Funcionario) {
     setForm({
       nome: f.user?.name ?? "",
-      matricula: f.matricula,
+      matricula: f.matricula ?? "",
       email: f.user?.email ?? "",
       cpf: "",
       cargo: f.cargo,
@@ -214,12 +276,48 @@ export function GestaoPage() {
     setConfirmDelete(null);
   }
 
+  async function toggleAtivo(f: Funcionario) {
+    const atualizado = await api.put<Funcionario>(`/ponto/gestao/funcionarios/${f.id}`, {
+      ativo: !f.ativo
+    });
+    if (atualizado) {
+      setFuncionarios((prev) => prev.map((x) => (x.id === f.id ? atualizado : x)));
+    }
+  }
+
   const nomeGerencia = (id: string) => gerencias.find((g) => g.id === id)?.nome ?? "—";
 
   const total = funcionarios.length;
   const estagiarios = funcionarios.filter((f) => f.categoria === "ESTAGIARIO").length;
   const concursados = funcionarios.filter((f) => f.categoria === "CONCURSADO").length;
   const assessores = funcionarios.filter((f) => f.categoria === "ASSESSOR").length;
+
+  // Acesso restrito: apenas RH_AUDITORIA e super admin/ponto-admin
+  if (!isRH) {
+    return (
+      <div style={{ maxWidth: 520, margin: "60px auto", padding: "0 16px" }}>
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.12)",
+            padding: "32px 28px",
+            textAlign: "center",
+            boxShadow: "0 4px 20px rgba(0,0,0,0.06)"
+          }}
+        >
+          <div style={{ fontSize: 40, marginBottom: 16 }}>🔒</div>
+          <p style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-900)", margin: "0 0 8px" }}>
+            Acesso restrito
+          </p>
+          <p style={{ fontSize: 13, color: "var(--ink-500)", lineHeight: 1.6, margin: 0 }}>
+            A página de Gestão de Funcionários é exclusiva para o setor de{" "}
+            <strong>Recursos Humanos</strong> e <strong>administradores do sistema</strong>.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -248,39 +346,65 @@ export function GestaoPage() {
             Gestão de <em>Funcionários</em>
           </h1>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {/* Botão para Gerências — página externa */}
-          <Link
-            to="/ponto/gerencias"
+        {/* Ações removidas: inserções são exclusivamente via sync da API Extensions + SSO */}
+      </div>
+
+      {/* ── Banner Sync Extensions (apenas admin) ── */}
+      {isAdmin && (
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid rgba(37,99,235,0.2)",
+            borderRadius: "var(--radius-md)",
+            padding: "12px 16px",
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap"
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, color: "#1e40af" }}>
+              API de Ramais (Extensions)
+            </p>
+            <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
+              {syncStatus
+                ? `Último sync: ${new Date(syncStatus.createdAt).toLocaleString("pt-BR")} — ${syncStatus.updated} atualizados, ${syncStatus.created} gerências criadas, ${syncStatus.errors} erros`
+                : "Nenhuma sincronização realizada ainda."}
+            </p>
+            {syncMsg && (
+              <p
+                style={{
+                  margin: "4px 0 0",
+                  fontSize: 11.5,
+                  color: syncMsg.startsWith("Erro") ? "var(--red)" : "#065f46",
+                  fontWeight: 500
+                }}
+              >
+                {syncMsg}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => void sincronizarExtensions()}
+            disabled={syncLoading}
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 7,
-              padding: "9px 16px",
+              padding: "7px 14px",
+              border: "1px solid rgba(37,99,235,0.3)",
               borderRadius: "var(--radius-md)",
-              border: "1.5px solid rgba(122,30,38,0.22)",
-              background: "#fff",
-              color: "var(--burgundy-600)",
-              fontSize: 13,
+              background: syncLoading ? "rgba(37,99,235,0.06)" : "#eff6ff",
+              color: "#1e40af",
+              cursor: syncLoading ? "not-allowed" : "pointer",
+              fontSize: 12,
               fontWeight: 600,
-              textDecoration: "none",
-              transition: "all 160ms ease"
+              flexShrink: 0
             }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLElement).style.background = "var(--cream-100)")
-            }
-            onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "#fff")}
           >
-            <BuildingIcon size={15} />
-            Gerenciar Gerências
-            <ExternalLinkIcon size={12} />
-          </Link>
-          <button className="btn btn-primary" onClick={abrirNovo} style={{ gap: 8 }}>
-            <PlusIcon size={16} />
-            Novo Funcionário
+            {syncLoading ? "Sincronizando..." : "↻ Sincronizar Gerências"}
           </button>
         </div>
-      </div>
+      )}
 
       {/* ── Stats ── */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24 }}>
@@ -327,7 +451,7 @@ export function GestaoPage() {
         <div style={{ position: "relative" }}>
           <select
             value={filtroCategoria}
-            onChange={(e) => setFiltroCategoria(e.target.value)}
+            onChange={(e) => setFiltroCategoria(e.target.value as Categoria | "")}
             style={{
               appearance: "none",
               padding: "9px 32px 9px 12px",
@@ -508,7 +632,7 @@ export function GestaoPage() {
                             {f.user?.name ?? "—"}
                           </p>
                           <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1 }}>
-                            {f.user?.email ?? "—"}
+                            {f.user ? resolveEmail(f.user) : "—"}
                           </p>
                         </div>
                       </div>
@@ -534,6 +658,12 @@ export function GestaoPage() {
                       <span style={{ fontSize: 13, color: "var(--ink-700)" }}>
                         {nomeGerencia(f.gerenciaId)}
                       </span>
+                      {f.section && isAdmin && (
+                        <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-500)" }}>
+                          {f.section}
+                          {f.isManager ? " · Gerente" : ""}
+                        </p>
+                      )}
                     </td>
                     {/* Situação */}
                     <td style={{ padding: "12px 16px" }}>
@@ -578,6 +708,26 @@ export function GestaoPage() {
                         >
                           <Edit2Icon size={14} />
                         </button>
+                        {podeToggleAtivo && (
+                          <button
+                            title={f.ativo ? "Desativar funcionário" : "Ativar funcionário"}
+                            onClick={() => void toggleAtivo(f)}
+                            style={{
+                              padding: 6,
+                              borderRadius: "var(--radius-sm)",
+                              border: f.ativo
+                                ? "1px solid rgba(198,127,0,0.30)"
+                                : "1px solid rgba(47,125,79,0.30)",
+                              background: "transparent",
+                              cursor: "pointer",
+                              color: f.ativo ? "#92400e" : "var(--green)",
+                              display: "flex",
+                              alignItems: "center"
+                            }}
+                          >
+                            {f.ativo ? <XCircleIcon size={14} /> : <CheckCircleIcon size={14} />}
+                          </button>
+                        )}
                         <button
                           title="Excluir"
                           onClick={() => setConfirmDelete(f.id)}

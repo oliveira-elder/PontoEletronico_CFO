@@ -284,16 +284,155 @@ function GrupoRow({ grupo, onEdit }: { grupo: GrupoKC; onEdit: (g: GrupoKC) => v
   );
 }
 
+/* ─── Tipos para usuários locais ─── */
+interface UserLocal {
+  id: string;
+  name: string;
+  email: string;
+  emailReal: string | null;
+  externalId: string | null;
+  createdAt: string;
+  funcionario: {
+    id: string;
+    matricula: string | null;
+    cargo: string;
+    ativo: boolean;
+    categoria: string;
+    gerencia: { id: string; nome: string; sigla: string } | null;
+  } | null;
+}
+
+/* ─── Modal para definir e-mail real ─── */
+function ModalEmailReal({
+  user: u,
+  onSave,
+  onClose
+}: {
+  user: UserLocal;
+  onSave: (emailReal: string | null) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [emailReal, setEmailReal] = useState(u.emailReal ?? "");
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  async function salvar() {
+    setSalvando(true);
+    setErro("");
+    try {
+      await onSave(emailReal.trim() || null);
+    } catch (err) {
+      setErro(err instanceof Error ? err.message : "Erro ao salvar e-mail.");
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 200,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-lg)",
+          width: "100%",
+          maxWidth: 440,
+          padding: "24px 28px",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.2)"
+        }}
+      >
+        <h2 style={{ margin: "0 0 4px", fontSize: 16, fontFamily: "var(--font-display)" }}>
+          Definir E-mail Real
+        </h2>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--ink-500)" }}>
+          Usuário: <strong>{u.name}</strong>
+          <br />
+          E-mail SSO: <code style={{ fontSize: 12 }}>{u.email}</code>
+        </p>
+
+        <label style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 600 }}>
+          E-mail organizacional real (ex: elder.oliveira@cfo.org.br)
+        </label>
+        <input
+          type="email"
+          value={emailReal}
+          onChange={(e) => setEmailReal(e.target.value)}
+          placeholder="usuario@cfo.org.br"
+          style={{
+            width: "100%",
+            padding: "8px 10px",
+            border: "1px solid rgba(0,0,0,0.15)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 13,
+            boxSizing: "border-box"
+          }}
+        />
+        {erro && <p style={{ color: "var(--red)", fontSize: 12, margin: "6px 0 0" }}>{erro}</p>}
+        <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "8px 0 0" }}>
+          Deixe em branco para remover o e-mail real cadastrado.
+        </p>
+
+        <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
+          <button
+            onClick={onClose}
+            disabled={salvando}
+            style={{
+              padding: "8px 18px",
+              border: "1px solid rgba(0,0,0,0.15)",
+              borderRadius: "var(--radius-md)",
+              background: "#fff",
+              cursor: "pointer",
+              fontSize: 13
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={salvar}
+            disabled={salvando}
+            style={{
+              padding: "8px 20px",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: "var(--burgundy-600)",
+              color: "#fff",
+              cursor: salvando ? "not-allowed" : "pointer",
+              fontSize: 13,
+              fontWeight: 600,
+              opacity: salvando ? 0.7 : 1
+            }}
+          >
+            {salvando ? "Salvando..." : "Salvar"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Página principal ─── */
 export function GestaoUsuariosPage() {
   const { token, user } = useAuth();
   const [grupos, setGrupos] = useState<GrupoKC[]>([]);
   const [usuarios, setUsuarios] = useState<UsuarioKC[]>([]);
+  const [usuariosLocais, setUsuariosLocais] = useState<UserLocal[]>([]);
   const [busca, setBusca] = useState("");
-  const [aba, setAba] = useState<"grupos" | "usuarios">("grupos");
+  const [aba, setAba] = useState<"grupos" | "usuarios" | "cadastrados">("grupos");
   const [carregando, setCarregando] = useState(false);
   const [kcDisponivel, setKcDisponivel] = useState<boolean | null>(null);
   const [modalGrupo, setModalGrupo] = useState<GrupoKC | null>(null);
+  const [modalEmailUser, setModalEmailUser] = useState<UserLocal | null>(null);
 
   const tk = token();
   const isSuperAdmin = user
@@ -338,10 +477,33 @@ export function GestaoUsuariosPage() {
     }
   }, [tk, busca]);
 
+  const carregarUsuariosLocais = useCallback(async () => {
+    if (!tk) return;
+    setCarregando(true);
+    try {
+      const data = await api.get<UserLocal[]>(
+        `/admin/usuarios${busca ? `?search=${encodeURIComponent(busca)}` : ""}`,
+        tk
+      );
+      setUsuariosLocais(Array.isArray(data) ? data : []);
+    } catch {
+      setUsuariosLocais([]);
+    } finally {
+      setCarregando(false);
+    }
+  }, [tk, busca]);
+
+  async function salvarEmailReal(userId: string, emailReal: string | null) {
+    await api.patch(`/admin/usuarios/${userId}/email-real`, { emailReal }, tk);
+    setUsuariosLocais((prev) => prev.map((u) => (u.id === userId ? { ...u, emailReal } : u)));
+    setModalEmailUser(null);
+  }
+
   useEffect(() => {
     if (aba === "grupos") carregarGrupos();
-    else carregarUsuarios();
-  }, [aba, carregarGrupos, carregarUsuarios]);
+    else if (aba === "usuarios") carregarUsuarios();
+    else carregarUsuariosLocais();
+  }, [aba, carregarGrupos, carregarUsuarios, carregarUsuariosLocais]);
 
   async function salvarPapeis(grupo: GrupoKC, papeis: string[]) {
     await api.put(
@@ -417,7 +579,7 @@ export function GestaoUsuariosPage() {
           paddingBottom: 0
         }}
       >
-        {(["grupos", "usuarios"] as const).map((a) => (
+        {(["grupos", "usuarios", "cadastrados"] as const).map((a) => (
           <button
             key={a}
             onClick={() => setAba(a)}
@@ -433,13 +595,17 @@ export function GestaoUsuariosPage() {
               transition: "all 150ms"
             }}
           >
-            {a === "grupos" ? "📁 Grupos do AD" : "👥 Usuários"}
+            {a === "grupos"
+              ? "📁 Grupos do AD"
+              : a === "usuarios"
+                ? "👥 Usuários KC"
+                : "🏢 Usuários Cadastrados"}
           </button>
         ))}
       </div>
 
-      {/* Barra de busca (usuários) */}
-      {aba === "usuarios" && (
+      {/* Barra de busca (usuários KC e cadastrados) */}
+      {(aba === "usuarios" || aba === "cadastrados") && (
         <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
           <input
             value={busca}
@@ -458,7 +624,7 @@ export function GestaoUsuariosPage() {
           />
           <button
             className="btn btn-primary"
-            onClick={carregarUsuarios}
+            onClick={() => (aba === "usuarios" ? carregarUsuarios() : carregarUsuariosLocais())}
             style={{ fontSize: 13, padding: "9px 16px" }}
           >
             Buscar
@@ -556,105 +722,238 @@ export function GestaoUsuariosPage() {
               ))}
             </>
           )
-        ) : usuarios.length === 0 ? (
-          <div style={{ padding: 40, textAlign: "center", color: "var(--ink-500)", fontSize: 13 }}>
-            {kcDisponivel === false
-              ? "Sincronização com Keycloak não disponível."
-              : "Nenhum usuário encontrado."}
-          </div>
-        ) : (
-          <>
+        ) : aba === "usuarios" ? (
+          usuarios.length === 0 ? (
             <div
-              style={{
-                padding: "12px 16px",
-                borderBottom: "1px solid rgba(122,30,38,0.08)",
-                background: "var(--cream-50)"
-              }}
+              style={{ padding: 40, textAlign: "center", color: "var(--ink-500)", fontSize: 13 }}
             >
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: "var(--ink-500)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em"
-                }}
-              >
-                {usuarios.length} usuário{usuarios.length !== 1 ? "s" : ""}
-              </span>
+              {kcDisponivel === false
+                ? "Sincronização com Keycloak não disponível."
+                : "Nenhum usuário encontrado."}
             </div>
-            {usuarios.map((u) => (
+          ) : (
+            <>
               <div
-                key={u.id}
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
                   padding: "12px 16px",
-                  borderBottom: "1px solid rgba(122,30,38,0.06)"
+                  borderBottom: "1px solid rgba(122,30,38,0.08)",
+                  background: "var(--cream-50)"
                 }}
               >
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: "50%",
-                    background: "var(--burgundy-600)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "#fff",
-                    fontSize: 14,
-                    fontWeight: 700,
-                    flexShrink: 0
-                  }}
-                >
-                  {(u.firstName?.[0] ?? u.username[0]).toUpperCase()}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}>
-                    {u.firstName} {u.lastName}
-                    {SUPER_ADMINS.includes(u.username) && (
-                      <span
-                        style={{
-                          marginLeft: 6,
-                          fontSize: 11,
-                          color: "var(--burgundy-600)",
-                          fontWeight: 700
-                        }}
-                      >
-                        ⭐ Super Admin
-                      </span>
-                    )}
-                  </p>
-                  <p
-                    style={{
-                      fontSize: 11,
-                      color: "var(--ink-500)",
-                      margin: "1px 0 0",
-                      fontFamily: "var(--font-mono)"
-                    }}
-                  >
-                    {u.username}
-                    {u.email ? ` · ${u.email}` : ""}
-                  </p>
-                </div>
                 <span
                   style={{
-                    padding: "2px 8px",
-                    borderRadius: "var(--radius-full)",
-                    background: u.enabled ? "rgba(47,125,79,0.12)" : "rgba(200,57,63,0.10)",
-                    color: u.enabled ? "var(--green)" : "var(--red)",
                     fontSize: 11,
-                    fontWeight: 600
+                    fontWeight: 700,
+                    color: "var(--ink-500)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em"
                   }}
                 >
-                  {u.enabled ? "Ativo" : "Inativo"}
+                  {usuarios.length} usuário{usuarios.length !== 1 ? "s" : ""}
                 </span>
               </div>
-            ))}
-          </>
-        )}
+              {usuarios.map((u) => (
+                <div
+                  key={u.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "12px 16px",
+                    borderBottom: "1px solid rgba(122,30,38,0.06)"
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: "50%",
+                      background: "var(--burgundy-600)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#fff",
+                      fontSize: 14,
+                      fontWeight: 700,
+                      flexShrink: 0
+                    }}
+                  >
+                    {(u.firstName?.[0] ?? u.username[0]).toUpperCase()}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <p
+                      style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}
+                    >
+                      {u.firstName} {u.lastName}
+                      {SUPER_ADMINS.includes(u.username) && (
+                        <span
+                          style={{
+                            marginLeft: 6,
+                            fontSize: 11,
+                            color: "var(--burgundy-600)",
+                            fontWeight: 700
+                          }}
+                        >
+                          ⭐ Super Admin
+                        </span>
+                      )}
+                    </p>
+                    <p
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ink-500)",
+                        margin: "1px 0 0",
+                        fontFamily: "var(--font-mono)"
+                      }}
+                    >
+                      {u.username}
+                      {u.email ? ` · ${u.email}` : ""}
+                    </p>
+                  </div>
+                  <span
+                    style={{
+                      padding: "2px 8px",
+                      borderRadius: "var(--radius-full)",
+                      background: u.enabled ? "rgba(47,125,79,0.12)" : "rgba(200,57,63,0.10)",
+                      color: u.enabled ? "var(--green)" : "var(--red)",
+                      fontSize: 11,
+                      fontWeight: 600
+                    }}
+                  >
+                    {u.enabled ? "Ativo" : "Inativo"}
+                  </span>
+                </div>
+              ))}
+            </>
+          )
+        ) : aba === "cadastrados" ? (
+          /* ─── Aba Usuários Cadastrados (banco local) ─── */
+          usuariosLocais.length === 0 ? (
+            <div
+              style={{ padding: 40, textAlign: "center", color: "var(--ink-500)", fontSize: 13 }}
+            >
+              Nenhum usuário cadastrado. Os usuários aparecem aqui após realizarem o primeiro login.
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  padding: "12px 16px",
+                  borderBottom: "1px solid rgba(122,30,38,0.08)",
+                  background: "var(--cream-50)",
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 1fr auto",
+                  gap: 8
+                }}
+              >
+                {["Nome / E-mail SSO", "E-mail Real", "Gerência / Cargo", ""].map((h) => (
+                  <span
+                    key={h}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: "var(--ink-500)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em"
+                    }}
+                  >
+                    {h}
+                  </span>
+                ))}
+              </div>
+              {usuariosLocais.map((u) => {
+                const emailPendente = !u.emailReal && u.email.endsWith("@sso.local");
+                return (
+                  <div
+                    key={u.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr auto",
+                      gap: 8,
+                      padding: "12px 16px",
+                      borderBottom: "1px solid rgba(122,30,38,0.06)",
+                      alignItems: "center"
+                    }}
+                  >
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{u.name}</p>
+                      <p
+                        style={{
+                          margin: "2px 0 0",
+                          fontSize: 11,
+                          color: "var(--ink-500)",
+                          fontFamily: "var(--font-mono)"
+                        }}
+                      >
+                        {u.email}
+                      </p>
+                    </div>
+                    <div>
+                      {u.emailReal ? (
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: 12,
+                            color: "#065f46",
+                            fontFamily: "var(--font-mono)"
+                          }}
+                        >
+                          {u.emailReal}
+                        </p>
+                      ) : (
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "2px 8px",
+                            borderRadius: 5,
+                            background: emailPendente ? "rgba(198,127,0,0.12)" : "rgba(0,0,0,0.05)",
+                            color: emailPendente ? "#92400e" : "var(--ink-500)",
+                            fontSize: 11,
+                            fontWeight: 600
+                          }}
+                        >
+                          {emailPendente ? "⚠ Não confirmado" : "—"}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      {u.funcionario ? (
+                        <>
+                          <p style={{ margin: 0, fontSize: 12, color: "var(--ink-700)" }}>
+                            {u.funcionario.gerencia?.sigla ?? "—"}
+                          </p>
+                          <p style={{ margin: "2px 0 0", fontSize: 11, color: "var(--ink-500)" }}>
+                            {u.funcionario.cargo || "—"}
+                          </p>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 11, color: "var(--ink-400)" }}>Sem vínculo</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setModalEmailUser(u)}
+                      style={{
+                        padding: "6px 12px",
+                        border: "1px solid rgba(122,30,38,0.2)",
+                        borderRadius: "var(--radius-md)",
+                        background: "#fff",
+                        color: "var(--burgundy-600)",
+                        cursor: "pointer",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        whiteSpace: "nowrap"
+                      }}
+                    >
+                      ✉ Definir E-mail
+                    </button>
+                  </div>
+                );
+              })}
+            </>
+          )
+        ) : null}
       </div>
 
       {/* Legenda papéis */}
@@ -699,12 +998,21 @@ export function GestaoUsuariosPage() {
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modal Papéis */}
       {modalGrupo && (
         <ModalPapeis
           grupo={modalGrupo}
           onSave={(papeis) => salvarPapeis(modalGrupo, papeis)}
           onClose={() => setModalGrupo(null)}
+        />
+      )}
+
+      {/* Modal E-mail Real */}
+      {modalEmailUser && (
+        <ModalEmailReal
+          user={modalEmailUser}
+          onSave={(emailReal) => salvarEmailReal(modalEmailUser.id, emailReal)}
+          onClose={() => setModalEmailUser(null)}
         />
       )}
     </div>

@@ -128,8 +128,83 @@ function SsoCallbackError({ error }: { error: string | null }) {
   );
 }
 
+function ContaDesativadaScreen({ onLogout }: { onLogout: () => void }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+        background: "var(--cream-50)",
+        gap: 16,
+        padding: "0 24px",
+        textAlign: "center"
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: "50%",
+          background: "rgba(200,57,63,0.10)",
+          border: "2px solid rgba(200,57,63,0.25)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 26
+        }}
+      >
+        🔒
+      </div>
+      <p
+        style={{
+          fontSize: 18,
+          fontWeight: 700,
+          color: "var(--ink-900)",
+          fontFamily: "var(--font-body)",
+          margin: 0
+        }}
+      >
+        Acesso suspenso
+      </p>
+      <p
+        style={{
+          fontSize: 14,
+          color: "var(--ink-600)",
+          maxWidth: 420,
+          lineHeight: 1.6,
+          margin: 0
+        }}
+      >
+        Sua conta foi desativada pelo RH ou administrador do sistema.
+        <br />
+        Entre em contato com o seu setor de Recursos Humanos para reativação.
+      </p>
+      <button
+        onClick={onLogout}
+        style={{
+          marginTop: 8,
+          padding: "10px 28px",
+          borderRadius: "var(--radius-md)",
+          background: "var(--burgundy-600)",
+          color: "#fff",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 14,
+          fontWeight: 600,
+          fontFamily: "var(--font-body)"
+        }}
+      >
+        Sair do sistema
+      </button>
+    </div>
+  );
+}
+
 export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { authenticated, ensureInitialized, initError } = useAuth();
+  const { authenticated, contaDesativada, ensureInitialized, initError, logout } = useAuth();
   const location = useLocation();
   const [checking, setChecking] = useState(!authenticated);
   const [ssoError, setSsoError] = useState(false);
@@ -158,6 +233,7 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
 
   if (checking) return <InitSpinner />;
   if (ssoError) return <SsoCallbackError error={initError} />;
+  if (contaDesativada) return <ContaDesativadaScreen onLogout={logout} />;
   if (!authenticated) return <Navigate to="/login" state={{ from: location }} replace />;
 
   return <>{children}</>;

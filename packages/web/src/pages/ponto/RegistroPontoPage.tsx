@@ -25,6 +25,23 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const fmt = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 const fmtShort = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
+function horarioBrasiliaAgora(): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date());
+}
+
+function horarioDentroFaixa(horario: string, min: string, max: string): boolean {
+  const [h, m] = horario.split(":").map(Number);
+  const [hMin, mMin] = min.split(":").map(Number);
+  const [hMax, mMax] = max.split(":").map(Number);
+  const atual = h * 60 + m;
+  return atual >= hMin * 60 + mMin && atual <= hMax * 60 + mMax;
+}
+
 /* ─── Fluxo fixo ─── */
 interface AcaoInfo {
   tipo: TipoRegistro;
@@ -670,6 +687,15 @@ export function RegistroPontoPage() {
   async function handleAcao() {
     if (!proximaAcao) return;
     setErro(null);
+    const min = cfg?.pontoHorarioMinimo ?? "06:00";
+    const max = cfg?.pontoHorarioMaximo ?? "23:59";
+    const agora = horarioBrasiliaAgora();
+    if (!horarioDentroFaixa(agora, min, max)) {
+      setErro(
+        `Registro permitido apenas entre ${min} e ${max} (horário de Brasília). Agora: ${agora}.`
+      );
+      return;
+    }
     if (exigirFoto && !fotoCapturada) {
       abrirCamera();
       return;

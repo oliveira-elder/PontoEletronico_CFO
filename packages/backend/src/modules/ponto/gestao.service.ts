@@ -32,6 +32,26 @@ export class GestaoService {
     return this.prisma.gerencia.update({ where: { id }, data });
   }
 
+  async setResponsavelGerencia(id: string, responsavelUserId: string | null) {
+    let responsavelNome: string | undefined;
+    if (responsavelUserId) {
+      const user = await this.prisma.user.findUnique({ where: { id: responsavelUserId } });
+      if (!user) throw new NotFoundException("Usuário responsável não encontrado.");
+      responsavelNome = user.name;
+    }
+    return this.prisma.gerencia.update({
+      where: { id },
+      data: {
+        responsavelUserId,
+        ...(responsavelNome ? { responsavel: responsavelNome } : {})
+      },
+      include: {
+        responsavelUser: { select: { id: true, name: true, email: true } },
+        _count: { select: { funcionarios: true } }
+      }
+    });
+  }
+
   deleteGerencia(id: string) {
     return this.prisma.gerencia.delete({ where: { id } });
   }
@@ -42,7 +62,7 @@ export class GestaoService {
     return this.prisma.funcionario.findMany({
       orderBy: { createdAt: "asc" },
       include: {
-        user: { select: { id: true, name: true, email: true } },
+        user: { select: { id: true, name: true, email: true, emailReal: true } },
         gerencia: { select: { id: true, nome: true, sigla: true } }
       }
     });

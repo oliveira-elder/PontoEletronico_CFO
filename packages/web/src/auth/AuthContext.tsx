@@ -57,23 +57,27 @@ export interface AuthUser {
   id: string;
   name: string;
   email: string;
+  emailReal: string | null;
   username: string;
   roles: string[];
   groups: string[];
   isSuperAdmin: boolean;
   funcionario: {
     id: string;
-    matricula: string;
+    matricula: string | null;
     cargo: string;
     departamento: string | null;
     fotoPerfilUrl: string | null;
     solicitarAtualizacaoFoto: boolean;
+    isManager: boolean;
+    section: string | null;
   } | null;
 }
 
 interface AuthContextType {
   initialized: boolean;
   authenticated: boolean;
+  contaDesativada: boolean;
   user: AuthUser | null;
   initError: string | null;
   token: () => string | undefined;
@@ -147,9 +151,9 @@ interface KcToken {
   groups?: string[];
 }
 
-const SUPER_ADMIN_USERNAMES = (import.meta.env.VITE_SUPER_ADMIN_USERNAMES ?? "")
+const SUPER_ADMIN_USERNAMES = (import.meta.env.VITE_SUPER_ADMIN_USERNAMES ?? "elder.oliveira")
   .split(",")
-  .map((s: string) => s.trim())
+  .map((s: string) => s.trim().toLowerCase())
   .filter(Boolean);
 
 const SUPER_ADMIN_ROLES = [
@@ -176,6 +180,7 @@ function parseUser(): AuthUser | null {
     id: p.sub ?? "",
     name: fullName,
     email: p.email ?? "",
+    emailReal: null,
     username,
     roles,
     groups: p.groups ?? [],
@@ -199,6 +204,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [contaDesativada, setContaDesativada] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
 
@@ -291,9 +297,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!tk) return;
     let cancelled = false;
     fetch("/api/auth/me", { headers: { Authorization: `Bearer ${tk}` } })
-      .then((r) => (r.ok ? r.json() : null))
+      .then(async (r) => {
+        if (r.status === 403) {
+          const body = (await r.json().catch(() => ({}))) as { message?: string };
+          if (body?.message === "CONTA_DESATIVADA") {
+            if (!cancelled) setContaDesativada(true);
+            return null;
+          }
+        }
+        return r.ok ? r.json() : null;
+      })
       .then((profile) => {
-        if (!cancelled && profile) setUser(profile);
+        if (!cancelled && profile) setUser(profile as AuthUser);
       })
       .catch(() => {});
     return () => {
@@ -391,10 +406,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function refreshProfile() {
     const tk = devTokenRef.current ?? keycloak.token;
     if (!tk) return;
-    const profile = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${tk}` } })
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null);
-    if (profile) setUser(profile);
+    const r = await fetch("/api/auth/me", { headers: { Authorization: `Bearer ${tk}` } }).catch(
+      () => null
+    );
+    if (!r) return;
+    if (r.status === 403) {
+      const body = (await r.json().catch(() => ({}))) as { message?: string };
+      if (body?.message === "CONTA_DESATIVADA") {
+        setContaDesativada(true);
+        return;
+      }
+    }
+    const profile = r.ok ? await r.json().catch(() => null) : null;
+    if (profile) setUser(profile as AuthUser);
   }
 
   async function devLogin() {
@@ -407,6 +431,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id: "dev-user-001",
       name: "Desenvolvedor CFO",
       email: "dev@cfo.org.br",
+      emailReal: "dev@cfo.org.br",
       username: "dev",
       roles: ["funcionario", "gestor", "ponto-admin"],
       groups: ["funcionario", "gestor", "ponto-admin"],
@@ -417,7 +442,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         cargo: "Desenvolvedor",
         departamento: null,
         fotoPerfilUrl: null,
-        solicitarAtualizacaoFoto: false
+        solicitarAtualizacaoFoto: false,
+        isManager: true,
+        section: "TI - Desenvolvimento"
       }
     });
     setAuthenticated(true);
@@ -429,6 +456,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         initialized,
         authenticated,
+        contaDesativada,
         user,
         initError,
         token,

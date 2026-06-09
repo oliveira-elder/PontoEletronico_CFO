@@ -9,7 +9,9 @@ import {
   CheckCircleIcon,
   MapPinIcon,
   ShieldCheckIcon,
-  UsersIcon
+  UsersIcon,
+  AlertCircleIcon,
+  CalendarIcon
 } from "../../components/icons";
 import { api } from "../../hooks/useApi";
 
@@ -63,6 +65,8 @@ interface SistemaApi {
   // Períodos / jornada (retornados pelo backend com defaults)
   horaEntrada: string;
   horaSaida: string;
+  pontoHorarioMinimo: string;
+  pontoHorarioMaximo: string;
   jornadaDiariaMin: number;
   jornadaSemanalMin: number;
   diasUteis: boolean[] | string;
@@ -270,13 +274,28 @@ function Secao({
   );
 }
 
-type Tab = "institucional" | "rede" | "modos" | "areas" | "periodos";
+type Tab = "institucional" | "rede" | "modos" | "areas" | "periodos" | "solicitacoes";
+
+interface ConfigSolicitacoes {
+  atestadoDiasLimiteSimples: number;
+  atestadoDiasLimiteInss: number;
+  atestadoGuiaUrl: string | null;
+  atestadoMensagemOriginais: string;
+  feriasAntecedenciaMinDias: number;
+  feriasMinimoGrandePeriodo: number;
+  feriasMinimoOutrosPeriodos: number;
+  feriasMaxPeriodos: number;
+  feriasMaxDiasVenda: number;
+  feriasVedacaoPreFeriadoDias: number;
+}
 
 /* ─── Tipos de períodos ─── */
 interface ConfigPeriodos {
   // Jornada padrão
   horaEntrada: string; // "08:00"
   horaSaida: string; // "17:00"
+  pontoHorarioMinimo: string; // "06:00" — limite para bater/ajustar ponto (Brasília)
+  pontoHorarioMaximo: string; // "23:59"
   jornadaDiariaMin: number; // 480
   jornadaSemanalMin: number; // 2400
   diasUteis: boolean[]; // [false,true,true,true,true,true,false] Dom→Sáb
@@ -307,6 +326,8 @@ export function ConfiguracoesPage() {
   const [tab, setTab] = useState<Tab>("institucional");
   const [config, setConfig] = useState<Config | null>(null);
   const [periodos, setPeriodos] = useState<ConfigPeriodos | null>(null);
+  const [configSol, setConfigSol] = useState<ConfigSolicitacoes | null>(null);
+  const [guiaBase64, setGuiaBase64] = useState<string | null>(null);
   const [provedores, setProvedores] = useState<Provedor[]>([]);
   const [subredes, setSubredes] = useState<Subrede[]>([]);
   const [areas, setAreas] = useState<AreaViagem[]>([]);
@@ -335,6 +356,13 @@ export function ConfiguracoesPage() {
 
   /* Carrega dados da API ao montar */
   useEffect(() => {
+    api
+      .get<ConfigSolicitacoes>("/ponto/config/solicitacoes")
+      .then((d) => {
+        if (d) setConfigSol(d);
+      })
+      .catch(() => {});
+
     Promise.all([
       api.get<SistemaApi>("/ponto/config/sistema"),
       api.get<Provedor[]>("/ponto/config/provedores"),
@@ -371,6 +399,8 @@ export function ConfiguracoesPage() {
           setPeriodos({
             horaEntrada: sis.horaEntrada,
             horaSaida: sis.horaSaida,
+            pontoHorarioMinimo: sis.pontoHorarioMinimo ?? "06:00",
+            pontoHorarioMaximo: sis.pontoHorarioMaximo ?? "23:59",
             jornadaDiariaMin: sis.jornadaDiariaMin,
             jornadaSemanalMin: sis.jornadaSemanalMin,
             diasUteis:
@@ -490,6 +520,8 @@ export function ConfiguracoesPage() {
       // Períodos
       horaEntrada: periodos.horaEntrada,
       horaSaida: periodos.horaSaida,
+      pontoHorarioMinimo: periodos.pontoHorarioMinimo,
+      pontoHorarioMaximo: periodos.pontoHorarioMaximo,
       jornadaDiariaMin: periodos.jornadaDiariaMin,
       jornadaSemanalMin: periodos.jornadaSemanalMin,
       diasUteis: JSON.stringify(periodos.diasUteis),
@@ -509,6 +541,15 @@ export function ConfiguracoesPage() {
       bancoHorasLimiteMin: periodos.bancoHorasLimiteMin,
       bancoHorasVigenciaDias: periodos.bancoHorasVigenciaDias
     });
+    // Salva regras de solicitações se na aba correspondente ou se foi editada
+    if (configSol) {
+      await api.put("/ponto/config/solicitacoes", {
+        ...configSol,
+        ...(guiaBase64 ? { atestadoGuiaBase64: guiaBase64 } : {})
+      });
+      setGuiaBase64(null);
+    }
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   }
@@ -589,7 +630,8 @@ export function ConfiguracoesPage() {
     { key: "rede", label: "Rede & IP" },
     { key: "periodos", label: "Períodos" },
     { key: "modos", label: "Modos de Registro" },
-    { key: "areas", label: "Áreas Especiais" }
+    { key: "areas", label: "Áreas Especiais" },
+    { key: "solicitacoes", label: "Solicitações" }
   ];
 
   if (loading) {
@@ -1771,6 +1813,91 @@ export function ConfiguracoesPage() {
               </div>
             </div>
 
+            <div
+              style={{
+                marginBottom: 16,
+                padding: "12px 14px",
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(37,99,235,0.18)",
+                background: "rgba(37,99,235,0.04)"
+              }}
+            >
+              <p style={{ margin: "0 0 10px", fontSize: 12.5, fontWeight: 600, color: "#1e40af" }}>
+                Janela para registrar ou ajustar ponto (horário de Brasília)
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "var(--ink-500)",
+                      display: "block",
+                      marginBottom: 5
+                    }}
+                  >
+                    Não antes de
+                  </label>
+                  <input
+                    type="time"
+                    value={periodos.pontoHorarioMinimo}
+                    onChange={(e) =>
+                      setPeriodos((p) => (p ? { ...p, pontoHorarioMinimo: e.target.value } : p))
+                    }
+                    style={{
+                      width: "100%",
+                      padding: "9px 11px",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      fontSize: 14,
+                      fontFamily: "var(--font-mono)",
+                      boxSizing: "border-box"
+                    }}
+                  />
+                </div>
+                <div>
+                  <label
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: "var(--ink-500)",
+                      display: "block",
+                      marginBottom: 5
+                    }}
+                  >
+                    Não depois de
+                  </label>
+                  <input
+                    type="time"
+                    value={periodos.pontoHorarioMaximo}
+                    onChange={(e) =>
+                      setPeriodos((p) => (p ? { ...p, pontoHorarioMaximo: e.target.value } : p))
+                    }
+                    style={{
+                      width: "100%",
+                      padding: "9px 11px",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      fontSize: 14,
+                      fontFamily: "var(--font-mono)",
+                      boxSizing: "border-box"
+                    }}
+                  />
+                </div>
+              </div>
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  fontSize: 11.5,
+                  color: "var(--ink-500)",
+                  lineHeight: 1.45
+                }}
+              >
+                Bloqueia o registro de ponto e solicitações de correção fora desse intervalo (fuso
+                de Brasília). Padrão: 06:00–23:59 (11:59 da noite).
+              </p>
+            </div>
+
             {/* Dias úteis */}
             <div style={{ marginBottom: 12 }}>
               <label
@@ -2509,6 +2636,253 @@ export function ConfiguracoesPage() {
               label="Exigir aprovação prévia de viagem"
               desc="O gestor deve autorizar o modo viagem antes do registro ser aceito"
             />
+          </Secao>
+        </>
+      )}
+
+      {/* ═══════ TAB: SOLICITAÇÕES ═══════ */}
+      {tab === "solicitacoes" && configSol && (
+        <>
+          {/* ── Regras de Atestado ── */}
+          <Secao titulo="Regras de Atestado Médico" icon={<AlertCircleIcon size={18} />}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                    display: "block",
+                    marginBottom: 4
+                  }}
+                >
+                  Limite simples (dias)
+                </label>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px" }}>
+                  Atestados até este limite são padrão sem homologação
+                </p>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={configSol.atestadoDiasLimiteSimples}
+                  onChange={(e) =>
+                    setConfigSol((c) =>
+                      c ? { ...c, atestadoDiasLimiteSimples: parseInt(e.target.value) || 3 } : c
+                    )
+                  }
+                  style={{
+                    width: 80,
+                    padding: "7px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)"
+                  }}
+                />
+              </div>
+              <div>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                    display: "block",
+                    marginBottom: 4
+                  }}
+                >
+                  Limite para INSS (dias)
+                </label>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px" }}>
+                  A partir deste limite exige documento do INSS
+                </p>
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={configSol.atestadoDiasLimiteInss}
+                  onChange={(e) =>
+                    setConfigSol((c) =>
+                      c ? { ...c, atestadoDiasLimiteInss: parseInt(e.target.value) || 14 } : c
+                    )
+                  }
+                  style={{
+                    width: 80,
+                    padding: "7px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)"
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <label
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--ink-700)",
+                  display: "block",
+                  marginBottom: 4
+                }}
+              >
+                Guia do Médico do Trabalho (PDF)
+              </label>
+              <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 8px" }}>
+                Modelo PDF exibido para atestados entre {configSol.atestadoDiasLimiteSimples + 1} e{" "}
+                {configSol.atestadoDiasLimiteInss - 1} dias
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  id="guia-upload"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => setGuiaBase64(ev.target?.result as string);
+                    reader.readAsDataURL(file);
+                  }}
+                />
+                <label
+                  htmlFor="guia-upload"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "8px 14px",
+                    border: "1px solid rgba(122,30,38,0.22)",
+                    borderRadius: "var(--radius-md)",
+                    cursor: "pointer",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    color: "var(--burgundy-600)",
+                    background: "#fff"
+                  }}
+                >
+                  📎 {guiaBase64 ? "PDF selecionado (salvar para enviar)" : "Selecionar PDF"}
+                </label>
+                {configSol.atestadoGuiaUrl && (
+                  <a
+                    href={configSol.atestadoGuiaUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      fontSize: 12.5,
+                      color: "var(--burgundy-600)",
+                      textDecoration: "underline"
+                    }}
+                  >
+                    Ver guia atual
+                  </a>
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <label
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--ink-700)",
+                  display: "block",
+                  marginBottom: 4
+                }}
+              >
+                Mensagem sobre originais
+              </label>
+              <textarea
+                value={configSol.atestadoMensagemOriginais}
+                onChange={(e) =>
+                  setConfigSol((c) => (c ? { ...c, atestadoMensagemOriginais: e.target.value } : c))
+                }
+                rows={2}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: 13,
+                  resize: "vertical",
+                  boxSizing: "border-box"
+                }}
+              />
+            </div>
+          </Secao>
+
+          {/* ── Regras de Férias ── */}
+          <Secao titulo="Regras de Férias" icon={<CalendarIcon size={18} />}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+              {(
+                [
+                  {
+                    key: "feriasAntecedenciaMinDias",
+                    label: "Antecedência mínima (dias)",
+                    desc: "Prazo mínimo para solicitar férias"
+                  },
+                  {
+                    key: "feriasMinimoGrandePeriodo",
+                    label: "Mínimo período principal (dias)",
+                    desc: "Primeiro período deve ter no mínimo X dias"
+                  },
+                  {
+                    key: "feriasMinimoOutrosPeriodos",
+                    label: "Mínimo outros períodos (dias)",
+                    desc: "Períodos 2 e 3 devem ter no mínimo X dias"
+                  },
+                  {
+                    key: "feriasMaxPeriodos",
+                    label: "Máximo de períodos",
+                    desc: "Férias podem ser divididas em até X períodos"
+                  },
+                  {
+                    key: "feriasMaxDiasVenda",
+                    label: "Máximo dias a vender",
+                    desc: "Funcionário pode vender até X dias de férias"
+                  },
+                  {
+                    key: "feriasVedacaoPreFeriadoDias",
+                    label: "Vedação pré-feriado (dias)",
+                    desc: "Não pode iniciar férias X dias antes de feriado/repouso"
+                  }
+                ] as { key: keyof ConfigSolicitacoes; label: string; desc: string }[]
+              ).map(({ key, label, desc }) => (
+                <div key={key}>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--ink-700)",
+                      display: "block",
+                      marginBottom: 4
+                    }}
+                  >
+                    {label}
+                  </label>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px" }}>{desc}</p>
+                  <input
+                    type="number"
+                    min={1}
+                    value={configSol[key] as number}
+                    onChange={(e) =>
+                      setConfigSol((c) => (c ? { ...c, [key]: parseInt(e.target.value) || 1 } : c))
+                    }
+                    style={{
+                      width: 80,
+                      padding: "7px 10px",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: 14,
+                      fontFamily: "var(--font-mono)"
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
           </Secao>
         </>
       )}

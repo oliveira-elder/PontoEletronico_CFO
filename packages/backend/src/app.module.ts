@@ -14,6 +14,7 @@ import { RealtimeModule } from "./modules/realtime/realtime.module";
 import { PontoModule } from "./modules/ponto/ponto.module";
 import { AdminModule } from "./modules/admin/admin.module";
 import { AuditoriaModule } from "./modules/auditoria/auditoria.module";
+import { ExtensionsModule } from "./modules/extensions/extensions.module";
 
 @Module({
   imports: [
@@ -29,7 +30,8 @@ import { AuditoriaModule } from "./modules/auditoria/auditoria.module";
     RealtimeModule,
     PontoModule,
     AdminModule,
-    AuditoriaModule
+    AuditoriaModule,
+    ExtensionsModule
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor }]
 })

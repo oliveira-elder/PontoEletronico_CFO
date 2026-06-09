@@ -2,12 +2,14 @@ import {
   Controller,
   Get,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
   UseGuards,
   Query,
-  Request
+  Request,
+  BadRequestException
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { RolesGuard } from "../auth/roles.guard";
@@ -104,5 +106,67 @@ export class AdminController {
   @Get("grupos-sistema")
   listarMapeamentos() {
     return this.prisma.grupoSistema.findMany({ orderBy: { grupoNome: "asc" } });
+  }
+
+  /* ─── Usuários locais (banco interno) ─── */
+
+  @Get("usuarios")
+  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
+  async listarUsuariosLocais(@Query("search") search?: string) {
+    const where = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { email: { contains: search, mode: "insensitive" as const } },
+            { emailReal: { contains: search, mode: "insensitive" as const } }
+          ]
+        }
+      : undefined;
+
+    return this.prisma.user.findMany({
+      where,
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        emailReal: true,
+        externalId: true,
+        createdAt: true,
+        funcionario: {
+          select: {
+            id: true,
+            matricula: true,
+            cargo: true,
+            ativo: true,
+            categoria: true,
+            gerencia: { select: { id: true, nome: true, sigla: true } }
+          }
+        }
+      }
+    });
+  }
+
+  @Patch("usuarios/:id/email-real")
+  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
+  async definirEmailReal(@Param("id") id: string, @Body() body: { emailReal: string | null }) {
+    if (body.emailReal !== null) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(body.emailReal)) {
+        throw new BadRequestException("Formato de e-mail inválido.");
+      }
+      const existente = await this.prisma.user.findFirst({
+        where: { emailReal: body.emailReal, NOT: { id } }
+      });
+      if (existente) {
+        throw new BadRequestException("E-mail já cadastrado para outro usuário.");
+      }
+    }
+
+    return this.prisma.user.update({
+      where: { id },
+      data: { emailReal: body.emailReal },
+      select: { id: true, name: true, email: true, emailReal: true }
+    });
   }
 }

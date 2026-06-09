@@ -9,7 +9,8 @@ import {
   UsersIcon,
   SettingsIcon,
   LogOutIcon,
-  ShieldCheckIcon
+  ShieldCheckIcon,
+  CheckCircleIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -27,9 +28,18 @@ const mainNav: NavItem[] = [
   { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> }
 ];
 
-/* Itens de Gestão: exibidos para gestores e admins */
-const gestaoNav: NavItem[] = [
-  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} /> },
+/* Aprovações: exibidas para gestores (GESTOR_APROVACAO, isManager) */
+const aprovacaoNav: NavItem[] = [
+  { path: "/ponto/aprovacoes", label: "Aprovações", icon: <CheckCircleIcon size={18} /> }
+];
+
+/* Gestão de funcionários: apenas RH (RH_AUDITORIA) e admins/super admin */
+const gestaoRhNav: NavItem[] = [
+  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} /> }
+];
+
+/* Auditoria: apenas para RH e admins */
+const auditoriaNav: NavItem[] = [
   { path: "/ponto/auditoria", label: "Auditoria", icon: <ShieldCheckIcon size={18} /> }
 ];
 
@@ -69,10 +79,19 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
   const { user, hasRole, logout } = useAuth();
 
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  // PROVISÓRIO: isManager via campo do Funcionario enquanto responsavelUserId não está configurado
+  const isManagerProvisorio = !!user?.funcionario?.isManager;
   const isGestor =
-    isAdmin || hasRole("gestor") || hasRole("GESTOR_APROVACAO") || hasRole("RH_AUDITORIA");
+    isAdmin ||
+    hasRole("gestor") ||
+    hasRole("GESTOR_APROVACAO") ||
+    hasRole("RH_AUDITORIA") ||
+    isManagerProvisorio;
+  const isRH = isAdmin || hasRole("RH_AUDITORIA");
 
-  const visibleGestaoNav = isGestor ? gestaoNav : [];
+  const visibleAprovacaoNav = isGestor ? aprovacaoNav : [];
+  const visibleGestaoRhNav = isRH ? gestaoRhNav : [];
+  const visibleAuditoriaNav = isRH ? auditoriaNav : [];
   const visibleAdminNav = isAdmin ? adminNav : [];
   const visibleAdminBottomNav = isAdmin ? adminBottomNav : [];
 
@@ -190,8 +209,11 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
           <SidebarLink key={item.path} item={item} expanded={expanded} />
         ))}
 
-        {/* Seção administração — visível apenas para gestor/admin */}
-        {(visibleGestaoNav.length > 0 || visibleAdminNav.length > 0) && (
+        {/* Seção administração */}
+        {(visibleAprovacaoNav.length > 0 ||
+          visibleGestaoRhNav.length > 0 ||
+          visibleAuditoriaNav.length > 0 ||
+          visibleAdminNav.length > 0) && (
           <>
             {expanded && (
               <p
@@ -210,7 +232,13 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
               </p>
             )}
             {!expanded && <div style={{ height: 12 }} />}
-            {visibleGestaoNav.map((item) => (
+            {visibleAprovacaoNav.map((item) => (
+              <SidebarLink key={item.path} item={item} expanded={expanded} />
+            ))}
+            {visibleGestaoRhNav.map((item) => (
+              <SidebarLink key={item.path} item={item} expanded={expanded} />
+            ))}
+            {visibleAuditoriaNav.map((item) => (
               <SidebarLink key={item.path} item={item} expanded={expanded} />
             ))}
             {visibleAdminNav.map((item) => (

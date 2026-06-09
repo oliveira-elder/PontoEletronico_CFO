@@ -1,0 +1,1333 @@
+import React, { useState, useEffect, useCallback } from "react";
+import { useAuth } from "../../auth/AuthContext";
+import { api } from "../../hooks/useApi";
+import {
+  CheckCircleIcon,
+  XCircleIcon,
+  AlertCircleIcon,
+  SearchIcon,
+  RefreshCwIcon,
+  UsersIcon,
+  UserIcon
+} from "../../components/icons";
+import { LogTimelineGestorHistorico, ModalDecisaoRH, SolicitacaoCardRH } from "./solicitacaoUi";
+
+/* ══════════════════════════════════════════
+   TIPOS
+══════════════════════════════════════════ */
+
+type StatusSolicitacao =
+  | "PENDENTE"
+  | "AGUARDANDO_RH"
+  | "APROVADA"
+  | "REJEITADA"
+  | "REJEITADA_GESTOR"
+  | "REJEITADA_RH";
+
+interface Solicitacao {
+  id: string;
+  tipo: string;
+  dataReferencia: string;
+  dataInicio: string | null;
+  dataFim: string | null;
+  metadados: Record<string, unknown> | null;
+  descricao: string;
+  status: StatusSolicitacao;
+  observacaoGestor: string | null;
+  gestorObservacao: string | null;
+  gestorResolvidoEm: string | null;
+  gestorUser?: { name: string } | null;
+  rhObservacao: string | null;
+  rhResolvidoEm: string | null;
+  createdAt: string;
+  funcionario: {
+    id: string;
+    matricula: string | null;
+    cargo: string;
+    fotoPerfilUrl: string | null;
+    user: { name: string; email: string; emailReal?: string | null };
+    gerencia: { nome: string; sigla: string } | null;
+  };
+}
+
+/* ══════════════════════════════════════════
+   HELPERS
+══════════════════════════════════════════ */
+
+const TIPO_LABEL: Record<string, string> = {
+  CORRECAO_PONTO: "Correção de Ponto",
+  ATESTADO: "Atestado Médico",
+  FERIAS: "Férias",
+  LICENCA: "Licença",
+  ABONO: "Abono de Falta"
+};
+
+function fmtDate(iso: string) {
+  try {
+    return new Date(iso).toLocaleDateString("pt-BR");
+  } catch {
+    return iso;
+  }
+}
+
+function fmtDateTime(iso: string) {
+  try {
+    const d = new Date(iso);
+    return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  } catch {
+    return iso;
+  }
+}
+
+function diffDias(inicio: string, fim: string): number {
+  try {
+    const d1 = new Date(inicio);
+    const d2 = new Date(fim);
+    return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1);
+  } catch {
+    return 1;
+  }
+}
+
+const TIPO_PONTO: Record<string, string> = {
+  ENTRADA: "Entrada",
+  INICIO_INTERVALO: "Início de Intervalo",
+  FIM_INTERVALO: "Fim de Intervalo",
+  SAIDA: "Saída"
+};
+
+function textoResumo(s: Solicitacao): string {
+  const nome = s.funcionario.user.name;
+  const meta = s.metadados;
+
+  switch (s.tipo) {
+    case "CORRECAO_PONTO": {
+      if (!meta) return `${nome} solicita correção de ponto.`;
+      const acao = (meta.acao as string) === "INCLUIR" ? "inclusão" : "alteração";
+      const tipoPonto =
+        TIPO_PONTO[(meta.tipoRegistro as string) ?? ""] ?? (meta.tipoRegistro as string);
+      if (meta.acao === "INCLUIR") {
+        return `${nome} solicita a ${acao} de registro de ponto: ${tipoPonto} às ${meta.horarioSolicitado as string} em ${fmtDate(s.dataReferencia)}.`;
+      }
+      const de = meta.horarioOriginal ? `de ${meta.horarioOriginal as string} ` : "";
+      return `${nome} solicita a ${acao} do registro de ${tipoPonto} ${de}para ${meta.horarioSolicitado as string} em ${fmtDate(s.dataReferencia)}.`;
+    }
+    case "ATESTADO": {
+      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
+      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 1;
+      const periodo =
+        meta?.horarioInicio && meta?.horarioFim
+          ? ` (${meta.horarioInicio as string}–${meta.horarioFim as string})`
+          : "";
+      if (inicio === fim) {
+        return `${nome} solicita o registro de atestado médico em ${inicio}${periodo}.`;
+      }
+      return `${nome} solicita o registro de atestado médico de ${inicio} a ${fim}${periodo} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
+    }
+    case "FERIAS": {
+      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
+      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
+      const periodo = meta?.periodoNumero ? ` (${meta.periodoNumero as number}º período)` : "";
+      const venda =
+        meta?.diasVenda && (meta.diasVenda as number) > 0
+          ? `, vendendo ${meta.diasVenda as number} dia${(meta.diasVenda as number) !== 1 ? "s" : ""}`
+          : "";
+      return `${nome} solicita férias de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""} corridos${periodo}${venda}.`;
+    }
+    case "LICENCA": {
+      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
+      if (inicio === fim) return `${nome} solicita licença em ${inicio}.`;
+      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
+      return `${nome} solicita licença de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
+    }
+    case "ABONO": {
+      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
+      const tipoAbono =
+        (meta?.tipoAbono as string) === "FUTURO" ? "abono de dia futuro" : "abono de falta";
+      if (inicio === fim) return `${nome} solicita ${tipoAbono} em ${inicio}.`;
+      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
+      return `${nome} solicita ${tipoAbono} de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
+    }
+    default:
+      return `${nome} abriu uma solicitação de ${TIPO_LABEL[s.tipo as keyof typeof TIPO_LABEL] ?? s.tipo}.`;
+  }
+}
+
+function Avatar({ name, fotoUrl }: { name: string; fotoUrl?: string | null }) {
+  const baseStyle: React.CSSProperties = {
+    width: 42,
+    height: 42,
+    borderRadius: "50%",
+    flexShrink: 0,
+    overflow: "hidden",
+    border: "2px solid rgba(122,30,38,0.15)"
+  };
+
+  if (fotoUrl) {
+    return (
+      <div style={baseStyle}>
+        <img
+          src={fotoUrl}
+          alt={name}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          onError={(e) => {
+            // Fallback para ícone se a imagem falhar
+            const parent = (e.currentTarget as HTMLImageElement).parentElement;
+            if (parent) {
+              parent.innerHTML = "";
+              parent.style.background = "var(--cream-100)";
+              parent.style.display = "flex";
+              parent.style.alignItems = "center";
+              parent.style.justifyContent = "center";
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        ...baseStyle,
+        background: "var(--cream-100)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+      }}
+    >
+      <UserIcon size={22} style={{ color: "var(--ink-400)" }} />
+    </div>
+  );
+}
+
+function TipoBadge({ tipo }: { tipo: string }) {
+  const label = TIPO_LABEL[tipo] ?? tipo;
+  const colorMap: Record<string, string> = {
+    CORRECAO_PONTO: "#1e40af",
+    ATESTADO: "#7c3aed",
+    FERIAS: "#065f46",
+    LICENCA: "#92400e",
+    ABONO: "#374151"
+  };
+  const bg = colorMap[tipo] ?? "#374151";
+  return (
+    <span
+      style={{
+        background: `${bg}18`,
+        color: bg,
+        border: `1px solid ${bg}40`,
+        borderRadius: 5,
+        padding: "2px 8px",
+        fontSize: 11,
+        fontWeight: 600
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: StatusSolicitacao }) {
+  const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
+    PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
+    AGUARDANDO_RH: { label: "Aprovado pelo Gestor", cls: "badge-blue" },
+    APROVADA: { label: "Aprovada pelo RH", cls: "badge-green" },
+    REJEITADA: { label: "Rejeitada", cls: "badge-red" },
+    REJEITADA_GESTOR: { label: "Rejeitada pelo Gestor", cls: "badge-red" },
+    REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" }
+  };
+  const { label, cls } = map[status] ?? { label: status, cls: "badge-amber" };
+  return <span className={`badge ${cls}`}>{label}</span>;
+}
+
+/* ══════════════════════════════════════════
+   POPUP DE CONFIRMAÇÃO DE DECISÃO
+══════════════════════════════════════════ */
+
+function ModalDecisao({
+  solicitacao,
+  decisao,
+  resumo,
+  onConfirm,
+  onClose,
+  loading
+}: {
+  solicitacao: Solicitacao;
+  decisao: "APROVAR" | "REJEITAR";
+  resumo: string;
+  onConfirm: (observacao: string) => void;
+  onClose: () => void;
+  loading: boolean;
+}) {
+  const [obs, setObs] = useState("");
+
+  const isAprovar = decisao === "APROVAR";
+  const corAcao = isAprovar ? "#16a34a" : "#dc2626";
+  const corAcaoClaro = isAprovar ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.06)";
+  const corBorda = isAprovar ? "rgba(22,163,74,0.25)" : "rgba(220,38,38,0.25)";
+  const emoji = isAprovar ? "✅" : "❌";
+  const titulo = isAprovar ? "Confirmar Aprovação" : "Confirmar Rejeição";
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        zIndex: 300,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && !loading && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 480,
+          boxShadow: "0 24px 80px rgba(0,0,0,0.28)",
+          overflow: "hidden"
+        }}
+      >
+        {/* ── Cabeçalho colorido ── */}
+        <div
+          style={{
+            background: corAcaoClaro,
+            borderBottom: `1px solid ${corBorda}`,
+            padding: "20px 24px",
+            display: "flex",
+            alignItems: "center",
+            gap: 14
+          }}
+        >
+          <span style={{ fontSize: 32, lineHeight: 1 }}>{emoji}</span>
+          <div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 17,
+                fontWeight: 700,
+                color: corAcao,
+                fontFamily: "var(--font-display)"
+              }}
+            >
+              {titulo}
+            </p>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+              {TIPO_LABEL[solicitacao.tipo] ?? solicitacao.tipo} ·{" "}
+              <strong>{solicitacao.funcionario.user.name}</strong>
+            </p>
+          </div>
+        </div>
+
+        {/* ── Corpo ── */}
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Resumo da solicitação */}
+          <div
+            style={{
+              background: "var(--cream-50)",
+              border: "1px solid rgba(122,30,38,0.10)",
+              borderRadius: "var(--radius-md)",
+              padding: "12px 14px"
+            }}
+          >
+            <p
+              style={{
+                margin: "0 0 4px",
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                color: "var(--ink-400)"
+              }}
+            >
+              Solicitação
+            </p>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--ink-800)", lineHeight: 1.5 }}>
+              {resumo}
+            </p>
+            {solicitacao.descricao && (
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  fontStyle: "italic",
+                  borderTop: "1px solid rgba(0,0,0,0.06)",
+                  paddingTop: 8
+                }}
+              >
+                Justificativa: "{solicitacao.descricao}"
+              </p>
+            )}
+          </div>
+
+          {/* Pergunta de confirmação */}
+          <p
+            style={{
+              margin: 0,
+              fontSize: 14,
+              fontWeight: 600,
+              color: "var(--ink-900)",
+              textAlign: "center"
+            }}
+          >
+            {isAprovar
+              ? "Você confirma a aprovação desta solicitação?"
+              : "Você confirma a rejeição desta solicitação?"}
+          </p>
+          {isAprovar && (
+            <p
+              style={{
+                margin: "-8px 0 0",
+                fontSize: 12,
+                color: "var(--ink-500)",
+                textAlign: "center"
+              }}
+            >
+              Após aprovação, a solicitação será encaminhada ao RH para análise final.
+            </p>
+          )}
+
+          {/* Observação */}
+          <div>
+            <label
+              style={{
+                display: "block",
+                marginBottom: 6,
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "var(--ink-700)"
+              }}
+            >
+              {isAprovar ? "Observação para o RH (opcional)" : "Motivo da rejeição (obrigatório)"}
+            </label>
+            <textarea
+              value={obs}
+              onChange={(e) => setObs(e.target.value)}
+              placeholder={
+                isAprovar
+                  ? "Deixe uma observação para o analista de RH, se necessário..."
+                  : "Informe o motivo da rejeição ao funcionário..."
+              }
+              rows={3}
+              autoFocus
+              style={{
+                width: "100%",
+                border: `1px solid ${obs.trim() || isAprovar ? "rgba(0,0,0,0.15)" : "rgba(220,38,38,0.40)"}`,
+                borderRadius: "var(--radius-md)",
+                padding: "9px 11px",
+                fontSize: 13,
+                resize: "vertical",
+                boxSizing: "border-box",
+                outline: "none"
+              }}
+            />
+            {!isAprovar && !obs.trim() && (
+              <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#dc2626" }}>
+                O motivo da rejeição é obrigatório.
+              </p>
+            )}
+          </div>
+
+          {/* Botões */}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button
+              onClick={onClose}
+              disabled={loading}
+              style={{
+                padding: "10px 20px",
+                border: "1px solid rgba(0,0,0,0.15)",
+                borderRadius: "var(--radius-md)",
+                background: "#fff",
+                cursor: loading ? "not-allowed" : "pointer",
+                fontSize: 13,
+                fontWeight: 500,
+                color: "var(--ink-600)"
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => onConfirm(obs)}
+              disabled={loading || (!isAprovar && !obs.trim())}
+              style={{
+                padding: "10px 24px",
+                border: "none",
+                borderRadius: "var(--radius-md)",
+                background: loading || (!isAprovar && !obs.trim()) ? "#9ca3af" : corAcao,
+                color: "#fff",
+                cursor: loading || (!isAprovar && !obs.trim()) ? "not-allowed" : "pointer",
+                fontSize: 13,
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                transition: "background 150ms"
+              }}
+            >
+              {loading ? (
+                <>⏳ Processando...</>
+              ) : isAprovar ? (
+                <>✅ Sim, aprovar</>
+              ) : (
+                <>❌ Sim, rejeitar</>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   CARD DE SOLICITAÇÃO
+══════════════════════════════════════════ */
+
+function SolicitacaoCard({
+  s,
+  mostrarAcoes,
+  onDecidir
+}: {
+  s: Solicitacao;
+  mostrarAcoes: boolean;
+  onDecidir: (s: Solicitacao, decisao: "APROVAR" | "REJEITAR") => void;
+}) {
+  const email = s.funcionario.user.emailReal || s.funcionario.user.email;
+  const resumo = textoResumo(s);
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        borderRadius: "var(--radius-lg)",
+        border: "1px solid rgba(122,30,38,0.08)",
+        padding: "16px 20px",
+        display: "flex",
+        gap: 14,
+        alignItems: "flex-start"
+      }}
+    >
+      <Avatar name={s.funcionario.user.name} fotoUrl={s.funcionario.fotoPerfilUrl} />
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* ── Identidade do funcionário ── */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+            marginBottom: 6
+          }}
+        >
+          <span style={{ fontWeight: 700, fontSize: 14, color: "var(--ink-900)" }}>
+            {s.funcionario.user.name}
+          </span>
+          {s.funcionario.matricula && (
+            <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+              mat. {s.funcionario.matricula}
+            </span>
+          )}
+          {s.funcionario.gerencia && (
+            <span
+              style={{
+                background: "rgba(122,30,38,0.07)",
+                color: "var(--burgundy-600)",
+                borderRadius: 4,
+                padding: "1px 7px",
+                fontSize: 11,
+                fontWeight: 600
+              }}
+            >
+              {s.funcionario.gerencia.sigla}
+            </span>
+          )}
+          <StatusBadge status={s.status} />
+        </div>
+
+        {/* ── Texto principal explicativo ── */}
+        <p
+          style={{
+            margin: "0 0 6px",
+            fontSize: 13.5,
+            color: "var(--ink-800)",
+            lineHeight: 1.5,
+            fontWeight: 500
+          }}
+        >
+          {resumo}
+        </p>
+
+        {/* ── Log discreto (tipo + datas) ── */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+            marginBottom: s.descricao ? 6 : 0
+          }}
+        >
+          <TipoBadge tipo={s.tipo} />
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+            Ref.: {fmtDate(s.dataReferencia)}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+            Enviado em {fmtDateTime(s.createdAt)}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>•</span>
+          <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{email}</span>
+        </div>
+
+        {/* ── Justificativa do funcionário (secundária) ── */}
+        {s.descricao && (
+          <p
+            style={{
+              margin: 0,
+              fontSize: 12.5,
+              color: "var(--ink-600)",
+              lineHeight: 1.5,
+              borderLeft: "3px solid rgba(122,30,38,0.12)",
+              paddingLeft: 10,
+              fontStyle: "italic"
+            }}
+          >
+            "{s.descricao}"
+          </p>
+        )}
+
+        {!mostrarAcoes && (s.gestorResolvidoEm || s.gestorObservacao || s.observacaoGestor) && (
+          <LogTimelineGestorHistorico s={s} />
+        )}
+      </div>
+
+      {/* ── Botões de ação ── */}
+      {mostrarAcoes && s.status === "PENDENTE" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+          <button
+            onClick={() => onDecidir(s, "APROVAR")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "7px 14px",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: "#16a34a",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600
+            }}
+          >
+            <CheckCircleIcon size={14} /> Aprovar
+          </button>
+          <button
+            onClick={() => onDecidir(s, "REJEITAR")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "7px 14px",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: "var(--red)",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600
+            }}
+          >
+            <XCircleIcon size={14} /> Rejeitar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   PÁGINA PRINCIPAL
+══════════════════════════════════════════ */
+
+type EtapaAprovacao = "gestor" | "rh";
+
+export function AprovacaoGestorPage() {
+  const { user, hasRole } = useAuth();
+
+  // PROVISÓRIO: isManager via campo do Funcionario dá acesso enquanto responsavelUserId não está configurado
+  const isManagerProvisorio = !!user?.funcionario?.isManager;
+  const isGestorArea =
+    !!user?.isSuperAdmin ||
+    hasRole("gestor") ||
+    hasRole("GESTOR_APROVACAO") ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN") ||
+    isManagerProvisorio;
+  const isRH =
+    !!user?.isSuperAdmin ||
+    hasRole("RH_AUDITORIA") ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN");
+  const temAcesso = isGestorArea || isRH;
+
+  const [etapa, setEtapa] = useState<EtapaAprovacao>(isRH && !isGestorArea ? "rh" : "gestor");
+  const [aba, setAba] = useState<"pendentes" | "historico">("pendentes");
+  const [busca, setBusca] = useState("");
+  const [tipo, setTipo] = useState("");
+  const [page, setPage] = useState(1);
+
+  const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const [equipeCount, setEquipeCount] = useState<number | null>(null);
+  const [statsGestor, setStatsGestor] = useState({ pendentes: 0, aprovadas: 0, rejeitadas: 0 });
+  const [statsRH, setStatsRH] = useState({ pendentes: 0, aprovadas: 0, rejeitadas: 0 });
+
+  // Modal de decisão — gestor
+  const [modalSol, setModalSol] = useState<Solicitacao | null>(null);
+  const [modalDecisao, setModalDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
+  const [modalLoading, setModalLoading] = useState(false);
+  // Modal de decisão — RH
+  const [modalRhSol, setModalRhSol] = useState<Solicitacao | null>(null);
+  const [modalRhDecisao, setModalRhDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
+  const [modalRhErro, setModalRhErro] = useState("");
+  const [feedbackMsg, setFeedbackMsg] = useState("");
+
+  const limit = 20;
+
+  const carregarEquipe = useCallback(async () => {
+    if (!isGestorArea) return;
+    try {
+      const data = await api.get<{ id: string }[]>("/auditoria/gestao/equipe");
+      setEquipeCount(data.length);
+    } catch {
+      /* opcional */
+    }
+  }, [isGestorArea]);
+
+  const carregarStats = useCallback(async () => {
+    try {
+      if (isGestorArea) {
+        const [pend, aprov, rejGestor] = await Promise.all([
+          api.get<{ total: number }>("/auditoria/gestao/solicitacoes?status=PENDENTE&limit=1"),
+          api.get<{ total: number }>(
+            "/auditoria/gestao/solicitacoes?status=AGUARDANDO_RH,APROVADA,REJEITADA_RH&limit=1"
+          ),
+          api.get<{ total: number }>(
+            "/auditoria/gestao/solicitacoes?status=REJEITADA_GESTOR&limit=1"
+          )
+        ]);
+        setStatsGestor({
+          pendentes: pend.total,
+          aprovadas: aprov.total,
+          rejeitadas: rejGestor.total ?? 0
+        });
+      }
+      if (isRH) {
+        const [pendRh, aprovRh, rejRh] = await Promise.all([
+          api.get<{ total: number }>("/auditoria/solicitacoes?status=AGUARDANDO_RH&limit=1"),
+          api.get<{ total: number }>("/auditoria/solicitacoes?status=APROVADA&limit=1"),
+          api.get<{ total: number }>("/auditoria/solicitacoes?status=REJEITADA_RH&limit=1")
+        ]);
+        setStatsRH({
+          pendentes: pendRh.total,
+          aprovadas: aprovRh.total,
+          rejeitadas: rejRh.total
+        });
+      }
+    } catch {
+      /* opcional */
+    }
+  }, [isGestorArea, isRH]);
+
+  const carregar = useCallback(async () => {
+    setLoading(true);
+    setErro("");
+    try {
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit)
+      });
+      if (tipo) params.set("tipo", tipo);
+
+      if (etapa === "gestor") {
+        const statusMap = {
+          pendentes: "PENDENTE",
+          historico: "HISTORICO_GESTOR"
+        };
+        params.set("status", statusMap[aba]);
+        const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
+          `/auditoria/gestao/solicitacoes?${params}`
+        );
+        setSolicitacoes(data.solicitacoes ?? []);
+        setTotal(data.total ?? 0);
+      } else {
+        const statusMap = {
+          pendentes: "AGUARDANDO_RH",
+          historico: "APROVADA,REJEITADA_RH"
+        };
+        params.set("status", statusMap[aba]);
+        const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
+          `/auditoria/solicitacoes?${params}`
+        );
+        setSolicitacoes(data.solicitacoes ?? []);
+        setTotal(data.total ?? 0);
+      }
+    } catch {
+      setErro("Erro ao carregar solicitações.");
+    } finally {
+      setLoading(false);
+    }
+  }, [aba, page, tipo, etapa]);
+
+  useEffect(() => {
+    if (isRH && !isGestorArea) setEtapa("rh");
+  }, [isRH, isGestorArea]);
+
+  useEffect(() => {
+    void carregarEquipe();
+    void carregarStats();
+  }, [carregarEquipe, carregarStats]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [aba, tipo, etapa]);
+
+  useEffect(() => {
+    void carregar();
+  }, [carregar]);
+
+  function abrirModal(s: Solicitacao, decisao: "APROVAR" | "REJEITAR") {
+    setModalSol(s);
+    setModalDecisao(decisao);
+    setFeedbackMsg("");
+  }
+
+  async function confirmarDecisao(observacao: string) {
+    if (!modalSol) return;
+    setModalLoading(true);
+    try {
+      await api.patch(`/auditoria/gestao/solicitacoes/${modalSol.id}`, {
+        decisao: modalDecisao,
+        observacao
+      });
+      setModalSol(null);
+      setFeedbackMsg(
+        modalDecisao === "APROVAR"
+          ? "Solicitação aprovada e encaminhada ao RH."
+          : "Solicitação rejeitada."
+      );
+      await Promise.all([carregar(), carregarStats()]);
+    } catch {
+      setFeedbackMsg("Erro ao processar decisão. Tente novamente.");
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  function abrirModalRH(s: Solicitacao, decisao: "APROVAR" | "REJEITAR") {
+    setModalRhSol(s);
+    setModalRhDecisao(decisao);
+    setModalRhErro("");
+    setFeedbackMsg("");
+  }
+
+  async function confirmarDecisaoRH(observacao: string) {
+    if (!modalRhSol) return;
+    setModalLoading(true);
+    setModalRhErro("");
+    try {
+      await api.patch(`/auditoria/rh/solicitacoes/${modalRhSol.id}`, {
+        decisao: modalRhDecisao,
+        observacao
+      });
+      setModalRhSol(null);
+      setFeedbackMsg(
+        modalRhDecisao === "APROVAR"
+          ? "Solicitação aprovada definitivamente pelo RH."
+          : "Solicitação rejeitada pelo RH."
+      );
+      await Promise.all([carregar(), carregarStats()]);
+    } catch (e) {
+      setModalRhErro((e as Error).message || "Erro ao processar decisão. Tente novamente.");
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  const solicitacoesFiltradas = busca
+    ? solicitacoes.filter(
+        (s) =>
+          s.funcionario.user.name.toLowerCase().includes(busca.toLowerCase()) ||
+          (s.funcionario.matricula ?? "").toLowerCase().includes(busca.toLowerCase())
+      )
+    : solicitacoes;
+
+  const totalPages = Math.ceil(total / limit);
+
+  if (!temAcesso) {
+    return (
+      <div style={{ padding: 32, maxWidth: 480 }}>
+        <div
+          style={{
+            background: "#fff3cd",
+            border: "1px solid #ffc107",
+            borderRadius: "var(--radius-lg)",
+            padding: "20px 24px"
+          }}
+        >
+          <AlertCircleIcon size={20} style={{ color: "#856404", marginBottom: 8 }} />
+          <p style={{ margin: 0, fontWeight: 600 }}>Acesso restrito</p>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "#856404" }}>
+            Esta página é exclusiva para gestores de área, RH e administradores.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const stats = etapa === "gestor" ? statsGestor : statsRH;
+  const mostrarEtapaGestor = isGestorArea;
+  const mostrarEtapaRH = isRH;
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 0 40px" }}>
+      {/* ── Header ── */}
+      <div style={{ marginBottom: 28 }}>
+        <p
+          className="eyebrow"
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "var(--burgundy-600)",
+            margin: "0 0 4px"
+          }}
+        >
+          Gestão
+        </p>
+        <h1
+          style={{
+            fontSize: "clamp(22px,3vw,28px)",
+            fontFamily: "var(--font-display)",
+            margin: 0,
+            fontWeight: 700
+          }}
+        >
+          Aprovações
+        </h1>
+        <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
+          {etapa === "gestor"
+            ? "Etapa do gestor de área — aprovação inicial da equipe."
+            : "Etapa do RH — aprovação final de todas as solicitações."}
+        </p>
+      </div>
+
+      {/* ── Etapas (Gestor / RH) ── */}
+      {mostrarEtapaGestor && mostrarEtapaRH && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+          {[
+            { id: "gestor" as const, label: "Gestor de Área", count: statsGestor.pendentes },
+            { id: "rh" as const, label: "RH", count: statsRH.pendentes }
+          ].map((e) => (
+            <button
+              key={e.id}
+              onClick={() => {
+                setEtapa(e.id);
+                setAba("pendentes");
+              }}
+              style={{
+                padding: "8px 16px",
+                borderRadius: "var(--radius-full)",
+                border:
+                  etapa === e.id
+                    ? "2px solid var(--burgundy-600)"
+                    : "1px solid rgba(122,30,38,0.18)",
+                background: etapa === e.id ? "var(--burgundy-600)" : "#fff",
+                color: etapa === e.id ? "#fff" : "var(--ink-700)",
+                fontSize: 12.5,
+                fontWeight: 600,
+                cursor: "pointer"
+              }}
+            >
+              {e.label}
+              {e.count > 0 ? ` (${e.count})` : ""}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Stat Cards ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))",
+          gap: 14,
+          marginBottom: 28
+        }}
+      >
+        {(etapa === "gestor"
+          ? [
+              {
+                label: "Aguardando minha aprovação",
+                val: stats.pendentes,
+                color: "#92400e",
+                bg: "#fef3c7"
+              },
+              {
+                label: "Aprovadas por mim (encam. ao RH)",
+                val: stats.aprovadas,
+                color: "#065f46",
+                bg: "#d1fae5"
+              },
+              {
+                label: "Rejeitadas por mim",
+                val: stats.rejeitadas,
+                color: "#7a1e26",
+                bg: "#fee2e2"
+              },
+              {
+                label: "Funcionários na equipe",
+                val: equipeCount ?? "–",
+                color: "#1e3a5f",
+                bg: "#dbeafe"
+              }
+            ]
+          : [
+              {
+                label: "Aguardando aprovação do RH",
+                val: stats.pendentes,
+                color: "#1e40af",
+                bg: "#dbeafe"
+              },
+              { label: "Aprovadas pelo RH", val: stats.aprovadas, color: "#065f46", bg: "#d1fae5" },
+              {
+                label: "Rejeitadas pelo RH",
+                val: stats.rejeitadas,
+                color: "#7a1e26",
+                bg: "#fee2e2"
+              }
+            ]
+        ).map((c) => (
+          <div
+            key={c.label}
+            style={{
+              background: "#fff",
+              borderRadius: "var(--radius-lg)",
+              border: "1px solid rgba(122,30,38,0.08)",
+              padding: "14px 18px"
+            }}
+          >
+            <p
+              style={{
+                margin: "0 0 6px",
+                fontSize: 11,
+                color: "var(--ink-500)",
+                fontWeight: 600,
+                lineHeight: 1.3
+              }}
+            >
+              {c.label}
+            </p>
+            <span
+              style={{
+                fontSize: 28,
+                fontWeight: 800,
+                fontFamily: "var(--font-display)",
+                background: c.bg,
+                color: c.color,
+                borderRadius: "var(--radius-md)",
+                padding: "2px 10px"
+              }}
+            >
+              {c.val}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Feedback ── */}
+      {feedbackMsg && (
+        <div
+          style={{
+            background: feedbackMsg.startsWith("Erro") ? "#fee2e2" : "#d1fae5",
+            color: feedbackMsg.startsWith("Erro") ? "#7a1e26" : "#065f46",
+            border: `1px solid ${feedbackMsg.startsWith("Erro") ? "#fca5a5" : "#6ee7b7"}`,
+            borderRadius: "var(--radius-md)",
+            padding: "10px 16px",
+            marginBottom: 16,
+            fontSize: 13,
+            fontWeight: 500
+          }}
+        >
+          {feedbackMsg}
+        </div>
+      )}
+
+      {/* ── Abas ── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 4,
+          marginBottom: 20,
+          borderBottom: "1px solid rgba(122,30,38,0.1)",
+          paddingBottom: 0
+        }}
+      >
+        {(["pendentes", "historico"] as const).map((a) => (
+          <button
+            key={a}
+            onClick={() => setAba(a)}
+            style={{
+              padding: "9px 18px",
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: aba === a ? 700 : 500,
+              color: aba === a ? "var(--burgundy-600)" : "var(--ink-500)",
+              borderBottom: aba === a ? "2px solid var(--burgundy-600)" : "2px solid transparent",
+              marginBottom: -1
+            }}
+          >
+            {a === "pendentes"
+              ? `Aguardando Aprovação${stats.pendentes > 0 ? ` (${stats.pendentes})` : ""}`
+              : etapa === "rh"
+                ? "Histórico do RH"
+                : "Histórico"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Filtros ── */}
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          marginBottom: 20,
+          flexWrap: "wrap",
+          alignItems: "center"
+        }}
+      >
+        <div style={{ position: "relative", flex: "1 1 220px" }}>
+          <SearchIcon
+            size={14}
+            style={{
+              position: "absolute",
+              left: 10,
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "var(--ink-500)"
+            }}
+          />
+          <input
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar por nome ou matrícula..."
+            style={{
+              width: "100%",
+              paddingLeft: 30,
+              paddingRight: 10,
+              paddingTop: 8,
+              paddingBottom: 8,
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13,
+              boxSizing: "border-box"
+            }}
+          />
+        </div>
+        <select
+          value={tipo}
+          onChange={(e) => setTipo(e.target.value)}
+          style={{
+            padding: "8px 12px",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 13,
+            background: "#fff"
+          }}
+        >
+          <option value="">Todos os tipos</option>
+          {Object.entries(TIPO_LABEL).map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => {
+            void carregar();
+            void carregarStats();
+          }}
+          title="Atualizar"
+          style={{
+            padding: "8px 12px",
+            border: "1px solid rgba(0,0,0,0.12)",
+            borderRadius: "var(--radius-md)",
+            background: "#fff",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 13
+          }}
+        >
+          <RefreshCwIcon size={14} /> Atualizar
+        </button>
+      </div>
+
+      {/* ── Lista ── */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: "40px 0", color: "var(--ink-500)" }}>
+          Carregando solicitações...
+        </div>
+      ) : erro ? (
+        <div
+          style={{
+            background: "#fee2e2",
+            borderRadius: "var(--radius-md)",
+            padding: "16px 20px",
+            color: "#7a1e26"
+          }}
+        >
+          {erro}
+        </div>
+      ) : solicitacoesFiltradas.length === 0 ? (
+        <div
+          style={{
+            textAlign: "center",
+            padding: "48px 20px",
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)"
+          }}
+        >
+          {aba === "pendentes" ? (
+            <>
+              <CheckCircleIcon size={36} style={{ color: "#16a34a", marginBottom: 12 }} />
+              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                {etapa === "rh"
+                  ? "Nenhuma solicitação aguardando aprovação do RH."
+                  : "Nenhuma solicitação aguardando aprovação."}
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
+                {etapa === "rh"
+                  ? "Solicitações aprovadas pelos gestores aparecerão aqui para análise final."
+                  : "Quando os membros da sua equipe enviarem solicitações, elas aparecerão aqui."}
+              </p>
+            </>
+          ) : (
+            <>
+              <UsersIcon size={36} style={{ color: "var(--ink-400)", marginBottom: 12 }} />
+              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                Nenhum registro no histórico.
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
+                {etapa === "rh"
+                  ? "Solicitações já decididas pelo RH aparecerão aqui."
+                  : "As solicitações que você aprovar ou rejeitar aparecerão aqui após a decisão."}
+              </p>
+            </>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {solicitacoesFiltradas.map((s) =>
+            etapa === "rh" ? (
+              <SolicitacaoCardRH
+                key={s.id}
+                s={s}
+                mostrarAcoes={aba === "pendentes"}
+                onDecidir={abrirModalRH}
+              />
+            ) : (
+              <SolicitacaoCard
+                key={s.id}
+                s={s}
+                mostrarAcoes={aba === "pendentes"}
+                onDecidir={abrirModal}
+              />
+            )
+          )}
+        </div>
+      )}
+
+      {/* ── Paginação ── */}
+      {totalPages > 1 && (
+        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 24 }}>
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            style={{
+              padding: "6px 14px",
+              border: "1px solid rgba(0,0,0,0.15)",
+              borderRadius: "var(--radius-md)",
+              background: "#fff",
+              cursor: page === 1 ? "not-allowed" : "pointer",
+              fontSize: 13
+            }}
+          >
+            ← Anterior
+          </button>
+          <span style={{ padding: "6px 14px", fontSize: 13, color: "var(--ink-500)" }}>
+            Página {page} de {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            style={{
+              padding: "6px 14px",
+              border: "1px solid rgba(0,0,0,0.15)",
+              borderRadius: "var(--radius-md)",
+              background: "#fff",
+              cursor: page === totalPages ? "not-allowed" : "pointer",
+              fontSize: 13
+            }}
+          >
+            Próxima →
+          </button>
+        </div>
+      )}
+
+      {/* ── Popup de confirmação — gestor ── */}
+      {modalSol && (
+        <ModalDecisao
+          solicitacao={modalSol}
+          decisao={modalDecisao}
+          resumo={textoResumo(modalSol)}
+          onConfirm={confirmarDecisao}
+          onClose={() => setModalSol(null)}
+          loading={modalLoading}
+        />
+      )}
+
+      {/* ── Popup de confirmação — RH ── */}
+      {modalRhSol && (
+        <ModalDecisaoRH
+          solicitacao={modalRhSol}
+          decisao={modalRhDecisao}
+          resumo={textoResumo(modalRhSol)}
+          onConfirm={confirmarDecisaoRH}
+          onClose={() => setModalRhSol(null)}
+          loading={modalLoading}
+          erro={modalRhErro}
+        />
+      )}
+    </div>
+  );
+}

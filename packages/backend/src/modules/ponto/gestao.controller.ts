@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from "@nestjs/common";
+import { Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
@@ -39,6 +39,15 @@ export class GestaoController {
     }>
   ) {
     return this.gestaoService.updateGerencia(id, body);
+  }
+
+  @Patch("gerencias/:id/responsavel")
+  @Roles("ponto-admin", "PONTO_ADMIN")
+  setResponsavelGerencia(
+    @Param("id") id: string,
+    @Body() body: { responsavelUserId: string | null }
+  ) {
+    return this.gestaoService.setResponsavelGerencia(id, body.responsavelUserId);
   }
 
   @Delete("gerencias/:id")

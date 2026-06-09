@@ -3,12 +3,18 @@ import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
 import { ConfigService } from "./config.service";
+import { ConfigSolicitacoesService, ConfigSolicitacoesData } from "./config-solicitacoes.service";
+import { DocumentoService } from "./documento.service";
 
 @Controller("ponto/config")
 @UseGuards(AuthGuard("jwt"), RolesGuard)
 @Roles("ponto-admin")
 export class ConfigController {
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly configSolicitacoesService: ConfigSolicitacoesService,
+    private readonly documentoService: DocumentoService
+  ) {}
 
   /* ─── ConfiguracaoSistema ─── */
 
@@ -105,5 +111,25 @@ export class ConfigController {
   @Delete("areas/:id")
   deleteArea(@Param("id") id: string) {
     return this.configService.deleteArea(id);
+  }
+
+  /* ─── Configuração de Solicitações (regras de atestado e férias) ─── */
+
+  @Get("solicitacoes")
+  @Roles() // qualquer usuário autenticado pode ler as regras
+  getConfigSolicitacoes() {
+    return this.configSolicitacoesService.getConfig();
+  }
+
+  @Put("solicitacoes")
+  async updateConfigSolicitacoes(
+    @Body() body: Partial<ConfigSolicitacoesData> & { atestadoGuiaBase64?: string }
+  ) {
+    const { atestadoGuiaBase64, ...data } = body;
+    if (atestadoGuiaBase64) {
+      const url = await this.documentoService.salvarGuia(atestadoGuiaBase64);
+      data.atestadoGuiaUrl = url;
+    }
+    return this.configSolicitacoesService.updateConfig(data);
   }
 }

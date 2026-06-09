@@ -4,13 +4,23 @@ import {
   DownloadIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
-  InfoIcon
+  InfoIcon,
+  Edit2Icon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { api } from "../../hooks/useApi";
 
 /* ─── Types ─── */
 type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO";
+
+interface ObservacaoRegistro {
+  data: string;
+  texto: string;
+  tipo?: string;
+  tipoRegistro?: string;
+  horarioAnterior?: string | null;
+  horarioNovo?: string;
+}
 
 interface DiaRegistro {
   data: string;
@@ -23,11 +33,18 @@ interface DiaRegistro {
   jornadaMin: number;
   status: StatusDia;
   obs?: string;
+  observacoes?: ObservacaoRegistro[];
+  entradaEditada?: boolean;
+  inicioIntervaloEditado?: boolean;
+  fimIntervaloEditado?: boolean;
+  saidaEditada?: boolean;
 }
 
 interface ApiRegistro {
   tipo: string;
   dataHora: string;
+  ajustado?: boolean;
+  observacoes?: ObservacaoRegistro[];
 }
 
 /* ─── Transformação da resposta da API ─── */
@@ -37,8 +54,21 @@ function toMin(h: string): number {
 }
 
 function fmtHora(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date(iso));
+}
+
+function dataBrasiliaKey(iso: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(iso));
 }
 
 function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number): DiaRegistro[] {
@@ -47,10 +77,10 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
   const NOMES_DIA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
   const result: DiaRegistro[] = [];
 
-  /* Agrupa registros por dia (ISO key YYYY-MM-DD) */
+  /* Agrupa registros por dia civil em Brasília */
   const byDay: Record<string, ApiRegistro[]> = {};
   for (const r of registros) {
-    const key = r.dataHora.slice(0, 10); // "YYYY-MM-DD"
+    const key = dataBrasiliaKey(r.dataHora);
     if (!byDay[key]) byDay[key] = [];
     byDay[key].push(r);
   }
@@ -123,6 +153,8 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
     const isHoje = dt.toDateString() === hoje.toDateString();
     const status: StatusDia = saida ? "OK" : isHoje || dayRegs.length > 0 ? "PENDENTE" : "FALTA";
 
+    const observacoesDia = dayRegs.flatMap((r) => r.observacoes ?? []);
+
     result.push({
       data: dataStr,
       diaSemana,
@@ -132,7 +164,12 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
       saida,
       horasMin: Math.max(0, horasMin),
       jornadaMin: 480,
-      status
+      status,
+      observacoes: observacoesDia.length ? observacoesDia : undefined,
+      entradaEditada: !!entradaR?.ajustado,
+      inicioIntervaloEditado: !!iniAlmR?.ajustado,
+      fimIntervaloEditado: !!fimAlmR?.ajustado,
+      saidaEditada: !!saidaR?.ajustado
     });
   }
 
@@ -181,9 +218,173 @@ function SaldoCell({
   );
 }
 
-function HoraCell({ hora }: { hora: string | null }) {
+function HoraCell({ hora, editado }: { hora: string | null; editado?: boolean }) {
   if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
-  return <span style={{ fontFamily: "var(--font-mono)" }}>{hora}</span>;
+  return (
+    <span
+      style={{
+        fontFamily: "var(--font-mono)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3
+      }}
+    >
+      {hora}
+      {editado && (
+        <span
+          title="Horário ajustado conforme solicitação"
+          style={{ display: "inline-flex", lineHeight: 0 }}
+        >
+          <Edit2Icon size={11} style={{ color: "#1e40af", flexShrink: 0, opacity: 0.85 }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function fmtObsData(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  } catch {
+    return iso;
+  }
+}
+
+/** Remove referência técnica (#cuid) de textos gravados antes da melhoria. */
+function textoObservacaoLegivel(texto: string): string {
+  return texto.replace(/\s*\(#[a-z0-9]+\)/gi, "").replace(/\s*#[a-z0-9]+\.?/gi, ".");
+}
+
+function ModalObservacoes({
+  dia,
+  observacoes,
+  onClose
+}: {
+  dia: string;
+  observacoes: ObservacaoRegistro[];
+  onClose: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 300,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 480,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+          overflow: "hidden"
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink-900)" }}>
+              Observações do dia
+            </p>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>{dia}</p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 18,
+              color: "var(--ink-500)",
+              lineHeight: 1
+            }}
+            aria-label="Fechar"
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {observacoes.map((o, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "10px 12px",
+                background: "rgba(37,99,235,0.05)",
+                border: "1px solid rgba(37,99,235,0.12)",
+                borderRadius: "var(--radius-md)"
+              }}
+            >
+              <p style={{ margin: 0, fontSize: 13.5, color: "var(--ink-800)", lineHeight: 1.5 }}>
+                {textoObservacaoLegivel(o.texto)}
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--ink-400)" }}>
+                Registrado em {fmtObsData(o.data)}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BotaoObservacoes({
+  observacoes,
+  onClick
+}: {
+  observacoes: ObservacaoRegistro[];
+  onClick: () => void;
+}) {
+  if (!observacoes.length) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Ver observações de ajuste de ponto"
+      aria-label="Ver observações de ajuste de ponto"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 18,
+        height: 18,
+        padding: 0,
+        margin: 0,
+        border: "none",
+        borderRadius: "50%",
+        background: "transparent",
+        color: "var(--ink-400)",
+        cursor: "pointer",
+        flexShrink: 0,
+        verticalAlign: "middle"
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.color = "#1e40af";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-400)";
+      }}
+    >
+      <InfoIcon size={13} />
+    </button>
+  );
 }
 
 function HorasCell({ min, status }: { min: number; status: StatusDia }) {
@@ -204,6 +405,10 @@ export function HistoricoPage() {
   const [ano, setAno] = useState(hoje.getFullYear());
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
   const [loading, setLoading] = useState(true);
+  const [modalObs, setModalObs] = useState<{
+    dia: string;
+    observacoes: ObservacaoRegistro[];
+  } | null>(null);
   const isMesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
 
   const fetchHistorico = useCallback(
@@ -273,6 +478,14 @@ export function HistoricoPage() {
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      {modalObs && (
+        <ModalObservacoes
+          dia={modalObs.dia}
+          observacoes={modalObs.observacoes}
+          onClose={() => setModalObs(null)}
+        />
+      )}
+
       {/* Cabeçalho */}
       <div style={{ marginBottom: isMobile ? 16 : 24 }}>
         {!isMobile && (
@@ -393,7 +606,7 @@ export function HistoricoPage() {
       ) : (
         <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table className="table-cfo" style={{ minWidth: 700 }}>
+            <table className="table-cfo" style={{ minWidth: 700, tableLayout: "auto" }}>
               <thead>
                 <tr>
                   {[
@@ -407,7 +620,16 @@ export function HistoricoPage() {
                     "Saldo",
                     "Status"
                   ].map((h) => (
-                    <th key={h}>{h}</th>
+                    <th
+                      key={h}
+                      style={
+                        h === "Status"
+                          ? { width: "1%", whiteSpace: "nowrap", paddingLeft: 10, paddingRight: 10 }
+                          : undefined
+                      }
+                    >
+                      {h}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -434,16 +656,16 @@ export function HistoricoPage() {
                       </td>
                       <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
                       <td>
-                        <HoraCell hora={r.entrada} />
+                        <HoraCell hora={r.entrada} editado={r.entradaEditada} />
                       </td>
                       <td>
-                        <HoraCell hora={r.inicioIntervalo} />
+                        <HoraCell hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
                       </td>
                       <td>
-                        <HoraCell hora={r.fimIntervalo} />
+                        <HoraCell hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
                       </td>
                       <td>
-                        <HoraCell hora={r.saida} />
+                        <HoraCell hora={r.saida} editado={r.saidaEditada} />
                       </td>
                       <td>
                         <HorasCell min={r.horasMin} status={r.status} />
@@ -455,8 +677,26 @@ export function HistoricoPage() {
                           status={r.status}
                         />
                       </td>
-                      <td>
-                        <StatusPill status={r.status} />
+                      <td
+                        style={{
+                          width: "1%",
+                          whiteSpace: "nowrap",
+                          paddingLeft: 10,
+                          paddingRight: 10
+                        }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <StatusPill status={r.status} />
+                          <BotaoObservacoes
+                            observacoes={r.observacoes ?? []}
+                            onClick={() =>
+                              setModalObs({
+                                dia: `${r.diaSemana}, ${r.data}`,
+                                observacoes: r.observacoes ?? []
+                              })
+                            }
+                          />
+                        </span>
                       </td>
                     </tr>
                   );
@@ -504,7 +744,7 @@ export function HistoricoPage() {
                         status="OK"
                       />
                     </td>
-                    <td />
+                    <td style={{ width: "1%", paddingLeft: 10, paddingRight: 10 }} />
                   </tr>
                 </tfoot>
               )}

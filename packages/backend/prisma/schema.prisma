@@ -14,14 +14,16 @@ enum PublicationStatus {
 }
 
 model User {
-  id          String        @id @default(cuid())
-  email       String        @unique
-  name        String
-  externalId  String?       @unique
-  memberships Membership[]
-  chatSession ChatSession[]
-  funcionario Funcionario?
-  createdAt   DateTime      @default(now())
+  id                String        @id @default(cuid())
+  email             String        @unique
+  emailReal         String?       @unique // e-mail organizacional real (ex: @cfo.org.br), definido pelo RH/admin
+  name              String
+  externalId        String?       @unique
+  memberships       Membership[]
+  chatSession       ChatSession[]
+  funcionario       Funcionario?
+  gerenciasGeridas  Gerencia[]    @relation("GerenciaResponsavel")
+  createdAt         DateTime      @default(now())
 }
 
 model Role {
@@ -221,9 +223,12 @@ enum TipoAfastamento {
 }
 
 enum StatusSolicitacao {
-  PENDENTE
-  APROVADA
-  REJEITADA
+  PENDENTE         // aguardando aprovação do gestor
+  AGUARDANDO_RH    // gestor aprovou, aguardando aprovação do RH
+  APROVADA         // RH aprovou e mudança foi aplicada
+  REJEITADA        // legado: rejeitada sem distinção de etapa
+  REJEITADA_GESTOR // gestor rejeitou
+  REJEITADA_RH     // RH rejeitou
 }
 
 enum ModoRegistro {
@@ -276,6 +281,9 @@ model ConfiguracaoSistema {
   // Jornada padrão
   horaEntrada            String            @default("08:00")
   horaSaida              String            @default("17:00")
+  // Janela permitida para bater ponto / solicitar ajuste (horário de Brasília)
+  pontoHorarioMinimo     String            @default("06:00")
+  pontoHorarioMaximo     String            @default("23:59")
   jornadaDiariaMin       Int               @default(480)
   jornadaSemanalMin      Int               @default(2400)
   diasUteis              String            @default("[false,true,true,true,true,true,false]")
@@ -304,14 +312,16 @@ model ConfiguracaoSistema {
 }
 
 model Gerencia {
-  id           String        @id @default(cuid())
-  nome         String
-  sigla        String        @unique
-  responsavel  String?
-  descricao    String?
-  ativa        Boolean       @default(true)
-  funcionarios Funcionario[]
-  createdAt    DateTime      @default(now())
+  id                String        @id @default(cuid())
+  nome              String
+  sigla             String        @unique
+  responsavel       String?
+  responsavelUserId String?       // FK → User.id (gestor responsável)
+  responsavelUser   User?         @relation("GerenciaResponsavel", fields: [responsavelUserId], references: [id], onDelete: SetNull)
+  descricao         String?
+  ativa             Boolean       @default(true)
+  funcionarios      Funcionario[]
+  createdAt         DateTime      @default(now())
 }
 
 model ProvedorInternet {
@@ -359,22 +369,25 @@ model EnderecoResidencial {
 }
 
 model Funcionario {
-  id                  String             @id @default(cuid())
-  userId              String             @unique
-  matricula           String             @unique
-  cargo               String
-  departamento        String?
-  gerenciaId          String?
-  categoria           CategoriaFuncional @default(CONCURSADO)
-  ativo               Boolean            @default(true)
-  jornadaHorasDia     Int                @default(8)
-  user                User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  gerencia            Gerencia?          @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
-  registros           RegistroPonto[]
-  periodos            PeriodoPonto[]
-  afastamentos        Afastamento[]
-  solicitacoes        Solicitacao[]
-  jornadas            JornadaTrabalho[]
+  id                       String             @id @default(cuid())
+  userId                   String             @unique
+  matricula                String?            @unique // nullable: usuários AD sincronizados podem não ter matrícula
+  cargo                    String             @default("")
+  departamento             String?
+  gerenciaId               String?
+  categoria                CategoriaFuncional @default(CONCURSADO)
+  ativo                    Boolean            @default(true)
+  jornadaHorasDia          Int                @default(8)
+  extensionsId             String?            @unique // id na API externa de ramais
+  section                  String?            // seção na API externa (ex: "TI - Desenvolvimento")
+  isManager                Boolean            @default(false) // Manager: true na API externa
+  user                     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gerencia                 Gerencia?          @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
+  registros                RegistroPonto[]
+  periodos                 PeriodoPonto[]
+  afastamentos             Afastamento[]
+  solicitacoes             Solicitacao[]
+  jornadas                 JornadaTrabalho[]
   enderecoResidencial      EnderecoResidencial?
   fotoPerfilUrl            String?
   solicitarAtualizacaoFoto Boolean            @default(false)
@@ -406,6 +419,7 @@ model RegistroPonto {
   fotoUrl       String?
   dentroPerimetro Boolean    @default(false)
   observacao    String?
+  observacoes   Json         @default("[]")
   ajustado      Boolean      @default(false)
   ajustadoPor   String?
   funcionario   Funcionario  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
@@ -447,11 +461,53 @@ model Solicitacao {
   funcionarioId   String
   tipo            String            // CORRECAO_PONTO | ATESTADO | FERIAS | LICENCA | ABONO
   dataReferencia  DateTime
+  dataInicio      DateTime?         // data inicial (ATESTADO, FERIAS, LICENCA, ABONO)
+  dataFim         DateTime?         // data final do intervalo
   descricao       String
+  metadados       Json?             // dados específicos por tipo (vide plano)
   status          StatusSolicitacao @default(PENDENTE)
-  observacaoGestor String?
-  resolvidoPor    String?
-  resolvidoEm     DateTime?
+  // Etapa 1 — Gestor
+  gestorUserId      String?   // User.id do gestor que resolveu
+  gestorObservacao  String?
+  gestorResolvidoEm DateTime?
+  // Etapa 2 — RH
+  rhUserId          String?   // User.id do analista de RH que resolveu
+  rhObservacao      String?
+  rhResolvidoEm     DateTime?
+  // Campos legados mantidos para compatibilidade
+  observacaoGestor  String?
+  resolvidoPor      String?   // Keycloak sub (aponta para RH no novo fluxo)
+  resolvidoEm       DateTime?
   funcionario     Funcionario       @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   createdAt       DateTime          @default(now())
+}
+
+model ConfiguracaoSolicitacoes {
+  id                          String   @id @default("singleton")
+  // Regras de Atestado
+  atestadoDiasLimiteSimples   Int      @default(3)
+  atestadoDiasLimiteInss      Int      @default(14)
+  atestadoGuiaUrl             String?
+  atestadoMensagemOriginais   String   @default("Os originais devem ser entregues ao setor de RH.")
+  // Regras de Férias
+  feriasAntecedenciaMinDias   Int      @default(30)
+  feriasMinimoGrandePeriodo   Int      @default(14)
+  feriasMinimoOutrosPeriodos  Int      @default(5)
+  feriasMaxPeriodos           Int      @default(3)
+  feriasMaxDiasVenda          Int      @default(10)
+  feriasVedacaoPreFeriadoDias Int      @default(2)
+  updatedAt                   DateTime @updatedAt
+  createdAt                   DateTime @default(now())
+}
+
+model SyncLog {
+  id        String   @id @default(cuid())
+  source    String   // "extensions"
+  status    String   // "success" | "error"
+  created   Int      @default(0)
+  updated   Int      @default(0)
+  skipped   Int      @default(0)
+  errors    Int      @default(0)
+  details   Json?
+  createdAt DateTime @default(now())
 }
