@@ -1,4 +1,12 @@
 import { dataBrasiliaISO, horarioDeDataBrasilia, hojeBrasiliaISO } from "./horario-brasilia";
+import {
+  JornadaHistoricoContext,
+  jornadaEsperadaMin,
+  resolverJornadaHistoricoContexto
+} from "./jornada-historico";
+
+export type { JornadaHistoricoContext };
+export { resolverJornadaHistoricoContexto };
 
 export interface RegistroHistorico {
   tipo: string;
@@ -151,13 +159,12 @@ export function montarRelatorioQuadro(
   afastamentos: AfastamentoHistorico[],
   mes: number,
   ano: number,
-  jornadaHorasDia: number,
+  jornada: JornadaHistoricoContext,
   feriados: FeriadoHistorico[] = [],
   sabadoPct = 100,
   domingoPct = 200,
   feriadoPct = 200
 ): RelatorioQuadroMensal {
-  const jornadaMin = jornadaHorasDia * 60;
   const hojeIso = hojeBrasiliaISO();
   const [hY, hM, hD] = hojeIso.split("-").map(Number);
   const hoje = new Date(hY, hM - 1, hD);
@@ -309,6 +316,7 @@ export function montarRelatorioQuadro(
           statusInterno: "AFASTAMENTO"
         });
       } else {
+        const jornadaMin = jornadaEsperadaMin(iso, jornada);
         dias.push({
           iso,
           entrada: null,
@@ -365,6 +373,7 @@ export function montarRelatorioQuadro(
     // Feriado com trabalho: jornadaMin = 0, saldo = horas * feriadoPct%
     let saldoMin: number | null;
     let multiplicadorPct: number | undefined;
+    const jornadaMin = jornadaEsperadaMin(iso, jornada);
     if (nomeFeriado) {
       saldoMin = Math.round((horasMin * feriadoPct) / 100);
       multiplicadorPct = feriadoPct;

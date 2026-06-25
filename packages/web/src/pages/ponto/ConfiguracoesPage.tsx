@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { MapModal } from "../../components/MapModal";
 import {
   SettingsIcon,
@@ -17,6 +17,7 @@ import {
   XIcon
 } from "../../components/icons";
 import { api } from "../../hooks/useApi";
+import { useAuth } from "../../auth/AuthContext";
 
 /* ─── Tipos ─── */
 interface Provedor {
@@ -136,13 +137,51 @@ function Toggle({
   value,
   onChange,
   label,
-  desc
+  desc,
+  disabled
 }: {
   value: boolean;
   onChange: (v: boolean) => void;
-  label: string;
+  label?: string;
   desc?: string;
+  disabled?: boolean;
 }) {
+  const btn = (
+    <button
+      type="button"
+      onClick={() => !disabled && onChange(!value)}
+      disabled={disabled}
+      style={{
+        width: 44,
+        height: 24,
+        borderRadius: 12,
+        border: "none",
+        cursor: disabled ? "default" : "pointer",
+        flexShrink: 0,
+        background: value ? "var(--burgundy-600)" : "rgba(122,30,38,0.15)",
+        position: "relative",
+        transition: "background 200ms",
+        opacity: disabled ? 0.65 : 1
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: 3,
+          left: value ? 22 : 3,
+          width: 18,
+          height: 18,
+          borderRadius: "50%",
+          background: "#fff",
+          transition: "left 200ms",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.25)"
+        }}
+      />
+    </button>
+  );
+
+  if (!label) return btn;
+
   return (
     <div
       style={{
@@ -158,34 +197,7 @@ function Toggle({
         <p style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>{label}</p>
         {desc && <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>{desc}</p>}
       </div>
-      <button
-        onClick={() => onChange(!value)}
-        style={{
-          width: 44,
-          height: 24,
-          borderRadius: 12,
-          border: "none",
-          cursor: "pointer",
-          flexShrink: 0,
-          background: value ? "var(--burgundy-600)" : "rgba(122,30,38,0.15)",
-          position: "relative",
-          transition: "background 200ms"
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 3,
-            left: value ? 22 : 3,
-            width: 18,
-            height: 18,
-            borderRadius: "50%",
-            background: "#fff",
-            transition: "left 200ms",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.25)"
-          }}
-        />
-      </button>
+      {btn}
     </div>
   );
 }
@@ -286,7 +298,15 @@ function Secao({
   );
 }
 
-type Tab = "institucional" | "rede" | "modos" | "areas" | "periodos" | "solicitacoes" | "feriados";
+type Tab =
+  | "institucional"
+  | "rede"
+  | "modos"
+  | "areas"
+  | "periodos"
+  | "solicitacoes"
+  | "feriados"
+  | "notificacoes";
 
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
@@ -427,8 +447,1031 @@ function calcJornadaEfetiva(
   return { diaria, semanal };
 }
 
+/* ═══════════════════════════════════════════════
+   TAB: NOTIFICAÇÕES & E-MAIL
+═══════════════════════════════════════════════ */
+
+const PROVEDORES = [
+  {
+    id: "LOCAWEB",
+    label: "Locaweb",
+    host: "email-ssl.com.br",
+    porta: 587,
+    seguranca: "STARTTLS" as const
+  },
+  {
+    id: "MICROSOFT",
+    label: "Microsoft 365 / Office 365",
+    host: "smtp.office365.com",
+    porta: 587,
+    seguranca: "STARTTLS" as const
+  }
+];
+
+const EVENTOS_NOTIFICACAO = [
+  {
+    id: "ASSINAR_QUADRO",
+    titulo: "Assinar Quadro de Pontos",
+    descricao:
+      "Notifica o funcionário para assinar o quadro de pontos após o fechamento do mês. " +
+      "Disparado no 1º dia de cada mês, junto com a criação das assinaturas.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — 1º dia de cada mês"
+  },
+  {
+    id: "ASSINAR_QUADRO_GESTOR",
+    titulo: "Quadro Aguardando Assinatura do Gestor",
+    descricao:
+      "Notifica o gestor quando um funcionário da sua equipe assinou o quadro de pontos " +
+      "e está aguardando aprovação.",
+    destinatario: "Gestor",
+    gatilho: "Automático — ao funcionário assinar o quadro"
+  },
+  {
+    id: "FERIAS_OBRIGATORIO",
+    titulo: "Agendar Férias — Período Obrigatório",
+    descricao:
+      "Notifica o funcionário quando está no período obrigatório de agendamento de férias " +
+      "(11º mês do ciclo anual; 5º mês para estagiários). Verificação mensal.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — mensal, para funcionários no período obrigatório"
+  },
+  {
+    id: "SOLICITACAO_APROVADA",
+    titulo: "Solicitação Aprovada",
+    descricao:
+      "Notifica o funcionário quando uma solicitação (férias, atestado, licença etc.) " +
+      "foi aprovada pelo RH.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao aprovar solicitação"
+  },
+  {
+    id: "SOLICITACAO_RECUSADA",
+    titulo: "Solicitação Recusada",
+    descricao:
+      "Notifica o funcionário quando uma solicitação foi recusada pelo RH, " +
+      "incluindo a justificativa informada.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao recusar solicitação"
+  },
+  {
+    id: "BANCO_HORAS_VENCIMENTO",
+    titulo: "Banco de Horas — Alerta de Vencimento",
+    descricao:
+      "Notifica o funcionário quando o saldo de banco de horas está próximo do vencimento, " +
+      "conforme a data de marco configurada.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — mensal"
+  },
+  {
+    id: "ASSINATURA_CONCLUIDA",
+    titulo: "Quadro Totalmente Assinado",
+    descricao:
+      "Notifica o funcionário quando o gestor assinou o quadro de pontos e o processo " +
+      "de assinatura foi concluído.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao gestor concluir a assinatura"
+  }
+];
+
+interface EmailCfg {
+  provedor: "LOCAWEB" | "MICROSOFT";
+  host: string;
+  porta: number;
+  seguranca: "NONE" | "SSL" | "STARTTLS";
+  usuario: string;
+  nomeRemetente: string;
+  emailRemetente: string;
+  ativo: boolean;
+  senhaDefinida?: boolean;
+}
+
+interface NotifCfg {
+  id: string;
+  titulo: string;
+  descricao: string;
+  destinatario: string;
+  gatilho: string;
+  ativoEmail: boolean;
+  ativoSistema: boolean;
+}
+
+interface FuncResult {
+  id: string;
+  name: string;
+  email: string;
+  matricula: string;
+  cargo: string;
+}
+
+function TabNotificacoes({ isSuperAdmin }: { isSuperAdmin: boolean }) {
+  /* ── state: email config ── */
+  const [emailCfg, setEmailCfg] = useState<EmailCfg>({
+    provedor: "LOCAWEB",
+    host: PROVEDORES[0].host,
+    porta: PROVEDORES[0].porta,
+    seguranca: "STARTTLS",
+    usuario: "",
+    nomeRemetente: "",
+    emailRemetente: "",
+    ativo: false
+  });
+  const [senha, setSenha] = useState("");
+  const [emailCfgLoading, setEmailCfgLoading] = useState(true);
+  const [emailCfgSaving, setEmailCfgSaving] = useState(false);
+  const [emailCfgMsg, setEmailCfgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [emailTeste, setEmailTeste] = useState("");
+  const [testando, setTestando] = useState(false);
+
+  /* ── state: notificação por evento ── */
+  const [notifCfgs, setNotifCfgs] = useState<NotifCfg[]>([]);
+  const [notifLoading, setNotifLoading] = useState(true);
+
+  /* ── state: envio manual ── */
+  const [manualGrupo, setManualGrupo] = useState<"todos" | "gestores" | "funcionarios" | "custom">(
+    "funcionarios"
+  );
+  const [manualTipoEnvio, setManualTipoEnvio] = useState<"email" | "sistema" | "ambos">("email");
+  const [funcSearch, setFuncSearch] = useState("");
+  const [funcResultados, setFuncResultados] = useState<FuncResult[]>([]);
+  const [funcBuscando, setFuncBuscando] = useState(false);
+  const [funcSelecionados, setFuncSelecionados] = useState<FuncResult[]>([]);
+  const [funcDropdown, setFuncDropdown] = useState(false);
+  const [manualAssunto, setManualAssunto] = useState("");
+  const [manualCorpo, setManualCorpo] = useState("");
+  const [manualEnviando, setManualEnviando] = useState(false);
+  const [manualResultado, setManualResultado] = useState<{
+    enviados: number;
+    tipo: string;
+    erros: string[];
+  } | null>(null);
+
+  const styleInput: React.CSSProperties = {
+    width: "100%",
+    padding: "9px 11px",
+    border: "1px solid rgba(122,30,38,0.14)",
+    borderRadius: "var(--radius-md)",
+    fontSize: 13,
+    boxSizing: "border-box",
+    fontFamily: "var(--font-body)"
+  };
+  const styleLabel: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--ink-700)",
+    display: "block",
+    marginBottom: 4
+  };
+
+  /* ── carregar email config ── */
+  useEffect(() => {
+    if (!isSuperAdmin) {
+      setEmailCfgLoading(false);
+      return;
+    }
+    api
+      .get<EmailCfg>("/notificacao/email-config")
+      .then((cfg) => {
+        if (cfg) setEmailCfg(cfg);
+      })
+      .catch(() => {})
+      .finally(() => setEmailCfgLoading(false));
+  }, [isSuperAdmin]);
+
+  /* ── carregar notif configs ── */
+  useEffect(() => {
+    api
+      .get<NotifCfg[]>("/notificacao/config")
+      .then((data) => {
+        if (Array.isArray(data) && data.length) setNotifCfgs(data);
+        else
+          setNotifCfgs(
+            EVENTOS_NOTIFICACAO.map((e) => ({ ...e, ativoEmail: false, ativoSistema: false }))
+          );
+      })
+      .catch(() =>
+        setNotifCfgs(
+          EVENTOS_NOTIFICACAO.map((e) => ({ ...e, ativoEmail: false, ativoSistema: false }))
+        )
+      )
+      .finally(() => setNotifLoading(false));
+  }, []);
+
+  function updEmailCfg<K extends keyof EmailCfg>(key: K, val: EmailCfg[K]) {
+    setEmailCfg((prev) => ({ ...prev, [key]: val }));
+    setEmailCfgMsg(null);
+  }
+
+  function onProvedorChange(id: "LOCAWEB" | "MICROSOFT") {
+    const p = PROVEDORES.find((x) => x.id === id);
+    if (p) {
+      setEmailCfg((prev) => ({
+        ...prev,
+        provedor: id,
+        host: p.host,
+        porta: p.porta,
+        seguranca: p.seguranca
+      }));
+    }
+  }
+
+  async function salvarEmailCfg() {
+    setEmailCfgSaving(true);
+    setEmailCfgMsg(null);
+    try {
+      await api.put("/notificacao/email-config", { ...emailCfg, senha });
+      setEmailCfg((prev) => ({ ...prev, senhaDefinida: prev.senhaDefinida || !!senha.trim() }));
+      setEmailCfgMsg({ ok: true, text: "Configuração salva com sucesso." });
+      setSenha("");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setEmailCfgMsg({ ok: false, text: msg });
+    } finally {
+      setEmailCfgSaving(false);
+    }
+  }
+
+  async function testarConexao() {
+    if (!emailTeste) return;
+    setTestando(true);
+    setEmailCfgMsg(null);
+    try {
+      await api.post("/notificacao/email-config/testar", {
+        ...emailCfg,
+        senha,
+        emailTeste
+      });
+      setEmailCfgMsg({ ok: true, text: `E-mail de teste enviado para ${emailTeste}.` });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setEmailCfgMsg({ ok: false, text: msg });
+    } finally {
+      setTestando(false);
+    }
+  }
+
+  const toggleNotif = useCallback(
+    async (id: string, campo: "ativoEmail" | "ativoSistema", valor: boolean) => {
+      let anterior: NotifCfg | undefined;
+      setNotifCfgs((prev) => {
+        anterior = prev.find((c) => c.id === id);
+        return prev.map((c) => (c.id === id ? { ...c, [campo]: valor } : c));
+      });
+      try {
+        await api.put(`/notificacao/config/${id}`, {
+          ativoEmail: campo === "ativoEmail" ? valor : (anterior?.ativoEmail ?? false),
+          ativoSistema: campo === "ativoSistema" ? valor : (anterior?.ativoSistema ?? false)
+        });
+      } catch {
+        setNotifCfgs((prev) => prev.map((c) => (c.id === id ? { ...c, [campo]: !valor } : c)));
+      }
+    },
+    []
+  );
+
+  /* ── busca debounced de funcionários ── */
+  useEffect(() => {
+    if (!funcSearch.trim() || manualGrupo !== "custom") {
+      setFuncResultados([]);
+      setFuncBuscando(false);
+      return;
+    }
+    setFuncBuscando(true);
+    const timer = setTimeout(async () => {
+      try {
+        type ApiFuncRaw = {
+          id: string;
+          user: { name: string; email: string; emailReal?: string | null };
+          matricula: string;
+          cargo: string;
+        };
+        const data = await api.get<ApiFuncRaw[]>(
+          `/auditoria/funcionarios?busca=${encodeURIComponent(funcSearch.trim())}&ativo=true`
+        );
+        const selecionadosIds = new Set(funcSelecionados.map((s) => s.id));
+        setFuncResultados(
+          data
+            .filter((f) => (f.user.emailReal || f.user.email) && !selecionadosIds.has(f.id))
+            .slice(0, 8)
+            .map((f) => ({
+              id: f.id,
+              name: f.user.name,
+              email: f.user.emailReal || f.user.email,
+              matricula: f.matricula,
+              cargo: f.cargo
+            }))
+        );
+      } catch {
+        setFuncResultados([]);
+      } finally {
+        setFuncBuscando(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [funcSearch, manualGrupo, funcSelecionados]);
+
+  function selecionarFunc(f: FuncResult) {
+    setFuncSelecionados((prev) => (prev.some((s) => s.id === f.id) ? prev : [...prev, f]));
+    setFuncSearch("");
+    setFuncResultados([]);
+  }
+
+  function removerFunc(id: string) {
+    setFuncSelecionados((prev) => prev.filter((f) => f.id !== id));
+  }
+
+  async function enviarManual() {
+    setManualEnviando(true);
+    setManualResultado(null);
+    try {
+      let destinatarios: string[] = [];
+      if (manualGrupo === "custom") {
+        destinatarios = funcSelecionados.map((f) => f.email).filter(Boolean);
+        if (!destinatarios.length) {
+          setManualResultado({
+            enviados: 0,
+            tipo: manualTipoEnvio,
+            erros: ["Selecione ao menos um funcionário."]
+          });
+          return;
+        }
+      } else {
+        const lista = await api.get<{ name: string; email: string }[]>(
+          `/notificacao/emails-funcionarios/${manualGrupo}`
+        );
+        destinatarios = lista.map((u) => u.email).filter(Boolean);
+      }
+      const res = await api.post<{ enviados: number; erros: string[] }>("/notificacao/manual", {
+        destinatarios,
+        assunto: manualAssunto,
+        corpo: manualCorpo,
+        tipoEnvio: manualTipoEnvio
+      });
+      setManualResultado({ ...res, tipo: manualTipoEnvio });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setManualResultado({ enviados: 0, tipo: manualTipoEnvio, erros: [msg] });
+    } finally {
+      setManualEnviando(false);
+    }
+  }
+
+  const tagStyle = (color: string): React.CSSProperties => ({
+    display: "inline-block",
+    fontSize: 10,
+    fontWeight: 700,
+    padding: "2px 7px",
+    borderRadius: 20,
+    background: color + "18",
+    color: color,
+    letterSpacing: "0.04em"
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {/* ──── Configuração de E-mail SMTP ──── */}
+      {isSuperAdmin ? (
+        <Secao titulo="Configuração de E-mail SMTP" icon={<SettingsIcon size={18} />}>
+          <div
+            style={{
+              padding: "8px 12px",
+              background: "rgba(37,99,235,0.06)",
+              border: "1px solid rgba(37,99,235,0.20)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 12,
+              color: "#1e40af",
+              marginBottom: 4
+            }}
+          >
+            Restrito a Super Administrador — define o servidor SMTP usado para envio de
+            notificações.
+          </div>
+
+          {emailCfgLoading ? (
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Carregando…</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* Provedor */}
+              <div>
+                <label style={styleLabel}>Provedor de E-mail</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {PROVEDORES.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => onProvedorChange(p.id as "LOCAWEB" | "MICROSOFT")}
+                      style={{
+                        padding: "8px 18px",
+                        borderRadius: "var(--radius-md)",
+                        border: "2px solid",
+                        borderColor:
+                          emailCfg.provedor === p.id
+                            ? "var(--burgundy-600)"
+                            : "rgba(122,30,38,0.15)",
+                        background: emailCfg.provedor === p.id ? "rgba(122,30,38,0.06)" : "#fff",
+                        color:
+                          emailCfg.provedor === p.id ? "var(--burgundy-600)" : "var(--ink-600)",
+                        fontWeight: 600,
+                        fontSize: 13,
+                        cursor: "pointer"
+                      }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+                {emailCfg.provedor === "MICROSOFT" && (
+                  <p
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--ink-500)",
+                      marginTop: 6,
+                      marginBottom: 0
+                    }}
+                  >
+                    Para Microsoft 365, use uma Senha de Aplicativo criada em{" "}
+                    <em>Segurança → Métodos de entrada → Senhas de aplicativo</em> na conta
+                    Microsoft.
+                  </p>
+                )}
+              </div>
+
+              {/* Campos de servidor */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 120px 140px", gap: 12 }}>
+                <div>
+                  <label style={styleLabel}>Servidor SMTP (Host)</label>
+                  <input
+                    style={styleInput}
+                    value={emailCfg.host}
+                    onChange={(e) => updEmailCfg("host", e.target.value)}
+                    placeholder="smtp.exemplo.com.br"
+                  />
+                </div>
+                <div>
+                  <label style={styleLabel}>Porta</label>
+                  <input
+                    style={styleInput}
+                    type="number"
+                    value={emailCfg.porta}
+                    onChange={(e) => updEmailCfg("porta", Number(e.target.value))}
+                  />
+                </div>
+                <div>
+                  <label style={styleLabel}>Segurança</label>
+                  <select
+                    style={{ ...styleInput }}
+                    value={emailCfg.seguranca}
+                    onChange={(e) =>
+                      updEmailCfg("seguranca", e.target.value as EmailCfg["seguranca"])
+                    }
+                  >
+                    <option value="STARTTLS">STARTTLS (recomendado)</option>
+                    <option value="SSL">SSL / TLS</option>
+                    <option value="NONE">Nenhuma</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Autenticação */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={styleLabel}>Usuário / E-mail de autenticação</label>
+                  <input
+                    style={styleInput}
+                    value={emailCfg.usuario}
+                    onChange={(e) => updEmailCfg("usuario", e.target.value)}
+                    placeholder="envio@exemplo.com.br"
+                  />
+                </div>
+                <div>
+                  <label style={styleLabel}>
+                    Senha{" "}
+                    {emailCfg.senhaDefinida && (
+                      <span style={{ fontWeight: 400, color: "var(--ink-400)" }}>
+                        (já definida — deixe em branco para manter)
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    style={styleInput}
+                    type="password"
+                    value={senha}
+                    onChange={(e) => setSenha(e.target.value)}
+                    placeholder={emailCfg.senhaDefinida ? "••••••••" : "Senha do e-mail"}
+                    autoComplete="new-password"
+                  />
+                </div>
+              </div>
+
+              {/* Remetente */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={styleLabel}>Nome do Remetente</label>
+                  <input
+                    style={styleInput}
+                    value={emailCfg.nomeRemetente}
+                    onChange={(e) => updEmailCfg("nomeRemetente", e.target.value)}
+                    placeholder="Ponto Eletrônico CFO"
+                  />
+                </div>
+                <div>
+                  <label style={styleLabel}>E-mail do Remetente</label>
+                  <input
+                    style={styleInput}
+                    type="email"
+                    value={emailCfg.emailRemetente}
+                    onChange={(e) => updEmailCfg("emailRemetente", e.target.value)}
+                    placeholder="noreply@exemplo.com.br"
+                  />
+                </div>
+              </div>
+
+              {/* Toggle ativo */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Toggle value={emailCfg.ativo} onChange={(v) => updEmailCfg("ativo", v)} />
+                <span style={{ fontSize: 13, color: "var(--ink-700)" }}>
+                  {emailCfg.ativo ? "Envio de e-mail ativado" : "Envio de e-mail desativado"}
+                </span>
+              </div>
+
+              {/* Feedback */}
+              {emailCfgMsg && (
+                <p
+                  style={{
+                    fontSize: 12.5,
+                    color: emailCfgMsg.ok ? "var(--green)" : "var(--red)",
+                    margin: 0
+                  }}
+                >
+                  {emailCfgMsg.ok ? "✓ " : "⚠️ "}
+                  {emailCfgMsg.text}
+                </p>
+              )}
+
+              {/* Ações */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => void salvarEmailCfg()}
+                  disabled={emailCfgSaving}
+                >
+                  {emailCfgSaving ? "Salvando…" : "Salvar Configuração"}
+                </button>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    style={{ ...styleInput, width: 220 }}
+                    type="email"
+                    value={emailTeste}
+                    onChange={(e) => setEmailTeste(e.target.value)}
+                    placeholder="seu@email.com (teste)"
+                  />
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void testarConexao()}
+                    disabled={testando || !emailTeste}
+                  >
+                    {testando ? "Testando…" : "Testar Conexão"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </Secao>
+      ) : (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(122,30,38,0.04)",
+            border: "1px solid rgba(122,30,38,0.12)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "var(--ink-500)"
+          }}
+        >
+          A configuração do servidor de e-mail SMTP é restrita ao Super Administrador.
+        </div>
+      )}
+
+      {/* ──── Notificações Automáticas por Evento ──── */}
+      <Secao titulo="Notificações Automáticas" icon={<AlertCircleIcon size={18} />}>
+        <p style={{ fontSize: 12.5, color: "var(--ink-500)", margin: "0 0 12px" }}>
+          Para cada evento abaixo, defina se o sistema deve enviar um <strong>e-mail</strong> e/ou
+          uma <strong>notificação no sistema</strong> de forma automática. O envio de e-mail requer
+          a configuração SMTP ativa acima.
+        </p>
+
+        {notifLoading ? (
+          <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Carregando…</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {/* Cabeçalho */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 110px 110px",
+                gap: 8,
+                padding: "6px 12px",
+                background: "var(--cream-100)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 10.5,
+                fontWeight: 700,
+                color: "var(--ink-500)",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase"
+              }}
+            >
+              <span>Evento</span>
+              <span style={{ textAlign: "center" }}>E-mail</span>
+              <span style={{ textAlign: "center" }}>No Sistema</span>
+            </div>
+
+            {notifCfgs.map((ev) => (
+              <div
+                key={ev.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 110px 110px",
+                  gap: 8,
+                  padding: "12px 12px",
+                  border: "1px solid rgba(122,30,38,0.08)",
+                  borderRadius: "var(--radius-md)",
+                  alignItems: "start"
+                }}
+              >
+                <div>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: "var(--ink-900)",
+                      margin: "0 0 3px"
+                    }}
+                  >
+                    {ev.titulo}
+                  </p>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      margin: "0 0 6px",
+                      lineHeight: 1.5
+                    }}
+                  >
+                    {ev.descricao}
+                  </p>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <span style={tagStyle("#1e40af")}>→ {ev.destinatario}</span>
+                    <span style={tagStyle("#6b7280")}>{ev.gatilho}</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "center", paddingTop: 2 }}>
+                  <Toggle
+                    value={ev.ativoEmail}
+                    onChange={(v) => void toggleNotif(ev.id, "ativoEmail", v)}
+                  />
+                </div>
+                <div style={{ display: "flex", justifyContent: "center", paddingTop: 2 }}>
+                  <Toggle
+                    value={ev.ativoSistema}
+                    onChange={(v) => void toggleNotif(ev.id, "ativoSistema", v)}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Secao>
+
+      {/* ──── Envio Manual ──── */}
+      <Secao titulo="Envio Manual de Notificação" icon={<UsersIcon size={18} />}>
+        <p style={{ fontSize: 12.5, color: "var(--ink-500)", margin: "0 0 14px" }}>
+          Envie uma mensagem personalizada para um grupo de funcionários ou para pessoas
+          específicas. O envio por e-mail requer a configuração SMTP ativa.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Canal de envio */}
+          <div>
+            <label style={styleLabel}>Canal de Envio</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {(
+                [
+                  { id: "email", label: "E-mail", desc: "Envia por SMTP" },
+                  { id: "sistema", label: "Notificação no Sistema", desc: "Notificação interna" },
+                  { id: "ambos", label: "Ambos", desc: "E-mail + Sistema" }
+                ] as const
+              ).map((op) => (
+                <button
+                  key={op.id}
+                  onClick={() => setManualTipoEnvio(op.id)}
+                  style={{
+                    padding: "7px 16px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1.5px solid",
+                    borderColor:
+                      manualTipoEnvio === op.id ? "var(--burgundy-600)" : "rgba(122,30,38,0.15)",
+                    background: manualTipoEnvio === op.id ? "rgba(122,30,38,0.06)" : "#fff",
+                    color: manualTipoEnvio === op.id ? "var(--burgundy-600)" : "var(--ink-600)",
+                    fontWeight: 600,
+                    fontSize: 12.5,
+                    cursor: "pointer",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "flex-start",
+                    gap: 1
+                  }}
+                >
+                  <span>{op.label}</span>
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 400,
+                      color: manualTipoEnvio === op.id ? "var(--burgundy-600)" : "var(--ink-400)"
+                    }}
+                  >
+                    {op.desc}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Destinatários — grupo */}
+          <div>
+            <label style={styleLabel}>Destinatários</label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {(
+                [
+                  { id: "funcionarios", label: "Todos os funcionários" },
+                  { id: "gestores", label: "Todos os gestores" },
+                  { id: "todos", label: "Todos" },
+                  { id: "custom", label: "Funcionários específicos" }
+                ] as const
+              ).map((op) => (
+                <button
+                  key={op.id}
+                  onClick={() => {
+                    setManualGrupo(op.id);
+                    setFuncSearch("");
+                    setFuncResultados([]);
+                    setFuncSelecionados([]);
+                  }}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1.5px solid",
+                    borderColor:
+                      manualGrupo === op.id ? "var(--burgundy-600)" : "rgba(122,30,38,0.15)",
+                    background: manualGrupo === op.id ? "rgba(122,30,38,0.06)" : "#fff",
+                    color: manualGrupo === op.id ? "var(--burgundy-600)" : "var(--ink-600)",
+                    fontWeight: 600,
+                    fontSize: 12,
+                    cursor: "pointer"
+                  }}
+                >
+                  {op.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Busca inteligente de funcionários (modo custom) */}
+            {manualGrupo === "custom" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {/* Chips dos selecionados */}
+                {funcSelecionados.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {funcSelecionados.map((f) => (
+                      <div
+                        key={f.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 5,
+                          padding: "3px 8px 3px 10px",
+                          background: "rgba(122,30,38,0.08)",
+                          border: "1px solid rgba(122,30,38,0.18)",
+                          borderRadius: 20,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: "var(--burgundy-600)"
+                        }}
+                      >
+                        <span>{f.name}</span>
+                        <button
+                          onClick={() => removerFunc(f.id)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "0 1px",
+                            fontSize: 14,
+                            lineHeight: 1,
+                            color: "var(--burgundy-600)",
+                            display: "flex",
+                            alignItems: "center"
+                          }}
+                          title="Remover"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Campo de busca + dropdown */}
+                <div style={{ position: "relative" }}>
+                  <input
+                    style={styleInput}
+                    value={funcSearch}
+                    onChange={(e) => {
+                      setFuncSearch(e.target.value);
+                      setFuncDropdown(true);
+                    }}
+                    onFocus={() => setFuncDropdown(true)}
+                    onBlur={() => setTimeout(() => setFuncDropdown(false), 160)}
+                    placeholder="Buscar por nome, matrícula ou cargo…"
+                    autoComplete="off"
+                  />
+                  {funcBuscando && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        right: 10,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        fontSize: 11,
+                        color: "var(--ink-400)"
+                      }}
+                    >
+                      buscando…
+                    </span>
+                  )}
+
+                  {/* Dropdown de resultados */}
+                  {funcDropdown && funcResultados.length > 0 && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 4px)",
+                        left: 0,
+                        right: 0,
+                        zIndex: 999,
+                        background: "#fff",
+                        border: "1px solid rgba(122,30,38,0.18)",
+                        borderRadius: "var(--radius-md)",
+                        boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
+                        overflow: "hidden"
+                      }}
+                    >
+                      {funcResultados.map((f, idx) => (
+                        <div
+                          key={f.id}
+                          onMouseDown={() => selecionarFunc(f)}
+                          style={{
+                            padding: "9px 12px",
+                            cursor: "pointer",
+                            borderBottom:
+                              idx < funcResultados.length - 1
+                                ? "1px solid rgba(122,30,38,0.06)"
+                                : "none",
+                            background: "#fff",
+                            transition: "background 120ms"
+                          }}
+                          onMouseEnter={(e) => {
+                            (e.currentTarget as HTMLDivElement).style.background =
+                              "rgba(122,30,38,0.04)";
+                          }}
+                          onMouseLeave={(e) => {
+                            (e.currentTarget as HTMLDivElement).style.background = "#fff";
+                          }}
+                        >
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
+                            {f.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 1 }}>
+                            {f.matricula} · {f.cargo} · {f.email}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Nenhum resultado */}
+                  {funcDropdown &&
+                    funcSearch.trim().length >= 2 &&
+                    !funcBuscando &&
+                    funcResultados.length === 0 && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          top: "calc(100% + 4px)",
+                          left: 0,
+                          right: 0,
+                          zIndex: 999,
+                          background: "#fff",
+                          border: "1px solid rgba(122,30,38,0.12)",
+                          borderRadius: "var(--radius-md)",
+                          padding: "10px 14px",
+                          fontSize: 12.5,
+                          color: "var(--ink-400)"
+                        }}
+                      >
+                        Nenhum funcionário ativo encontrado para "{funcSearch}".
+                      </div>
+                    )}
+                </div>
+
+                {funcSelecionados.length === 0 && (
+                  <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: 0 }}>
+                    Digite para buscar e clique no funcionário para adicioná-lo.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Assunto */}
+          <div>
+            <label style={styleLabel}>Assunto</label>
+            <input
+              style={styleInput}
+              value={manualAssunto}
+              onChange={(e) => setManualAssunto(e.target.value)}
+              placeholder="Ex: Lembrete — assine o quadro de pontos de maio/2026"
+            />
+          </div>
+
+          {/* Corpo */}
+          <div>
+            <label style={styleLabel}>Mensagem</label>
+            <textarea
+              style={{ ...styleInput, resize: "vertical" }}
+              rows={6}
+              value={manualCorpo}
+              onChange={(e) => setManualCorpo(e.target.value)}
+              placeholder="Texto da mensagem. Quebras de linha serão preservadas."
+            />
+          </div>
+
+          {/* Resultado */}
+          {manualResultado && (
+            <div
+              style={{
+                padding: "10px 14px",
+                background:
+                  manualResultado.erros.length === 0
+                    ? "rgba(47,125,79,0.06)"
+                    : "rgba(200,57,63,0.06)",
+                border: `1px solid ${manualResultado.erros.length === 0 ? "rgba(47,125,79,0.25)" : "rgba(200,57,63,0.25)"}`,
+                borderRadius: "var(--radius-md)",
+                fontSize: 12.5
+              }}
+            >
+              <p
+                style={{
+                  margin: "0 0 4px",
+                  fontWeight: 700,
+                  color: manualResultado.erros.length === 0 ? "var(--green)" : "var(--red)"
+                }}
+              >
+                {manualResultado.enviados}{" "}
+                {manualResultado.tipo === "email"
+                  ? "e-mail(s) enviado(s)"
+                  : manualResultado.tipo === "sistema"
+                    ? "notificação(ões) enviada(s) no sistema"
+                    : "envio(s) realizado(s) (e-mail + sistema)"}{" "}
+                com sucesso.
+              </p>
+              {manualResultado.erros.map((e, i) => (
+                <p key={i} style={{ margin: "2px 0", color: "var(--red)" }}>
+                  ⚠️ {e}
+                </p>
+              ))}
+            </div>
+          )}
+
+          <button
+            className="btn btn-primary"
+            style={{ alignSelf: "flex-start" }}
+            disabled={
+              manualEnviando ||
+              !manualAssunto ||
+              !manualCorpo ||
+              (manualGrupo === "custom" && funcSelecionados.length === 0)
+            }
+            onClick={() => void enviarManual()}
+          >
+            {manualEnviando ? "Enviando…" : "Enviar Notificação"}
+          </button>
+        </div>
+      </Secao>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════ */
 export function ConfiguracoesPage() {
+  const { user } = useAuth();
   const [tab, setTab] = useState<Tab>("institucional");
   const [config, setConfig] = useState<Config | null>(null);
   const [periodos, setPeriodos] = useState<ConfigPeriodos | null>(null);
@@ -1025,10 +2068,11 @@ export function ConfiguracoesPage() {
     { key: "institucional", label: "Instituição" },
     { key: "rede", label: "Rede & IP" },
     { key: "periodos", label: "Períodos" },
-    { key: "modos", label: "Modos de Registro" },
+    { key: "modos", label: "Registro" },
     { key: "areas", label: "Áreas Especiais" },
     { key: "solicitacoes", label: "Solicitações" },
-    { key: "feriados", label: "Feriados" }
+    { key: "feriados", label: "Feriados" },
+    { key: "notificacoes", label: "Notificações" }
   ];
 
   if (loading) {
@@ -5442,6 +6486,9 @@ export function ConfiguracoesPage() {
           </div>
         </div>
       )}
+
+      {/* ═══════ TAB: NOTIFICAÇÕES ═══════ */}
+      {tab === "notificacoes" && <TabNotificacoes isSuperAdmin={user?.isSuperAdmin ?? false} />}
 
       {/* Modal de mapa */}
       {mapaModal && (

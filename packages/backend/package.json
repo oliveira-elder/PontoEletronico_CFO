@@ -28,13 +28,17 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "jwks-rsa": "^3.1.0",
+    "linebreak": "^1.1.0",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
-    "multer": "^2.2.0",
+    "pdfkit": "^0.12.3",
     "pdfmake": "^0.1.72",
     "reflect-metadata": "^0.2.2",
-    "sharp": "^0.33.5"
+    "sharp": "^0.33.5",
+    "svg-to-pdfkit": "^0.1.8"
   },
   "overrides": {
     "qs": "6.14.0",
@@ -44,6 +48,7 @@
     "@nestjs/cli": "^11.0.23",
     "@types/express": "^5.0.0",
     "@types/multer": "^2.1.0",
+    "@types/nodemailer": "^8.0.1",
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-local": "^1.0.38",
     "prisma": "^5.20.0",

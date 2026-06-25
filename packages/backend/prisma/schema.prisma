@@ -514,6 +514,8 @@ model Funcionario {
   departamento             String?
   gerenciaId               String?
   jornadaPeriodoId         String?
+  jornadaPeriodoDesde      DateTime?          @db.Date
+  jornadaPeriodoAssociadoEm DateTime?
   modoHomeOffice           Boolean            @default(false)
   modoHibridoLocal         Boolean            @default(false)
   categoria                CategoriaFuncional @default(CONCURSADO)
@@ -730,6 +732,31 @@ model SyncLog {
   createdAt DateTime @default(now())
 }
 
+// Configuração SMTP — singleton, acesso restrito a super admin
+model ConfiguracaoEmail {
+  id             String   @id @default("singleton")
+  provedor       String   @default("LOCAWEB")   // "LOCAWEB" | "MICROSOFT"
+  host           String?
+  porta          Int?     @default(587)
+  seguranca      String   @default("STARTTLS")  // "NONE" | "SSL" | "STARTTLS"
+  usuario        String?
+  senha          String?
+  nomeRemetente  String?
+  emailRemetente String?
+  ativo          Boolean  @default(false)
+  atualizadoEm   DateTime @updatedAt
+  criadoEm       DateTime @default(now())
+}
+
+// Configuração de notificação por evento — uma linha por gatilho
+model ConfiguracaoNotificacao {
+  id           String   @id    // ex: "ASSINAR_QUADRO", "FERIAS_OBRIGATORIO"
+  ativoEmail   Boolean  @default(false)
+  ativoSistema Boolean  @default(false)
+  atualizadoEm DateTime @updatedAt
+  criadoEm     DateTime @default(now())
+}
+
 enum TipoRequisicaoRh {
   PERIODICO
   EXAME_MEDICO
@@ -774,4 +801,18 @@ model RequisicaoRhDestinatario {
   createdAt            DateTime                     @default(now())
 
   @@unique([requisicaoId, funcionarioId])
+}
+
+// Notificações individuais por usuário (bell icon / página de notificações)
+model Notificacao {
+  id             String   @id @default(cuid())
+  userExternalId String   // Keycloak sub = User.externalId
+  titulo         String
+  corpo          String?
+  tipo           String?  // event id: "ASSINAR_QUADRO", "FERIAS_OBRIGATORIO" etc.
+  lida           Boolean  @default(false)
+  criadoEm       DateTime @default(now())
+
+  @@index([userExternalId, lida])
+  @@index([userExternalId, criadoEm(sort: Desc)])
 }

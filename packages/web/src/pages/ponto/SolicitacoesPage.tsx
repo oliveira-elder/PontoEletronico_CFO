@@ -1099,6 +1099,8 @@ interface SaldoFerias {
   totalVencido: number;
   obrigatorio: boolean;
   mesesTotal: number;
+  isEstagiario?: boolean;
+  duracaoCicloMeses?: number;
   ciclos: Array<{ numero: number; inicio: string; fim: string }>;
 }
 
@@ -1137,20 +1139,29 @@ function FormFerias({
       .finally(() => setSaldoLoading(false));
   }, []);
 
+  const isEstagiario = saldo?.isEstagiario ?? false;
+
+  // Garante que estagiário não tenha diasVenda > 0
+  useEffect(() => {
+    if (isEstagiario && diasVenda > 0) setDiasVenda(0);
+  }, [isEstagiario, diasVenda]);
+
   const hoje = new Date();
   const minData = new Date(hoje);
   minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
   const minDataStr = minData.toISOString().slice(0, 10);
 
   const totalDiasGozo = periodos.reduce((s, p) => s + p.dias, 0);
-  const totalDiasUtilizados = totalDiasGozo + diasVenda;
+  // Estagiário não pode vender dias
+  const diasVendaEfetivo = isEstagiario ? 0 : diasVenda;
+  const totalDiasUtilizados = totalDiasGozo + diasVendaEfetivo;
   const diasRestantes = (saldo?.diasDisponiveis ?? 0) - totalDiasUtilizados;
-  const maxVenda = Math.min(
-    cfg.feriasMaxDiasVenda,
-    saldo?.diasDisponiveis ?? cfg.feriasMaxDiasVenda
-  );
-  // venda ocupa 1 slot dos feriasMaxPeriodos disponíveis
-  const maxPeriodosGozo = diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
+  const maxVenda = isEstagiario
+    ? 0
+    : Math.min(cfg.feriasMaxDiasVenda, saldo?.diasDisponiveis ?? cfg.feriasMaxDiasVenda);
+  // venda ocupa 1 slot dos feriasMaxPeriodos disponíveis (não se aplica a estagiários)
+  const maxPeriodosGozo =
+    !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
 
   function calcDias(ini: string, fim: string) {
     return diffDias(ini, fim);
@@ -1180,8 +1191,8 @@ function FormFerias({
     const errs: string[] = [];
     const todosPreenchidos = periodos.every((p) => p.dataInicio && p.dataFim);
 
-    // venda excede limite de slots
-    if (diasVenda > 0 && periodos.length > maxPeriodosGozo) {
+    // venda excede limite de slots (não se aplica a estagiários)
+    if (!isEstagiario && diasVenda > 0 && periodos.length > maxPeriodosGozo) {
       errs.push(`Com venda de dias, o máximo é ${maxPeriodosGozo} período(s) de gozo.`);
     }
 
@@ -1207,13 +1218,13 @@ function FormFerias({
       );
     }
 
-    if (diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
+    if (!isEstagiario && diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
 
-    // invariante: gozo + venda = dias disponíveis
+    // invariante: gozo (+ venda para não-estagiários) = dias disponíveis
     if (saldo && todosPreenchidos && diasRestantes !== 0) {
       errs.push(
         diasRestantes > 0
-          ? `Gozo + venda deve igualar os ${saldo.diasDisponiveis} dias disponíveis (faltam ${diasRestantes} dias).`
+          ? `${isEstagiario ? "Gozo" : "Gozo + venda"} deve igualar os ${saldo.diasDisponiveis} dias disponíveis (faltam ${diasRestantes} dias).`
           : `Total excede os ${saldo.diasDisponiveis} dias disponíveis (sobram ${-diasRestantes} dias).`
       );
     }
@@ -1222,6 +1233,7 @@ function FormFerias({
   }, [
     periodos,
     diasVenda,
+    isEstagiario,
     saldo,
     totalDiasUtilizados,
     diasRestantes,
@@ -1257,7 +1269,7 @@ function FormFerias({
           dataFim: p.dataFim + "T23:59:59.000Z",
           dias: p.dias
         })),
-        diasVendidos: diasVenda,
+        diasVendidos: diasVendaEfetivo,
         totalDiasGozo: totalDiasGozo,
         totalDias: totalDiasUtilizados,
         diasDisponiveis: diasDisponiveis
@@ -1295,6 +1307,11 @@ function FormFerias({
             borderRadius: "var(--radius-md)"
           }}
         >
+          {saldo.isEstagiario && (
+            <p style={{ fontSize: 11.5, fontWeight: 700, color: "#1e40af", margin: "0 0 6px" }}>
+              Estagiário — ciclo de 6 meses · 15 dias por ciclo · sem acúmulo · sem venda de dias
+            </p>
+          )}
           {saldo.obrigatorio && (
             <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--red)", margin: "0 0 6px" }}>
               ⚠️ Período de gozo obrigatório — tire suas férias antes do fim do ciclo!
@@ -1308,7 +1325,9 @@ function FormFerias({
                 saldo.diasDisponiveis > 0 ? "var(--green)" : "var(--ink-500)"
               ],
               ["Já gozados", String(saldo.diasGozo), "var(--ink-700)"],
-              ["Já vendidos", String(saldo.diasVendidos), "var(--ink-700)"],
+              ...(!saldo.isEstagiario
+                ? [["Já vendidos", String(saldo.diasVendidos), "var(--ink-700)"]]
+                : []),
               ["Ciclos vencidos", String(saldo.ciclosVencidos), "var(--ink-700)"]
             ].map(([l, v, c]) => (
               <div key={l}>
@@ -1377,34 +1396,48 @@ function FormFerias({
           lineHeight: 1.6
         }}
       >
-        <strong>Regras:</strong> até {cfg.feriasMaxPeriodos} períodos de gozo · todos os períodos
-        mín. {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
-        {cfg.feriasMinimoGrandePeriodo} dias · venda equivale a 1 período (máx.{" "}
-        {cfg.feriasMaxPeriodos - 1} períodos de gozo com venda) · venda máx.{" "}
-        {cfg.feriasMaxDiasVenda} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias} dias · na
-        primeira solicitação informe todos os períodos · gozo + venda deve igualar os dias
-        disponíveis · alterações permitidas com 30 dias de antecedência por período.
-      </div>
-
-      {/* Venda de dias */}
-      <div>
-        <label style={labelBase}>Dias a vender (abono pecuniário) — máx. {maxVenda}</label>
-        <input
-          type="number"
-          style={{ ...input, maxWidth: 120 }}
-          min={0}
-          max={maxVenda}
-          value={diasVenda}
-          onChange={(e) =>
-            setDiasVenda(Math.min(maxVenda, Math.max(0, parseInt(e.target.value) || 0)))
-          }
-        />
-        {diasVenda > 0 && (
-          <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
-            {diasVenda} dia(s) serão convertidos em pagamento.
-          </p>
+        {isEstagiario ? (
+          <>
+            <strong>Regras (estagiário):</strong> ciclo de 6 meses · 15 dias de gozo por ciclo · sem
+            acúmulo de ciclos · sem venda de dias · todos os períodos mín.{" "}
+            {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
+            {cfg.feriasMinimoGrandePeriodo} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias}{" "}
+            dias · agendar até o 5º mês do ciclo.
+          </>
+        ) : (
+          <>
+            <strong>Regras:</strong> até {cfg.feriasMaxPeriodos} períodos de gozo · todos os
+            períodos mín. {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
+            {cfg.feriasMinimoGrandePeriodo} dias · venda equivale a 1 período (máx.{" "}
+            {cfg.feriasMaxPeriodos - 1} períodos de gozo com venda) · venda máx.{" "}
+            {cfg.feriasMaxDiasVenda} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias} dias ·
+            na primeira solicitação informe todos os períodos · gozo + venda deve igualar os dias
+            disponíveis · alterações permitidas com 30 dias de antecedência por período.
+          </>
         )}
       </div>
+
+      {/* Venda de dias — oculto para estagiários */}
+      {!isEstagiario && (
+        <div>
+          <label style={labelBase}>Dias a vender (abono pecuniário) — máx. {maxVenda}</label>
+          <input
+            type="number"
+            style={{ ...input, maxWidth: 120 }}
+            min={0}
+            max={maxVenda}
+            value={diasVenda}
+            onChange={(e) =>
+              setDiasVenda(Math.min(maxVenda, Math.max(0, parseInt(e.target.value) || 0)))
+            }
+          />
+          {diasVenda > 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
+              {diasVenda} dia(s) serão convertidos em pagamento.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Períodos */}
       {periodos.map((p, idx) => (
@@ -1527,7 +1560,7 @@ function FormFerias({
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
             {[
               ["Gozo", totalDiasGozo],
-              ["Venda", diasVenda],
+              ...(!isEstagiario ? [["Venda", diasVendaEfetivo]] : []),
               ["Total", totalDiasUtilizados],
               ["Restam", diasRestantes]
             ].map(([l, v]) => (

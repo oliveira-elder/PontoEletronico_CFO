@@ -10,6 +10,11 @@ import {
   intervaloDiaBrasilia
 } from "../../utils/horario-brasilia";
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
+import {
+  jornadaEsperadaMin as jornadaMinParaDia,
+  resolverJornadaHistoricoContexto
+} from "../../utils/jornada-historico";
+import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
 
@@ -514,10 +519,27 @@ export class AuditoriaService {
     };
     if (filtros.tipo) where.tipo = filtros.tipo;
 
-    return this.prisma.registroPonto.findMany({
-      where,
-      orderBy: { dataHora: "asc" }
-    });
+    const [registros, func] = await Promise.all([
+      this.prisma.registroPonto.findMany({
+        where,
+        orderBy: { dataHora: "asc" }
+      }),
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: {
+          jornadaPeriodoId: true,
+          jornadaHorasDia: true,
+          jornadaPeriodoDesde: true,
+          jornadaPeriodoAssociadoEm: true,
+          jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+        }
+      })
+    ]);
+
+    return {
+      registros,
+      jornada: resolverJornadaHistoricoContexto(func)
+    };
   }
 
   /* ─── Solicitações ─── */
@@ -1561,10 +1583,21 @@ export class AuditoriaService {
    *  e contabilizando feriados/afastamentos como saldo neutro (0). */
   private async calcularBancoHoras(
     funcionarioId: string,
-    jornadaHorasDia: number,
     cicloInicio: string | null,
     hojeIso: string
   ) {
+    const funcJornada = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        jornadaPeriodoId: true,
+        jornadaHorasDia: true,
+        jornadaPeriodoDesde: true,
+        jornadaPeriodoAssociadoEm: true,
+        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+      }
+    });
+    const jornadaCtx = resolverJornadaHistoricoContexto(funcJornada);
+
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
       select: { diasUteis: true }
@@ -1619,7 +1652,6 @@ export class AuditoriaService {
     const domingoPct = cfgMult?.bancoHorasDomingoPct ?? 200;
     const feriadoPct = cfgMult?.bancoHorasFeriadoPct ?? 200;
 
-    const jornadaEsperadaMinutos = jornadaHorasDia * 60;
     const dias: {
       data: string;
       horasTrabalhadasMinutos: number;
@@ -1665,8 +1697,9 @@ export class AuditoriaService {
           jornadaDia = 0;
           obs = `Feriado: ${nomeFeriado}`;
         } else {
-          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaEsperadaMinutos;
-          jornadaDia = jornadaEsperadaMinutos;
+          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
+          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaDiaMin;
+          jornadaDia = jornadaDiaMin;
           obs = undefined;
         }
 
@@ -1745,12 +1778,7 @@ export class AuditoriaService {
 
     let itens = await Promise.all(
       funcionarios.map(async (f) => {
-        const { saldoAtualMinutos } = await this.calcularBancoHoras(
-          f.id,
-          f.jornadaHorasDia,
-          cicloInicio,
-          hojeIso
-        );
+        const { saldoAtualMinutos } = await this.calcularBancoHoras(f.id, cicloInicio, hojeIso);
         const excedeLimite = Math.abs(saldoAtualMinutos) > limiteMinutos;
         return {
           funcionario: { id: f.id, matricula: f.matricula, nome: f.user.name, email: f.user.email },
@@ -1792,7 +1820,6 @@ export class AuditoriaService {
     const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras();
     const { saldoAtualMinutos, dias } = await this.calcularBancoHoras(
       func.id,
-      func.jornadaHorasDia,
       cicloInicio,
       hojeIso
     );
@@ -1941,9 +1968,41 @@ export class AuditoriaService {
     });
 
     const totalMinutos = diasDetalhados.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
-    const diasTrabalhados = diasDetalhados.filter((d) => d.horasTrabalhadasMinutos > 0).length;
-    const jornadaEsperadaMin = diasTrabalhados * func.jornadaHorasDia * 60;
-    const saldo = totalMinutos - jornadaEsperadaMin;
+
+    const feriadosList = await this.prisma.feriadoConfig.findMany({
+      where: { data: { gte: inicio, lte: fim } },
+      select: { data: true, nome: true }
+    });
+    const cfgMult = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: {
+        bancoHorasSabadoPct: true,
+        bancoHorasDomingoPct: true,
+        bancoHorasFeriadoPct: true
+      }
+    });
+    const jornadaCtx = resolverJornadaHistoricoContexto(func);
+    const quadro = montarRelatorioQuadro(
+      registros,
+      afastamentos,
+      mes,
+      ano,
+      jornadaCtx,
+      feriadosList,
+      cfgMult?.bancoHorasSabadoPct ?? 100,
+      cfgMult?.bancoHorasDomingoPct ?? 200,
+      cfgMult?.bancoHorasFeriadoPct ?? 200
+    );
+
+    const diasTrabalhados = quadro.diasTrabalhados;
+    const jornadaEsperadaMin = quadro.dias.reduce((s, d) => {
+      if (d.statusInterno === "FALTA") return s + jornadaMinParaDia(d.iso, jornadaCtx);
+      if ((d.statusInterno === "OK" || d.statusInterno === "PENDENTE") && !d.multiplicadorPct) {
+        return s + jornadaMinParaDia(d.iso, jornadaCtx);
+      }
+      return s;
+    }, 0);
+    const saldo = quadro.saldoMinutos;
 
     return {
       funcionario: {

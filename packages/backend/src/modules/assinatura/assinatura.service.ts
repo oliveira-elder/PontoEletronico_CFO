@@ -10,7 +10,10 @@ import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
 import { intervaloDiaBrasilia } from "../../utils/horario-brasilia";
-import { montarRelatorioQuadro } from "../../utils/historico-quadro";
+import {
+  montarRelatorioQuadro,
+  resolverJornadaHistoricoContexto
+} from "../../utils/historico-quadro";
 import {
   buildQuadroPdfDocDefinition,
   buildRascunhoPdfDocDefinition,
@@ -414,12 +417,19 @@ export class AssinaturaService {
     return { registros, afastamentos };
   }
 
-  private async montarRelatorioParaPdf(
-    funcionarioId: string,
-    mes: number,
-    ano: number,
-    jornadaHorasDia: number
-  ) {
+  private async montarRelatorioParaPdf(funcionarioId: string, mes: number, ano: number) {
+    const funcJornada = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        jornadaPeriodoId: true,
+        jornadaHorasDia: true,
+        jornadaPeriodoDesde: true,
+        jornadaPeriodoAssociadoEm: true,
+        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+      }
+    });
+    const jornada = resolverJornadaHistoricoContexto(funcJornada);
+
     const { registros, afastamentos } = await this.buscarRegistrosEAfastamentos(
       funcionarioId,
       mes,
@@ -446,17 +456,20 @@ export class AssinaturaService {
       })
     ]);
 
-    return montarRelatorioQuadro(
-      registros,
-      afastamentos,
-      mes,
-      ano,
-      jornadaHorasDia,
-      feriados,
-      cfg?.bancoHorasSabadoPct ?? 100,
-      cfg?.bancoHorasDomingoPct ?? 200,
-      cfg?.bancoHorasFeriadoPct ?? 200
-    );
+    return {
+      relatorio: montarRelatorioQuadro(
+        registros,
+        afastamentos,
+        mes,
+        ano,
+        jornada,
+        feriados,
+        cfg?.bancoHorasSabadoPct ?? 100,
+        cfg?.bancoHorasDomingoPct ?? 200,
+        cfg?.bancoHorasFeriadoPct ?? 200
+      ),
+      jornada
+    };
   }
 
   /* ─── Geração de PDF ─── */
@@ -471,12 +484,8 @@ export class AssinaturaService {
     });
     if (!funcionario) throw new NotFoundException("Funcionário não encontrado");
 
-    const relatorio = await this.montarRelatorioParaPdf(
-      funcionario.id,
-      mes,
-      ano,
-      funcionario.jornadaHorasDia ?? 8
-    );
+    const { relatorio, jornada } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
+    const jornadaHorasExibicao = Math.round(jornada.atualMin / 60);
 
     const logoBase64 = loadAssetBase64("logo.png");
 
@@ -489,7 +498,7 @@ export class AssinaturaService {
         cargo: funcionario.cargo,
         section: funcionario.section,
         categoria: funcionario.categoria,
-        jornadaHorasDia: funcionario.jornadaHorasDia ?? 8,
+        jornadaHorasDia: jornadaHorasExibicao,
         user: { name: funcionario.user.name },
         gerencia: funcionario.gerencia
           ? { nome: funcionario.gerencia.nome, sigla: funcionario.gerencia.sigla }
@@ -546,12 +555,7 @@ export class AssinaturaService {
     const { mes, ano } = periodo;
 
     this.logger.log(`Buscando relatório para funcionário ${funcionario.id}, ${mes}/${ano}`);
-    const relatorio = await this.montarRelatorioParaPdf(
-      funcionario.id,
-      mes,
-      ano,
-      funcionario.jornadaHorasDia ?? 8
-    );
+    const { relatorio } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
     this.logger.log(`Relatório OK — ${relatorio.dias.length} dias`);
 
     const logoBase64 = loadAssetBase64("logo.png");

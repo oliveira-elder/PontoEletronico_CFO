@@ -77,6 +77,19 @@ interface Multiplicadores {
   feriadoPct: number;
 }
 
+interface JornadaHistorico {
+  anteriorMin: number;
+  atualMin: number;
+  vigenciaDesde: string | null;
+}
+
+const JORNADA_PADRAO: JornadaHistorico = { anteriorMin: 480, atualMin: 480, vigenciaDesde: null };
+
+function jornadaEsperadaMin(isoKey: string, jornada: JornadaHistorico): number {
+  if (jornada.vigenciaDesde && isoKey >= jornada.vigenciaDesde) return jornada.atualMin;
+  return jornada.anteriorMin;
+}
+
 const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
   FERIAS: "Férias",
   ATESTADO: "Atestado médico",
@@ -161,7 +174,8 @@ function transformarHistorico(
   mes: number,
   ano: number,
   feriados: ApiFeriado[] = [],
-  mult: Multiplicadores = { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 }
+  mult: Multiplicadores = { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
+  jornada: JornadaHistorico = JORNADA_PADRAO
 ): DiaRegistro[] {
   const hoje = new Date();
   const diasNoMes = new Date(ano, mes, 0).getDate();
@@ -207,7 +221,7 @@ function transformarHistorico(
         fimIntervalo: null,
         saida: null,
         horasMin: 0,
-        jornadaMin: 480,
+        jornadaMin: jornadaEsperadaMin(isoKey, jornada),
         status: "FUTURO"
       });
       continue;
@@ -257,7 +271,7 @@ function transformarHistorico(
           fimIntervalo: null,
           saida: null,
           horasMin: 0,
-          jornadaMin: 480,
+          jornadaMin: jornadaEsperadaMin(isoKey, jornada),
           status: "FALTA",
           obs: "Ausência não registrada"
         });
@@ -304,7 +318,7 @@ function transformarHistorico(
     horasMin = Math.max(0, horasMin);
 
     // Para fins de semana e feriados: jornadaMin=0, saldo = horas * multiplicador
-    let jornadaMin = 480;
+    let jornadaMin = jornadaEsperadaMin(isoKey, jornada);
     if (fimDeSemana || nomeFeriado) {
       const pct = nomeFeriado ? mult.feriadoPct : dow === 6 ? mult.sabadoPct : mult.domingoPct;
       jornadaMin = 0;
@@ -387,12 +401,14 @@ function fmtBH(min: number): string {
 function ModalAssinarQuadro({
   assinatura,
   totalTrabMin,
+  totalJornadaMin,
   onClose,
   onConfirm,
   loading
 }: {
   assinatura: AssinaturaQuadro;
   totalTrabMin: number;
+  totalJornadaMin: number;
   onClose: () => void;
   onConfirm: () => void;
   loading: boolean;
@@ -401,7 +417,7 @@ function ModalAssinarQuadro({
     "pt-BR",
     { month: "long", year: "numeric" }
   );
-  const saldoMin = totalTrabMin - assinatura.periodo.diasTrabalhados * 480;
+  const saldoMin = totalTrabMin - totalJornadaMin;
   return (
     <div
       style={{
@@ -681,7 +697,15 @@ function SaldoCell({
 }) {
   if (status === "FUTURO" || status === "AFASTAMENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
-  if (status === "FALTA") return <span className="text-red">−8h00</span>;
+  if (status === "FALTA") {
+    const h = Math.floor(jornadaMin / 60);
+    const m = jornadaMin % 60;
+    return (
+      <span className="text-red">
+        −{h}h{String(m).padStart(2, "0")}
+      </span>
+    );
+  }
   const saldo = trabMin - jornadaMin;
   const h = Math.floor(Math.abs(saldo) / 60);
   const m = Math.abs(saldo) % 60;
@@ -1089,6 +1113,7 @@ export function HistoricoPage() {
           afastamentos: ApiAfastamento[];
           feriados?: ApiFeriado[];
           multiplicadores?: Multiplicadores;
+          jornada?: JornadaHistorico;
         }>(`/ponto/historico?mes=${mes}&ano=${ano}`)
         .then((data) =>
           setRegistros(
@@ -1098,7 +1123,8 @@ export function HistoricoPage() {
               mes,
               ano,
               data?.feriados ?? [],
-              data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 }
+              data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
+              data?.jornada ?? JORNADA_PADRAO
             )
           )
         )
@@ -1201,6 +1227,9 @@ export function HistoricoPage() {
   const totalDiasUteis = registros.filter(
     (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO"
   ).length;
+  const totalJornadaMin = registros
+    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO")
+    .reduce((s, r) => s + r.jornadaMin, 0);
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -1376,6 +1405,7 @@ export function HistoricoPage() {
         <ModalAssinarQuadro
           assinatura={assinatura}
           totalTrabMin={totalTrabMin}
+          totalJornadaMin={totalJornadaMin}
           onClose={() => setModalAssinar(false)}
           onConfirm={confirmarAssinatura}
           loading={loadingAssinar}
@@ -1533,11 +1563,7 @@ export function HistoricoPage() {
                       {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}
                     </td>
                     <td>
-                      <SaldoCell
-                        trabMin={totalTrabMin}
-                        jornadaMin={totalDiasUteis * 480}
-                        status="OK"
-                      />
+                      <SaldoCell trabMin={totalTrabMin} jornadaMin={totalJornadaMin} status="OK" />
                     </td>
                     <td style={{ width: "1%", paddingLeft: 10, paddingRight: 10 }} />
                   </tr>

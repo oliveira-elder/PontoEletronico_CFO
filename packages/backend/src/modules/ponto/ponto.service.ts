@@ -19,6 +19,10 @@ import {
   validarHorarioPermitido
 } from "../../utils/horario-brasilia";
 import { appendObservacao } from "../../utils/registro-observacoes";
+import {
+  jornadaEsperadaMin,
+  resolverJornadaHistoricoContexto
+} from "../../utils/jornada-historico";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
    anexados pelo funcionário não podem mais ser editados/substituídos. */
@@ -89,6 +93,27 @@ export class PontoService {
   ) {}
 
   /* ─── Helpers ─── */
+
+  private async getJornadaHistoricoContexto(funcionarioId: string) {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        jornadaPeriodoId: true,
+        jornadaHorasDia: true,
+        jornadaPeriodoDesde: true,
+        jornadaPeriodoAssociadoEm: true,
+        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+      }
+    });
+    return resolverJornadaHistoricoContexto(func);
+  }
+
+  private jornadaDiariaParaDia(
+    ctx: { anteriorMin: number; atualMin: number; vigenciaDesde: string | null },
+    isoDate: string
+  ): number {
+    return jornadaEsperadaMin(isoDate, ctx);
+  }
 
   /* Retorna os parâmetros de jornada efetivos para um funcionário:
      1. JornadaPeriodo atribuído ao funcionário
@@ -706,6 +731,8 @@ export class PontoService {
       select: { bancoHorasSabadoPct: true, bancoHorasDomingoPct: true, bancoHorasFeriadoPct: true }
     });
 
+    const jornada = await this.getJornadaHistoricoContexto(func.id);
+
     return {
       mes,
       ano,
@@ -716,7 +743,8 @@ export class PontoService {
         sabadoPct: cfg?.bancoHorasSabadoPct ?? 100,
         domingoPct: cfg?.bancoHorasDomingoPct ?? 200,
         feriadoPct: cfg?.bancoHorasFeriadoPct ?? 200
-      }
+      },
+      jornada
     };
   }
 
@@ -762,6 +790,7 @@ export class PontoService {
    *  como saldo neutro (0), e faltas como saldo negativo. */
   private async calcularBancoHoras(funcionarioId: string) {
     const jornada = await this.getJornadaEfetiva(funcionarioId);
+    const jornadaCtx = await this.getJornadaHistoricoContexto(funcionarioId);
 
     const diasUteisCfg: boolean[] = JSON.parse(
       typeof jornada.diasUteis === "string"
@@ -833,7 +862,6 @@ export class PontoService {
     const domingoPct = cfgMult?.bancoHorasDomingoPct ?? 200;
     const feriadoPct = cfgMult?.bancoHorasFeriadoPct ?? 200;
 
-    const jornadaEsperadaMinutos = jornada.jornadaDiariaMin;
     const dias: {
       data: string;
       horasTrabalhadasMinutos: number;
@@ -884,9 +912,10 @@ export class PontoService {
           jornadaDia = 0;
           obs = `Feriado: ${nomeFeriado}`;
         } else {
-          // Dia útil normal
-          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaEsperadaMinutos;
-          jornadaDia = jornadaEsperadaMinutos;
+          // Dia útil normal — jornada conforme vigência do período
+          const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
+          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaDiaMin;
+          jornadaDia = jornadaDiaMin;
           obs = undefined;
         }
 
@@ -1128,6 +1157,15 @@ export class PontoService {
       }
     }
 
+    if (body.tipo === "FERIAS" && func.categoria === "ESTAGIARIO") {
+      const diasVendidos = Number(body.metadados?.diasVendidos ?? 0);
+      if (diasVendidos > 0) {
+        throw new BadRequestException(
+          "Estagiários não podem vender dias de férias (abono pecuniário)."
+        );
+      }
+    }
+
     // Salva documento de atestado se enviado em base64
     if (body.tipo === "ATESTADO" && metadados && typeof metadados.documentoBase64 === "string") {
       const url = await this.documentoService.salvarDocumento({
@@ -1255,18 +1293,23 @@ export class PontoService {
   async calcularSaldoFeriasFuncionario(funcionarioId: string) {
     const func = await this.prisma.funcionario.findUnique({
       where: { id: funcionarioId },
-      select: { dataAdmissao: true }
+      select: { dataAdmissao: true, categoria: true }
     });
 
     if (!func?.dataAdmissao) return null;
 
+    const isEstagiario = func.categoria === "ESTAGIARIO";
+    const duracaoCicloMeses = isEstagiario ? 6 : 12;
+    const diasPorCiclo = isEstagiario ? 15 : 30;
+    // Estagiário não acumula ciclos; demais funcionários acumulam até 2
+    const maxAcumulo = isEstagiario ? 1 : 2;
+
     const hoje = new Date();
     const admissao = new Date(func.dataAdmissao);
 
-    // Meses decorridos desde a admissão
     const mesesTotal =
       (hoje.getFullYear() - admissao.getFullYear()) * 12 + (hoje.getMonth() - admissao.getMonth());
-    const ciclosVencidos = Math.floor(mesesTotal / 12);
+    const ciclosVencidos = Math.floor(mesesTotal / duracaoCicloMeses);
 
     if (ciclosVencidos === 0) {
       return {
@@ -1276,6 +1319,8 @@ export class PontoService {
         diasGozo: 0,
         diasVendidos: 0,
         obrigatorio: false,
+        isEstagiario,
+        duracaoCicloMeses,
         ciclos: []
       };
     }
@@ -1294,22 +1339,28 @@ export class PontoService {
       diasVendidos += Number(m.diasVendidos ?? 0);
     }
 
-    const maxAcumulo = 2;
-    const totalVencido = Math.min(ciclosVencidos, maxAcumulo) * 30;
+    const totalVencido = Math.min(ciclosVencidos, maxAcumulo) * diasPorCiclo;
     const diasDisponiveis = Math.max(0, totalVencido - diasGozo - diasVendidos);
 
-    // Obrigação: está no 23º+ mês do período de acúmulo (2 ciclos = 24 meses)
-    const mesesNoPeriodoAcumulo = mesesTotal % (maxAcumulo * 12);
-    const obrigatorio =
-      ciclosVencidos >= maxAcumulo && diasDisponiveis > 0 && mesesNoPeriodoAcumulo >= 23;
+    let obrigatorio: boolean;
+    if (isEstagiario) {
+      // Estagiário: obrigatório a partir do 5º mês do ciclo atual (ciclo dura 6 meses)
+      const mesesNoCicloAtual = mesesTotal % duracaoCicloMeses;
+      obrigatorio = ciclosVencidos >= 1 && diasDisponiveis > 0 && mesesNoCicloAtual >= 5;
+    } else {
+      // Demais: obrigatório no 23º+ mês do período de acúmulo (2 ciclos = 24 meses)
+      const mesesNoPeriodoAcumulo = mesesTotal % (maxAcumulo * 12);
+      obrigatorio =
+        ciclosVencidos >= maxAcumulo && diasDisponiveis > 0 && mesesNoPeriodoAcumulo >= 23;
+    }
 
-    // Info de ciclos disponíveis (máx 2)
-    const ciclos = Array.from({ length: Math.min(ciclosVencidos, maxAcumulo) }, (_, i) => {
-      const cicloNum = ciclosVencidos - Math.min(ciclosVencidos, maxAcumulo) + i + 1;
+    const ciclosVisiveis = Math.min(ciclosVencidos, maxAcumulo);
+    const ciclos = Array.from({ length: ciclosVisiveis }, (_, i) => {
+      const cicloNum = ciclosVencidos - ciclosVisiveis + i + 1;
       const inicio = new Date(admissao);
-      inicio.setFullYear(admissao.getFullYear() + cicloNum - 1);
+      inicio.setMonth(admissao.getMonth() + (cicloNum - 1) * duracaoCicloMeses);
       const fim = new Date(inicio);
-      fim.setFullYear(fim.getFullYear() + 1);
+      fim.setMonth(fim.getMonth() + duracaoCicloMeses);
       fim.setDate(fim.getDate() - 1);
       return { numero: cicloNum, inicio, fim };
     });
@@ -1323,6 +1374,8 @@ export class PontoService {
       totalVencido,
       obrigatorio,
       mesesTotal,
+      isEstagiario,
+      duracaoCicloMeses,
       ciclos
     };
   }

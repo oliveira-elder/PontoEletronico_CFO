@@ -1,4 +1,5 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { MapPinIcon, MailIcon, PhoneIcon, BellIcon } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -291,6 +292,276 @@ function AvatarPerfil() {
   );
 }
 
+/* ─── Sino de Notificações ─── */
+interface NotifItem {
+  id: string;
+  titulo: string;
+  corpo?: string;
+  lida: boolean;
+  criadoEm: string;
+}
+
+function tempoRelativo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "agora mesmo";
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `há ${h}h`;
+  const d = Math.floor(h / 24);
+  return d < 7
+    ? `há ${d}d`
+    : new Date(iso).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+}
+
+function SinoBell() {
+  const [naoLidas, setNaoLidas] = useState(0);
+  const [ultima, setUltima] = useState<NotifItem | null>(null);
+  const [aberto, setAberto] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const buscarContagem = useCallback(async () => {
+    try {
+      const d = await api.get<{ total: number; ultima: NotifItem | null }>("/notificacao/contagem");
+      setNaoLidas(d?.total ?? 0);
+      setUltima(d?.ultima ?? null);
+    } catch {
+      /* silencioso */
+    }
+  }, []);
+
+  useEffect(() => {
+    void buscarContagem();
+    const id = setInterval(() => void buscarContagem(), 30_000);
+    return () => clearInterval(id);
+  }, [buscarContagem]);
+
+  // Fecha ao clicar fora
+  useEffect(() => {
+    if (!aberto) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setAberto(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [aberto]);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      {/* Botão do sino */}
+      <button
+        className="btn-icon"
+        aria-label={naoLidas > 0 ? `Notificações (${naoLidas} não lidas)` : "Notificações"}
+        title={naoLidas > 0 ? `${naoLidas} notificação(ões) não lida(s)` : "Notificações"}
+        onClick={() => {
+          setAberto((v) => {
+            if (!v) void buscarContagem();
+            return !v;
+          });
+        }}
+        style={{ position: "relative", overflow: "visible" }}
+      >
+        <BellIcon size={18} />
+        {naoLidas > 0 && (
+          <span
+            aria-hidden
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 6,
+              minWidth: 18,
+              height: 18,
+              padding: "0 4px",
+              background: "var(--burgundy-600)",
+              color: "#fff",
+              borderRadius: 9,
+              border: "2px solid #fff",
+              fontSize: 10,
+              fontWeight: 700,
+              lineHeight: "14px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              pointerEvents: "none",
+              zIndex: 2,
+              boxShadow: "0 1px 4px rgba(0,0,0,0.18)"
+            }}
+          >
+            {naoLidas > 99 ? "99+" : naoLidas}
+          </span>
+        )}
+      </button>
+
+      {/* Popover */}
+      {aberto && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 10px)",
+            right: 0,
+            width: 320,
+            zIndex: 300,
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.14)",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.13)",
+            overflow: "hidden"
+          }}
+        >
+          {/* Cabeçalho do popover */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "12px 14px 10px",
+              borderBottom: "1px solid rgba(122,30,38,0.08)"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <BellIcon size={15} style={{ color: "var(--burgundy-600)" }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-900)" }}>
+                Notificações
+              </span>
+              {naoLidas > 0 && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    background: "var(--red)",
+                    color: "#fff",
+                    borderRadius: 10,
+                    padding: "1px 6px"
+                  }}
+                >
+                  {naoLidas}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Última notificação */}
+          <div style={{ padding: "12px 14px" }}>
+            {ultima ? (
+              <Link
+                to={`/ponto/notificacoes?id=${ultima.id}`}
+                onClick={() => setAberto(false)}
+                style={{
+                  display: "block",
+                  padding: "10px 12px",
+                  background: ultima.lida ? "var(--cream-50)" : "rgba(122,30,38,0.04)",
+                  borderRadius: "var(--radius-md)",
+                  border: `1px solid ${ultima.lida ? "rgba(122,30,38,0.07)" : "rgba(122,30,38,0.15)"}`,
+                  textDecoration: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  transition: "background 140ms, border-color 140ms"
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLAnchorElement).style.background = "rgba(122,30,38,0.07)";
+                  (e.currentTarget as HTMLAnchorElement).style.borderColor = "rgba(122,30,38,0.22)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLAnchorElement).style.background = ultima.lida
+                    ? "var(--cream-50)"
+                    : "rgba(122,30,38,0.04)";
+                  (e.currentTarget as HTMLAnchorElement).style.borderColor = ultima.lida
+                    ? "rgba(122,30,38,0.07)"
+                    : "rgba(122,30,38,0.15)";
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  {!ultima.lida && (
+                    <div
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: "50%",
+                        background: "var(--burgundy-600)",
+                        flexShrink: 0,
+                        marginTop: 5
+                      }}
+                    />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p
+                      style={{
+                        fontSize: 12.5,
+                        fontWeight: ultima.lida ? 400 : 600,
+                        color: "var(--ink-900)",
+                        margin: "0 0 3px",
+                        lineHeight: 1.35
+                      }}
+                    >
+                      {ultima.titulo}
+                    </p>
+                    {ultima.corpo && (
+                      <p
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--ink-500)",
+                          margin: "0 0 4px",
+                          lineHeight: 1.4,
+                          overflow: "hidden",
+                          display: "-webkit-box",
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: "vertical"
+                        }}
+                      >
+                        {ultima.corpo}
+                      </p>
+                    )}
+                    <p style={{ fontSize: 10.5, color: "var(--ink-400)", margin: 0 }}>
+                      {tempoRelativo(ultima.criadoEm)}
+                    </p>
+                  </div>
+                </div>
+              </Link>
+            ) : (
+              <p
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--ink-400)",
+                  margin: 0,
+                  textAlign: "center",
+                  padding: "8px 0"
+                }}
+              >
+                Nenhuma notificação ainda.
+              </p>
+            )}
+          </div>
+
+          {/* Rodapé — link para página completa */}
+          <Link
+            to="/ponto/notificacoes"
+            onClick={() => setAberto(false)}
+            style={{
+              display: "block",
+              padding: "10px 14px",
+              borderTop: "1px solid rgba(122,30,38,0.08)",
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: "var(--burgundy-600)",
+              textDecoration: "none",
+              textAlign: "center",
+              background: "var(--cream-50)",
+              transition: "background 140ms"
+            }}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLAnchorElement).style.background = "rgba(122,30,38,0.05)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLAnchorElement).style.background = "var(--cream-50)";
+            }}
+          >
+            Ver todas as notificações →
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Topbar ─── */
 export function Topbar() {
   const { user, logout } = useAuth();
@@ -347,6 +618,7 @@ export function Topbar() {
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <SinoBell />
           <AvatarPerfil />
           <button
             onClick={logout}
@@ -482,27 +754,8 @@ export function Topbar() {
 
         <div style={{ flex: 1 }} />
 
-        {/* Ações do header */}
-        <button
-          className="btn-icon"
-          aria-label="Notificações"
-          title="Notificações"
-          style={{ position: "relative" }}
-        >
-          <BellIcon size={18} />
-          <span
-            style={{
-              position: "absolute",
-              top: 8,
-              right: 8,
-              width: 7,
-              height: 7,
-              background: "var(--red)",
-              borderRadius: "50%",
-              border: "1.5px solid white"
-            }}
-          />
-        </button>
+        {/* Sino de notificações */}
+        <SinoBell />
 
         {/* Avatar + info do usuário autenticado */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

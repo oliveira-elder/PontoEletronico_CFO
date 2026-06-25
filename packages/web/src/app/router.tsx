@@ -19,6 +19,7 @@ import { DocumentosRhPage } from "../pages/ponto/DocumentosRhPage";
 import { RequisicaoRhAdminPage } from "../pages/ponto/RequisicaoRhAdminPage";
 import { MinhasRequisicoesRhPage } from "../pages/ponto/MinhasRequisicoesRhPage";
 import { LogsPage } from "../pages/ponto/LogsPage";
+import { NotificacoesPage } from "../pages/ponto/NotificacoesPage";
 
 export const router = createBrowserRouter([
   /* Página de login — pública */
@@ -51,7 +52,8 @@ export const router = createBrowserRouter([
       { path: "aprovacoes", element: <AprovacaoGestorPage /> },
       { path: "requisicoes-rh", element: <RequisicaoRhAdminPage /> },
       { path: "minhas-requisicoes", element: <MinhasRequisicoesRhPage /> },
-      { path: "logs", element: <LogsPage /> }
+      { path: "logs", element: <LogsPage /> },
+      { path: "notificacoes", element: <NotificacoesPage /> }
     ]
   }
 ]);

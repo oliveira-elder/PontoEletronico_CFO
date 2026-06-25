@@ -268,9 +268,45 @@ export class GestaoService {
   }
 
   async setJornadaPeriodo(id: string, jornadaPeriodoId: string | null) {
+    const agora = new Date();
+
+    const atual = await this.prisma.funcionario.findUnique({
+      where: { id },
+      select: {
+        jornadaPeriodoId: true,
+        jornadaPeriodoDesde: true,
+        jornadaPeriodoAssociadoEm: true
+      }
+    });
+
+    let jornadaPeriodoDesde: Date | null = null;
+    let jornadaPeriodoAssociadoEm: Date | null = null;
+
+    if (jornadaPeriodoId) {
+      const mesmoPeriodo =
+        atual?.jornadaPeriodoId === jornadaPeriodoId && atual.jornadaPeriodoAssociadoEm;
+      if (mesmoPeriodo) {
+        jornadaPeriodoAssociadoEm = atual.jornadaPeriodoAssociadoEm;
+        jornadaPeriodoDesde = atual.jornadaPeriodoDesde;
+      } else {
+        jornadaPeriodoAssociadoEm = agora;
+        const diaBr = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Sao_Paulo",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(agora);
+        jornadaPeriodoDesde = new Date(`${diaBr}T12:00:00-03:00`);
+      }
+    }
+
     return this.prisma.funcionario.update({
       where: { id },
-      data: { jornadaPeriodoId: jornadaPeriodoId || null },
+      data: {
+        jornadaPeriodoId: jornadaPeriodoId || null,
+        jornadaPeriodoDesde,
+        jornadaPeriodoAssociadoEm
+      },
       include: {
         user: { select: { id: true, name: true, email: true, emailReal: true } },
         gerencia: { select: { id: true, nome: true, sigla: true } },

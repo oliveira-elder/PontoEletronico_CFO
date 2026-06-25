@@ -1828,8 +1828,8 @@ function DetalhesFuncionario({
   const carregarRegistros = useCallback(async () => {
     setLoading(true);
     try {
-      const [regs, rel] = await Promise.all([
-        api.get<Registro[]>(
+      const [regsResp, rel] = await Promise.all([
+        api.get<{ registros: Registro[] }>(
           `/auditoria/funcionarios/${funcionario.id}/registros?mes=${mes}&ano=${ano}`,
           token
         ),
@@ -1838,7 +1838,7 @@ function DetalhesFuncionario({
           token
         )
       ]);
-      setRegistros(regs ?? []);
+      setRegistros(regsResp?.registros ?? []);
       setRelatorio(rel);
     } finally {
       setLoading(false);
@@ -3849,6 +3849,23 @@ function TabAfastamentos({ token }: { token: string }) {
 
 type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO" | "FOLGA";
 
+interface JornadaHistorico {
+  anteriorMin: number;
+  atualMin: number;
+  vigenciaDesde: string | null;
+}
+
+const JORNADA_PADRAO_AUD: JornadaHistorico = {
+  anteriorMin: 480,
+  atualMin: 480,
+  vigenciaDesde: null
+};
+
+function jornadaMinDia(isoKey: string, jornada: JornadaHistorico): number {
+  if (jornada.vigenciaDesde && isoKey >= jornada.vigenciaDesde) return jornada.atualMin;
+  return jornada.anteriorMin;
+}
+
 interface DiaHist {
   data: string;
   diaSemana: string;
@@ -3961,7 +3978,8 @@ function buildHistorico(
   feriados: ApiFeriadoH[] = [],
   sabadoPct = 100,
   domingoPct = 200,
-  feriadoPct = 200
+  feriadoPct = 200,
+  jornada: JornadaHistorico = JORNADA_PADRAO_AUD
 ): DiaHist[] {
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
@@ -3993,7 +4011,7 @@ function buildHistorico(
         fimIntervalo: null,
         saida: null,
         horasMin: 0,
-        jornadaMin: 480,
+        jornadaMin: jornadaMinDia(isoKey, jornada),
         status: "FUTURO"
       });
       continue;
@@ -4054,7 +4072,7 @@ function buildHistorico(
           fimIntervalo: null,
           saida: null,
           horasMin: 0,
-          jornadaMin: 480,
+          jornadaMin: jornadaMinDia(isoKey, jornada),
           status: "FALTA",
           obs: "Ausência não registrada"
         });
@@ -4092,7 +4110,7 @@ function buildHistorico(
     }
     horasMin = Math.max(0, horasMin);
     // Multiplicador para fins de semana e feriados
-    let jornadaMin = 480;
+    let jornadaMin = jornadaMinDia(isoKey, jornada);
     if (fimDeSemana || nomeFeriado) {
       const pct = nomeFeriado ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
       jornadaMin = Math.round(horasMin * (1 - pct / 100));
@@ -4188,7 +4206,15 @@ function SaldoCellH({
 }) {
   if (status === "FUTURO" || status === "AFASTAMENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
-  if (status === "FALTA") return <span style={{ color: "var(--red)" }}>−8h00</span>;
+  if (status === "FALTA") {
+    const h = Math.floor(jornadaMin / 60);
+    const m = jornadaMin % 60;
+    return (
+      <span style={{ color: "var(--red)" }}>
+        −{h}h{String(m).padStart(2, "0")}
+      </span>
+    );
+  }
   const s = trabMin - jornadaMin;
   return (
     <span
@@ -4767,7 +4793,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
     setFeedbackEnviada(false);
     try {
       const [regsRaw, afastsRaw, assinData, feriadosRaw, cfgRaw] = await Promise.all([
-        api.get<ApiRegHist[]>(
+        api.get<{ registros: ApiRegHist[]; jornada?: JornadaHistorico }>(
           `/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`,
           token
         ),
@@ -4778,7 +4804,10 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
         api
           .get<{
             data: { status: string }[];
-          }>(`/auditoria/assinaturas?funcionarioId=${funcionarioId}&mes=${mes}&ano=${ano}&limit=1`, token)
+          }>(
+            `/auditoria/assinaturas?funcionarioId=${funcionarioId}&mes=${mes}&ano=${ano}&limit=1`,
+            token
+          )
           .catch(() => null),
         api
           .get<
@@ -4793,7 +4822,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           }>(`/api-publica/v1/configuracoes`, token)
           .catch(() => null)
       ]);
-      const regs = regsRaw ?? [];
+      const regs = regsRaw?.registros ?? [];
+      const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
       const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
         ? feriadosRaw
@@ -4813,7 +4843,9 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       }
       setRawPorDia(byDay);
 
-      setDias(buildHistorico(regs, afasts, mes, ano, feriados, sabadoPct, domingoPct, feriadoPct));
+      setDias(
+        buildHistorico(regs, afasts, mes, ano, feriados, sabadoPct, domingoPct, feriadoPct, jornada)
+      );
 
       // Bloqueia edição se o período estiver concluído (assinado pelos dois)
       const assinResp = assinData as { assinaturas?: { status: string }[] } | null;
@@ -4860,6 +4892,9 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
   const totalFaltas = dias.filter((r) => r.status === "FALTA").length;
   const totalAfasts = dias.filter((r) => r.status === "AFASTAMENTO").length;
   const totalUteis = dias.filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO").length;
+  const totalJornadaMin = dias
+    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO")
+    .reduce((s, r) => s + r.jornadaMin, 0);
   const mesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
 
   return (
@@ -5195,7 +5230,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                       {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")}
                     </td>
                     <td>
-                      <SaldoCellH trabMin={totalTrab} jornadaMin={totalUteis * 480} status="OK" />
+                      <SaldoCellH trabMin={totalTrab} jornadaMin={totalJornadaMin} status="OK" />
                     </td>
                     <td colSpan={2} />
                   </tr>
