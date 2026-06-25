@@ -1,9 +1,24 @@
-import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from "@nestjs/common";
+import {
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  NestInterceptor,
+  Optional
+} from "@nestjs/common";
 import { Observable, tap } from "rxjs";
+import { randomUUID } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
+import { LogsSseService } from "../modules/logs/logs.sse.service";
+import { MonitorAuditIngestService } from "../modules/ingest/monitor-audit-ingest.service";
 
 /* Endpoints de alta frequência que poluiriam o log sem valor diagnóstico */
-const SKIP_PATHS = new Set(["/api/ponto/status", "/api/auth/me", "/api/ponto/config/sistema"]);
+const SKIP_PATHS = new Set([
+  "/api/ponto/status",
+  "/api/auth/me",
+  "/api/ponto/config/sistema",
+  "/api/logs/stream",
+  "/api/logs/metrics/system"
+]);
 
 /* Chaves de body que não devem ser persistidas */
 const REDACT_KEYS = new Set([
@@ -28,29 +43,56 @@ interface RequestWithUser {
   user?: { sub?: string; username?: string };
 }
 
-@Injectable()
-export class AuditLogInterceptor implements NestInterceptor {
-  constructor(private readonly prisma: PrismaService) {}
+function deriveCategory(statusCode: number): string {
+  if (statusCode >= 500) return "ERROR";
+  if (statusCode >= 400) return "FAILURE";
+  return "SUCCESS";
+}
 
-  intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    if (ctx.getType() !== "http") return next.handle();
+@Injectable()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export class AuditLogInterceptor implements NestInterceptor<any, any> {
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly logsSse?: LogsSseService,
+    @Optional() private readonly monitorAudit?: MonitorAuditIngestService
+  ) {}
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  intercept(ctx: ExecutionContext, next: CallHandler<any>): Observable<any> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (ctx.getType() !== "http") return next.handle() as Observable<any>;
 
     const req = ctx.switchToHttp().getRequest<RequestWithUser>();
     const path = req.path ?? req.url?.split("?")[0] ?? "";
 
-    if (SKIP_PATHS.has(path)) return next.handle();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (SKIP_PATHS.has(path)) return next.handle() as Observable<any>;
+
+    const tracker = randomUUID();
+    const res = ctx.switchToHttp().getResponse<{ setHeader?: (k: string, v: string) => void }>();
+    res?.setHeader?.("X-Trace-Id", tracker);
 
     const start = Date.now();
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return next.handle().pipe(
       tap({
-        next: () => this.persist(req, path, start, 200),
-        error: (err: { status?: number }) => this.persist(req, path, start, err?.status ?? 500)
+        next: () => this.persist(req, path, start, 200, tracker),
+        error: (err: { status?: number }) =>
+          this.persist(req, path, start, err?.status ?? 500, tracker)
       })
-    );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ) as Observable<any>;
   }
 
-  private persist(req: RequestWithUser, path: string, start: number, statusCode: number): void {
+  private persist(
+    req: RequestWithUser,
+    path: string,
+    start: number,
+    statusCode: number,
+    tracker: string
+  ): void {
     const durationMs = Date.now() - start;
     const method = req.method?.toUpperCase() ?? "GET";
     const actorUserId = req.user?.sub ?? null;
@@ -58,6 +100,7 @@ export class AuditLogInterceptor implements NestInterceptor {
     const ipAddress = (req.ips?.[0] ?? req.ip ?? "").replace(/^::ffff:/, "");
     const userAgent = String(req.headers?.["user-agent"] ?? "").slice(0, 200) || null;
     const action = `${method} ${path}`;
+    const category = deriveCategory(statusCode);
 
     const sanitizedBody = this.sanitize(req.body);
     const sanitizedQuery = this.sanitize(req.query);
@@ -73,6 +116,8 @@ export class AuditLogInterceptor implements NestInterceptor {
     this.prisma.auditLog
       .create({
         data: {
+          tracker,
+          category,
           actorUserId,
           username,
           method,
@@ -85,6 +130,31 @@ export class AuditLogInterceptor implements NestInterceptor {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           payload: (payload as any) ?? null
         }
+      })
+      .then((log) => {
+        this.logsSse?.emit({
+          id: log.id,
+          category: log.category,
+          method: log.method ?? method,
+          path: log.path ?? path,
+          statusCode: log.statusCode ?? statusCode,
+          durationMs: log.durationMs ?? durationMs,
+          username: log.username,
+          ipAddress: log.ipAddress,
+          createdAt: log.createdAt.toISOString()
+        });
+
+        void this.monitorAudit?.pushAudit({
+          tracker,
+          method,
+          path,
+          action,
+          statusCode,
+          durationMs,
+          username,
+          actorUserId,
+          ipAddress
+        });
       })
       .catch(() => {
         /* log failure não afeta a requisição */

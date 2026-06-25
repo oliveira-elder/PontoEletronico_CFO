@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
+import { MapModal, MapResult } from "../../components/MapModal";
+import { geocodificarEndereco } from "../../utils/geocode";
 import {
   UsersIcon,
   SearchIcon,
@@ -10,31 +12,93 @@ import {
   GraduationCapIcon,
   ShieldCheckIcon,
   BriefcaseIcon,
+  CrownIcon,
   ChevronDownIcon,
   CheckCircleIcon,
-  XCircleIcon
+  XCircleIcon,
+  MapPinIcon
 } from "../../components/icons";
 
 /* ─── Types ─── */
-type Categoria = "ESTAGIARIO" | "CONCURSADO" | "ASSESSOR";
+type Categoria = "ESTAGIARIO" | "CONCURSADO" | "ASSESSOR" | "GERENTE";
 
 interface Gerencia {
   id: string;
   nome: string;
   sigla: string;
 }
+interface JornadaPeriodo {
+  id: string;
+  nome: string;
+  ePadrao: boolean;
+}
+
+interface EnderecoResidencial {
+  cep?: string | null;
+  logradouro?: string | null;
+  numero?: string | null;
+  complemento?: string | null;
+  bairro?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  raioMetros: number;
+}
+
 interface Funcionario {
   id: string;
   matricula: string | null;
+  cpf?: string | null;
+  fotoPerfilUrl?: string | null;
   email: string;
   cargo: string;
   categoria: Categoria;
   gerenciaId: string;
+  jornadaPeriodoId?: string | null;
+  jornadaPeriodo?: JornadaPeriodo | null;
+  modoHomeOffice?: boolean;
+  modoHibridoLocal?: boolean;
+  enderecoResidencial?: EnderecoResidencial | null;
+  requerimentoEndereco?: {
+    id: string;
+    status: string;
+    criadoEm: string;
+    respondidoEm?: string | null;
+  } | null;
   ativo: boolean;
   section?: string | null;
+  subsecao?: string | null;
   isManager?: boolean;
+  ramal?: string | null;
+  sala?: string | null;
+  andar?: string | null;
+  dataNascimento?: string | null;
   user: { id: string; name: string; email: string; emailReal: string | null };
   gerencia?: { id: string; nome: string; sigla: string } | null;
+}
+
+/* Converte slug kebab-case → nome capitalizado (ex: "desenvolvimento" → "Desenvolvimento") */
+function slugLabel(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Monta a linha de localização/contato apenas com os campos preenchidos.
+ *  Retorna null quando não há nada a exibir. */
+function infoContato(f: {
+  ramal?: string | null;
+  sala?: string | null;
+  andar?: string | null;
+}): string | null {
+  const partes = [
+    f.ramal ? `Ramal ${f.ramal}` : null,
+    f.sala ? `Sala ${f.sala}` : null,
+    f.andar ?? null
+  ].filter((v): v is string => Boolean(v));
+  return partes.length ? partes.join(" · ") : null;
 }
 
 const SSO_FAKE_SUFFIXES = ["@sso.local", "@pending.local"];
@@ -47,6 +111,30 @@ function resolveEmail(u: { email: string; emailReal: string | null }): string {
     }
   }
   return u.email;
+}
+
+/* ─── CPF utils ─── */
+function formatCpf(value: string): string {
+  const d = value.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return `${d.slice(0, 3)}.${d.slice(3)}`;
+  if (d.length <= 9) return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6)}`;
+  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+}
+
+function isValidCpf(cpf: string): boolean {
+  const d = cpf.replace(/\D/g, "");
+  if (d.length !== 11 || /^(\d)\1+$/.test(d)) return false;
+  let s = 0;
+  for (let i = 0; i < 9; i++) s += +d[i] * (10 - i);
+  let r = (s * 10) % 11;
+  if (r >= 10) r = 0;
+  if (r !== +d[9]) return false;
+  s = 0;
+  for (let i = 0; i < 10; i++) s += +d[i] * (11 - i);
+  r = (s * 10) % 11;
+  if (r >= 10) r = 0;
+  return r === +d[10];
 }
 
 /* ─── Config de categoria ─── */
@@ -69,6 +157,12 @@ const CAT: Record<Categoria, { label: string; cor: string; bg: string; icon: Rea
       cor: "#8a6a00",
       bg: "rgba(247,196,55,0.12)",
       icon: BriefcaseIcon
+    },
+    GERENTE: {
+      label: "Gerente",
+      cor: "var(--burgundy-600)",
+      bg: "rgba(122,30,38,0.08)",
+      icon: CrownIcon
     }
   };
 
@@ -81,7 +175,11 @@ const FORM_VAZIO = {
   cargo: "",
   categoria: "CONCURSADO" as Categoria,
   gerenciaId: "",
-  ativo: true
+  jornadaPeriodoId: "",
+  subsecao: "",
+  ativo: true,
+  dataNascimento: "",
+  dataAdmissao: ""
 };
 
 /* ─── Stat Card ─── */
@@ -159,15 +257,99 @@ interface SyncStatus {
   createdAt: string;
 }
 
+/* ─── Botão: Solicitar Endereço para Todos ─── */
+function SolicitarEnderecoTodosBtn() {
+  const [status, setStatus] = React.useState<"idle" | "loading" | "ok" | "erro">("idle");
+  const [total, setTotal] = React.useState(0);
+
+  async function solicitar() {
+    if (
+      !confirm(
+        "Enviar solicitação de endereço residencial para todos os funcionários ativos? Eles verão um formulário na próxima vez que acessarem o registro de ponto."
+      )
+    )
+      return;
+    setStatus("loading");
+    try {
+      const res = await api.post<{ total: number }>(
+        "/ponto/gestao/requerimento-endereco/todos",
+        {}
+      );
+      setTotal(res?.total ?? 0);
+      setStatus("ok");
+      setTimeout(() => setStatus("idle"), 4000);
+    } catch {
+      setStatus("erro");
+      setTimeout(() => setStatus("idle"), 3000);
+    }
+  }
+
+  return (
+    <button
+      onClick={() => void solicitar()}
+      disabled={status === "loading"}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        padding: "9px 16px",
+        borderRadius: "var(--radius-md)",
+        border: "1.5px solid rgba(122,30,38,0.22)",
+        background:
+          status === "ok"
+            ? "rgba(47,125,79,0.08)"
+            : status === "erro"
+              ? "rgba(200,57,63,0.08)"
+              : "transparent",
+        cursor: status === "loading" ? "wait" : "pointer",
+        fontSize: 13,
+        fontWeight: 600,
+        fontFamily: "var(--font-body)",
+        color:
+          status === "ok" ? "var(--green)" : status === "erro" ? "var(--red)" : "var(--ink-700)",
+        opacity: status === "loading" ? 0.7 : 1,
+        transition: "all 200ms",
+        whiteSpace: "nowrap"
+      }}
+    >
+      <MapPinIcon size={15} />
+      {status === "loading"
+        ? "Enviando…"
+        : status === "ok"
+          ? `✓ Enviado para ${total} funcionário${total !== 1 ? "s" : ""}`
+          : status === "erro"
+            ? "Erro ao enviar"
+            : "Solicitar Endereço a Todos"}
+    </button>
+  );
+}
+
 /* ─── Página ─── */
 export function GestaoPage() {
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, refreshProfile } = useAuth();
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
   const podeToggleAtivo = isRH;
 
+  const isRhOuAdmin = isAdmin || hasRole("RH_AUDITORIA");
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
+  const [jornadasDisponiveis, setJornadasDisponiveis] = useState<JornadaPeriodo[]>([]);
+
+  // Requerimento de endereço
+  const [requerimentoAtual, setRequerimentoAtual] = useState<{
+    status: string;
+    criadoEm: string;
+  } | null>(null);
+  const [enviandoReq, setEnviandoReq] = useState(false);
+
+  // Modalidade remoto + endereço
+  const [modalidade, setModalidade] = useState({ modoHomeOffice: false, modoHibridoLocal: false });
+  const [endereco, setEndereco] = useState<EnderecoResidencial>({ raioMetros: 20 });
+  const [, setEnderecoCarregado] = useState(false);
+  const [mapaAberto, setMapaAberto] = useState(false);
+  const [cepLoading, setCepLoading] = useState(false);
+  const [hibridoMaxDias, setHibridoMaxDias] = useState(2);
   const [busca, setBusca] = useState("");
   const [filtroCategoria, setFiltroCategoria] = useState<Categoria | "">("");
   const [filtroGerencia, setFiltroGerencia] = useState("");
@@ -192,6 +374,16 @@ export function GestaoPage() {
 
   useEffect(() => {
     void carregarSyncStatus();
+    api
+      .get<JornadaPeriodo[]>("/ponto/config/jornadas")
+      .then((jps) => setJornadasDisponiveis(jps ?? []))
+      .catch(() => {});
+    api
+      .get<{ hibridoMaxDiasSemana: number }>("/ponto/config/sistema")
+      .then((s) => {
+        if (s?.hibridoMaxDiasSemana) setHibridoMaxDias(s.hibridoMaxDiasSemana);
+      })
+      .catch(() => {});
     Promise.all([
       api.get<Funcionario[]>("/ponto/gestao/funcionarios"),
       api.get<(Gerencia & { _count: { funcionarios: number } })[]>("/ponto/gestao/gerencias")
@@ -245,28 +437,160 @@ export function GestaoPage() {
       nome: f.user?.name ?? "",
       matricula: f.matricula ?? "",
       email: f.user?.email ?? "",
-      cpf: "",
-      cargo: f.cargo,
-      categoria: f.categoria,
-      gerenciaId: f.gerenciaId,
-      ativo: f.ativo
+      cpf: f.cpf ?? "",
+      cargo: f.cargo ?? "",
+      categoria: f.categoria ?? "CONCURSADO",
+      gerenciaId: f.gerenciaId ?? "",
+      jornadaPeriodoId: f.jornadaPeriodoId ?? "",
+      subsecao: f.subsecao ?? "",
+      ativo: f.ativo ?? true,
+      dataNascimento: f.dataNascimento ? new Date(f.dataNascimento).toISOString().slice(0, 10) : "",
+      dataAdmissao: (f as unknown as { dataAdmissao?: string | null }).dataAdmissao
+        ? new Date((f as unknown as { dataAdmissao: string }).dataAdmissao)
+            .toISOString()
+            .slice(0, 10)
+        : ""
     });
+    setModalidade({
+      modoHomeOffice: f.modoHomeOffice ?? false,
+      modoHibridoLocal: f.modoHibridoLocal ?? false
+    });
+    setRequerimentoAtual(f.requerimentoEndereco ?? null);
+    setEnderecoCarregado(false);
+    if (isRhOuAdmin) {
+      api
+        .get<EnderecoResidencial>(`/ponto/gestao/funcionarios/${f.id}/endereco`)
+        .then((e) => {
+          setEndereco(
+            e
+              ? { ...e, raioMetros: e.raioMetros && e.raioMetros !== 100 ? e.raioMetros : 20 }
+              : { raioMetros: 20 }
+          );
+          setEnderecoCarregado(true);
+        })
+        .catch(() => {
+          setEndereco({ raioMetros: 20 });
+          setEnderecoCarregado(true);
+        });
+    }
     setEditandoId(f.id);
     setPainel("editar");
   }
 
+  const cpfPreenchido = form.cpf.replace(/\D/g, "").length > 0;
+  const cpfBloqueio = cpfPreenchido && !isValidCpf(form.cpf);
+
+  async function solicitarEndereco() {
+    if (!editandoId) return;
+    setEnviandoReq(true);
+    try {
+      const res = await api.post<{ status: string; criadoEm: string }>(
+        `/ponto/gestao/funcionarios/${editandoId}/requerimento-endereco`,
+        {}
+      );
+      setRequerimentoAtual(res);
+      setFuncionarios((prev) =>
+        prev.map((f) =>
+          f.id === editandoId
+            ? { ...f, requerimentoEndereco: res as typeof f.requerimentoEndereco }
+            : f
+        )
+      );
+    } finally {
+      setEnviandoReq(false);
+    }
+  }
+
+  async function abrirMapaComGeocode() {
+    if (!endereco.lat || !endereco.lng) {
+      const result = await geocodificarEndereco({
+        logradouro: endereco.logradouro ?? undefined,
+        numero: endereco.numero ?? undefined,
+        bairro: endereco.bairro ?? undefined,
+        cidade: endereco.cidade ?? undefined,
+        uf: endereco.uf ?? undefined,
+        cep: endereco.cep ?? undefined
+      });
+      if (result) setEndereco((e) => ({ ...e, lat: result.lat, lng: result.lng }));
+    }
+    setMapaAberto(true);
+  }
+
+  async function buscarCep(cep: string) {
+    const digits = cep.replace(/\D/g, "");
+    if (digits.length !== 8) return;
+    setCepLoading(true);
+    try {
+      const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
+      const data = await res.json();
+      if (!data.erro) {
+        setEndereco((e) => ({
+          ...e,
+          cep: data.cep,
+          logradouro: data.logradouro,
+          bairro: data.bairro,
+          cidade: data.localidade,
+          uf: data.uf
+        }));
+      }
+    } catch {
+      /* silencioso */
+    } finally {
+      setCepLoading(false);
+    }
+  }
+
+  function onMapaConfirm(r: MapResult) {
+    setEndereco((e) => ({ ...e, lat: r.lat, lng: r.lng, raioMetros: r.raio }));
+    setMapaAberto(false);
+  }
+
+  async function salvarModalidadeEndereco(funcId: string) {
+    if (!isRhOuAdmin) return;
+    await api.patch(`/ponto/gestao/funcionarios/${funcId}/modalidade`, modalidade);
+    // Sempre salva o endereço quando há dados (independente do modo ativo)
+    if (endereco.logradouro || endereco.lat) {
+      await api.put(`/ponto/gestao/funcionarios/${funcId}/endereco`, endereco);
+    }
+  }
+
   async function salvar() {
     if (!form.nome || !form.matricula || !form.gerenciaId) return;
+    if (cpfBloqueio) return;
+
+    const { jornadaPeriodoId, ...restForm } = form;
+    const payload = { ...restForm, dataNascimento: form.dataNascimento || null };
+
     if (painel === "novo") {
-      const novo = await api.post<Funcionario>("/ponto/gestao/funcionarios", form);
-      setFuncionarios((prev) => [...prev, novo]);
+      const novo = await api.post<Funcionario>("/ponto/gestao/funcionarios", payload);
+      if (isRhOuAdmin) {
+        await Promise.all([
+          jornadaPeriodoId
+            ? api.patch(`/ponto/gestao/funcionarios/${novo.id}/jornada-periodo`, {
+                jornadaPeriodoId
+              })
+            : Promise.resolve(),
+          salvarModalidadeEndereco(novo.id)
+        ]);
+      }
     } else if (editandoId) {
-      const atualizado = await api.put<Funcionario>(
-        `/ponto/gestao/funcionarios/${editandoId}`,
-        form
-      );
-      setFuncionarios((prev) => prev.map((f) => (f.id === editandoId ? atualizado! : f)));
+      await api.put(`/ponto/gestao/funcionarios/${editandoId}`, payload);
+      if (isRhOuAdmin) {
+        await Promise.all([
+          api.patch(`/ponto/gestao/funcionarios/${editandoId}/jornada-periodo`, {
+            jornadaPeriodoId: jornadaPeriodoId || null
+          }),
+          salvarModalidadeEndereco(editandoId)
+        ]);
+      }
+      if (editandoId === user?.funcionario?.id) {
+        void refreshProfile();
+      }
     }
+
+    // Fonte da verdade: sempre recarrega a lista completa da API após qualquer save
+    const lista = await api.get<Funcionario[]>("/ponto/gestao/funcionarios");
+    setFuncionarios(lista ?? []);
     setPainel(null);
   }
 
@@ -291,6 +615,7 @@ export function GestaoPage() {
   const estagiarios = funcionarios.filter((f) => f.categoria === "ESTAGIARIO").length;
   const concursados = funcionarios.filter((f) => f.categoria === "CONCURSADO").length;
   const assessores = funcionarios.filter((f) => f.categoria === "ASSESSOR").length;
+  const gerentes = funcionarios.filter((f) => f.categoria === "GERENTE").length;
 
   // Acesso restrito: apenas RH_AUDITORIA e super admin/ponto-admin
   if (!isRH) {
@@ -346,7 +671,8 @@ export function GestaoPage() {
             Gestão de <em>Funcionários</em>
           </h1>
         </div>
-        {/* Ações removidas: inserções são exclusivamente via sync da API Extensions + SSO */}
+        {/* Solicitar endereço em massa */}
+        {isRhOuAdmin && <SolicitarEnderecoTodosBtn />}
       </div>
 
       {/* ── Banner Sync Extensions (apenas admin) ── */}
@@ -410,6 +736,7 @@ export function GestaoPage() {
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24 }}>
         <Stat valor={total} label="Total" cor="var(--burgundy-600)" />
         <Stat valor={concursados} label="Concursados" cor="var(--green)" />
+        <Stat valor={gerentes} label="Gerentes" cor="var(--burgundy-600)" />
         <Stat valor={assessores} label="Assessores" cor="#8a6a00" />
         <Stat valor={estagiarios} label="Estagiários" cor="var(--blue-ink)" />
       </div>
@@ -466,9 +793,10 @@ export function GestaoPage() {
             }}
           >
             <option value="">Todas as categorias</option>
+            <option value="ESTAGIARIO">Estagiário</option>
             <option value="CONCURSADO">Concursado</option>
             <option value="ASSESSOR">Assessor</option>
-            <option value="ESTAGIARIO">Estagiário</option>
+            <option value="GERENTE">Gerente</option>
           </select>
           <ChevronDownIcon
             size={14}
@@ -604,21 +932,39 @@ export function GestaoPage() {
                             width: 34,
                             height: 34,
                             borderRadius: "50%",
-                            background: "var(--burgundy-600)",
+                            background: f.fotoPerfilUrl ? "transparent" : "var(--burgundy-600)",
+                            border: f.fotoPerfilUrl ? "2px solid var(--burgundy-600)" : "none",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
                             color: "#fff",
                             fontWeight: 600,
                             fontSize: 13,
-                            flexShrink: 0
+                            flexShrink: 0,
+                            overflow: "hidden"
                           }}
                         >
-                          {(f.user?.name ?? "?")
-                            .split(" ")
-                            .map((n: string) => n[0])
-                            .slice(0, 2)
-                            .join("")}
+                          {f.fotoPerfilUrl ? (
+                            <img
+                              src={f.fotoPerfilUrl}
+                              alt={f.user?.name}
+                              style={{
+                                width: "100%",
+                                height: "100%",
+                                objectFit: "cover",
+                                display: "block"
+                              }}
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            (f.user?.name ?? "?")
+                              .split(" ")
+                              .map((n: string) => n[0])
+                              .slice(0, 2)
+                              .join("")
+                          )}
                         </div>
                         <div>
                           <p
@@ -653,15 +999,45 @@ export function GestaoPage() {
                     <td style={{ padding: "12px 16px" }}>
                       <CategoriaBadge cat={f.categoria} />
                     </td>
-                    {/* Gerência */}
+                    {/* Gerência / Subseção */}
                     <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontSize: 13, color: "var(--ink-700)" }}>
+                      <span style={{ fontSize: 13, color: "var(--ink-700)", fontWeight: 500 }}>
                         {nomeGerencia(f.gerenciaId)}
+                        {f.subsecao && (
+                          <span style={{ color: "var(--ink-400)", fontWeight: 400 }}>
+                            {" / "}
+                            {slugLabel(f.subsecao)}
+                          </span>
+                        )}
                       </span>
-                      {f.section && isAdmin && (
-                        <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-500)" }}>
-                          {f.section}
-                          {f.isManager ? " · Gerente" : ""}
+                      {f.isManager && (
+                        <p
+                          style={{
+                            margin: "2px 0 0",
+                            fontSize: 10.5,
+                            color: "var(--burgundy-600)",
+                            fontWeight: 600
+                          }}
+                        >
+                          Gerente da área
+                        </p>
+                      )}
+                      {infoContato(f) && (
+                        <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-400)" }}>
+                          {infoContato(f)}
+                        </p>
+                      )}
+                      {f.jornadaPeriodo && (
+                        <p
+                          style={{
+                            margin: "2px 0 0",
+                            fontSize: 10.5,
+                            color: "var(--burgundy-600)",
+                            fontWeight: 600
+                          }}
+                        >
+                          {f.jornadaPeriodo.nome}
+                          {f.jornadaPeriodo.ePadrao ? " ★" : ""}
                         </p>
                       )}
                     </td>
@@ -852,7 +1228,7 @@ export function GestaoPage() {
                 >
                   Categoria *
                 </label>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
                   {(Object.keys(CAT) as Categoria[]).map((cat) => {
                     const c = CAT[cat];
                     const Icon = c.icon;
@@ -862,7 +1238,7 @@ export function GestaoPage() {
                         key={cat}
                         onClick={() => setForm((f) => ({ ...f, categoria: cat }))}
                         style={{
-                          padding: "10px 8px",
+                          padding: "8px 4px",
                           borderRadius: "var(--radius-md)",
                           border: `2px solid ${sel ? c.cor : "rgba(122,30,38,0.12)"}`,
                           background: sel ? c.bg : "transparent",
@@ -870,16 +1246,19 @@ export function GestaoPage() {
                           display: "flex",
                           flexDirection: "column",
                           alignItems: "center",
-                          gap: 4,
+                          gap: 3,
                           transition: "all 140ms ease"
                         }}
                       >
-                        <Icon size={18} style={{ color: sel ? c.cor : "var(--ink-500)" }} />
+                        <Icon size={16} style={{ color: sel ? c.cor : "var(--ink-500)" }} />
                         <span
                           style={{
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: 600,
-                            color: sel ? c.cor : "var(--ink-700)"
+                            color: sel ? c.cor : "var(--ink-700)",
+                            textAlign: "center",
+                            lineHeight: 1.2,
+                            whiteSpace: "nowrap"
                           }}
                         >
                           {c.label}
@@ -911,7 +1290,6 @@ export function GestaoPage() {
                     placeholder: "nome@cfo.org.br",
                     type: "email"
                   },
-                  { key: "cpf", label: "CPF", placeholder: "000.000.000-00", type: "text" },
                   {
                     key: "cargo",
                     label: "Cargo / Função",
@@ -954,6 +1332,79 @@ export function GestaoPage() {
                 </div>
               ))}
 
+              {/* CPF — com máscara e validação */}
+              {(() => {
+                const cpfPreenchido = form.cpf.replace(/\D/g, "").length > 0;
+                const cpfCompleto = form.cpf.replace(/\D/g, "").length === 11;
+                const cpfValido = cpfCompleto && isValidCpf(form.cpf);
+                const cpfInvalido = cpfPreenchido && cpfCompleto && !cpfValido;
+                const borderColor = cpfInvalido
+                  ? "var(--red)"
+                  : cpfValido
+                    ? "var(--green)"
+                    : "rgba(122,30,38,0.14)";
+                return (
+                  <div style={{ marginBottom: 16 }}>
+                    <label
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 6
+                      }}
+                    >
+                      CPF
+                    </label>
+                    <input
+                      type="text"
+                      value={form.cpf}
+                      onChange={(e) => setForm((f) => ({ ...f, cpf: formatCpf(e.target.value) }))}
+                      placeholder="000.000.000-00"
+                      maxLength={14}
+                      style={{
+                        width: "100%",
+                        padding: "9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: `1px solid ${borderColor}`,
+                        background: "#fff",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-mono)",
+                        outline: "none",
+                        boxSizing: "border-box",
+                        letterSpacing: "0.05em"
+                      }}
+                    />
+                    {cpfInvalido && (
+                      <p
+                        style={{
+                          margin: "4px 0 0",
+                          fontSize: 11.5,
+                          color: "var(--red)",
+                          fontWeight: 500
+                        }}
+                      >
+                        CPF inválido. Verifique os dígitos.
+                      </p>
+                    )}
+                    {cpfValido && (
+                      <p
+                        style={{
+                          margin: "4px 0 0",
+                          fontSize: 11.5,
+                          color: "var(--green)",
+                          fontWeight: 500
+                        }}
+                      >
+                        CPF válido.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Gerência */}
               <div style={{ marginBottom: 16 }}>
                 <label
@@ -991,7 +1442,7 @@ export function GestaoPage() {
                     <option value="">Selecione uma gerência…</option>
                     {gerencias.map((g) => (
                       <option key={g.id} value={g.id}>
-                        {g.sigla} — {g.nome}
+                        {g.nome}
                       </option>
                     ))}
                   </select>
@@ -1008,6 +1459,713 @@ export function GestaoPage() {
                   />
                 </div>
               </div>
+
+              {/* Subseção — derivada dos funcionários já existentes na gerência selecionada */}
+              {form.gerenciaId &&
+                (() => {
+                  const subsecoesDisponiveis = [
+                    ...new Set(
+                      funcionarios
+                        .filter((f) => f.gerenciaId === form.gerenciaId && f.subsecao)
+                        .map((f) => f.subsecao!)
+                    )
+                  ].sort();
+                  if (!subsecoesDisponiveis.length) return null;
+                  return (
+                    <div style={{ marginBottom: 16 }}>
+                      <label
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 6
+                        }}
+                      >
+                        Subseção
+                      </label>
+                      <div style={{ position: "relative" }}>
+                        <select
+                          value={form.subsecao}
+                          onChange={(e) => setForm((f) => ({ ...f, subsecao: e.target.value }))}
+                          style={{
+                            width: "100%",
+                            appearance: "none",
+                            padding: "9px 32px 9px 12px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            background: "#fff",
+                            fontSize: 13.5,
+                            fontFamily: "var(--font-body)",
+                            color: form.subsecao ? "var(--ink-900)" : "var(--ink-500)",
+                            cursor: "pointer",
+                            outline: "none",
+                            boxSizing: "border-box" as const
+                          }}
+                        >
+                          <option value="">Sem subseção (membro direto da gerência)</option>
+                          {subsecoesDisponiveis.map((s) => (
+                            <option key={s} value={s}>
+                              {slugLabel(s)}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDownIcon
+                          size={14}
+                          style={{
+                            position: "absolute",
+                            right: 12,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            pointerEvents: "none",
+                            color: "var(--ink-500)"
+                          }}
+                        />
+                      </div>
+                      <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                        Define a hierarquia completa exibida:{" "}
+                        <strong>
+                          {nomeGerencia(form.gerenciaId)}
+                          {form.subsecao ? ` / ${slugLabel(form.subsecao)}` : ""}
+                        </strong>
+                      </p>
+                    </div>
+                  );
+                })()}
+
+              {/* Jornada de Trabalho — apenas RH/admin */}
+              {isRhOuAdmin && (
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "var(--ink-500)",
+                      display: "block",
+                      marginBottom: 6
+                    }}
+                  >
+                    Jornada de Trabalho
+                  </label>
+                  <div style={{ position: "relative" }}>
+                    <select
+                      value={form.jornadaPeriodoId}
+                      onChange={(e) => setForm((f) => ({ ...f, jornadaPeriodoId: e.target.value }))}
+                      style={{
+                        width: "100%",
+                        appearance: "none",
+                        padding: "9px 32px 9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        background: "#fff",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-body)",
+                        color: "var(--ink-900)",
+                        cursor: "pointer",
+                        outline: "none",
+                        boxSizing: "border-box" as const
+                      }}
+                    >
+                      <option value="">Usar jornada padrão do sistema</option>
+                      {jornadasDisponiveis
+                        .filter((j) => j)
+                        .map((j) => (
+                          <option key={j.id} value={j.id}>
+                            {j.nome}
+                            {j.ePadrao ? " (Padrão)" : ""}
+                          </option>
+                        ))}
+                    </select>
+                    <ChevronDownIcon
+                      size={14}
+                      style={{
+                        position: "absolute",
+                        right: 12,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        pointerEvents: "none",
+                        color: "var(--ink-500)"
+                      }}
+                    />
+                  </div>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                    Jornadas configuradas em{" "}
+                    <a href="/ponto/configuracoes" style={{ color: "var(--burgundy-600)" }}>
+                      Configurações → Períodos
+                    </a>
+                    .
+                  </p>
+                </div>
+              )}
+
+              {/* Data de Nascimento */}
+              <div style={{ marginBottom: 16 }}>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 6
+                  }}
+                >
+                  Data de Nascimento
+                </label>
+                <input
+                  type="date"
+                  value={form.dataNascimento}
+                  onChange={(e) => setForm((f) => ({ ...f, dataNascimento: e.target.value }))}
+                  style={{
+                    width: "100%",
+                    padding: "9px 12px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    background: "#fff",
+                    fontSize: 13.5,
+                    fontFamily: "var(--font-body)",
+                    outline: "none",
+                    boxSizing: "border-box"
+                  }}
+                />
+                <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--ink-500)" }}>
+                  Necessário para liberar o Day Off de Aniversário.
+                </p>
+              </div>
+
+              {/* Data de Admissão */}
+              {isRhOuAdmin && (
+                <div style={{ marginBottom: 16 }}>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "var(--ink-500)",
+                      display: "block",
+                      marginBottom: 6
+                    }}
+                  >
+                    Data de Admissão
+                  </label>
+                  <input
+                    type="date"
+                    value={form.dataAdmissao}
+                    onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
+                    style={{
+                      width: "100%",
+                      padding: "9px 12px",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      background: "#fff",
+                      fontSize: 13.5,
+                      fontFamily: "var(--font-body)",
+                      outline: "none",
+                      boxSizing: "border-box"
+                    }}
+                  />
+                  <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--ink-500)" }}>
+                    Usada para calcular os ciclos de férias do funcionário.
+                  </p>
+                </div>
+              )}
+
+              {/* ── Modalidade de Trabalho Remoto (apenas RH/admin) ── */}
+              {isRhOuAdmin && (
+                <>
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "8px 0 16px"
+                    }}
+                  />
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: 12
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        letterSpacing: "0.07em",
+                        textTransform: "uppercase",
+                        color: "var(--burgundy-600)",
+                        margin: 0
+                      }}
+                    >
+                      Modalidade de Trabalho Remoto
+                    </p>
+                    {painel === "editar" && (
+                      <button
+                        onClick={() => void solicitarEndereco()}
+                        disabled={enviandoReq}
+                        title="Solicitar ao funcionário que preencha o endereço residencial"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 5,
+                          padding: "5px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.22)",
+                          background:
+                            requerimentoAtual?.status === "PENDENTE"
+                              ? "rgba(247,196,55,0.12)"
+                              : "transparent",
+                          cursor: enviandoReq ? "wait" : "pointer",
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          fontFamily: "var(--font-body)",
+                          color:
+                            requerimentoAtual?.status === "PENDENTE" ? "#8a6a00" : "var(--ink-600)",
+                          opacity: enviandoReq ? 0.6 : 1
+                        }}
+                      >
+                        <MapPinIcon size={13} />
+                        {enviandoReq
+                          ? "Enviando…"
+                          : requerimentoAtual?.status === "PENDENTE"
+                            ? "Aguardando resposta"
+                            : requerimentoAtual?.status === "RESPONDIDO"
+                              ? "Reenviar solicitação"
+                              : "Solicitar Endereço"}
+                      </button>
+                    )}
+                  </div>
+                  {requerimentoAtual && (
+                    <div
+                      style={{
+                        marginBottom: 12,
+                        padding: "8px 12px",
+                        borderRadius: "var(--radius-md)",
+                        fontSize: 12,
+                        background:
+                          requerimentoAtual.status === "PENDENTE"
+                            ? "rgba(247,196,55,0.10)"
+                            : "rgba(47,125,79,0.07)",
+                        border: `1px solid ${requerimentoAtual.status === "PENDENTE" ? "rgba(247,196,55,0.30)" : "rgba(47,125,79,0.18)"}`,
+                        color: requerimentoAtual.status === "PENDENTE" ? "#8a6a00" : "var(--green)"
+                      }}
+                    >
+                      {requerimentoAtual.status === "PENDENTE"
+                        ? `⏳ Solicitação enviada em ${new Date(requerimentoAtual.criadoEm).toLocaleDateString("pt-BR")} — aguardando o funcionário preencher o endereço.`
+                        : `✓ Funcionário respondeu a solicitação.`}
+                    </div>
+                  )}
+
+                  {/* Toggles mutuamente exclusivos */}
+                  {[
+                    [
+                      "modoHomeOffice",
+                      "Home Office",
+                      "Pode registrar o ponto de casa todos os dias"
+                    ] as const,
+                    [
+                      "modoHibridoLocal",
+                      "Híbrido",
+                      `Pode trabalhar de casa até ${hibridoMaxDias} dia(s) por semana (regra global)`
+                    ] as const
+                  ].map(([key, label, desc]) => (
+                    <div
+                      key={key}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        padding: "12px 0",
+                        borderBottom: "1px solid rgba(122,30,38,0.06)"
+                      }}
+                    >
+                      <div>
+                        <p style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>
+                          {label}
+                        </p>
+                        <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 2 }}>
+                          {desc}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() =>
+                          setModalidade((m) => ({
+                            modoHomeOffice: key === "modoHomeOffice" ? !m[key] : false,
+                            modoHibridoLocal: key === "modoHibridoLocal" ? !m[key] : false
+                          }))
+                        }
+                        style={{
+                          width: 44,
+                          height: 24,
+                          borderRadius: 12,
+                          border: "none",
+                          cursor: "pointer",
+                          flexShrink: 0,
+                          background: modalidade[key]
+                            ? "var(--burgundy-600)"
+                            : "rgba(122,30,38,0.15)",
+                          position: "relative",
+                          transition: "background 200ms"
+                        }}
+                      >
+                        <span
+                          style={{
+                            position: "absolute",
+                            top: 3,
+                            left: modalidade[key] ? 22 : 3,
+                            width: 18,
+                            height: 18,
+                            borderRadius: "50%",
+                            background: "#fff",
+                            transition: "left 200ms",
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.25)"
+                          }}
+                        />
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* Endereço residencial */}
+                  {true && (
+                    <div style={{ marginTop: 16 }}>
+                      <p
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          letterSpacing: "0.07em",
+                          textTransform: "uppercase",
+                          color: "var(--burgundy-600)",
+                          marginBottom: 12
+                        }}
+                      >
+                        Endereço Residencial
+                      </p>
+                      <p
+                        style={{
+                          fontSize: 11.5,
+                          color: "var(--ink-500)",
+                          marginBottom: 14,
+                          lineHeight: 1.5
+                        }}
+                      >
+                        Endereço residencial do funcionário. Usado para validar o ponto em Home
+                        Office e Híbrido — raio de <strong>{endereco.raioMetros ?? 20}m</strong>.
+                      </p>
+
+                      {/* CEP com busca */}
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr auto",
+                          gap: 8,
+                          marginBottom: 12
+                        }}
+                      >
+                        <div>
+                          <label
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              color: "var(--ink-500)",
+                              display: "block",
+                              marginBottom: 5
+                            }}
+                          >
+                            CEP
+                          </label>
+                          <input
+                            type="text"
+                            value={endereco.cep ?? ""}
+                            onChange={(e) => setEndereco((x) => ({ ...x, cep: e.target.value }))}
+                            onBlur={(e) => buscarCep(e.target.value)}
+                            placeholder="00000-000"
+                            style={{
+                              width: "100%",
+                              padding: "9px 12px",
+                              borderRadius: "var(--radius-md)",
+                              border: "1px solid rgba(122,30,38,0.14)",
+                              fontSize: 13.5,
+                              fontFamily: "var(--font-mono)",
+                              outline: "none",
+                              boxSizing: "border-box"
+                            }}
+                          />
+                        </div>
+                        <div style={{ display: "flex", alignItems: "flex-end" }}>
+                          <button
+                            onClick={() => buscarCep(endereco.cep ?? "")}
+                            disabled={cepLoading}
+                            style={{
+                              padding: "9px 12px",
+                              borderRadius: "var(--radius-md)",
+                              border: "1px solid rgba(122,30,38,0.20)",
+                              background: "transparent",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: "var(--burgundy-600)",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            {cepLoading ? "..." : "Buscar"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Logradouro + Número */}
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "3fr 1fr",
+                          gap: 10,
+                          marginBottom: 10
+                        }}
+                      >
+                        {[
+                          ["logradouro", "Logradouro", "Rua, Av..."],
+                          ["numero", "Nº", "S/N"]
+                        ].map(([k, l, ph]) => (
+                          <div key={k}>
+                            <label
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                letterSpacing: "0.06em",
+                                textTransform: "uppercase",
+                                color: "var(--ink-500)",
+                                display: "block",
+                                marginBottom: 5
+                              }}
+                            >
+                              {l}
+                            </label>
+                            <input
+                              type="text"
+                              value={
+                                ((endereco as unknown as Record<string, unknown>)[k] as string) ??
+                                ""
+                              }
+                              onChange={(e) => setEndereco((x) => ({ ...x, [k]: e.target.value }))}
+                              placeholder={ph}
+                              style={{
+                                width: "100%",
+                                padding: "9px 12px",
+                                borderRadius: "var(--radius-md)",
+                                border: "1px solid rgba(122,30,38,0.14)",
+                                fontSize: 13.5,
+                                fontFamily: "var(--font-body)",
+                                outline: "none",
+                                boxSizing: "border-box"
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Complemento */}
+                      <div style={{ marginBottom: 10 }}>
+                        <label
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 5
+                          }}
+                        >
+                          Complemento
+                        </label>
+                        <input
+                          type="text"
+                          value={endereco.complemento ?? ""}
+                          onChange={(e) =>
+                            setEndereco((x) => ({ ...x, complemento: e.target.value }))
+                          }
+                          placeholder="Apto 301, Bloco B..."
+                          style={{
+                            width: "100%",
+                            padding: "9px 12px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            fontSize: 13.5,
+                            fontFamily: "var(--font-body)",
+                            outline: "none",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+
+                      {/* Bairro, Cidade, UF */}
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "2fr 2fr 1fr",
+                          gap: 10,
+                          marginBottom: 12
+                        }}
+                      >
+                        {[
+                          ["bairro", "Bairro", ""],
+                          ["cidade", "Cidade", ""],
+                          ["uf", "UF", "DF"]
+                        ].map(([k, l, ph]) => (
+                          <div key={k}>
+                            <label
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                letterSpacing: "0.06em",
+                                textTransform: "uppercase",
+                                color: "var(--ink-500)",
+                                display: "block",
+                                marginBottom: 5
+                              }}
+                            >
+                              {l}
+                            </label>
+                            <input
+                              type="text"
+                              value={
+                                ((endereco as unknown as Record<string, unknown>)[k] as string) ??
+                                ""
+                              }
+                              onChange={(e) => setEndereco((x) => ({ ...x, [k]: e.target.value }))}
+                              placeholder={ph}
+                              style={{
+                                width: "100%",
+                                padding: "9px 12px",
+                                borderRadius: "var(--radius-md)",
+                                border: "1px solid rgba(122,30,38,0.14)",
+                                fontSize: 13.5,
+                                fontFamily: "var(--font-body)",
+                                outline: "none",
+                                boxSizing: "border-box"
+                              }}
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Raio + Mapa */}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-end",
+                          gap: 10,
+                          marginBottom: 12
+                        }}
+                      >
+                        <div style={{ width: 130 }}>
+                          <label
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              color: "var(--ink-500)",
+                              display: "block",
+                              marginBottom: 5
+                            }}
+                          >
+                            Raio (metros)
+                          </label>
+                          <input
+                            type="number"
+                            min={10}
+                            max={500}
+                            value={endereco.raioMetros ?? 20}
+                            onChange={(e) =>
+                              setEndereco((x) => ({ ...x, raioMetros: +e.target.value }))
+                            }
+                            style={{
+                              width: "100%",
+                              padding: "9px 12px",
+                              borderRadius: "var(--radius-md)",
+                              border: "1px solid rgba(122,30,38,0.14)",
+                              fontSize: 13.5,
+                              fontFamily: "var(--font-mono)",
+                              outline: "none",
+                              boxSizing: "border-box"
+                            }}
+                          />
+                        </div>
+                        <button
+                          onClick={() => void abrirMapaComGeocode()}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "9px 14px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1.5px solid rgba(122,30,38,0.22)",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: "var(--ink-700)",
+                            fontSize: 13,
+                            fontWeight: 500,
+                            fontFamily: "var(--font-body)",
+                            whiteSpace: "nowrap"
+                          }}
+                        >
+                          <MapPinIcon size={14} />
+                          {endereco.lat ? "Ajustar no Mapa" : "Definir no Mapa"}
+                        </button>
+                      </div>
+
+                      {/* Preview de coordenadas */}
+                      {endereco.lat && endereco.lng ? (
+                        <div
+                          style={{
+                            padding: "8px 12px",
+                            background: "rgba(47,125,79,0.07)",
+                            border: "1px solid rgba(47,125,79,0.18)",
+                            borderRadius: "var(--radius-md)",
+                            fontSize: 12,
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--green)"
+                          }}
+                        >
+                          {Number(endereco.lat).toLocaleString("en-US", {
+                            minimumFractionDigits: 6,
+                            maximumFractionDigits: 6
+                          })}
+                          ,{" "}
+                          {Number(endereco.lng).toLocaleString("en-US", {
+                            minimumFractionDigits: 6,
+                            maximumFractionDigits: 6
+                          })}{" "}
+                          · raio {endereco.raioMetros ?? 20}m
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            padding: "8px 12px",
+                            background: "rgba(200,57,63,0.05)",
+                            border: "1px solid rgba(200,57,63,0.15)",
+                            borderRadius: "var(--radius-md)",
+                            fontSize: 12,
+                            color: "var(--red)"
+                          }}
+                        >
+                          Sem coordenadas — defina no mapa para validar o ponto remoto
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
 
               {/* Situação */}
               {painel === "editar" && (
@@ -1090,10 +2248,11 @@ export function GestaoPage() {
               <button
                 className="btn btn-primary"
                 onClick={salvar}
-                disabled={!form.nome || !form.matricula || !form.gerenciaId}
+                disabled={!form.nome || !form.matricula || !form.gerenciaId || cpfBloqueio}
                 style={{
                   flex: 2,
-                  opacity: !form.nome || !form.matricula || !form.gerenciaId ? 0.5 : 1
+                  opacity:
+                    !form.nome || !form.matricula || !form.gerenciaId || cpfBloqueio ? 0.5 : 1
                 }}
               >
                 {painel === "novo" ? "Cadastrar Funcionário" : "Salvar Alterações"}
@@ -1101,6 +2260,20 @@ export function GestaoPage() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ── MapModal para endereço residencial ── */}
+      {mapaAberto && (
+        <MapModal
+          lat={endereco.lat ?? -15.7876}
+          lng={endereco.lng ?? -47.904}
+          raio={endereco.raioMetros ?? 20}
+          titulo="Localização Residencial"
+          minRaio={10}
+          maxRaio={500}
+          onConfirm={onMapaConfirm}
+          onClose={() => setMapaAberto(false)}
+        />
       )}
 
       {/* ── Modal de confirmação de exclusão ── */}

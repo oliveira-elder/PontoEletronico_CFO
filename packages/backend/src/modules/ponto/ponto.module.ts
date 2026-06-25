@@ -9,6 +9,7 @@ import { GestaoService } from "./gestao.service";
 import { FotoService } from "./foto.service";
 import { DocumentoService } from "./documento.service";
 import { FeriadosService } from "./feriados.service";
+import { FeriadoConfigService } from "./feriado-config.service";
 import { ConfigSolicitacoesService } from "./config-solicitacoes.service";
 import { PrismaModule } from "../../prisma/prisma.module";
 
@@ -22,8 +23,9 @@ import { PrismaModule } from "../../prisma/prisma.module";
     FotoService,
     DocumentoService,
     FeriadosService,
+    FeriadoConfigService,
     ConfigSolicitacoesService
   ],
-  exports: [PontoService, ConfigSolicitacoesService, FeriadosService]
+  exports: [PontoService, ConfigSolicitacoesService, FeriadosService, FeriadoConfigService]
 })
 export class PontoModule {}

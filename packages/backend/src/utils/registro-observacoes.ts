@@ -1,7 +1,7 @@
 export interface ObservacaoRegistro {
   data: string;
   texto: string;
-  tipo?: "AJUSTE_HORARIO" | "INCLUSAO_PONTO";
+  tipo?: "AJUSTE_HORARIO" | "INCLUSAO_PONTO" | "AJUSTE_AUTOMATICO";
   solicitacaoId?: string;
   tipoRegistro?: string;
   horarioAnterior?: string | null;
@@ -12,7 +12,9 @@ export const TIPO_PONTO_LABEL: Record<string, string> = {
   ENTRADA: "Entrada",
   INICIO_INTERVALO: "Início de Intervalo",
   FIM_INTERVALO: "Fim de Intervalo",
-  SAIDA: "Saída"
+  SAIDA: "Saída",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
 
 export function parseObservacoes(raw: unknown): ObservacaoRegistro[] {
@@ -34,8 +36,21 @@ export function textoAjusteHorario(params: {
   horarioNovo: string;
   solicitacaoId: string;
   acao: "CORRIGIR" | "INCLUIR";
+  autorRH?: string; // quando definido, indica correção iniciada pelo RH
 }): string {
   const label = TIPO_PONTO_LABEL[params.tipoRegistro] ?? params.tipoRegistro;
+
+  if (params.autorRH) {
+    const sufixo = `pelo setor de RH (${params.autorRH}), aprovada pelo Gerente de RH`;
+    if (params.acao === "INCLUIR") {
+      return `Horário de ${label} (${params.horarioNovo}) incluído ${sufixo}.`;
+    }
+    if (params.horarioAnterior) {
+      return `Horário de ${label} alterado de ${params.horarioAnterior} para ${params.horarioNovo} ${sufixo}.`;
+    }
+    return `Horário de ${label} ajustado para ${params.horarioNovo} ${sufixo}.`;
+  }
+
   if (params.acao === "INCLUIR") {
     return `Horário de ${label} (${params.horarioNovo}) incluído conforme sua solicitação aprovada.`;
   }
@@ -51,6 +66,7 @@ export function criarObservacaoAjuste(params: {
   horarioNovo: string;
   solicitacaoId: string;
   acao: "CORRIGIR" | "INCLUIR";
+  autorRH?: string;
 }): ObservacaoRegistro {
   return {
     data: new Date().toISOString(),

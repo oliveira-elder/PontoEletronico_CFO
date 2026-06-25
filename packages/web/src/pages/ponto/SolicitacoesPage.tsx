@@ -2,19 +2,30 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { PlusIcon, CheckCircleIcon, CalendarIcon, RefreshCwIcon } from "../../components/icons";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import { FeriasDetalheBlock } from "./solicitacaoUi";
 
 /* ══════════════════════════════════════════
    TIPOS
 ══════════════════════════════════════════ */
 
-type TipoSolicitacao = "CORRECAO_PONTO" | "ATESTADO" | "FERIAS" | "LICENCA" | "ABONO";
+type TipoSolicitacao =
+  | "CORRECAO_PONTO"
+  | "ATESTADO"
+  | "FERIAS"
+  | "LICENCA"
+  | "ABONO"
+  | "DAY_OFF"
+  | "HORA_EXTRA";
 type StatusSolicitacao =
   | "PENDENTE"
   | "AGUARDANDO_RH"
+  | "AGUARDANDO_DOCUMENTO_FUNCIONARIO"
   | "APROVADA"
   | "REJEITADA"
   | "REJEITADA_GESTOR"
-  | "REJEITADA_RH";
+  | "REJEITADA_RH"
+  | "CANCELADA";
 
 interface Solicitacao {
   id: string;
@@ -29,6 +40,11 @@ interface Solicitacao {
   gestorObservacao?: string;
   rhObservacao?: string;
   resolvidoEm?: string;
+  guiaMedicoUrl?: string | null;
+  guiaMedicoEnviadaEm?: string | null;
+  guiaMedicoObservacao?: string | null;
+  documentoRetornoUrl?: string | null;
+  documentoRetornoEm?: string | null;
   createdAt: string;
 }
 
@@ -43,7 +59,6 @@ interface RegistroDoDia {
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
   atestadoDiasLimiteInss: number;
-  atestadoGuiaUrl: string | null;
   atestadoMensagemOriginais: string;
   feriasAntecedenciaMinDias: number;
   feriasMinimoGrandePeriodo: number;
@@ -51,6 +66,13 @@ interface ConfigSolicitacoes {
   feriasMaxPeriodos: number;
   feriasMaxDiasVenda: number;
   feriasVedacaoPreFeriadoDias: number;
+  tipoAtivoCorrecaoPonto?: boolean;
+  tipoAtivoAtestado?: boolean;
+  tipoAtivoFerias?: boolean;
+  tipoAtivoLicenca?: boolean;
+  tipoAtivoAbono?: boolean;
+  tipoAtivoDayOff?: boolean;
+  tipoAtivoHoraExtra?: boolean;
 }
 
 const TIPO_LABEL: Record<TipoSolicitacao, string> = {
@@ -58,7 +80,9 @@ const TIPO_LABEL: Record<TipoSolicitacao, string> = {
   ATESTADO: "Atestado Médico",
   FERIAS: "Férias",
   LICENCA: "Licença",
-  ABONO: "Abono"
+  ABONO: "Abono",
+  DAY_OFF: "Day Off de Aniversário",
+  HORA_EXTRA: "Hora Extra"
 };
 
 const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
@@ -66,15 +90,28 @@ const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
   ATESTADO: "🏥",
   FERIAS: "🌴",
   LICENCA: "📋",
-  ABONO: "📆"
+  ABONO: "📆",
+  DAY_OFF: "🎂",
+  HORA_EXTRA: "⏱️"
 };
 
 const TIPO_PONTO_LABEL: Record<string, string> = {
   ENTRADA: "Entrada",
   INICIO_INTERVALO: "Início de Intervalo",
   FIM_INTERVALO: "Fim de Intervalo",
-  SAIDA: "Saída"
+  SAIDA: "Saída",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
+
+/* Status que encerram a análise — a partir daqui, documentos anexados pelo
+   funcionário não podem mais ser editados/substituídos. */
+const STATUS_FINALIZADOS: StatusSolicitacao[] = [
+  "APROVADA",
+  "REJEITADA",
+  "REJEITADA_GESTOR",
+  "REJEITADA_RH"
+];
 
 /* ══════════════════════════════════════════
    HELPERS
@@ -158,10 +195,12 @@ function StatusBadge({ status }: { status: StatusSolicitacao }) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
     PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
+    AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguardando seu documento", cls: "badge-amber" },
     APROVADA: { label: "Aprovada", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     REJEITADA_GESTOR: { label: "Rejeitada pelo Gestor", cls: "badge-red" },
-    REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" }
+    REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" },
+    CANCELADA: { label: "Cancelada (substituída)", cls: "badge-amber" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-amber" };
   return <span className={`badge ${cls}`}>{label}</span>;
@@ -171,7 +210,29 @@ function StatusBadge({ status }: { status: StatusSolicitacao }) {
    SELETOR DE TIPO
 ══════════════════════════════════════════ */
 
-function TipoSeletor({ onSelect }: { onSelect: (t: TipoSolicitacao) => void }) {
+const TIPO_FLAG: Record<TipoSolicitacao, keyof ConfigSolicitacoes> = {
+  CORRECAO_PONTO: "tipoAtivoCorrecaoPonto",
+  ATESTADO: "tipoAtivoAtestado",
+  FERIAS: "tipoAtivoFerias",
+  LICENCA: "tipoAtivoLicenca",
+  ABONO: "tipoAtivoAbono",
+  DAY_OFF: "tipoAtivoDayOff",
+  HORA_EXTRA: "tipoAtivoHoraExtra"
+};
+
+function TipoSeletor({
+  onSelect,
+  config
+}: {
+  onSelect: (t: TipoSolicitacao) => void;
+  config: ConfigSolicitacoes | null;
+}) {
+  const tipos = (Object.keys(TIPO_LABEL) as TipoSolicitacao[]).filter((t) => {
+    const flag = TIPO_FLAG[t];
+    const val = config?.[flag];
+    return val === undefined || val === true;
+  });
+
   return (
     <div>
       <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16 }}>
@@ -184,7 +245,7 @@ function TipoSeletor({ onSelect }: { onSelect: (t: TipoSolicitacao) => void }) {
           gap: 10
         }}
       >
-        {(Object.keys(TIPO_LABEL) as TipoSolicitacao[]).map((t) => (
+        {tipos.map((t) => (
           <button
             key={t}
             onClick={() => onSelect(t)}
@@ -240,6 +301,14 @@ function horarioDentroFaixa(horario: string, min: string, max: string): boolean 
   return atual >= hMin * 60 + mMin && atual <= hMax * 60 + mMax;
 }
 
+/* Tipos de registro exibidos no formulário de correção */
+const TIPOS_CORRECAO = [
+  { tipo: "ENTRADA", label: "Entrada", emoji: "🟢" },
+  { tipo: "INICIO_INTERVALO", label: "Início Intervalo", emoji: "🟡" },
+  { tipo: "FIM_INTERVALO", label: "Fim Intervalo", emoji: "🔵" },
+  { tipo: "SAIDA", label: "Saída", emoji: "🔴" }
+] as const;
+
 function FormCorrecaoPonto({
   onSubmit,
   enviando
@@ -248,15 +317,19 @@ function FormCorrecaoPonto({
   enviando: boolean;
 }) {
   const [dataRef, setDataRef] = useState("");
-  const [acao, setAcao] = useState<"CORRIGIR" | "INCLUIR">("CORRIGIR");
   const [registros, setRegistros] = useState<RegistroDoDia[]>([]);
   const [loadingRegistros, setLoadingRegistros] = useState(false);
-  const [registroId, setRegistroId] = useState("");
-  const [horarioSolicitado, setHorarioSolicitado] = useState("");
-  const [tipoInclusao, setTipoInclusao] = useState("ENTRADA");
   const [descricao, setDescricao] = useState("");
   const [horarioMin, setHorarioMin] = useState("06:00");
   const [horarioMax, setHorarioMax] = useState("23:59");
+
+  /* Horários desejados para cada tipo — "" = sem alteração */
+  const [horarios, setHorarios] = useState<Record<string, string>>({
+    ENTRADA: "",
+    INICIO_INTERVALO: "",
+    FIM_INTERVALO: "",
+    SAIDA: ""
+  });
 
   useEffect(() => {
     api
@@ -271,6 +344,7 @@ function FormCorrecaoPonto({
   const carregarRegistros = useCallback(async (data: string) => {
     if (!data) return;
     setLoadingRegistros(true);
+    setHorarios({ ENTRADA: "", INICIO_INTERVALO: "", FIM_INTERVALO: "", SAIDA: "" });
     try {
       const lista = await api.get<RegistroDoDia[]>(`/ponto/registros-do-dia?data=${data}`);
       setRegistros(lista ?? []);
@@ -285,24 +359,44 @@ function FormCorrecaoPonto({
     if (dataRef) carregarRegistros(dataRef);
   }, [dataRef, carregarRegistros]);
 
-  const horarioInvalido = horarioSolicitado
-    ? !horarioDentroFaixa(horarioSolicitado, horarioMin, horarioMax)
-    : false;
+  /* Retorna o registro existente para um tipo */
+  const regDoTipo = (tipo: string) => registros.find((r) => r.tipo === tipo);
+
+  /* Valida todos os horários preenchidos */
+  const erros: Record<string, string> = {};
+  for (const { tipo } of TIPOS_CORRECAO) {
+    const h = horarios[tipo];
+    if (h && !horarioDentroFaixa(h, horarioMin, horarioMax)) {
+      erros[tipo] = `Fora da faixa ${horarioMin}–${horarioMax}`;
+    }
+  }
+
+  /* Constrói a lista de correções apenas dos campos alterados */
+  const correcoesDia = TIPOS_CORRECAO.map(({ tipo }) => {
+    const novoHorario = horarios[tipo];
+    if (!novoHorario) return null;
+    const reg = regDoTipo(tipo);
+    const atual = reg ? fmtTime(reg.dataHora) : null;
+    if (novoHorario === atual) return null; // sem mudança
+    return {
+      acao: reg ? "CORRIGIR" : "INCLUIR",
+      tipoRegistro: tipo,
+      horario: novoHorario,
+      registroId: reg?.id,
+      horarioOriginal: atual ?? undefined
+    };
+  }).filter(Boolean);
+
+  const temAlteracao = correcoesDia.length > 0;
+  const temErro = Object.keys(erros).length > 0;
 
   const handleSubmit = () => {
-    if (!dataRef || !horarioSolicitado || !descricao || horarioInvalido) return;
-    const reg = registros.find((r) => r.id === registroId);
+    if (!dataRef || !descricao || !temAlteracao || temErro) return;
     onSubmit({
       tipo: "CORRECAO_PONTO",
       dataReferencia: new Date(dataRef + "T12:00:00").toISOString(),
       descricao,
-      metadados: {
-        acao,
-        registroId: acao === "CORRIGIR" ? registroId : null,
-        tipoRegistro: acao === "CORRIGIR" ? reg?.tipo : tipoInclusao,
-        horarioOriginal: acao === "CORRIGIR" && reg ? fmtTime(reg.dataHora) : null,
-        horarioSolicitado
-      }
+      metadados: { correcoesDia }
     });
   };
 
@@ -323,110 +417,162 @@ function FormCorrecaoPonto({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Data */}
       <div>
         <label style={labelBase}>Data de referência</label>
         <input
           type="date"
-          style={input}
+          style={{ ...input, maxWidth: 200 }}
           value={dataRef}
           onChange={(e) => setDataRef(e.target.value)}
           max={new Date().toISOString().slice(0, 10)}
         />
       </div>
 
-      <div>
-        <label style={labelBase}>Tipo de ação</label>
-        <div style={{ display: "flex", gap: 10 }}>
-          {(["CORRIGIR", "INCLUIR"] as const).map((a) => (
-            <button
-              key={a}
-              onClick={() => setAcao(a)}
-              style={{
-                flex: 1,
-                padding: "9px 12px",
-                border: `2px solid ${acao === a ? "var(--burgundy-600)" : "rgba(122,30,38,0.15)"}`,
-                borderRadius: "var(--radius-md)",
-                background: acao === a ? "rgba(122,30,38,0.05)" : "#fff",
-                cursor: "pointer",
-                fontSize: 13,
-                fontWeight: 600,
-                color: acao === a ? "var(--burgundy-600)" : "var(--ink-500)"
-              }}
-            >
-              {a === "CORRIGIR" ? "✏️ Corrigir horário existente" : "➕ Incluir ponto faltante"}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {acao === "CORRIGIR" && (
-        <div>
-          <label style={labelBase}>
-            De (ponto do dia)
+      {/* Tabela de horários */}
+      {dataRef && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <p
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: "var(--ink-400)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              margin: "0 0 8px"
+            }}
+          >
+            Registros do dia
             {loadingRegistros && (
               <span style={{ fontWeight: 400, marginLeft: 8 }}>⏳ carregando...</span>
             )}
-          </label>
-          {registros.length === 0 && !loadingRegistros && dataRef ? (
-            <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>
-              Nenhum registro encontrado para este dia.
-            </p>
-          ) : (
-            <select
-              style={input}
-              value={registroId}
-              onChange={(e) => setRegistroId(e.target.value)}
-            >
-              <option value="">Selecione o registro...</option>
-              {registros.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {fmtTime(r.dataHora)} — {TIPO_PONTO_LABEL[r.tipo] ?? r.tipo}
-                  {r.ajustado ? " (já ajustado)" : ""}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-      )}
-
-      {acao === "INCLUIR" && (
-        <div>
-          <label style={labelBase}>Tipo do ponto a incluir</label>
-          <select
-            style={input}
-            value={tipoInclusao}
-            onChange={(e) => setTipoInclusao(e.target.value)}
-          >
-            {Object.entries(TIPO_PONTO_LABEL).map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div>
-        <label style={labelBase}>Para (horário correto)</label>
-        <input
-          type="time"
-          style={{ ...input, maxWidth: 140 }}
-          value={horarioSolicitado}
-          min={horarioMin}
-          max={horarioMax}
-          onChange={(e) => setHorarioSolicitado(e.target.value)}
-        />
-        <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "4px 0 0" }}>
-          Permitido entre {horarioMin} e {horarioMax} (horário de Brasília).
-        </p>
-        {horarioInvalido && (
-          <p style={{ fontSize: 11.5, color: "var(--red)", margin: "4px 0 0" }}>
-            Horário fora da faixa permitida.
           </p>
-        )}
-      </div>
 
+          {/* Cabeçalho */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 110px 110px",
+              gap: "0 12px",
+              padding: "6px 10px",
+              background: "rgba(122,30,38,0.04)",
+              borderRadius: "var(--radius-md)",
+              marginBottom: 4
+            }}
+          >
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-500)" }}>
+              Tipo de registro
+            </span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-500)" }}>Atual</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-500)" }}>
+              Corrigir para
+            </span>
+          </div>
+
+          {TIPOS_CORRECAO.map(({ tipo, label, emoji }) => {
+            const reg = regDoTipo(tipo);
+            const atual = reg ? fmtTime(reg.dataHora) : null;
+            const novo = horarios[tipo];
+            const mudou = novo && novo !== atual;
+            const erro = erros[tipo];
+            return (
+              <div
+                key={tipo}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 110px 110px",
+                  gap: "0 12px",
+                  padding: "10px 10px",
+                  borderRadius: "var(--radius-md)",
+                  alignItems: "center",
+                  background: mudou ? "rgba(37,99,235,0.04)" : "#fff",
+                  border: mudou
+                    ? "1px solid rgba(37,99,235,0.18)"
+                    : "1px solid rgba(122,30,38,0.07)"
+                }}
+              >
+                {/* Label */}
+                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-800)" }}>
+                  {emoji} {label}
+                  {reg?.ajustado && (
+                    <span
+                      style={{ fontSize: 10, color: "#1e40af", marginLeft: 6, fontWeight: 400 }}
+                    >
+                      já ajustado
+                    </span>
+                  )}
+                </span>
+
+                {/* Atual */}
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 13,
+                    color: atual ? "var(--ink-700)" : "var(--ink-300)"
+                  }}
+                >
+                  {atual ?? "—"}
+                </span>
+
+                {/* Novo horário */}
+                <div>
+                  <input
+                    type="time"
+                    value={novo}
+                    onChange={(e) => setHorarios((h) => ({ ...h, [tipo]: e.target.value }))}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 13,
+                      border: `1px solid ${erro ? "rgba(200,57,63,0.5)" : mudou ? "rgba(37,99,235,0.4)" : "rgba(122,30,38,0.14)"}`,
+                      borderRadius: "var(--radius-md)",
+                      background: mudou ? "rgba(37,99,235,0.04)" : "#fff",
+                      boxSizing: "border-box"
+                    }}
+                  />
+                  {erro && (
+                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--red)" }}>{erro}</p>
+                  )}
+                  {mudou && !erro && (
+                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "#1e40af" }}>
+                      {reg ? `${atual} → ${novo}` : `Incluir ${novo}`}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {!loadingRegistros && !temAlteracao && (
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                margin: "8px 0 0",
+                fontStyle: "italic"
+              }}
+            >
+              Preencha ao menos um horário para criar a solicitação.
+            </p>
+          )}
+          {temAlteracao && (
+            <p style={{ fontSize: 12, color: "#1e40af", margin: "8px 0 0", fontWeight: 500 }}>
+              {correcoesDia.length} alteração{correcoesDia.length !== 1 ? "ões" : ""} detectada
+              {correcoesDia.length !== 1 ? "s" : ""} — será enviada como uma única solicitação ao
+              gestor.
+            </p>
+          )}
+
+          <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: "4px 0 0" }}>
+            Horário permitido: {horarioMin} – {horarioMax} (Brasília). Deixe em branco para não
+            alterar.
+          </p>
+        </div>
+      )}
+
+      {/* Justificativa */}
       <div>
         <label style={labelBase}>
           Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
@@ -442,14 +588,7 @@ function FormCorrecaoPonto({
 
       <button
         className="btn btn-primary"
-        disabled={
-          enviando ||
-          !dataRef ||
-          !horarioSolicitado ||
-          !descricao ||
-          horarioInvalido ||
-          (acao === "CORRIGIR" && !registroId)
-        }
+        disabled={enviando || !dataRef || !descricao || !temAlteracao || temErro}
         onClick={handleSubmit}
       >
         {enviando ? "Enviando…" : "Enviar Solicitação"}
@@ -638,7 +777,9 @@ function FormAtestado({
   const [documentoMime, setDocumentoMime] = useState<string>("image/jpeg");
   const [nomeArquivo, setNomeArquivo] = useState("");
 
+  const isMobile = useIsMobile(768);
   const dias = diffDias(dataInicio, dataFim);
+  const diaUnico = dias <= 1;
   const limite = config?.atestadoDiasLimiteSimples ?? 3;
   const limiteInss = config?.atestadoDiasLimiteInss ?? 14;
 
@@ -671,8 +812,8 @@ function FormAtestado({
       dataFim: new Date((dataFim || dataInicio) + "T23:59:59").toISOString(),
       descricao,
       metadados: {
-        horarioInicio: horaInicio || null,
-        horarioFim: horaFim || null,
+        horarioInicio: diaUnico ? horaInicio || null : null,
+        horarioFim: diaUnico ? horaFim || null : null,
         diasDuracao: dias,
         requerHomologacao: dias > limite && dias < limiteInss,
         requerInss: dias >= limiteInss,
@@ -710,8 +851,14 @@ function FormAtestado({
             style={input}
             value={dataInicio}
             onChange={(e) => {
-              setDataInicio(e.target.value);
-              if (!dataFim) setDataFim(e.target.value);
+              const novoInicio = e.target.value;
+              setDataInicio(novoInicio);
+              if (!dataFim) {
+                setDataFim(novoInicio);
+              } else if (dataFim !== novoInicio) {
+                setHoraInicio("");
+                setHoraFim("");
+              }
             }}
           />
         </div>
@@ -722,7 +869,14 @@ function FormAtestado({
             style={input}
             value={dataFim}
             min={dataInicio}
-            onChange={(e) => setDataFim(e.target.value)}
+            onChange={(e) => {
+              const novoFim = e.target.value;
+              setDataFim(novoFim);
+              if (novoFim !== dataInicio) {
+                setHoraInicio("");
+                setHoraFim("");
+              }
+            }}
           />
         </div>
       </div>
@@ -733,53 +887,61 @@ function FormAtestado({
           <strong>
             {dias} dia{dias !== 1 ? "s" : ""}
           </strong>
-          {dataInicio === dataFim ? " — dia inteiro ou período" : ""}
+          {diaUnico ? " — dia inteiro ou período" : " — dias inteiros"}
         </p>
       )}
 
-      {/* Atalhos de período */}
-      <div>
-        <label style={labelBase}>Período do atestado (atalhos)</label>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => aplicarAtalho("MATUTINO")}
-          >
-            ☀️ Matutino (08:00–12:00)
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => aplicarAtalho("VESPERTINO")}
-          >
-            🌆 Vespertino (13:00–18:00)
-          </button>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div>
-            <label style={labelBase}>Horário inicial</label>
-            <input
-              type="time"
-              style={{ ...input, maxWidth: 140 }}
-              value={horaInicio}
-              onChange={(e) => setHoraInicio(e.target.value)}
-            />
+      {/* Atalhos de período (apenas para atestado de 1 dia) */}
+      {diaUnico ? (
+        <div>
+          <label style={labelBase}>Período do atestado (atalhos)</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => aplicarAtalho("MATUTINO")}
+            >
+              ☀️ Matutino (08:00–12:00)
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => aplicarAtalho("VESPERTINO")}
+            >
+              🌆 Vespertino (13:00–18:00)
+            </button>
           </div>
-          <div>
-            <label style={labelBase}>Horário final</label>
-            <input
-              type="time"
-              style={{ ...input, maxWidth: 140 }}
-              value={horaFim}
-              onChange={(e) => setHoraFim(e.target.value)}
-            />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={labelBase}>Horário inicial</label>
+              <input
+                type="time"
+                style={{ ...input, maxWidth: 140 }}
+                value={horaInicio}
+                onChange={(e) => setHoraInicio(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={labelBase}>Horário final</label>
+              <input
+                type="time"
+                style={{ ...input, maxWidth: 140 }}
+                value={horaFim}
+                onChange={(e) => setHoraFim(e.target.value)}
+              />
+            </div>
           </div>
+          <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+            Deixe em branco se o atestado cobrir o dia inteiro.
+          </p>
         </div>
-        <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-          Deixe em branco se o atestado cobrir o dia inteiro.
-        </p>
-      </div>
+      ) : (
+        dias > 1 && (
+          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
+            Atestados com mais de um dia são sempre considerados dia inteiro (sem horário parcial).
+          </p>
+        )
+      )}
 
       {/* Banner de regras */}
       {config && dias > 0 && (
@@ -812,23 +974,10 @@ function FormAtestado({
                 ⚠️ Atestado com homologação necessária ({limite + 1}–{limiteInss - 1} dias)
               </p>
               <p style={{ fontSize: 12.5, color: "#92400e", margin: "0 0 8px" }}>
-                É necessário a Guia do Médico do Trabalho. Baixe, preencha e leve ao médico.
+                Após a aprovação do seu gestor, o RH avaliará se este atestado precisa de uma Guia
+                do Médico do Trabalho. Caso seja necessário, o RH enviará a guia específica
+                diretamente nesta solicitação e você poderá acompanhá-la aqui.
               </p>
-              {config.atestadoGuiaUrl && (
-                <a
-                  href={config.atestadoGuiaUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    color: "#92400e",
-                    textDecoration: "underline"
-                  }}
-                >
-                  📄 Baixar Guia do Médico do Trabalho
-                </a>
-              )}
               <p style={{ fontSize: 12.5, color: "#92400e", margin: "6px 0 0" }}>
                 {config.atestadoMensagemOriginais}
               </p>
@@ -854,13 +1003,15 @@ function FormAtestado({
       <div>
         <label style={labelBase}>Documento do atestado (foto ou PDF)</label>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <CameraScanner
-            onCaptura={(b64) => {
-              setDocumentoBase64(b64);
-              setDocumentoMime("image/jpeg");
-              setNomeArquivo("foto-câmera.jpg");
-            }}
-          />
+          {isMobile && (
+            <CameraScanner
+              onCaptura={(b64) => {
+                setDocumentoBase64(b64);
+                setDocumentoMime("image/jpeg");
+                setNomeArquivo("foto-câmera.jpg");
+              }}
+            />
+          )}
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="file"
@@ -931,8 +1082,25 @@ function FormAtestado({
 }
 
 /* ══════════════════════════════════════════
-   FORMULÁRIO: FÉRIAS
+   FORMULÁRIO: FÉRIAS (multi-período)
 ══════════════════════════════════════════ */
+
+interface PeriodoFerias {
+  dataInicio: string;
+  dataFim: string;
+  dias: number;
+}
+interface SaldoFerias {
+  dataAdmissao: string;
+  ciclosVencidos: number;
+  diasDisponiveis: number;
+  diasGozo: number;
+  diasVendidos: number;
+  totalVencido: number;
+  obrigatorio: boolean;
+  mesesTotal: number;
+  ciclos: Array<{ numero: number; inicio: string; fim: string }>;
+}
 
 function FormFerias({
   config,
@@ -943,14 +1111,6 @@ function FormFerias({
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
 }) {
-  const [dataInicio, setDataInicio] = useState("");
-  const [dataFim, setDataFim] = useState("");
-  const [diasVenda, setDiasVenda] = useState(0);
-  const [periodoNumero, setPeriodoNumero] = useState(1);
-  const [descricao, setDescricao] = useState("");
-  const [erros, setErros] = useState<string[]>([]);
-  const [feriadosVedados, setFeriadosVedados] = useState<string[]>([]);
-
   const cfg = config ?? {
     feriasAntecedenciaMinDias: 30,
     feriasMinimoGrandePeriodo: 14,
@@ -960,65 +1120,148 @@ function FormFerias({
     feriasVedacaoPreFeriadoDias: 2
   };
 
-  const dias = diffDias(dataInicio, dataFim);
+  const [saldo, setSaldo] = useState<SaldoFerias | null>(null);
+  const [saldoLoading, setSaldoLoading] = useState(true);
+  const [periodos, setPeriodos] = useState<PeriodoFerias[]>([
+    { dataInicio: "", dataFim: "", dias: 0 }
+  ]);
+  const [diasVenda, setDiasVenda] = useState(0);
+  const [descricao, setDescricao] = useState("");
+  const [erros, setErros] = useState<string[]>([]);
+
+  useEffect(() => {
+    api
+      .get<SaldoFerias>("/ponto/ferias/saldo")
+      .then((s) => setSaldo(s))
+      .catch(() => setSaldo(null))
+      .finally(() => setSaldoLoading(false));
+  }, []);
+
   const hoje = new Date();
   const minData = new Date(hoje);
   minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
+  const minDataStr = minData.toISOString().slice(0, 10);
 
-  useEffect(() => {
-    if (!dataInicio) return;
-    const ano = parseInt(dataInicio.slice(0, 4));
-    api
-      .get<{ date: string; name: string }[]>(`/ponto/feriados?ano=${ano}`)
-      .then((lista) => {
-        const vedados = (lista ?? [])
-          .filter((f) => {
-            const d = new Date(f.date + "T12:00:00");
-            const inicio = new Date(dataInicio + "T12:00:00");
-            const diff = (d.getTime() - inicio.getTime()) / 86_400_000;
-            return diff >= -cfg.feriasVedacaoPreFeriadoDias && diff <= 0;
-          })
-          .map((f) => f.name);
-        setFeriadosVedados(vedados);
-      })
-      .catch(() => {});
-  }, [dataInicio, cfg.feriasVedacaoPreFeriadoDias]);
+  const totalDiasGozo = periodos.reduce((s, p) => s + p.dias, 0);
+  const totalDiasUtilizados = totalDiasGozo + diasVenda;
+  const diasRestantes = (saldo?.diasDisponiveis ?? 0) - totalDiasUtilizados;
+  const maxVenda = Math.min(
+    cfg.feriasMaxDiasVenda,
+    saldo?.diasDisponiveis ?? cfg.feriasMaxDiasVenda
+  );
+  // venda ocupa 1 slot dos feriasMaxPeriodos disponíveis
+  const maxPeriodosGozo = diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
+
+  function calcDias(ini: string, fim: string) {
+    return diffDias(ini, fim);
+  }
+
+  function updPeriodo(idx: number, field: "dataInicio" | "dataFim", val: string) {
+    setPeriodos((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: val };
+      const p = next[idx];
+      if (p.dataInicio && p.dataFim) next[idx].dias = calcDias(p.dataInicio, p.dataFim);
+      return next;
+    });
+  }
+
+  function addPeriodo() {
+    if (periodos.length < maxPeriodosGozo) {
+      setPeriodos((p) => [...p, { dataInicio: "", dataFim: "", dias: 0 }]);
+    }
+  }
+
+  function removePeriodo(idx: number) {
+    if (periodos.length > 1) setPeriodos((p) => p.filter((_, i) => i !== idx));
+  }
 
   useEffect(() => {
     const errs: string[] = [];
-    if (dataInicio) {
-      const inicio = new Date(dataInicio + "T12:00:00");
-      if (inicio < minData) {
-        errs.push(
-          `Solicitação deve ser feita com pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
-        );
-      }
-      if (feriadosVedados.length > 0) {
-        errs.push(
-          `Início vedado: próximo ao feriado "${feriadosVedados[0]}" (regra dos ${cfg.feriasVedacaoPreFeriadoDias} dias).`
-        );
-      }
+    const todosPreenchidos = periodos.every((p) => p.dataInicio && p.dataFim);
+
+    // venda excede limite de slots
+    if (diasVenda > 0 && periodos.length > maxPeriodosGozo) {
+      errs.push(`Com venda de dias, o máximo é ${maxPeriodosGozo} período(s) de gozo.`);
     }
-    if (dias > 0) {
-      if (periodoNumero === 1 && dias < cfg.feriasMinimoGrandePeriodo) {
-        errs.push(`O primeiro período deve ter no mínimo ${cfg.feriasMinimoGrandePeriodo} dias.`);
-      }
-      if (periodoNumero > 1 && dias < cfg.feriasMinimoOutrosPeriodos) {
-        errs.push(`Este período deve ter no mínimo ${cfg.feriasMinimoOutrosPeriodos} dias.`);
-      }
+
+    // validação por período
+    periodos.forEach((p, i) => {
+      if (!p.dataInicio || !p.dataFim) return;
+      if (new Date(p.dataInicio) < minData)
+        errs.push(
+          `Período ${i + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
+        );
+      if (p.dias > 0 && p.dias < cfg.feriasMinimoOutrosPeriodos)
+        errs.push(`Período ${i + 1}: mínimo de ${cfg.feriasMinimoOutrosPeriodos} dias.`);
+    });
+
+    // ao menos um período deve ter o mínimo do grande período
+    if (
+      todosPreenchidos &&
+      periodos.length > 0 &&
+      !periodos.some((p) => p.dias >= cfg.feriasMinimoGrandePeriodo)
+    ) {
+      errs.push(
+        `Ao menos um período deve ter no mínimo ${cfg.feriasMinimoGrandePeriodo} dias corridos.`
+      );
     }
+
+    if (diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
+
+    // invariante: gozo + venda = dias disponíveis
+    if (saldo && todosPreenchidos && diasRestantes !== 0) {
+      errs.push(
+        diasRestantes > 0
+          ? `Gozo + venda deve igualar os ${saldo.diasDisponiveis} dias disponíveis (faltam ${diasRestantes} dias).`
+          : `Total excede os ${saldo.diasDisponiveis} dias disponíveis (sobram ${-diasRestantes} dias).`
+      );
+    }
+
     setErros(errs);
-  }, [dataInicio, dataFim, dias, periodoNumero, feriadosVedados, cfg, minData]);
+  }, [
+    periodos,
+    diasVenda,
+    saldo,
+    totalDiasUtilizados,
+    diasRestantes,
+    maxVenda,
+    maxPeriodosGozo,
+    cfg,
+    minData
+  ]);
+
+  const diasDisponiveis = saldo?.diasDisponiveis ?? 0;
+
+  const podeEnviar =
+    periodos.every((p) => p.dataInicio && p.dataFim && p.dias > 0) &&
+    erros.length === 0 &&
+    totalDiasUtilizados > 0;
 
   const handleSubmit = () => {
-    if (!dataInicio || !dataFim || !descricao || erros.length > 0) return;
+    if (!podeEnviar) return;
+    const primeiroInicio = periodos.reduce(
+      (m, p) => (!m || p.dataInicio < m ? p.dataInicio : m),
+      ""
+    );
+    const ultimoFim = periodos.reduce((m, p) => (!m || p.dataFim > m ? p.dataFim : m), "");
     onSubmit({
       tipo: "FERIAS",
-      dataReferencia: new Date(dataInicio + "T12:00:00").toISOString(),
-      dataInicio: new Date(dataInicio + "T00:00:00").toISOString(),
-      dataFim: new Date(dataFim + "T23:59:59").toISOString(),
+      dataReferencia: new Date(primeiroInicio + "T12:00:00").toISOString(),
+      dataInicio: new Date(primeiroInicio + "T00:00:00").toISOString(),
+      dataFim: new Date(ultimoFim + "T23:59:59").toISOString(),
       descricao,
-      metadados: { diasVenda, periodoNumero, diasCorridos: dias }
+      metadados: {
+        periodos: periodos.map((p) => ({
+          dataInicio: p.dataInicio + "T00:00:00.000Z",
+          dataFim: p.dataFim + "T23:59:59.000Z",
+          dias: p.dias
+        })),
+        diasVendidos: diasVenda,
+        totalDiasGozo: totalDiasGozo,
+        totalDias: totalDiasUtilizados,
+        diasDisponiveis: diasDisponiveis
+      }
     });
   };
 
@@ -1040,86 +1283,287 @@ function FormFerias({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Saldo do ciclo */}
+      {saldoLoading ? (
+        <p style={{ fontSize: 12.5, color: "var(--ink-500)" }}>Carregando saldo de férias…</p>
+      ) : saldo ? (
+        <div
+          style={{
+            padding: "12px 14px",
+            background: saldo.obrigatorio ? "rgba(200,57,63,0.07)" : "rgba(47,125,79,0.06)",
+            border: `1px solid ${saldo.obrigatorio ? "rgba(200,57,63,0.25)" : "rgba(47,125,79,0.20)"}`,
+            borderRadius: "var(--radius-md)"
+          }}
+        >
+          {saldo.obrigatorio && (
+            <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--red)", margin: "0 0 6px" }}>
+              ⚠️ Período de gozo obrigatório — tire suas férias antes do fim do ciclo!
+            </p>
+          )}
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+            {[
+              [
+                "Dias disponíveis",
+                String(saldo.diasDisponiveis),
+                saldo.diasDisponiveis > 0 ? "var(--green)" : "var(--ink-500)"
+              ],
+              ["Já gozados", String(saldo.diasGozo), "var(--ink-700)"],
+              ["Já vendidos", String(saldo.diasVendidos), "var(--ink-700)"],
+              ["Ciclos vencidos", String(saldo.ciclosVencidos), "var(--ink-700)"]
+            ].map(([l, v, c]) => (
+              <div key={l}>
+                <p
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: "var(--ink-500)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    margin: 0
+                  }}
+                >
+                  {l}
+                </p>
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 18,
+                    fontWeight: 700,
+                    color: c,
+                    margin: 0
+                  }}
+                >
+                  {v}
+                </p>
+              </div>
+            ))}
+          </div>
+          {saldo.ciclos.length > 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 8, marginBottom: 0 }}>
+              Ciclo(s) ativo(s):{" "}
+              {saldo.ciclos
+                .map(
+                  (c) =>
+                    `${new Date(c.inicio).toLocaleDateString("pt-BR")} – ${new Date(c.fim).toLocaleDateString("pt-BR")}`
+                )
+                .join(" | ")}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(247,196,55,0.08)",
+            border: "1px solid rgba(247,196,55,0.25)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "#8a6a00"
+          }}
+        >
+          Data de admissão não cadastrada. Solicite ao RH para calcular o saldo de férias.
+        </div>
+      )}
+
+      {/* Regras */}
       <div
         style={{
           padding: "10px 14px",
           background: "rgba(37,99,235,0.05)",
           border: "1px solid rgba(37,99,235,0.2)",
           borderRadius: "var(--radius-md)",
-          fontSize: 12.5,
+          fontSize: 12,
           color: "#1e40af",
-          lineHeight: 1.5
+          lineHeight: 1.6
         }}
       >
-        <strong>Regras:</strong> Férias em até {cfg.feriasMaxPeriodos} períodos — 1º período mínimo{" "}
-        {cfg.feriasMinimoGrandePeriodo} dias; outros mínimo {cfg.feriasMinimoOutrosPeriodos} dias.
-        Antecedência mínima: {cfg.feriasAntecedenciaMinDias} dias.
+        <strong>Regras:</strong> até {cfg.feriasMaxPeriodos} períodos de gozo · todos os períodos
+        mín. {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
+        {cfg.feriasMinimoGrandePeriodo} dias · venda equivale a 1 período (máx.{" "}
+        {cfg.feriasMaxPeriodos - 1} períodos de gozo com venda) · venda máx.{" "}
+        {cfg.feriasMaxDiasVenda} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias} dias · na
+        primeira solicitação informe todos os períodos · gozo + venda deve igualar os dias
+        disponíveis · alterações permitidas com 30 dias de antecedência por período.
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div>
-          <label style={labelBase}>
-            Data Inicial <span style={{ color: "var(--red)" }}>*</span>
-          </label>
-          <input
-            type="date"
-            style={input}
-            value={dataInicio}
-            min={minData.toISOString().slice(0, 10)}
-            onChange={(e) => setDataInicio(e.target.value)}
-          />
-        </div>
-        <div>
-          <label style={labelBase}>
-            Data Final <span style={{ color: "var(--red)" }}>*</span>
-          </label>
-          <input
-            type="date"
-            style={input}
-            value={dataFim}
-            min={dataInicio}
-            onChange={(e) => setDataFim(e.target.value)}
-          />
-        </div>
+      {/* Venda de dias */}
+      <div>
+        <label style={labelBase}>Dias a vender (abono pecuniário) — máx. {maxVenda}</label>
+        <input
+          type="number"
+          style={{ ...input, maxWidth: 120 }}
+          min={0}
+          max={maxVenda}
+          value={diasVenda}
+          onChange={(e) =>
+            setDiasVenda(Math.min(maxVenda, Math.max(0, parseInt(e.target.value) || 0)))
+          }
+        />
+        {diasVenda > 0 && (
+          <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
+            {diasVenda} dia(s) serão convertidos em pagamento.
+          </p>
+        )}
       </div>
 
-      {dias > 0 && (
-        <p style={{ fontSize: 12.5, color: "var(--ink-500)", margin: 0 }}>
-          Duração: <strong>{dias} dias corridos</strong>
-        </p>
+      {/* Períodos */}
+      {periodos.map((p, idx) => (
+        <div
+          key={idx}
+          style={{
+            padding: "12px 14px",
+            background: "var(--cream-50)",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid rgba(122,30,38,0.10)"
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: 10
+            }}
+          >
+            <p style={{ fontSize: 12, fontWeight: 700, color: "var(--burgundy-600)", margin: 0 }}>
+              {idx + 1}º Período (mín. {cfg.feriasMinimoOutrosPeriodos} dias)
+            </p>
+            {periodos.length > 1 && (
+              <button
+                onClick={() => removePeriodo(idx)}
+                style={{
+                  fontSize: 11,
+                  color: "var(--red)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 0
+                }}
+              >
+                Remover
+              </button>
+            )}
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr auto",
+              gap: 10,
+              alignItems: "flex-end"
+            }}
+          >
+            <div>
+              <label style={labelBase}>
+                Início <span style={{ color: "var(--red)" }}>*</span>
+              </label>
+              <input
+                type="date"
+                style={input}
+                value={p.dataInicio}
+                min={minDataStr}
+                onChange={(e) => updPeriodo(idx, "dataInicio", e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={labelBase}>
+                Fim <span style={{ color: "var(--red)" }}>*</span>
+              </label>
+              <input
+                type="date"
+                style={input}
+                value={p.dataFim}
+                min={p.dataInicio || minDataStr}
+                onChange={(e) => updPeriodo(idx, "dataFim", e.target.value)}
+              />
+            </div>
+            <div style={{ paddingBottom: 1 }}>
+              <p
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 16,
+                  fontWeight: 700,
+                  color: p.dias > 0 ? "var(--green)" : "var(--ink-400)",
+                  margin: 0,
+                  textAlign: "center",
+                  minWidth: 52
+                }}
+              >
+                {p.dias > 0 ? `${p.dias}d` : "—"}
+              </p>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {periodos.length < maxPeriodosGozo && (!saldo || diasRestantes > 0) && (
+        <button
+          onClick={addPeriodo}
+          style={{
+            alignSelf: "flex-start",
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--burgundy-600)",
+            background: "none",
+            border: "1px dashed rgba(122,30,38,0.30)",
+            borderRadius: "var(--radius-md)",
+            padding: "7px 14px",
+            cursor: "pointer"
+          }}
+        >
+          + Adicionar período
+        </button>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div>
-          <label style={labelBase}>Número do período</label>
-          <select
-            style={input}
-            value={periodoNumero}
-            onChange={(e) => setPeriodoNumero(parseInt(e.target.value))}
-          >
-            {Array.from({ length: cfg.feriasMaxPeriodos }, (_, i) => i + 1).map((n) => (
-              <option key={n} value={n}>
-                {n}º período
-              </option>
+      {/* Resumo */}
+      {totalDiasUtilizados > 0 && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "var(--cream-50)",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid rgba(122,30,38,0.08)"
+          }}
+        >
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {[
+              ["Gozo", totalDiasGozo],
+              ["Venda", diasVenda],
+              ["Total", totalDiasUtilizados],
+              ["Restam", diasRestantes]
+            ].map(([l, v]) => (
+              <div key={l}>
+                <p
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: "var(--ink-500)",
+                    textTransform: "uppercase",
+                    margin: 0
+                  }}
+                >
+                  {l}
+                </p>
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color:
+                      Number(v) === 0
+                        ? "var(--green)"
+                        : l === "Restam" && Number(v) > 0
+                          ? "var(--red)"
+                          : "var(--ink-900)",
+                    margin: 0
+                  }}
+                >
+                  {v}d
+                </p>
+              </div>
             ))}
-          </select>
+          </div>
         </div>
-        <div>
-          <label style={labelBase}>Vender férias (dias) — máx. {cfg.feriasMaxDiasVenda}</label>
-          <input
-            type="number"
-            style={input}
-            min={0}
-            max={cfg.feriasMaxDiasVenda}
-            value={diasVenda}
-            onChange={(e) =>
-              setDiasVenda(
-                Math.min(cfg.feriasMaxDiasVenda, Math.max(0, parseInt(e.target.value) || 0))
-              )
-            }
-          />
-        </div>
-      </div>
+      )}
 
       {erros.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1132,24 +1576,283 @@ function FormFerias({
       )}
 
       <div>
-        <label style={labelBase}>
-          Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
-        </label>
+        <label style={labelBase}>Descrição / Justificativa</label>
         <textarea
           style={{ ...input, resize: "vertical" }}
           rows={3}
           value={descricao}
           onChange={(e) => setDescricao(e.target.value)}
-          placeholder="Informações adicionais..."
+          placeholder="Informações adicionais (opcional)..."
         />
       </div>
 
       <button
         className="btn btn-primary"
-        disabled={enviando || !dataInicio || !dataFim || !descricao || erros.length > 0}
+        disabled={enviando || periodos.some((p) => !p.dataInicio || !p.dataFim) || erros.length > 0}
         onClick={handleSubmit}
       >
         {enviando ? "Enviando…" : "Enviar Solicitação"}
+      </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   FORMULÁRIO DE ALTERAÇÃO DE FÉRIAS
+══════════════════════════════════════════ */
+
+function FormFeriasAlteracao({
+  solicitacaoOriginal,
+  config,
+  onSubmit,
+  enviando
+}: {
+  solicitacaoOriginal: Solicitacao;
+  config: ConfigSolicitacoes | null;
+  onSubmit: (data: Record<string, unknown>) => void;
+  enviando: boolean;
+}) {
+  const cfg = config ?? {
+    feriasAntecedenciaMinDias: 30,
+    feriasMinimoGrandePeriodo: 14,
+    feriasMinimoOutrosPeriodos: 5,
+    feriasMaxPeriodos: 3,
+    feriasMaxDiasVenda: 10,
+    feriasVedacaoPreFeriadoDias: 2
+  };
+  const metaOriginal = solicitacaoOriginal.metadados;
+  const periodosOriginais =
+    (metaOriginal?.periodos as
+      | Array<{ dataInicio: string; dataFim: string; dias: number }>
+      | undefined) ?? [];
+  const diasVendaOriginal = (metaOriginal?.diasVendidos as number | undefined) ?? 0;
+
+  const hoje = new Date();
+  const minAlteracao = new Date(hoje);
+  minAlteracao.setDate(minAlteracao.getDate() + cfg.feriasAntecedenciaMinDias);
+  const minDataStr = minAlteracao.toISOString().slice(0, 10);
+
+  type PeriodoAlt = { dataInicio: string; dataFim: string; dias: number; bloqueado: boolean };
+  const [periodos, setPeriodos] = useState<PeriodoAlt[]>(() =>
+    periodosOriginais.map((p) => ({
+      dataInicio: p.dataInicio.slice(0, 10),
+      dataFim: p.dataFim.slice(0, 10),
+      dias: p.dias,
+      bloqueado: new Date(p.dataInicio) <= minAlteracao
+    }))
+  );
+  const [descricao, setDescricao] = useState("");
+  const [erros, setErros] = useState<string[]>([]);
+
+  function updPeriodo(idx: number, field: "dataInicio" | "dataFim", val: string) {
+    setPeriodos((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: val };
+      const p = next[idx];
+      if (p.dataInicio && p.dataFim) next[idx].dias = diffDias(p.dataInicio, p.dataFim);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    const errs: string[] = [];
+    const editaveis = periodos.filter((p) => !p.bloqueado);
+    editaveis.forEach((p) => {
+      if (!p.dataInicio || !p.dataFim) return;
+      if (new Date(p.dataInicio) <= minAlteracao)
+        errs.push(
+          `Período ${periodos.indexOf(p) + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
+        );
+      if (p.dias > 0 && p.dias < cfg.feriasMinimoOutrosPeriodos)
+        errs.push(
+          `Período ${periodos.indexOf(p) + 1}: mínimo de ${cfg.feriasMinimoOutrosPeriodos} dias.`
+        );
+    });
+    const todosPreenchidos = editaveis.every((p) => p.dataInicio && p.dataFim);
+    if (
+      todosPreenchidos &&
+      editaveis.length > 0 &&
+      !periodos.some((p) => p.dias >= cfg.feriasMinimoGrandePeriodo)
+    ) {
+      errs.push(
+        `Ao menos um período deve ter no mínimo ${cfg.feriasMinimoGrandePeriodo} dias corridos.`
+      );
+    }
+    setErros(errs);
+  }, [periodos, cfg, minAlteracao]);
+
+  const podeEnviar =
+    periodos.filter((p) => !p.bloqueado).every((p) => p.dataInicio && p.dataFim && p.dias > 0) &&
+    erros.length === 0;
+
+  const handleSubmit = () => {
+    if (!podeEnviar) return;
+    const primeiroInicio = periodos.reduce(
+      (m, p) => (!m || p.dataInicio < m ? p.dataInicio : m),
+      ""
+    );
+    const ultimoFim = periodos.reduce((m, p) => (!m || p.dataFim > m ? p.dataFim : m), "");
+    const totalDiasGozo = periodos.reduce((s, p) => s + p.dias, 0);
+    onSubmit({
+      tipo: "FERIAS",
+      dataReferencia: new Date(primeiroInicio + "T12:00:00").toISOString(),
+      dataInicio: new Date(primeiroInicio + "T00:00:00").toISOString(),
+      dataFim: new Date(ultimoFim + "T23:59:59").toISOString(),
+      descricao,
+      metadados: {
+        periodos: periodos.map((p) => ({
+          dataInicio: p.dataInicio + "T00:00:00.000Z",
+          dataFim: p.dataFim + "T23:59:59.000Z",
+          dias: p.dias
+        })),
+        diasVendidos: diasVendaOriginal,
+        totalDiasGozo,
+        totalDias: totalDiasGozo + diasVendaOriginal,
+        alteracaoDeId: solicitacaoOriginal.id
+      }
+    });
+  };
+
+  const labelBase: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--ink-700)",
+    display: "block",
+    marginBottom: 4
+  };
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: "9px 11px",
+    border: "1px solid rgba(122,30,38,0.14)",
+    borderRadius: "var(--radius-md)",
+    fontSize: 13,
+    boxSizing: "border-box"
+  };
+  const inputBloqueado: React.CSSProperties = {
+    ...input,
+    background: "var(--cream-100)",
+    color: "var(--ink-400)",
+    cursor: "not-allowed"
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div
+        style={{
+          padding: "10px 14px",
+          background: "rgba(37,99,235,0.05)",
+          border: "1px solid rgba(37,99,235,0.2)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 12,
+          color: "#1e40af",
+          lineHeight: 1.6
+        }}
+      >
+        Períodos bloqueados (início em menos de {cfg.feriasAntecedenciaMinDias} dias) não podem ser
+        alterados. Altere apenas os períodos disponíveis.
+      </div>
+
+      {periodos.map((p, idx) => (
+        <div
+          key={idx}
+          style={{
+            padding: "12px 14px",
+            background: p.bloqueado ? "var(--cream-100)" : "var(--cream-50)",
+            borderRadius: "var(--radius-md)",
+            border: `1px solid ${p.bloqueado ? "rgba(122,30,38,0.05)" : "rgba(122,30,38,0.10)"}`,
+            opacity: p.bloqueado ? 0.65 : 1
+          }}
+        >
+          <p
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: p.bloqueado ? "var(--ink-400)" : "var(--burgundy-600)",
+              margin: "0 0 10px"
+            }}
+          >
+            {idx + 1}º Período{" "}
+            {p.bloqueado
+              ? "(bloqueado — menos de 30 dias)"
+              : `(mín. ${cfg.feriasMinimoOutrosPeriodos} dias)`}
+          </p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr auto",
+              gap: 10,
+              alignItems: "flex-end"
+            }}
+          >
+            <div>
+              <label style={labelBase}>Início</label>
+              <input
+                type="date"
+                style={p.bloqueado ? inputBloqueado : input}
+                value={p.dataInicio}
+                min={minDataStr}
+                disabled={p.bloqueado}
+                onChange={(e) => updPeriodo(idx, "dataInicio", e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={labelBase}>Fim</label>
+              <input
+                type="date"
+                style={p.bloqueado ? inputBloqueado : input}
+                value={p.dataFim}
+                min={p.dataInicio || minDataStr}
+                disabled={p.bloqueado}
+                onChange={(e) => updPeriodo(idx, "dataFim", e.target.value)}
+              />
+            </div>
+            <div style={{ paddingBottom: 1 }}>
+              <p
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 16,
+                  fontWeight: 700,
+                  color:
+                    p.dias > 0
+                      ? p.bloqueado
+                        ? "var(--ink-400)"
+                        : "var(--green)"
+                      : "var(--ink-400)",
+                  margin: 0,
+                  textAlign: "center",
+                  minWidth: 52
+                }}
+              >
+                {p.dias > 0 ? `${p.dias}d` : "—"}
+              </p>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {erros.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {erros.map((e, i) => (
+            <p key={i} style={{ fontSize: 12.5, color: "var(--red)", margin: 0 }}>
+              ⚠️ {e}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <label style={labelBase}>Motivo da alteração</label>
+        <textarea
+          style={{ ...input, resize: "vertical" }}
+          rows={3}
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          placeholder="Descreva o motivo da alteração (opcional)..."
+        />
+      </div>
+
+      <button className="btn btn-primary" disabled={enviando || !podeEnviar} onClick={handleSubmit}>
+        {enviando ? "Enviando…" : "Solicitar Alteração"}
       </button>
     </div>
   );
@@ -1266,6 +1969,475 @@ function FormSimples({
       >
         {enviando ? "Enviando…" : "Enviar Solicitação"}
       </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   FORMULÁRIO: DAY OFF DE ANIVERSÁRIO
+══════════════════════════════════════════ */
+
+function FormDayOff({
+  onSubmit,
+  enviando
+}: {
+  onSubmit: (data: Record<string, unknown>) => void;
+  enviando: boolean;
+}) {
+  const [perfil, setPerfil] = useState<{
+    dataNascimento: string | null;
+  } | null>(null);
+  const [loadingPerfil, setLoadingPerfil] = useState(true);
+  const [dataEscolhida, setDataEscolhida] = useState("");
+  const [descricao, setDescricao] = useState("");
+
+  useEffect(() => {
+    api
+      .get<{ dataNascimento: string | null }>("/ponto/meu-perfil")
+      .then((p) => setPerfil(p))
+      .catch(() => setPerfil({ dataNascimento: null }))
+      .finally(() => setLoadingPerfil(false));
+  }, []);
+
+  const labelBase: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--ink-700)",
+    display: "block",
+    marginBottom: 4
+  };
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: "9px 11px",
+    border: "1px solid rgba(122,30,38,0.14)",
+    borderRadius: "var(--radius-md)",
+    fontSize: 13,
+    boxSizing: "border-box"
+  };
+
+  if (loadingPerfil) {
+    return (
+      <p style={{ fontSize: 13, color: "var(--ink-500)", textAlign: "center", padding: "24px 0" }}>
+        Carregando perfil…
+      </p>
+    );
+  }
+
+  if (!perfil?.dataNascimento) {
+    return (
+      <div
+        style={{
+          padding: "16px 18px",
+          background: "rgba(198,127,0,0.06)",
+          border: "1px solid rgba(198,127,0,0.30)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 13,
+          color: "#92400e",
+          lineHeight: 1.6
+        }}
+      >
+        <p style={{ margin: "0 0 6px", fontWeight: 700 }}>⚠️ Data de nascimento não cadastrada</p>
+        <p style={{ margin: 0 }}>
+          Para solicitar o Day Off de Aniversário, é necessário que o RH cadastre sua data de
+          nascimento no sistema. Entre em contato com o setor de Recursos Humanos.
+        </p>
+      </div>
+    );
+  }
+
+  const aniversario = new Date(perfil.dataNascimento);
+  const mes = aniversario.getUTCMonth(); // 0-indexed
+  const hoje = new Date();
+  const mesHoje = hoje.getMonth(); // 0-indexed
+  // Se o mês de aniversário já passou neste ano, usa o próximo ano
+  const anoDayOff = mesHoje > mes ? hoje.getFullYear() + 1 : hoje.getFullYear();
+  const ultimoDia = new Date(anoDayOff, mes + 1, 0).getDate();
+  // Se for o mês atual, min = hoje; caso contrário, min = primeiro dia do mês
+  const ehMesAtual = mesHoje === mes && anoDayOff === hoje.getFullYear();
+  const minData = ehMesAtual
+    ? hoje.toISOString().slice(0, 10)
+    : `${anoDayOff}-${String(mes + 1).padStart(2, "0")}-01`;
+  const maxData = `${anoDayOff}-${String(mes + 1).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+  const nomeMes = aniversario.toLocaleDateString("pt-BR", { month: "long", timeZone: "UTC" });
+
+  const handleSubmit = () => {
+    if (!dataEscolhida || !descricao) return;
+    onSubmit({
+      tipo: "DAY_OFF",
+      dataReferencia: new Date(dataEscolhida + "T12:00:00").toISOString(),
+      dataInicio: new Date(dataEscolhida + "T00:00:00").toISOString(),
+      dataFim: new Date(dataEscolhida + "T23:59:59").toISOString(),
+      descricao,
+      metadados: { mesAniversario: mes + 1 }
+    });
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div
+        style={{
+          padding: "12px 14px",
+          background: "rgba(122,30,38,0.04)",
+          border: "1px solid rgba(122,30,38,0.12)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 12.5,
+          color: "var(--ink-700)",
+          lineHeight: 1.5
+        }}
+      >
+        🎂 Seu mês de aniversário é <strong>{nomeMes}</strong>. Escolha qualquer dia útil desse mês
+        para o seu day off.
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Dia do Day Off <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <input
+          type="date"
+          style={{ ...input, maxWidth: 200 }}
+          value={dataEscolhida}
+          min={minData}
+          max={maxData}
+          onChange={(e) => setDataEscolhida(e.target.value)}
+        />
+        <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "4px 0 0" }}>
+          Permitido apenas em {nomeMes} de {anoDayOff}.
+        </p>
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <textarea
+          style={{ ...input, resize: "vertical" }}
+          rows={3}
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          placeholder="Descreva como pretende usufruir do seu day off de aniversário..."
+        />
+      </div>
+
+      <button
+        className="btn btn-primary"
+        disabled={enviando || !dataEscolhida || !descricao}
+        onClick={handleSubmit}
+      >
+        {enviando ? "Enviando…" : "Enviar Solicitação"}
+      </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   FORM HORA EXTRA
+══════════════════════════════════════════ */
+
+function FormHoraExtra({
+  onSubmit,
+  enviando
+}: {
+  onSubmit: (data: Record<string, unknown>) => void;
+  enviando: boolean;
+}) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  /* Limite mínimo configurado (em minutos) — carregado da API; 120 enquanto carrega */
+  const [limiteMin, setLimiteMin] = useState<number>(120);
+  const [cfgCarregada, setCfgCarregada] = useState(false);
+
+  const [data, setData] = useState(hoje);
+  const [horas, setHoras] = useState("");
+  const [minutos, setMinutos] = useState("0");
+  const [descricao, setDescricao] = useState("");
+
+  useEffect(() => {
+    api
+      .get<{ horaExtraLimiteAuto?: number }>("/ponto/config/sistema")
+      .then((cfg) => {
+        const lim = cfg?.horaExtraLimiteAuto ?? 120;
+        setLimiteMin(lim);
+        /* Inicializa o campo horas com o valor mínimo exigido */
+        setHoras(String(Math.floor(lim / 60)));
+        setMinutos(String(lim % 60));
+      })
+      .catch(() => {
+        setHoras("2");
+        setMinutos("0");
+      })
+      .finally(() => setCfgCarregada(true));
+  }, []);
+
+  const labelBase: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--ink-500)",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    display: "block",
+    marginBottom: 4
+  };
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: "9px 11px",
+    borderRadius: "var(--radius-md)",
+    border: "1px solid rgba(122,30,38,0.14)",
+    fontSize: 13.5,
+    fontFamily: "var(--font-body)",
+    outline: "none",
+    boxSizing: "border-box"
+  };
+
+  const horasNum = Math.max(0, parseInt(horas) || 0);
+  const minutosNum = Math.max(0, Math.min(59, parseInt(minutos) || 0));
+  const totalMin = horasNum * 60 + minutosNum;
+
+  const abaixoLimite = totalMin > 0 && totalMin < limiteMin;
+  const limiteLabel = `${Math.floor(limiteMin / 60)}h${String(limiteMin % 60).padStart(2, "0")}`;
+
+  const handleSubmit = () => {
+    if (!data || !descricao.trim() || totalMin < limiteMin) return;
+    onSubmit({
+      tipo: "HORA_EXTRA",
+      dataReferencia: new Date(data + "T12:00:00").toISOString(),
+      dataInicio: new Date(data + "T00:00:00").toISOString(),
+      dataFim: new Date(data + "T23:59:59").toISOString(),
+      descricao: descricao.trim(),
+      metadados: { automatica: false, horasExtraMinutos: totalMin }
+    });
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div
+        style={{
+          padding: "12px 14px",
+          background: "rgba(122,30,38,0.04)",
+          border: "1px solid rgba(122,30,38,0.12)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 12.5,
+          color: "var(--ink-700)",
+          lineHeight: 1.5
+        }}
+      >
+        ⏱️ Use este formulário para solicitar <strong>antecipadamente</strong> horas extras ao seu
+        gestor. O mínimo permitido é <strong>{cfgCarregada ? limiteLabel : "…"}</strong>, conforme
+        configuração do sistema.
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Data da Hora Extra <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <input
+          type="date"
+          style={{ ...input, maxWidth: 200 }}
+          value={data}
+          onChange={(e) => setData(e.target.value)}
+        />
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Tempo Extra Estimado <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="number"
+              min={0}
+              max={12}
+              value={horas}
+              onChange={(e) => setHoras(e.target.value)}
+              style={{
+                ...input,
+                width: 72,
+                fontFamily: "var(--font-mono)",
+                borderColor: abaixoLimite ? "var(--red)" : "rgba(122,30,38,0.14)"
+              }}
+            />
+            <span style={{ fontSize: 13, color: "var(--ink-500)" }}>h</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="number"
+              min={0}
+              max={59}
+              value={minutos}
+              onChange={(e) => setMinutos(e.target.value)}
+              style={{
+                ...input,
+                width: 72,
+                fontFamily: "var(--font-mono)",
+                borderColor: abaixoLimite ? "var(--red)" : "rgba(122,30,38,0.14)"
+              }}
+            />
+            <span style={{ fontSize: 13, color: "var(--ink-500)" }}>min</span>
+          </div>
+        </div>
+
+        {/* Feedback dinâmico */}
+        {totalMin > 0 && !abaixoLimite && (
+          <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
+            Total:{" "}
+            <strong>
+              {horasNum}h{String(minutosNum).padStart(2, "0")}
+            </strong>
+          </p>
+        )}
+        {abaixoLimite && (
+          <p
+            style={{
+              fontSize: 12,
+              color: "var(--red)",
+              marginTop: 5,
+              display: "flex",
+              alignItems: "center",
+              gap: 5
+            }}
+          >
+            ⚠️ O mínimo para solicitação de hora extra é <strong>{limiteLabel}</strong>. Informe um
+            tempo igual ou superior.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Motivo / Justificativa <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <textarea
+          style={{ ...input, resize: "vertical" }}
+          rows={3}
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          placeholder="Descreva o motivo da hora extra solicitada…"
+        />
+      </div>
+
+      <button
+        className="btn btn-primary"
+        disabled={enviando || !data || !descricao.trim() || totalMin < limiteMin}
+        onClick={handleSubmit}
+      >
+        {enviando ? "Enviando…" : "Enviar Solicitação"}
+      </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   MODAL ALTERAÇÃO DE FÉRIAS
+══════════════════════════════════════════ */
+
+function AlterarFeriasModal({
+  solicitacao,
+  onClose,
+  onCriada
+}: {
+  solicitacao: Solicitacao;
+  onClose: () => void;
+  onCriada: (s: Solicitacao) => void;
+}) {
+  const [config, setConfig] = useState<ConfigSolicitacoes | null>(null);
+  const [enviando, setEnviando] = useState(false);
+  const [ok, setOk] = useState(false);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    api
+      .get<ConfigSolicitacoes>("/ponto/config/solicitacoes")
+      .then((c) => {
+        if (c) setConfig(c);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSubmit = async (data: Record<string, unknown>) => {
+    setEnviando(true);
+    setErro("");
+    try {
+      const nova = await api.post<Solicitacao>("/ponto/solicitacoes", data);
+      onCriada(nova);
+      setOk(true);
+      setTimeout(onClose, 1600);
+    } catch (e: unknown) {
+      setErro((e as Error).message ?? "Falha ao enviar solicitação.");
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(10,5,6,0.55)",
+        zIndex: 200,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "16px 16px 80px",
+        overflowY: "auto"
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 560,
+          padding: 28,
+          boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
+          marginTop: 24
+        }}
+      >
+        {ok ? (
+          <div style={{ textAlign: "center", padding: "24px 0" }}>
+            <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
+            <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>Alteração enviada!</p>
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Aguardando análise do gestor.</p>
+          </div>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 20
+              }}
+            >
+              <h2 style={{ fontSize: 19, fontFamily: "var(--font-display)", margin: 0 }}>
+                ✏️ Alterar Períodos de Férias
+              </h2>
+              <button
+                onClick={onClose}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 20,
+                  color: "var(--ink-500)"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            {erro && (
+              <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
+            )}
+            <FormFeriasAlteracao
+              solicitacaoOriginal={solicitacao}
+              config={config}
+              onSubmit={handleSubmit}
+              enviando={enviando}
+            />
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1391,7 +2563,7 @@ function NovaModal({
               <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
             )}
 
-            {!tipo && <TipoSeletor onSelect={setTipo} />}
+            {!tipo && <TipoSeletor onSelect={setTipo} config={config} />}
             {tipo === "CORRECAO_PONTO" && (
               <FormCorrecaoPonto onSubmit={handleSubmit} enviando={enviando} />
             )}
@@ -1417,6 +2589,8 @@ function NovaModal({
                 obs="O abono pode ser solicitado para datas passadas ou futuras."
               />
             )}
+            {tipo === "DAY_OFF" && <FormDayOff onSubmit={handleSubmit} enviando={enviando} />}
+            {tipo === "HORA_EXTRA" && <FormHoraExtra onSubmit={handleSubmit} enviando={enviando} />}
           </>
         )}
       </div>
@@ -1428,7 +2602,285 @@ function NovaModal({
    CARD DE SOLICITAÇÃO (listagem)
 ══════════════════════════════════════════ */
 
-function SolicitacaoCard({ s }: { s: Solicitacao }) {
+function AtestadoGuiaSection({
+  s,
+  onAtualizado,
+  tipo = "ATESTADO"
+}: {
+  s: Solicitacao;
+  onAtualizado: () => void;
+  tipo?: "ATESTADO" | "FERIAS";
+}) {
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const isFerias = tipo === "FERIAS";
+  const cor = isFerias ? "#2f7d4f" : "#7c3aed";
+  const corBg = isFerias ? "rgba(47,125,79,0.05)" : "rgba(124,58,237,0.05)";
+  const corBorder = isFerias ? "rgba(47,125,79,0.18)" : "rgba(124,58,237,0.18)";
+  const corBorderUpload = isFerias ? "rgba(47,125,79,0.35)" : "rgba(124,58,237,0.35)";
+
+  const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mimeType = file.type;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target?.result as string;
+      setEnviando(true);
+      setErro("");
+      try {
+        await api.patch(`/ponto/solicitacoes/${s.id}/documento-retorno`, {
+          documentoBase64: base64,
+          mimeType
+        });
+        onAtualizado();
+      } catch (err) {
+        setErro((err as Error).message || "Erro ao enviar documento. Tente novamente.");
+      } finally {
+        setEnviando(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  if (!s.guiaMedicoUrl && !s.documentoRetornoUrl) return null;
+
+  const podeEnviarOuEditarRetorno =
+    s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" ||
+    (s.status === "AGUARDANDO_RH" && !!s.documentoRetornoUrl);
+
+  return (
+    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+      {s.guiaMedicoUrl && (
+        <div
+          style={{
+            padding: "10px 12px",
+            background: corBg,
+            border: `1px solid ${corBorder}`,
+            borderRadius: "var(--radius-md)"
+          }}
+        >
+          <p style={{ margin: 0, fontSize: 12.5, color: cor, lineHeight: 1.5 }}>
+            📄{" "}
+            <strong>
+              {isFerias
+                ? "O RH enviou sua folha de pagamento de férias"
+                : "O RH enviou sua guia médica"}
+            </strong>
+            {s.guiaMedicoEnviadaEm ? ` em ${fmtDateTime(s.guiaMedicoEnviadaEm)}` : ""}.
+          </p>
+          {s.guiaMedicoObservacao && (
+            <p
+              style={{
+                margin: "6px 0 0",
+                fontSize: 12,
+                color: "var(--ink-600)",
+                fontStyle: "italic"
+              }}
+            >
+              "{s.guiaMedicoObservacao}"
+            </p>
+          )}
+          {s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" && (
+            <p style={{ margin: "8px 0 0", fontSize: 12, color: cor, lineHeight: 1.5 }}>
+              {isFerias
+                ? "Baixe a folha de pagamento, assine e envie o documento assinado de volta pelo sistema para que o RH possa concluir a aprovação."
+                : "Vá à consulta com o médico do trabalho e envie aqui o documento de retorno (resultado/aptidão) para que o RH possa concluir a análise."}
+            </p>
+          )}
+          {s.status === "AGUARDANDO_RH" && s.documentoRetornoUrl && (
+            <p style={{ margin: "8px 0 0", fontSize: 12, color: cor, lineHeight: 1.5 }}>
+              {isFerias
+                ? "Encontrou um erro na folha assinada enviada? Você pode substituí-la enquanto o RH ainda não concluir a aprovação."
+                : "Encontrou um erro no documento de retorno enviado? Você pode substituí-lo enquanto o RH ainda não concluir a análise."}
+            </p>
+          )}
+          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a
+              href={s.guiaMedicoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "7px 14px",
+                border: `1px solid ${cor}`,
+                borderRadius: "var(--radius-md)",
+                background: cor,
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12.5,
+                fontWeight: 600,
+                textDecoration: "none"
+              }}
+            >
+              {isFerias ? "📥 Baixar Folha de Férias" : "📥 Baixar Guia Médica"}
+            </a>
+            {podeEnviarOuEditarRetorno && (
+              <>
+                <input
+                  type="file"
+                  id={`retorno-upload-${s.id}`}
+                  accept="image/*,application/pdf"
+                  style={{ display: "none" }}
+                  onChange={handleArquivo}
+                  disabled={enviando}
+                />
+                <label
+                  htmlFor={`retorno-upload-${s.id}`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "7px 14px",
+                    border: `1px solid ${corBorderUpload}`,
+                    borderRadius: "var(--radius-md)",
+                    background: "#fff",
+                    color: cor,
+                    cursor: enviando ? "not-allowed" : "pointer",
+                    fontSize: 12.5,
+                    fontWeight: 600
+                  }}
+                >
+                  {enviando
+                    ? "⏳ Enviando..."
+                    : s.documentoRetornoUrl
+                      ? isFerias
+                        ? "✏️ Substituir folha assinada"
+                        : "✏️ Substituir documento de retorno"
+                      : isFerias
+                        ? "📎 Enviar folha assinada"
+                        : "📎 Enviar documento de retorno"}
+                </label>
+              </>
+            )}
+          </div>
+          {erro && (
+            <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--red)" }}>⚠️ {erro}</p>
+          )}
+        </div>
+      )}
+
+      {s.documentoRetornoUrl && (
+        <p style={{ margin: 0, fontSize: 12, color: "#16a34a" }}>
+          📎{" "}
+          <a href={s.documentoRetornoUrl} target="_blank" rel="noopener noreferrer">
+            {isFerias ? "Ver folha de férias assinada enviada" : "Ver documento de retorno enviado"}
+          </a>
+          {s.documentoRetornoEm ? ` em ${fmtDateTime(s.documentoRetornoEm)}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   SEÇÃO: DOCUMENTO ANEXADO À SOLICITAÇÃO
+   (editável pelo funcionário até a decisão final do RH)
+══════════════════════════════════════════ */
+
+function DocumentoAnexadoSection({
+  s,
+  onAtualizado
+}: {
+  s: Solicitacao;
+  onAtualizado: () => void;
+}) {
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const documentoUrl = s.metadados?.documentoUrl as string | undefined;
+  if (!documentoUrl) return null;
+
+  const editavel = !STATUS_FINALIZADOS.includes(s.status);
+
+  const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mimeType = file.type;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target?.result as string;
+      setEnviando(true);
+      setErro("");
+      try {
+        await api.patch(`/ponto/solicitacoes/${s.id}/documento`, {
+          documentoBase64: base64,
+          mimeType
+        });
+        onAtualizado();
+      } catch (err) {
+        setErro((err as Error).message || "Erro ao atualizar documento. Tente novamente.");
+      } finally {
+        setEnviando(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <a
+          href={documentoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 12, color: "#7c3aed" }}
+        >
+          📎 Ver documento anexado
+        </a>
+        {editavel && (
+          <>
+            <input
+              type="file"
+              id={`documento-edit-${s.id}`}
+              accept="image/*,application/pdf"
+              style={{ display: "none" }}
+              onChange={handleArquivo}
+              disabled={enviando}
+            />
+            <label
+              htmlFor={`documento-edit-${s.id}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "5px 12px",
+                border: "1px solid rgba(124,58,237,0.35)",
+                borderRadius: "var(--radius-md)",
+                background: "#fff",
+                color: "#7c3aed",
+                cursor: enviando ? "not-allowed" : "pointer",
+                fontSize: 11.5,
+                fontWeight: 600
+              }}
+            >
+              {enviando ? "⏳ Enviando..." : "✏️ Substituir documento"}
+            </label>
+          </>
+        )}
+      </div>
+      {editavel && (
+        <p style={{ margin: 0, fontSize: 11, color: "var(--ink-500)" }}>
+          Errou o anexo? Você pode substituí-lo até que o RH conclua a análise.
+        </p>
+      )}
+      {erro && <p style={{ margin: 0, fontSize: 11.5, color: "var(--red)" }}>⚠️ {erro}</p>}
+    </div>
+  );
+}
+
+function SolicitacaoCard({
+  s,
+  onAtualizado,
+  onAlterar
+}: {
+  s: Solicitacao;
+  onAtualizado: () => void;
+  onAlterar?: (s: Solicitacao) => void;
+}) {
   const borderColor =
     {
       APROVADA: "var(--green)",
@@ -1436,7 +2888,9 @@ function SolicitacaoCard({ s }: { s: Solicitacao }) {
       REJEITADA_GESTOR: "var(--red)",
       REJEITADA_RH: "var(--red)",
       AGUARDANDO_RH: "#2563eb",
-      PENDENTE: "var(--amber)"
+      AGUARDANDO_DOCUMENTO_FUNCIONARIO: "var(--amber)",
+      PENDENTE: "var(--amber)",
+      CANCELADA: "var(--ink-300)"
     }[s.status] ?? "var(--amber)";
 
   const meta = s.metadados;
@@ -1450,6 +2904,23 @@ function SolicitacaoCard({ s }: { s: Solicitacao }) {
         Dia {fmtDate(s.dataReferencia)} · aberta em {fmtDateTime(s.createdAt)}
       </span>
     );
+  } else if (tipo === "DAY_OFF") {
+    const dia = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+    subInfo = <span>Dia: {dia}</span>;
+  } else if (tipo === "HORA_EXTRA") {
+    const dia = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
+    const minExtra = meta?.horasExtraMinutos as number | undefined;
+    const isAuto = meta?.automatica === true;
+    const tempoStr = minExtra
+      ? `${Math.floor(minExtra / 60)}h${String(minExtra % 60).padStart(2, "0")}`
+      : null;
+    subInfo = (
+      <span>
+        Dia: {dia}
+        {tempoStr ? ` · ${tempoStr} extras` : ""}
+        {isAuto ? " · gerada automaticamente" : ""}
+      </span>
+    );
   } else if (
     (tipo === "ATESTADO" || tipo === "FERIAS" || tipo === "LICENCA" || tipo === "ABONO") &&
     s.dataInicio
@@ -1460,12 +2931,15 @@ function SolicitacaoCard({ s }: { s: Solicitacao }) {
         {s.dataFim && s.dataFim !== s.dataInicio ? `→ ${fmtDate(s.dataFim)}` : ""}
       </span>
     );
-    if (tipo === "FERIAS" && meta?.diasVenda)
-      subInfo = (
-        <>
-          {subInfo} · Vender {meta.diasVenda as number} dias
-        </>
-      );
+    if (tipo === "FERIAS" && (meta?.diasVendidos || meta?.diasVenda)) {
+      const dv = Number(meta?.diasVendidos ?? meta?.diasVenda ?? 0);
+      if (dv > 0)
+        subInfo = (
+          <>
+            {subInfo} · Vender {dv} dias
+          </>
+        );
+    }
     if (tipo === "ATESTADO" && meta?.documentoUrl) subInfo = <>{subInfo} · 📎 doc. anexado</>;
   }
 
@@ -1555,6 +3029,45 @@ function SolicitacaoCard({ s }: { s: Solicitacao }) {
         </p>
       )}
 
+      {tipo === "ATESTADO" && <DocumentoAnexadoSection s={s} onAtualizado={onAtualizado} />}
+
+      {tipo === "ATESTADO" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} />}
+
+      {tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
+
+      {tipo === "FERIAS" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} tipo="FERIAS" />}
+
+      {tipo === "FERIAS" &&
+        s.status === "APROVADA" &&
+        onAlterar &&
+        (() => {
+          const periodos =
+            (s.metadados?.periodos as Array<{ dataInicio: string }> | undefined) ?? [];
+          const minAlteracao = new Date();
+          minAlteracao.setDate(minAlteracao.getDate() + 30);
+          const temPeriodoAlteravel = periodos.some((p) => new Date(p.dataInicio) > minAlteracao);
+          if (!temPeriodoAlteravel) return null;
+          return (
+            <div style={{ marginTop: 10 }}>
+              <button
+                onClick={() => onAlterar(s)}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#1e40af",
+                  background: "rgba(37,99,235,0.06)",
+                  border: "1px solid rgba(37,99,235,0.20)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "6px 12px",
+                  cursor: "pointer"
+                }}
+              >
+                ✏️ Alterar Períodos
+              </button>
+            </div>
+          );
+        })()}
+
       {(s.gestorObservacao || s.rhObservacao || s.observacaoGestor) && (
         <div
           style={{
@@ -1602,12 +3115,17 @@ function SolicitacaoCard({ s }: { s: Solicitacao }) {
    PÁGINA PRINCIPAL
 ══════════════════════════════════════════ */
 
+const POR_PAGINA = 6;
+
 export function SolicitacoesPage() {
   const { token } = useAuth();
   const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalAberto, setModalAberto] = useState(false);
-  const [filtro, setFiltro] = useState<StatusSolicitacao | "TODAS">("TODAS");
+  const [alterandoFerias, setAlterandoFerias] = useState<Solicitacao | null>(null);
+  type FiltroView = StatusSolicitacao | "TODAS" | "FERIAS_TODAS";
+  const [filtro, setFiltro] = useState<FiltroView>("TODAS");
+  const [pagina, setPagina] = useState(1);
 
   const carregar = useCallback(() => {
     const tk = token();
@@ -1627,13 +3145,29 @@ export function SolicitacoesPage() {
     carregar();
   }, [carregar]);
 
-  const exibir =
-    filtro === "TODAS" ? solicitacoes : solicitacoes.filter((s) => s.status === filtro);
+  function mudarFiltro(v: FiltroView) {
+    setFiltro(v);
+    setPagina(1);
+  }
 
-  const filtros: { v: StatusSolicitacao | "TODAS"; l: string }[] = [
+  const exibir =
+    filtro === "TODAS"
+      ? solicitacoes
+      : filtro === "FERIAS_TODAS"
+        ? solicitacoes.filter((s) => s.tipo === "FERIAS")
+        : solicitacoes.filter((s) => s.status === filtro);
+
+  const totalPaginas = Math.max(1, Math.ceil(exibir.length / POR_PAGINA));
+  const paginaSegura = Math.min(pagina, totalPaginas);
+  const inicio = (paginaSegura - 1) * POR_PAGINA;
+  const pagAtual = exibir.slice(inicio, inicio + POR_PAGINA);
+
+  const filtros: { v: FiltroView; l: string }[] = [
     { v: "TODAS", l: "Todas" },
+    { v: "FERIAS_TODAS", l: "🌴 Férias" },
     { v: "PENDENTE", l: "Pendentes" },
     { v: "AGUARDANDO_RH", l: "Aguardando RH" },
+    { v: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", l: "Aguardando seu documento" },
     { v: "APROVADA", l: "Aprovadas" },
     { v: "REJEITADA_GESTOR", l: "Rej. Gestor" },
     { v: "REJEITADA_RH", l: "Rej. RH" }
@@ -1646,6 +3180,19 @@ export function SolicitacoesPage() {
           onClose={() => setModalAberto(false)}
           onCriada={(nova) => {
             setSolicitacoes((prev) => [nova, ...prev]);
+            setPagina(1);
+          }}
+        />
+      )}
+
+      {alterandoFerias && (
+        <AlterarFeriasModal
+          solicitacao={alterandoFerias}
+          onClose={() => setAlterandoFerias(null)}
+          onCriada={(nova) => {
+            setSolicitacoes((prev) => [nova, ...prev]);
+            setPagina(1);
+            setAlterandoFerias(null);
           }}
         />
       )}
@@ -1684,26 +3231,39 @@ export function SolicitacoesPage() {
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {filtros.map(({ v, l }) => (
-          <button
-            key={v}
-            onClick={() => setFiltro(v)}
-            style={{
-              padding: "5px 12px",
-              borderRadius: "var(--radius-full)",
-              fontSize: 12,
-              fontWeight: 500,
-              cursor: "pointer",
-              border:
-                filtro === v ? "1.5px solid var(--burgundy-600)" : "1px solid rgba(122,30,38,0.18)",
-              background: filtro === v ? "var(--burgundy-600)" : "white",
-              color: filtro === v ? "white" : "var(--ink-700)",
-              transition: "all 180ms ease"
-            }}
-          >
-            {l}
-          </button>
-        ))}
+        {filtros.map(({ v, l }) => {
+          const isFerias = v === "FERIAS_TODAS";
+          const ativo = filtro === v;
+          return (
+            <button
+              key={v}
+              onClick={() => mudarFiltro(v)}
+              style={{
+                padding: "5px 12px",
+                borderRadius: "var(--radius-full)",
+                fontSize: 12,
+                fontWeight: ativo ? 700 : 500,
+                cursor: "pointer",
+                border: ativo
+                  ? `1.5px solid ${isFerias ? "#2f7d4f" : "var(--burgundy-600)"}`
+                  : isFerias
+                    ? "1px solid rgba(47,125,79,0.30)"
+                    : "1px solid rgba(122,30,38,0.18)",
+                background: ativo
+                  ? isFerias
+                    ? "#2f7d4f"
+                    : "var(--burgundy-600)"
+                  : isFerias
+                    ? "rgba(47,125,79,0.06)"
+                    : "white",
+                color: ativo ? "white" : isFerias ? "#2f7d4f" : "var(--ink-700)",
+                transition: "all 180ms ease"
+              }}
+            >
+              {l}
+            </button>
+          );
+        })}
       </div>
 
       {loading ? (
@@ -1713,23 +3273,99 @@ export function SolicitacoesPage() {
           Carregando solicitações…
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {exibir.length === 0 ? (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {pagAtual.length === 0 ? (
+              <div
+                className="card-flat"
+                style={{ textAlign: "center", padding: "36px 16px", color: "var(--ink-500)" }}
+              >
+                <CalendarIcon size={28} style={{ margin: "0 auto 8px" }} />
+                <p>
+                  {solicitacoes.length === 0
+                    ? "Nenhuma solicitação aberta."
+                    : "Nenhuma solicitação para o filtro selecionado."}
+                </p>
+              </div>
+            ) : (
+              pagAtual.map((s) => (
+                <SolicitacaoCard
+                  key={s.id}
+                  s={s}
+                  onAtualizado={carregar}
+                  onAlterar={setAlterandoFerias}
+                />
+              ))
+            )}
+          </div>
+
+          {exibir.length > POR_PAGINA && (
             <div
-              className="card-flat"
-              style={{ textAlign: "center", padding: "36px 16px", color: "var(--ink-500)" }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                marginTop: 20
+              }}
             >
-              <CalendarIcon size={28} style={{ margin: "0 auto 8px" }} />
-              <p>
-                {solicitacoes.length === 0
-                  ? "Nenhuma solicitação aberta."
-                  : "Nenhuma solicitação para o filtro selecionado."}
-              </p>
+              <button
+                onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                disabled={paginaSegura <= 1}
+                className="btn-icon"
+                style={{
+                  background: "white",
+                  border: "1px solid rgba(122,30,38,0.12)",
+                  opacity: paginaSegura <= 1 ? 0.35 : 1,
+                  fontSize: 18,
+                  lineHeight: 1
+                }}
+              >
+                ‹
+              </button>
+
+              {Array.from({ length: totalPaginas }, (_, i) => i + 1).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPagina(p)}
+                  style={{
+                    minWidth: 32,
+                    height: 32,
+                    borderRadius: "var(--radius-md)",
+                    border: p === paginaSegura ? "none" : "1px solid rgba(122,30,38,0.12)",
+                    background: p === paginaSegura ? "var(--burgundy-600)" : "white",
+                    color: p === paginaSegura ? "#fff" : "var(--ink-600)",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    padding: "0 6px"
+                  }}
+                >
+                  {p}
+                </button>
+              ))}
+
+              <button
+                onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                disabled={paginaSegura >= totalPaginas}
+                className="btn-icon"
+                style={{
+                  background: "white",
+                  border: "1px solid rgba(122,30,38,0.12)",
+                  opacity: paginaSegura >= totalPaginas ? 0.35 : 1,
+                  fontSize: 18,
+                  lineHeight: 1
+                }}
+              >
+                ›
+              </button>
+
+              <span style={{ fontSize: 12, color: "var(--ink-400)", marginLeft: 4 }}>
+                {inicio + 1}–{Math.min(inicio + POR_PAGINA, exibir.length)} de {exibir.length}
+              </span>
             </div>
-          ) : (
-            exibir.map((s) => <SolicitacaoCard key={s.id} s={s} />)
           )}
-        </div>
+        </>
       )}
     </div>
   );

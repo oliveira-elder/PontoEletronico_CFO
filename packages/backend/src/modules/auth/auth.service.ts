@@ -99,9 +99,8 @@ export class AuthService {
           })
         );
     } else {
-      // Atualiza nome e corrige email temporário se necessário
+      // Atualiza apenas email temporário (nome é gerenciado manualmente pelo RH)
       const updates: Record<string, string | null> = {};
-      if (user.name !== name) updates.name = name;
       if (
         ctx.email &&
         (user.email.endsWith("@pending.local") || user.email.endsWith("@sso.local"))

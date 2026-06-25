@@ -1,10 +1,22 @@
-import { Controller, Get, Put, Post, Delete, Patch, Body, Param, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Put,
+  Post,
+  Delete,
+  Patch,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  BadRequestException
+} from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
 import { ConfigService } from "./config.service";
 import { ConfigSolicitacoesService, ConfigSolicitacoesData } from "./config-solicitacoes.service";
-import { DocumentoService } from "./documento.service";
+import { FeriadoConfigService } from "./feriado-config.service";
 
 @Controller("ponto/config")
 @UseGuards(AuthGuard("jwt"), RolesGuard)
@@ -13,7 +25,7 @@ export class ConfigController {
   constructor(
     private readonly configService: ConfigService,
     private readonly configSolicitacoesService: ConfigSolicitacoesService,
-    private readonly documentoService: DocumentoService
+    private readonly feriadoConfigService: FeriadoConfigService
   ) {}
 
   /* ─── ConfiguracaoSistema ─── */
@@ -113,6 +125,56 @@ export class ConfigController {
     return this.configService.deleteArea(id);
   }
 
+  /* ─── JornadaPeriodo ─── */
+
+  @Get("jornadas")
+  @Roles()
+  listJornadas() {
+    return this.configService.listJornadas();
+  }
+
+  @Post("jornadas")
+  createJornada(@Body() body: Record<string, unknown>) {
+    return this.configService.createJornada(body as never);
+  }
+
+  @Put("jornadas/:id")
+  updateJornada(@Param("id") id: string, @Body() body: Record<string, unknown>) {
+    return this.configService.updateJornada(id, body);
+  }
+
+  @Patch("jornadas/:id/padrao")
+  setJornadaPadrao(@Param("id") id: string) {
+    return this.configService.setJornadaPadrao(id);
+  }
+
+  @Delete("jornadas/:id")
+  async deleteJornada(@Param("id") id: string) {
+    try {
+      return await this.configService.deleteJornada(id);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  /* ─── Banco de Horas: datas marco ─── */
+
+  @Get("banco-horas/marcos")
+  @Roles() // leitura aberta: necessária para a página Banco de Horas exibir a próxima zeragem
+  listMarcosBancoHoras() {
+    return this.configService.listMarcosBancoHoras();
+  }
+
+  @Post("banco-horas/marcos")
+  createMarcoBancoHoras(@Body() body: { data: string; descricao?: string }) {
+    return this.configService.createMarcoBancoHoras(body);
+  }
+
+  @Delete("banco-horas/marcos/:id")
+  deleteMarcoBancoHoras(@Param("id") id: string) {
+    return this.configService.deleteMarcoBancoHoras(id);
+  }
+
   /* ─── Configuração de Solicitações (regras de atestado e férias) ─── */
 
   @Get("solicitacoes")
@@ -122,14 +184,54 @@ export class ConfigController {
   }
 
   @Put("solicitacoes")
-  async updateConfigSolicitacoes(
-    @Body() body: Partial<ConfigSolicitacoesData> & { atestadoGuiaBase64?: string }
-  ) {
-    const { atestadoGuiaBase64, ...data } = body;
-    if (atestadoGuiaBase64) {
-      const url = await this.documentoService.salvarGuia(atestadoGuiaBase64);
-      data.atestadoGuiaUrl = url;
+  async updateConfigSolicitacoes(@Body() body: Partial<ConfigSolicitacoesData>) {
+    return this.configSolicitacoesService.updateConfig(body);
+  }
+
+  /* ─── Feriados ─── */
+
+  @Get("feriados")
+  @Roles() // leitura aberta para usuários autenticados
+  listarFeriados(@Query("ano") ano: string) {
+    const year = parseInt(ano) || new Date().getFullYear();
+    return this.feriadoConfigService.listarPorAno(year);
+  }
+
+  @Post("feriados/importar")
+  importarFeriados(@Body("ano") ano: number) {
+    const year = ano || new Date().getFullYear();
+    return this.feriadoConfigService.importar(year);
+  }
+
+  @Post("feriados")
+  criarFeriado(
+    @Body()
+    body: {
+      data: string;
+      nome: string;
+      tipo?: string;
+      bloqueiaRegistro?: boolean;
+      observacao?: string;
     }
-    return this.configSolicitacoesService.updateConfig(data);
+  ) {
+    return this.feriadoConfigService.criar(body);
+  }
+
+  @Patch("feriados/:id")
+  atualizarFeriado(
+    @Param("id") id: string,
+    @Body() body: { nome?: string; tipo?: string; bloqueiaRegistro?: boolean; observacao?: string }
+  ) {
+    return this.feriadoConfigService.atualizar(id, body);
+  }
+
+  @Patch("feriados/:id/bloqueio")
+  toggleBloqueio(@Param("id") id: string) {
+    return this.feriadoConfigService.toggleBloqueio(id);
+  }
+
+  @Delete("feriados/:id")
+  deletarFeriado(@Param("id") id: string) {
+    return this.feriadoConfigService.deletar(id);
   }
 }

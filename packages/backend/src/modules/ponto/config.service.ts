@@ -98,4 +98,69 @@ export class ConfigService {
   deleteArea(id: string) {
     return this.prisma.areaViagem.delete({ where: { id } });
   }
+
+  /* ─── JornadaPeriodo ─── */
+
+  listJornadas() {
+    return this.prisma.jornadaPeriodo.findMany({ orderBy: { createdAt: "asc" } });
+  }
+
+  async createJornada(
+    data: Partial<{
+      nome: string;
+      descricao: string;
+      horaEntrada: string;
+      horaSaida: string;
+      jornadaDiariaMin: number;
+      jornadaSemanalMin: number;
+      diasUteis: string;
+      tipoFlexibilidade: string;
+      toleranciaEntradaMin: number;
+      toleranciaSaidaMin: number;
+      toleranciaHoraExtraMin: number;
+      toleranciaCalculoMin: number;
+      almocoPodeIniciarA: string;
+      almocoPodeIniciarAte: string;
+      almocoMinMin: number;
+      almocoMaxMin: number;
+      bancoHorasLimiteMin: number;
+      bancoHorasVigenciaDias: number;
+      horaExtraLimiteAuto: number;
+    }>
+  ) {
+    return this.prisma.jornadaPeriodo.create({ data: data as never });
+  }
+
+  async updateJornada(id: string, data: Record<string, unknown>) {
+    return this.prisma.jornadaPeriodo.update({ where: { id }, data: data as never });
+  }
+
+  async deleteJornada(id: string) {
+    const count = await this.prisma.funcionario.count({ where: { jornadaPeriodoId: id } });
+    if (count > 0) {
+      throw new Error(`Não é possível excluir: ${count} funcionário(s) usando esta jornada.`);
+    }
+    return this.prisma.jornadaPeriodo.delete({ where: { id } });
+  }
+
+  async setJornadaPadrao(id: string) {
+    await this.prisma.jornadaPeriodo.updateMany({ data: { ePadrao: false } });
+    return this.prisma.jornadaPeriodo.update({ where: { id }, data: { ePadrao: true } });
+  }
+
+  /* ─── Banco de Horas: datas marco ─── */
+
+  listMarcosBancoHoras() {
+    return this.prisma.bancoHorasMarco.findMany({ orderBy: { data: "desc" } });
+  }
+
+  createMarcoBancoHoras(data: { data: string; descricao?: string }) {
+    return this.prisma.bancoHorasMarco.create({
+      data: { data: new Date(data.data), descricao: data.descricao }
+    });
+  }
+
+  deleteMarcoBancoHoras(id: string) {
+    return this.prisma.bancoHorasMarco.delete({ where: { id } });
+  }
 }

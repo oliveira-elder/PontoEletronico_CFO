@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { Navigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 
@@ -435,11 +436,6 @@ export function GestaoUsuariosPage() {
   const [modalEmailUser, setModalEmailUser] = useState<UserLocal | null>(null);
 
   const tk = token();
-  const isSuperAdmin = user
-    ? SUPER_ADMINS.includes(user.username) ||
-      user.roles.includes("PONTO_ADMIN") ||
-      user.roles.includes("ponto-admin")
-    : false;
 
   const carregarGrupos = useCallback(async () => {
     if (!tk) return;
@@ -514,13 +510,8 @@ export function GestaoUsuariosPage() {
     setGrupos((prev) => prev.map((g) => (g.id === grupo.id ? { ...g, papeis } : g)));
   }
 
-  if (!isSuperAdmin) {
-    return (
-      <div style={{ padding: 32, textAlign: "center", color: "var(--ink-500)" }}>
-        <p style={{ fontSize: 24, marginBottom: 8 }}>🔒</p>
-        <p style={{ fontSize: 14 }}>Acesso restrito a administradores do sistema.</p>
-      </div>
-    );
+  if (!user?.isSuperAdmin) {
+    return <Navigate to="/ponto" replace />;
   }
 
   const gruposFlat = grupos.flatMap((g) => [g, ...(g.subGrupos ?? [])]);
@@ -530,7 +521,7 @@ export function GestaoUsuariosPage() {
       {/* Cabeçalho */}
       <div style={{ marginBottom: 24 }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
-          Administração
+          Sistema
         </p>
         <h1
           style={{
@@ -922,7 +913,7 @@ export function GestaoUsuariosPage() {
                       {u.funcionario ? (
                         <>
                           <p style={{ margin: 0, fontSize: 12, color: "var(--ink-700)" }}>
-                            {u.funcionario.gerencia?.sigla ?? "—"}
+                            {u.funcionario.gerencia?.nome ?? "—"}
                           </p>
                           <p style={{ margin: "2px 0 0", fontSize: 11, color: "var(--ink-500)" }}>
                             {u.funcionario.cargo || "—"}

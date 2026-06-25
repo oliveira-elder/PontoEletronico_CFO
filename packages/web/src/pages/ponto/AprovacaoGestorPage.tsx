@@ -8,9 +8,18 @@ import {
   SearchIcon,
   RefreshCwIcon,
   UsersIcon,
-  UserIcon
+  UserIcon,
+  DownloadIcon
 } from "../../components/icons";
-import { LogTimelineGestorHistorico, ModalDecisaoRH, SolicitacaoCardRH } from "./solicitacaoUi";
+import {
+  FeriasDetalheBlock,
+  LogTimelineGestorHistorico,
+  ModalDecisaoRH,
+  ModalEnviarGuia,
+  ModalEnviarFolhaFerias,
+  SolicitacaoCardRH,
+  type SolicitacaoResumo
+} from "./solicitacaoUi";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -19,6 +28,8 @@ import { LogTimelineGestorHistorico, ModalDecisaoRH, SolicitacaoCardRH } from ".
 type StatusSolicitacao =
   | "PENDENTE"
   | "AGUARDANDO_RH"
+  | "AGUARDANDO_DOCUMENTO_FUNCIONARIO"
+  | "AGUARDANDO_GESTOR_RH"
   | "APROVADA"
   | "REJEITADA"
   | "REJEITADA_GESTOR"
@@ -39,6 +50,11 @@ interface Solicitacao {
   gestorUser?: { name: string } | null;
   rhObservacao: string | null;
   rhResolvidoEm: string | null;
+  guiaMedicoUrl?: string | null;
+  guiaMedicoEnviadaEm?: string | null;
+  guiaMedicoObservacao?: string | null;
+  documentoRetornoUrl?: string | null;
+  documentoRetornoEm?: string | null;
   createdAt: string;
   funcionario: {
     id: string;
@@ -93,7 +109,9 @@ const TIPO_PONTO: Record<string, string> = {
   ENTRADA: "Entrada",
   INICIO_INTERVALO: "Início de Intervalo",
   FIM_INTERVALO: "Fim de Intervalo",
-  SAIDA: "Saída"
+  SAIDA: "Saída",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
 
 function textoResumo(s: Solicitacao): string {
@@ -126,15 +144,26 @@ function textoResumo(s: Solicitacao): string {
       return `${nome} solicita o registro de atestado médico de ${inicio} a ${fim}${periodo} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
     }
     case "FERIAS": {
+      const periodos = Array.isArray(meta?.periodos)
+        ? (meta.periodos as Array<{ dataInicio: string; dataFim: string; dias: number }>)
+        : null;
+      const diasVenda = Number(meta?.diasVendidos ?? meta?.diasVenda ?? 0);
+      const diasGozo = Number(meta?.totalDiasGozo ?? 0);
+      if (periodos && periodos.length > 0) {
+        const periodosStr = periodos
+          .map(
+            (p, i) => `${i + 1}º: ${fmtDate(p.dataInicio)} a ${fmtDate(p.dataFim)} (${p.dias} dias)`
+          )
+          .join(" | ");
+        const vendaStr = diasVenda > 0 ? ` + ${diasVenda} dia(s) vendidos` : "";
+        const isAlteracao = typeof meta?.alteracaoDeId === "string" ? " [alteração]" : "";
+        return `${nome} solicita férias${isAlteracao} — ${periodosStr}${vendaStr}. Total: ${diasGozo + diasVenda} dias.`;
+      }
       const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
       const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
       const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
-      const periodo = meta?.periodoNumero ? ` (${meta.periodoNumero as number}º período)` : "";
-      const venda =
-        meta?.diasVenda && (meta.diasVenda as number) > 0
-          ? `, vendendo ${meta.diasVenda as number} dia${(meta.diasVenda as number) !== 1 ? "s" : ""}`
-          : "";
-      return `${nome} solicita férias de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""} corridos${periodo}${venda}.`;
+      const venda = diasVenda > 0 ? `, vendendo ${diasVenda} dia${diasVenda !== 1 ? "s" : ""}` : "";
+      return `${nome} solicita férias de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""} corridos${venda}.`;
     }
     case "LICENCA": {
       const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
@@ -236,6 +265,11 @@ function StatusBadge({ status }: { status: StatusSolicitacao }) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
     PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aprovado pelo Gestor", cls: "badge-blue" },
+    AGUARDANDO_DOCUMENTO_FUNCIONARIO: {
+      label: "Aguardando Doc. Funcionário",
+      cls: "badge-amber"
+    },
+    AGUARDANDO_GESTOR_RH: { label: "Aguardando Gerente de RH", cls: "badge-amber" },
     APROVADA: { label: "Aprovada pelo RH", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     REJEITADA_GESTOR: { label: "Rejeitada pelo Gestor", cls: "badge-red" },
@@ -354,6 +388,7 @@ function ModalDecisao({
             <p style={{ margin: 0, fontSize: 13, color: "var(--ink-800)", lineHeight: 1.5 }}>
               {resumo}
             </p>
+            {solicitacao.tipo === "FERIAS" && <FeriasDetalheBlock meta={solicitacao.metadados} />}
             {solicitacao.descricao && (
               <p
                 style={{
@@ -549,7 +584,7 @@ function SolicitacaoCard({
                 fontWeight: 600
               }}
             >
-              {s.funcionario.gerencia.sigla}
+              {s.funcionario.gerencia.nome}
             </span>
           )}
           <StatusBadge status={s.status} />
@@ -589,6 +624,8 @@ function SolicitacaoCard({
           <span style={{ fontSize: 11, color: "var(--ink-400)" }}>{email}</span>
         </div>
 
+        {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
+
         {/* ── Justificativa do funcionário (secundária) ── */}
         {s.descricao && (
           <p
@@ -603,6 +640,15 @@ function SolicitacaoCard({
             }}
           >
             "{s.descricao}"
+          </p>
+        )}
+
+        {s.tipo === "ATESTADO" && typeof s.metadados?.documentoUrl === "string" && (
+          <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "#7c3aed" }}>
+            📎{" "}
+            <a href={s.metadados.documentoUrl as string} target="_blank" rel="noopener noreferrer">
+              Ver atestado anexado
+            </a>
           </p>
         )}
 
@@ -660,10 +706,52 @@ function SolicitacaoCard({
    PÁGINA PRINCIPAL
 ══════════════════════════════════════════ */
 
-type EtapaAprovacao = "gestor" | "rh";
+type EtapaAprovacao = "gestor" | "rh" | "assinaturas" | "correcoes_rh";
+
+/* ── Tipos de Assinatura ── */
+type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
+interface AssinaturaQuadro {
+  id: string;
+  status: StatusAssinatura;
+  bancoHorasSaldoTotalMinutos: number;
+  assinadoFuncionarioEm: string | null;
+  assinadoGestorEm: string | null;
+  assinadoGestorNome: string | null;
+  periodo: {
+    mes: number;
+    ano: number;
+    funcionario: {
+      id: string;
+      matricula: string | null;
+      user: { name: string };
+      gerencia: { nome: string; sigla: string } | null;
+    };
+  };
+}
+
+const MESES_PT = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro"
+];
+
+function fmtBH(min: number): string {
+  const sign = min < 0 ? "-" : "+";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}min`;
+}
 
 export function AprovacaoGestorPage() {
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, token } = useAuth();
 
   // PROVISÓRIO: isManager via campo do Funcionario dá acesso enquanto responsavelUserId não está configurado
   const isManagerProvisorio = !!user?.funcionario?.isManager;
@@ -679,6 +767,7 @@ export function AprovacaoGestorPage() {
     hasRole("RH_AUDITORIA") ||
     hasRole("ponto-admin") ||
     hasRole("PONTO_ADMIN");
+  const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const temAcesso = isGestorArea || isRH;
 
   const [etapa, setEtapa] = useState<EtapaAprovacao>(isRH && !isGestorArea ? "rh" : "gestor");
@@ -695,6 +784,21 @@ export function AprovacaoGestorPage() {
   const [equipeCount, setEquipeCount] = useState<number | null>(null);
   const [statsGestor, setStatsGestor] = useState({ pendentes: 0, aprovadas: 0, rejeitadas: 0 });
   const [statsRH, setStatsRH] = useState({ pendentes: 0, aprovadas: 0, rejeitadas: 0 });
+  const [statsAdmin, setStatsAdmin] = useState({ pendentes: 0 });
+
+  // Modal de decisão — Gerente de RH (correções criadas pelo RH)
+  const [modalAdminSol, setModalAdminSol] = useState<Solicitacao | null>(null);
+  const [modalAdminDecisao, setModalAdminDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
+  const [, setModalAdminObs] = useState("");
+  const [modalAdminErro, setModalAdminErro] = useState("");
+
+  // Assinaturas de Quadro
+  const [assinaturas, setAssinaturas] = useState<AssinaturaQuadro[]>([]);
+  const [loadingAssin, setLoadingAssin] = useState(false);
+  const [assinandoId, setAssinandoId] = useState<string | null>(null);
+  const [modalAssin, setModalAssin] = useState<AssinaturaQuadro | null>(null);
+  const [erroAssin, setErroAssin] = useState("");
+  const [filtroAssinStatus, setFiltroAssinStatus] = useState("PENDENTE_GESTOR");
 
   // Modal de decisão — gestor
   const [modalSol, setModalSol] = useState<Solicitacao | null>(null);
@@ -704,6 +808,12 @@ export function AprovacaoGestorPage() {
   const [modalRhSol, setModalRhSol] = useState<Solicitacao | null>(null);
   const [modalRhDecisao, setModalRhDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
   const [modalRhErro, setModalRhErro] = useState("");
+  // Modal de envio de guia médica — RH
+  const [modalGuiaSol, setModalGuiaSol] = useState<Solicitacao | null>(null);
+  const [modalGuiaErro, setModalGuiaErro] = useState("");
+  // Modal de envio de folha de férias — RH
+  const [modalFolhaSol, setModalFolhaSol] = useState<Solicitacao | null>(null);
+  const [modalFolhaErro, setModalFolhaErro] = useState("");
   const [feedbackMsg, setFeedbackMsg] = useState("");
 
   const limit = 20;
@@ -738,7 +848,9 @@ export function AprovacaoGestorPage() {
       }
       if (isRH) {
         const [pendRh, aprovRh, rejRh] = await Promise.all([
-          api.get<{ total: number }>("/auditoria/solicitacoes?status=AGUARDANDO_RH&limit=1"),
+          api.get<{ total: number }>(
+            "/auditoria/solicitacoes?status=AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO&limit=1"
+          ),
           api.get<{ total: number }>("/auditoria/solicitacoes?status=APROVADA&limit=1"),
           api.get<{ total: number }>("/auditoria/solicitacoes?status=REJEITADA_RH&limit=1")
         ]);
@@ -747,6 +859,12 @@ export function AprovacaoGestorPage() {
           aprovadas: aprovRh.total,
           rejeitadas: rejRh.total
         });
+      }
+      if (isPontoAdmin) {
+        const pendAdmin = await api
+          .get<{ total: number }>("/auditoria/solicitacoes?status=AGUARDANDO_GESTOR_RH&limit=1")
+          .catch(() => ({ total: 0 }));
+        setStatsAdmin({ pendentes: pendAdmin.total });
       }
     } catch {
       /* opcional */
@@ -774,9 +892,21 @@ export function AprovacaoGestorPage() {
         );
         setSolicitacoes(data.solicitacoes ?? []);
         setTotal(data.total ?? 0);
+      } else if (etapa === "correcoes_rh") {
+        const statusMap = {
+          pendentes: "AGUARDANDO_GESTOR_RH",
+          historico: "APROVADA,REJEITADA_RH"
+        };
+        params.set("status", statusMap[aba]);
+        params.set("tipo", "CORRECAO_PONTO");
+        const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
+          `/auditoria/solicitacoes?${params}`
+        );
+        setSolicitacoes(data.solicitacoes ?? []);
+        setTotal(data.total ?? 0);
       } else {
         const statusMap = {
-          pendentes: "AGUARDANDO_RH",
+          pendentes: "AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO",
           historico: "APROVADA,REJEITADA_RH"
         };
         params.set("status", statusMap[aba]);
@@ -838,8 +968,8 @@ export function AprovacaoGestorPage() {
     }
   }
 
-  function abrirModalRH(s: Solicitacao, decisao: "APROVAR" | "REJEITAR") {
-    setModalRhSol(s);
+  function abrirModalRH(s: SolicitacaoResumo, decisao: "APROVAR" | "REJEITAR") {
+    setModalRhSol(s as Solicitacao);
     setModalRhDecisao(decisao);
     setModalRhErro("");
     setFeedbackMsg("");
@@ -863,6 +993,110 @@ export function AprovacaoGestorPage() {
       await Promise.all([carregar(), carregarStats()]);
     } catch (e) {
       setModalRhErro((e as Error).message || "Erro ao processar decisão. Tente novamente.");
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  function abrirModalGuia(s: SolicitacaoResumo) {
+    setModalGuiaSol(s as Solicitacao);
+    setModalGuiaErro("");
+    setFeedbackMsg("");
+  }
+
+  function abrirModalFolha(s: SolicitacaoResumo) {
+    setModalFolhaSol(s as Solicitacao);
+    setModalFolhaErro("");
+    setFeedbackMsg("");
+  }
+
+  async function confirmarEnviarFolha(folhaBase64: string, observacao: string) {
+    if (!modalFolhaSol) return;
+    setModalLoading(true);
+    setModalFolhaErro("");
+    try {
+      await api.patch(`/auditoria/rh/solicitacoes/${modalFolhaSol.id}/enviar-folha-ferias`, {
+        folhaBase64,
+        observacao
+      });
+      setModalFolhaSol(null);
+      setFeedbackMsg("Folha de férias enviada ao funcionário para assinatura.");
+      await Promise.all([carregar(), carregarStats()]);
+    } catch (e) {
+      setModalFolhaErro((e as Error).message || "Erro ao enviar folha. Tente novamente.");
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  async function confirmarEnviarGuia(guiaMedicoBase64: string, observacao: string) {
+    if (!modalGuiaSol) return;
+    setModalLoading(true);
+    setModalGuiaErro("");
+    try {
+      await api.patch(`/auditoria/rh/solicitacoes/${modalGuiaSol.id}/enviar-guia`, {
+        guiaMedicoBase64,
+        observacao
+      });
+      setModalGuiaSol(null);
+      setFeedbackMsg("Guia médica enviada ao funcionário.");
+      await Promise.all([carregar(), carregarStats()]);
+    } catch (e) {
+      setModalGuiaErro((e as Error).message || "Erro ao enviar guia médica. Tente novamente.");
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
+  /* ── Assinaturas: carrega quando entra na aba ── */
+  useEffect(() => {
+    if (etapa !== "assinaturas") return;
+    setLoadingAssin(true);
+    const param = filtroAssinStatus ? `?status=${filtroAssinStatus}` : "";
+    api
+      .get<AssinaturaQuadro[]>(`/auditoria/gestao/assinaturas${param}`)
+      .then((data) => setAssinaturas(data ?? []))
+      .catch(() => setAssinaturas([]))
+      .finally(() => setLoadingAssin(false));
+  }, [etapa, filtroAssinStatus]);
+
+  async function confirmarAssinarGestor() {
+    if (!modalAssin) return;
+    setAssinandoId(modalAssin.id);
+    setErroAssin("");
+    try {
+      await api.post(`/auditoria/gestao/assinaturas/${modalAssin.id}/assinar`, {});
+      setModalAssin(null);
+      const data = await api.get<AssinaturaQuadro[]>(
+        `/auditoria/gestao/assinaturas${filtroAssinStatus ? `?status=${filtroAssinStatus}` : ""}`
+      );
+      setAssinaturas(data ?? []);
+      setFeedbackMsg("Quadro assinado com sucesso.");
+    } catch (e) {
+      setErroAssin((e as Error).message || "Erro ao assinar. Tente novamente.");
+    } finally {
+      setAssinandoId(null);
+    }
+  }
+
+  async function confirmarAdmin(observacao: string) {
+    if (!modalAdminSol) return;
+    setModalLoading(true);
+    setModalAdminErro("");
+    try {
+      await api.patch(`/auditoria/admin/correcoes-rh/${modalAdminSol.id}`, {
+        decisao: modalAdminDecisao,
+        observacao
+      });
+      setModalAdminSol(null);
+      setFeedbackMsg(
+        modalAdminDecisao === "APROVAR"
+          ? "Correção aprovada e aplicada no histórico do funcionário."
+          : "Correção rejeitada."
+      );
+      await Promise.all([carregar(), carregarStats()]);
+    } catch (e) {
+      setModalAdminErro((e as Error).message || "Erro ao processar decisão.");
     } finally {
       setModalLoading(false);
     }
@@ -933,16 +1167,36 @@ export function AprovacaoGestorPage() {
         <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
           {etapa === "gestor"
             ? "Etapa do gestor de área — aprovação inicial da equipe."
-            : "Etapa do RH — aprovação final de todas as solicitações."}
+            : etapa === "rh"
+              ? "Etapa do RH — aprovação final de todas as solicitações."
+              : etapa === "correcoes_rh"
+                ? "Correções de ponto criadas pelo RH — aprovação exclusiva do Gerente de RH."
+                : "Assine os quadros mensais de ponto da sua equipe."}
         </p>
       </div>
 
-      {/* ── Etapas (Gestor / RH) ── */}
-      {mostrarEtapaGestor && mostrarEtapaRH && (
+      {/* ── Etapas (Gestor / RH / Assinaturas) ── */}
+      {(mostrarEtapaGestor || mostrarEtapaRH) && (
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           {[
-            { id: "gestor" as const, label: "Gestor de Área", count: statsGestor.pendentes },
-            { id: "rh" as const, label: "RH", count: statsRH.pendentes }
+            ...(mostrarEtapaGestor
+              ? [{ id: "gestor" as const, label: "Gestor de Área", count: statsGestor.pendentes }]
+              : []),
+            ...(mostrarEtapaRH
+              ? [{ id: "rh" as const, label: "RH", count: statsRH.pendentes }]
+              : []),
+            ...(mostrarEtapaGestor
+              ? [{ id: "assinaturas" as const, label: "Assinaturas de Quadro", count: 0 }]
+              : []),
+            ...(isPontoAdmin
+              ? [
+                  {
+                    id: "correcoes_rh" as const,
+                    label: "✏️ Correções de Ponto",
+                    count: statsAdmin.pendentes
+                  }
+                ]
+              : [])
           ].map((e) => (
             <button
               key={e.id}
@@ -971,94 +1225,361 @@ export function AprovacaoGestorPage() {
         </div>
       )}
 
-      {/* ── Stat Cards ── */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))",
-          gap: 14,
-          marginBottom: 28
-        }}
-      >
-        {(etapa === "gestor"
-          ? [
-              {
-                label: "Aguardando minha aprovação",
-                val: stats.pendentes,
-                color: "#92400e",
-                bg: "#fef3c7"
-              },
-              {
-                label: "Aprovadas por mim (encam. ao RH)",
-                val: stats.aprovadas,
-                color: "#065f46",
-                bg: "#d1fae5"
-              },
-              {
-                label: "Rejeitadas por mim",
-                val: stats.rejeitadas,
-                color: "#7a1e26",
-                bg: "#fee2e2"
-              },
-              {
-                label: "Funcionários na equipe",
-                val: equipeCount ?? "–",
-                color: "#1e3a5f",
-                bg: "#dbeafe"
-              }
-            ]
-          : [
-              {
-                label: "Aguardando aprovação do RH",
-                val: stats.pendentes,
-                color: "#1e40af",
-                bg: "#dbeafe"
-              },
-              { label: "Aprovadas pelo RH", val: stats.aprovadas, color: "#065f46", bg: "#d1fae5" },
-              {
-                label: "Rejeitadas pelo RH",
-                val: stats.rejeitadas,
-                color: "#7a1e26",
-                bg: "#fee2e2"
-              }
-            ]
-        ).map((c) => (
-          <div
-            key={c.label}
-            style={{
-              background: "#fff",
-              borderRadius: "var(--radius-lg)",
-              border: "1px solid rgba(122,30,38,0.08)",
-              padding: "14px 18px"
-            }}
-          >
-            <p
+      {/* ── Aba Assinaturas de Quadro ── */}
+      {etapa === "assinaturas" && (
+        <div>
+          {/* Modal de confirmação de assinatura do gestor */}
+          {modalAssin && (
+            <div
               style={{
-                margin: "0 0 6px",
-                fontSize: 11,
-                color: "var(--ink-500)",
-                fontWeight: 600,
-                lineHeight: 1.3
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.45)",
+                zIndex: 1000,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 16
               }}
+              onClick={() => setModalAssin(null)}
             >
-              {c.label}
-            </p>
-            <span
-              style={{
-                fontSize: 28,
-                fontWeight: 800,
-                fontFamily: "var(--font-display)",
-                background: c.bg,
-                color: c.color,
-                borderRadius: "var(--radius-md)",
-                padding: "2px 10px"
-              }}
-            >
-              {c.val}
-            </span>
+              <div
+                style={{
+                  background: "white",
+                  borderRadius: 12,
+                  padding: "28px 28px 24px",
+                  maxWidth: 440,
+                  width: "100%",
+                  boxShadow: "0 8px 40px rgba(0,0,0,0.18)"
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h2
+                  style={{
+                    fontFamily: "var(--font-display)",
+                    fontSize: 17,
+                    marginBottom: 4,
+                    color: "var(--burgundy-700)"
+                  }}
+                >
+                  Assinar Quadro do Funcionário
+                </h2>
+                <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16 }}>
+                  {modalAssin.periodo.funcionario.user.name} —{" "}
+                  {MESES_PT[(modalAssin.periodo.mes ?? 1) - 1]}/{modalAssin.periodo.ano}
+                </p>
+                <div
+                  style={{
+                    background: "#f9fafb",
+                    borderRadius: 8,
+                    padding: "12px 14px",
+                    marginBottom: 16,
+                    display: "flex",
+                    gap: 20
+                  }}
+                >
+                  <div>
+                    <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 1 }}>
+                      Matrícula
+                    </p>
+                    <p style={{ fontSize: 13, fontWeight: 700 }}>
+                      {modalAssin.periodo.funcionario.matricula ?? "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 1 }}>
+                      Banco de horas (total)
+                    </p>
+                    <p
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: modalAssin.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C",
+                        fontFamily: "var(--font-mono)"
+                      }}
+                    >
+                      {fmtBH(modalAssin.bancoHorasSaldoTotalMinutos)}
+                    </p>
+                  </div>
+                </div>
+                <p
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--ink-600)",
+                    marginBottom: 20,
+                    lineHeight: 1.6
+                  }}
+                >
+                  Confirmo que revisei e estou de acordo com os registros de ponto do funcionário
+                  para este período.
+                </p>
+                {erroAssin && (
+                  <p style={{ color: "#b91c1c", fontSize: 12, marginBottom: 12 }}>{erroAssin}</p>
+                )}
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setModalAssin(null)}
+                    disabled={!!assinandoId}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={confirmarAssinarGestor}
+                    disabled={!!assinandoId}
+                    style={{
+                      background: "var(--burgundy-700)",
+                      borderColor: "var(--burgundy-700)"
+                    }}
+                  >
+                    {assinandoId ? "Assinando…" : "✍ Assinar Quadro"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Filtro */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+            {[
+              { v: "PENDENTE_GESTOR", l: "Aguardando minha assinatura" },
+              { v: "PENDENTE_FUNCIONARIO", l: "Aguardando funcionário" },
+              { v: "CONCLUIDA", l: "Concluídas" },
+              { v: "", l: "Todas" }
+            ].map(({ v, l }) => (
+              <button
+                key={v}
+                onClick={() => setFiltroAssinStatus(v)}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: "var(--radius-full)",
+                  border:
+                    filtroAssinStatus === v
+                      ? "2px solid var(--burgundy-600)"
+                      : "1px solid rgba(122,30,38,0.18)",
+                  background: filtroAssinStatus === v ? "var(--burgundy-50, #fdf2f3)" : "#fff",
+                  color: filtroAssinStatus === v ? "var(--burgundy-700)" : "var(--ink-600)",
+                  fontSize: 12,
+                  fontWeight: filtroAssinStatus === v ? 700 : 500,
+                  cursor: "pointer"
+                }}
+              >
+                {l}
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
+
+          {loadingAssin ? (
+            <p style={{ textAlign: "center", padding: 40, color: "var(--ink-400)", fontSize: 13 }}>
+              Carregando assinaturas…
+            </p>
+          ) : assinaturas.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
+              <p style={{ fontSize: 14 }}>Nenhuma assinatura encontrada.</p>
+            </div>
+          ) : (
+            <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
+              <table className="table-cfo" style={{ minWidth: 700 }}>
+                <thead>
+                  <tr>
+                    <th>Funcionário</th>
+                    <th>Matrícula</th>
+                    <th>Departamento</th>
+                    <th>Mês/Ano</th>
+                    <th>Banco de Horas (total)</th>
+                    <th>Assinatura Func.</th>
+                    <th>Status</th>
+                    <th style={{ width: "1%", whiteSpace: "nowrap" }}>Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assinaturas.map((a) => (
+                    <tr key={a.id}>
+                      <td style={{ fontWeight: 600 }}>{a.periodo.funcionario.user.name}</td>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                        {a.periodo.funcionario.matricula ?? "—"}
+                      </td>
+                      <td style={{ fontSize: 12 }}>
+                        {a.periodo.funcionario.gerencia?.nome ?? "—"}
+                      </td>
+                      <td style={{ fontFamily: "var(--font-mono)" }}>
+                        {String(a.periodo.mes).padStart(2, "0")}/{a.periodo.ano}
+                      </td>
+                      <td
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontWeight: 600,
+                          color: a.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C"
+                        }}
+                      >
+                        {fmtBH(a.bancoHorasSaldoTotalMinutos)}
+                      </td>
+                      <td style={{ fontSize: 12, color: "var(--ink-500)" }}>
+                        {a.assinadoFuncionarioEm
+                          ? new Date(a.assinadoFuncionarioEm).toLocaleDateString("pt-BR")
+                          : "—"}
+                      </td>
+                      <td>
+                        {a.status === "PENDENTE_FUNCIONARIO" && (
+                          <span className="badge badge-amber">Aguard. funcionário</span>
+                        )}
+                        {a.status === "PENDENTE_GESTOR" && (
+                          <span className="badge badge-blue">Aguard. gestor</span>
+                        )}
+                        {a.status === "CONCLUIDA" && (
+                          <span className="badge badge-green">Concluída</span>
+                        )}
+                        {a.status === "DISPENSADA" && (
+                          <span className="badge badge-gray">Dispensada</span>
+                        )}
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          {a.status === "PENDENTE_GESTOR" && (
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={() => {
+                                setModalAssin(a);
+                                setErroAssin("");
+                              }}
+                              style={{
+                                gap: 5,
+                                fontSize: 12,
+                                background: "var(--burgundy-700)",
+                                borderColor: "var(--burgundy-700)"
+                              }}
+                            >
+                              ✍ Assinar
+                            </button>
+                          )}
+                          {(a.status === "PENDENTE_GESTOR" || a.status === "CONCLUIDA") && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              style={{ gap: 4, fontSize: 12 }}
+                              title="Baixar PDF do quadro"
+                              onClick={() => {
+                                const matricula = a.periodo.funcionario.matricula ?? a.id;
+                                const filename = `quadro-${matricula}-${String(a.periodo.mes).padStart(2, "0")}-${a.periodo.ano}.pdf`;
+                                api
+                                  .download(`/auditoria/assinaturas/${a.id}/pdf`, filename, token())
+                                  .catch((e: unknown) =>
+                                    alert(
+                                      "Erro ao baixar PDF: " +
+                                        ((e as Error)?.message ?? "desconhecido")
+                                    )
+                                  );
+                              }}
+                            >
+                              <DownloadIcon size={12} /> PDF
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Stat Cards ── */}
+      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))",
+            gap: 14,
+            marginBottom: 28
+          }}
+        >
+          {(etapa === "gestor"
+            ? [
+                {
+                  label: "Aguardando minha aprovação",
+                  val: stats.pendentes,
+                  color: "#92400e",
+                  bg: "#fef3c7"
+                },
+                {
+                  label: "Aprovadas por mim (encam. ao RH)",
+                  val: stats.aprovadas,
+                  color: "#065f46",
+                  bg: "#d1fae5"
+                },
+                {
+                  label: "Rejeitadas por mim",
+                  val: stats.rejeitadas,
+                  color: "#7a1e26",
+                  bg: "#fee2e2"
+                },
+                {
+                  label: "Funcionários na equipe",
+                  val: equipeCount ?? "–",
+                  color: "#1e3a5f",
+                  bg: "#dbeafe"
+                }
+              ]
+            : [
+                {
+                  label: "Aguardando aprovação do RH",
+                  val: stats.pendentes,
+                  color: "#1e40af",
+                  bg: "#dbeafe"
+                },
+                {
+                  label: "Aprovadas pelo RH",
+                  val: stats.aprovadas,
+                  color: "#065f46",
+                  bg: "#d1fae5"
+                },
+                {
+                  label: "Rejeitadas pelo RH",
+                  val: stats.rejeitadas,
+                  color: "#7a1e26",
+                  bg: "#fee2e2"
+                }
+              ]
+          ).map((c) => (
+            <div
+              key={c.label}
+              style={{
+                background: "#fff",
+                borderRadius: "var(--radius-lg)",
+                border: "1px solid rgba(122,30,38,0.08)",
+                padding: "14px 18px"
+              }}
+            >
+              <p
+                style={{
+                  margin: "0 0 6px",
+                  fontSize: 11,
+                  color: "var(--ink-500)",
+                  fontWeight: 600,
+                  lineHeight: 1.3
+                }}
+              >
+                {c.label}
+              </p>
+              <span
+                style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  fontFamily: "var(--font-display)",
+                  background: c.bg,
+                  color: c.color,
+                  borderRadius: "var(--radius-md)",
+                  padding: "2px 10px"
+                }}
+              >
+                {c.val}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ── Feedback ── */}
       {feedbackMsg && (
@@ -1079,228 +1600,353 @@ export function AprovacaoGestorPage() {
       )}
 
       {/* ── Abas ── */}
-      <div
-        style={{
-          display: "flex",
-          gap: 4,
-          marginBottom: 20,
-          borderBottom: "1px solid rgba(122,30,38,0.1)",
-          paddingBottom: 0
-        }}
-      >
-        {(["pendentes", "historico"] as const).map((a) => (
-          <button
-            key={a}
-            onClick={() => setAba(a)}
-            style={{
-              padding: "9px 18px",
-              border: "none",
-              background: "none",
-              cursor: "pointer",
-              fontSize: 13,
-              fontWeight: aba === a ? 700 : 500,
-              color: aba === a ? "var(--burgundy-600)" : "var(--ink-500)",
-              borderBottom: aba === a ? "2px solid var(--burgundy-600)" : "2px solid transparent",
-              marginBottom: -1
-            }}
-          >
-            {a === "pendentes"
-              ? `Aguardando Aprovação${stats.pendentes > 0 ? ` (${stats.pendentes})` : ""}`
-              : etapa === "rh"
-                ? "Histórico do RH"
-                : "Histórico"}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Filtros ── */}
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          marginBottom: 20,
-          flexWrap: "wrap",
-          alignItems: "center"
-        }}
-      >
-        <div style={{ position: "relative", flex: "1 1 220px" }}>
-          <SearchIcon
-            size={14}
-            style={{
-              position: "absolute",
-              left: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "var(--ink-500)"
-            }}
-          />
-          <input
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar por nome ou matrícula..."
-            style={{
-              width: "100%",
-              paddingLeft: 30,
-              paddingRight: 10,
-              paddingTop: 8,
-              paddingBottom: 8,
-              border: "1px solid rgba(0,0,0,0.12)",
-              borderRadius: "var(--radius-md)",
-              fontSize: 13,
-              boxSizing: "border-box"
-            }}
-          />
-        </div>
-        <select
-          value={tipo}
-          onChange={(e) => setTipo(e.target.value)}
+      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
+        <div
           style={{
-            padding: "8px 12px",
-            border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: "var(--radius-md)",
-            fontSize: 13,
-            background: "#fff"
-          }}
-        >
-          <option value="">Todos os tipos</option>
-          {Object.entries(TIPO_LABEL).map(([v, l]) => (
-            <option key={v} value={v}>
-              {l}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={() => {
-            void carregar();
-            void carregarStats();
-          }}
-          title="Atualizar"
-          style={{
-            padding: "8px 12px",
-            border: "1px solid rgba(0,0,0,0.12)",
-            borderRadius: "var(--radius-md)",
-            background: "#fff",
-            cursor: "pointer",
             display: "flex",
-            alignItems: "center",
-            gap: 5,
-            fontSize: 13
+            gap: 4,
+            marginBottom: 20,
+            borderBottom: "1px solid rgba(122,30,38,0.1)",
+            paddingBottom: 0
           }}
         >
-          <RefreshCwIcon size={14} /> Atualizar
-        </button>
-      </div>
-
-      {/* ── Lista ── */}
-      {loading ? (
-        <div style={{ textAlign: "center", padding: "40px 0", color: "var(--ink-500)" }}>
-          Carregando solicitações...
-        </div>
-      ) : erro ? (
-        <div
-          style={{
-            background: "#fee2e2",
-            borderRadius: "var(--radius-md)",
-            padding: "16px 20px",
-            color: "#7a1e26"
-          }}
-        >
-          {erro}
-        </div>
-      ) : solicitacoesFiltradas.length === 0 ? (
-        <div
-          style={{
-            textAlign: "center",
-            padding: "48px 20px",
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)"
-          }}
-        >
-          {aba === "pendentes" ? (
-            <>
-              <CheckCircleIcon size={36} style={{ color: "#16a34a", marginBottom: 12 }} />
-              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
-                {etapa === "rh"
-                  ? "Nenhuma solicitação aguardando aprovação do RH."
-                  : "Nenhuma solicitação aguardando aprovação."}
-              </p>
-              <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
-                {etapa === "rh"
-                  ? "Solicitações aprovadas pelos gestores aparecerão aqui para análise final."
-                  : "Quando os membros da sua equipe enviarem solicitações, elas aparecerão aqui."}
-              </p>
-            </>
-          ) : (
-            <>
-              <UsersIcon size={36} style={{ color: "var(--ink-400)", marginBottom: 12 }} />
-              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
-                Nenhum registro no histórico.
-              </p>
-              <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
-                {etapa === "rh"
-                  ? "Solicitações já decididas pelo RH aparecerão aqui."
-                  : "As solicitações que você aprovar ou rejeitar aparecerão aqui após a decisão."}
-              </p>
-            </>
-          )}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {solicitacoesFiltradas.map((s) =>
-            etapa === "rh" ? (
-              <SolicitacaoCardRH
-                key={s.id}
-                s={s}
-                mostrarAcoes={aba === "pendentes"}
-                onDecidir={abrirModalRH}
-              />
-            ) : (
-              <SolicitacaoCard
-                key={s.id}
-                s={s}
-                mostrarAcoes={aba === "pendentes"}
-                onDecidir={abrirModal}
-              />
-            )
-          )}
+          {(["pendentes", "historico"] as const).map((a) => (
+            <button
+              key={a}
+              onClick={() => setAba(a)}
+              style={{
+                padding: "9px 18px",
+                border: "none",
+                background: "none",
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: aba === a ? 700 : 500,
+                color: aba === a ? "var(--burgundy-600)" : "var(--ink-500)",
+                borderBottom: aba === a ? "2px solid var(--burgundy-600)" : "2px solid transparent",
+                marginBottom: -1
+              }}
+            >
+              {a === "pendentes"
+                ? `Aguardando Aprovação${stats.pendentes > 0 ? ` (${stats.pendentes})` : ""}`
+                : etapa === "rh"
+                  ? "Histórico do RH"
+                  : "Histórico"}
+            </button>
+          ))}
         </div>
       )}
 
-      {/* ── Paginação ── */}
-      {totalPages > 1 && (
-        <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 24 }}>
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
+      {/* ── Filtros e Lista ── */}
+      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
+        <>
+          <div
             style={{
-              padding: "6px 14px",
-              border: "1px solid rgba(0,0,0,0.15)",
-              borderRadius: "var(--radius-md)",
-              background: "#fff",
-              cursor: page === 1 ? "not-allowed" : "pointer",
-              fontSize: 13
+              display: "flex",
+              gap: 10,
+              marginBottom: 20,
+              flexWrap: "wrap",
+              alignItems: "center"
             }}
           >
-            ← Anterior
-          </button>
-          <span style={{ padding: "6px 14px", fontSize: 13, color: "var(--ink-500)" }}>
-            Página {page} de {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
+            <div style={{ position: "relative", flex: "1 1 220px" }}>
+              <SearchIcon
+                size={14}
+                style={{
+                  position: "absolute",
+                  left: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--ink-500)"
+                }}
+              />
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Buscar por nome ou matrícula..."
+                style={{
+                  width: "100%",
+                  paddingLeft: 30,
+                  paddingRight: 10,
+                  paddingTop: 8,
+                  paddingBottom: 8,
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: 13,
+                  boxSizing: "border-box"
+                }}
+              />
+            </div>
+            <select
+              value={tipo}
+              onChange={(e) => setTipo(e.target.value)}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid rgba(0,0,0,0.12)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 13,
+                background: "#fff"
+              }}
+            >
+              <option value="">Todos os tipos</option>
+              {Object.entries(TIPO_LABEL).map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                void carregar();
+                void carregarStats();
+              }}
+              title="Atualizar"
+              style={{
+                padding: "8px 12px",
+                border: "1px solid rgba(0,0,0,0.12)",
+                borderRadius: "var(--radius-md)",
+                background: "#fff",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 13
+              }}
+            >
+              <RefreshCwIcon size={14} /> Atualizar
+            </button>
+          </div>
+
+          {/* ── Lista ── */}
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--ink-500)" }}>
+              Carregando solicitações...
+            </div>
+          ) : erro ? (
+            <div
+              style={{
+                background: "#fee2e2",
+                borderRadius: "var(--radius-md)",
+                padding: "16px 20px",
+                color: "#7a1e26"
+              }}
+            >
+              {erro}
+            </div>
+          ) : solicitacoesFiltradas.length === 0 ? (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "48px 20px",
+                background: "#fff",
+                borderRadius: "var(--radius-lg)",
+                border: "1px solid rgba(122,30,38,0.08)"
+              }}
+            >
+              {aba === "pendentes" ? (
+                <>
+                  <CheckCircleIcon size={36} style={{ color: "#16a34a", marginBottom: 12 }} />
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                    {etapa === "rh"
+                      ? "Nenhuma solicitação aguardando aprovação do RH."
+                      : "Nenhuma solicitação aguardando aprovação."}
+                  </p>
+                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
+                    {etapa === "rh"
+                      ? "Solicitações aprovadas pelos gestores aparecerão aqui para análise final."
+                      : "Quando os membros da sua equipe enviarem solicitações, elas aparecerão aqui."}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <UsersIcon size={36} style={{ color: "var(--ink-400)", marginBottom: 12 }} />
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                    Nenhum registro no histórico.
+                  </p>
+                  <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
+                    {etapa === "rh"
+                      ? "Solicitações já decididas pelo RH aparecerão aqui."
+                      : "As solicitações que você aprovar ou rejeitar aparecerão aqui após a decisão."}
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {solicitacoesFiltradas.map((s) =>
+                etapa === "rh" ? (
+                  <SolicitacaoCardRH
+                    key={s.id}
+                    s={s}
+                    mostrarAcoes={aba === "pendentes"}
+                    onDecidir={abrirModalRH}
+                    onEnviarGuia={abrirModalGuia}
+                    onEnviarFolhaFerias={abrirModalFolha}
+                  />
+                ) : (
+                  <SolicitacaoCard
+                    key={s.id}
+                    s={s}
+                    mostrarAcoes={aba === "pendentes"}
+                    onDecidir={abrirModal}
+                  />
+                )
+              )}
+            </div>
+          )}
+
+          {/* ── Paginação ── */}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 24 }}>
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                style={{
+                  padding: "6px 14px",
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  borderRadius: "var(--radius-md)",
+                  background: "#fff",
+                  cursor: page === 1 ? "not-allowed" : "pointer",
+                  fontSize: 13
+                }}
+              >
+                ← Anterior
+              </button>
+              <span style={{ padding: "6px 14px", fontSize: 13, color: "var(--ink-500)" }}>
+                Página {page} de {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                style={{
+                  padding: "6px 14px",
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  borderRadius: "var(--radius-md)",
+                  background: "#fff",
+                  cursor: page === totalPages ? "not-allowed" : "pointer",
+                  fontSize: 13
+                }}
+              >
+                Próxima →
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Lista de Correções de Ponto (Gerente de RH) ── */}
+      {etapa === "correcoes_rh" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Abas pendentes / histórico */}
+          <div
             style={{
-              padding: "6px 14px",
-              border: "1px solid rgba(0,0,0,0.15)",
-              borderRadius: "var(--radius-md)",
-              background: "#fff",
-              cursor: page === totalPages ? "not-allowed" : "pointer",
-              fontSize: 13
+              display: "flex",
+              gap: 4,
+              borderBottom: "1px solid rgba(122,30,38,0.10)",
+              marginBottom: 4
             }}
           >
-            Próxima →
-          </button>
+            {(["pendentes", "historico"] as const).map((a) => (
+              <button
+                key={a}
+                onClick={() => setAba(a)}
+                style={{
+                  padding: "8px 16px",
+                  border: "none",
+                  background: "none",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: aba === a ? 700 : 500,
+                  color: aba === a ? "var(--burgundy-600)" : "var(--ink-500)",
+                  borderBottom:
+                    aba === a ? "2px solid var(--burgundy-600)" : "2px solid transparent",
+                  marginBottom: -1
+                }}
+              >
+                {a === "pendentes"
+                  ? `Aguardando aprovação${statsAdmin.pendentes > 0 ? ` (${statsAdmin.pendentes})` : ""}`
+                  : "Histórico"}
+              </button>
+            ))}
+          </div>
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--ink-500)" }}>
+              Carregando…
+            </div>
+          ) : solicitacoesFiltradas.length === 0 ? (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "48px 20px",
+                background: "#fff",
+                borderRadius: "var(--radius-lg)",
+                border: "1px solid rgba(122,30,38,0.08)"
+              }}
+            >
+              <CheckCircleIcon size={36} style={{ color: "#16a34a", marginBottom: 12 }} />
+              <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                {aba === "pendentes"
+                  ? "Nenhuma correção aguardando aprovação."
+                  : "Nenhum registro no histórico."}
+              </p>
+            </div>
+          ) : (
+            solicitacoesFiltradas.map((s) => (
+              <CardCorrecaoRH
+                key={s.id}
+                s={s}
+                mostrarAcoes={aba === "pendentes"}
+                onAprovar={() => {
+                  setModalAdminSol(s);
+                  setModalAdminDecisao("APROVAR");
+                  setModalAdminObs("");
+                  setModalAdminErro("");
+                  setFeedbackMsg("");
+                }}
+                onRejeitar={() => {
+                  setModalAdminSol(s);
+                  setModalAdminDecisao("REJEITAR");
+                  setModalAdminObs("");
+                  setModalAdminErro("");
+                  setFeedbackMsg("");
+                }}
+              />
+            ))
+          )}
+          {totalPages > 1 && (
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                style={{
+                  padding: "6px 14px",
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  borderRadius: "var(--radius-md)",
+                  background: "#fff",
+                  cursor: page === 1 ? "not-allowed" : "pointer",
+                  fontSize: 13
+                }}
+              >
+                ← Anterior
+              </button>
+              <span style={{ padding: "6px 14px", fontSize: 13, color: "var(--ink-500)" }}>
+                Página {page} de {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                style={{
+                  padding: "6px 14px",
+                  border: "1px solid rgba(0,0,0,0.15)",
+                  borderRadius: "var(--radius-md)",
+                  background: "#fff",
+                  cursor: page === totalPages ? "not-allowed" : "pointer",
+                  fontSize: 13
+                }}
+              >
+                Próxima →
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1328,6 +1974,543 @@ export function AprovacaoGestorPage() {
           erro={modalRhErro}
         />
       )}
+
+      {/* ── Popup de envio de guia médica — RH ── */}
+      {modalGuiaSol && (
+        <ModalEnviarGuia
+          solicitacao={modalGuiaSol}
+          resumo={textoResumo(modalGuiaSol)}
+          onConfirm={confirmarEnviarGuia}
+          onClose={() => setModalGuiaSol(null)}
+          loading={modalLoading}
+          erro={modalGuiaErro}
+        />
+      )}
+
+      {/* ── Popup de envio de folha de férias — RH ── */}
+      {modalFolhaSol && (
+        <ModalEnviarFolhaFerias
+          solicitacao={modalFolhaSol}
+          onConfirm={confirmarEnviarFolha}
+          onClose={() => setModalFolhaSol(null)}
+          loading={modalLoading}
+          erro={modalFolhaErro}
+        />
+      )}
+
+      {/* ── Modal aprovação Gerente de RH (correções de ponto criadas pelo RH) ── */}
+      {modalAdminSol && (
+        <ModalDecisaoAdmin
+          solicitacao={modalAdminSol}
+          decisao={modalAdminDecisao}
+          onConfirm={confirmarAdmin}
+          onClose={() => setModalAdminSol(null)}
+          loading={modalLoading}
+          erro={modalAdminErro}
+          setErro={setModalAdminErro}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   CARD DE CORREÇÃO DE PONTO (etapa admin)
+══════════════════════════════════════════ */
+
+function CardCorrecaoRH({
+  s,
+  mostrarAcoes,
+  onAprovar,
+  onRejeitar
+}: {
+  s: Solicitacao;
+  mostrarAcoes: boolean;
+  onAprovar: () => void;
+  onRejeitar: () => void;
+}) {
+  const meta = s.metadados as Record<string, unknown> | null;
+  const correcoesDia = Array.isArray(meta?.correcoesDia)
+    ? (meta!.correcoesDia as Array<{
+        acao: string;
+        tipoRegistro: string;
+        horario: string;
+        horarioOriginal?: string;
+      }>)
+    : [];
+  const criadoPor = (meta?.criadoPorNome as string) ?? "RH";
+  const isAguardando = s.status === "AGUARDANDO_GESTOR_RH";
+
+  const statusBg = isAguardando
+    ? "rgba(122,30,38,0.06)"
+    : s.status === "APROVADA"
+      ? "rgba(47,125,79,0.06)"
+      : "rgba(200,57,63,0.06)";
+  const statusColor = isAguardando ? "#7a1e26" : s.status === "APROVADA" ? "#2f7d4f" : "#c8393f";
+  const statusLabel = isAguardando
+    ? "Aguardando Gerente de RH"
+    : s.status === "APROVADA"
+      ? "Aprovada"
+      : "Rejeitada";
+
+  const fmtDt = (iso: string) =>
+    new Date(iso).toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric"
+    });
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        borderRadius: "var(--radius-lg)",
+        border: "1px solid rgba(122,30,38,0.12)",
+        borderLeft: isAguardando ? "4px solid #7a1e26" : "4px solid transparent",
+        padding: "16px 20px",
+        display: "flex",
+        gap: 14,
+        alignItems: "flex-start"
+      }}
+    >
+      {/* Avatar */}
+      <div
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: "50%",
+          background: s.funcionario.fotoPerfilUrl ? "transparent" : "var(--burgundy-600)",
+          border: s.funcionario.fotoPerfilUrl ? "2px solid var(--burgundy-600)" : "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#fff",
+          fontSize: 14,
+          fontWeight: 700,
+          flexShrink: 0,
+          overflow: "hidden"
+        }}
+      >
+        {s.funcionario.fotoPerfilUrl ? (
+          <img
+            src={s.funcionario.fotoPerfilUrl}
+            alt=""
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        ) : (
+          s.funcionario.user.name[0].toUpperCase()
+        )}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Nome + status */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+            marginBottom: 6
+          }}
+        >
+          <span style={{ fontWeight: 700, fontSize: 14, color: "var(--ink-900)" }}>
+            {s.funcionario.user.name}
+          </span>
+          {s.funcionario.matricula && (
+            <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+              mat. {s.funcionario.matricula}
+            </span>
+          )}
+          {s.funcionario.gerencia && (
+            <span
+              style={{
+                background: "rgba(122,30,38,0.07)",
+                color: "var(--burgundy-600)",
+                borderRadius: 4,
+                padding: "1px 7px",
+                fontSize: 11,
+                fontWeight: 600
+              }}
+            >
+              {s.funcionario.gerencia.nome}
+            </span>
+          )}
+          <span
+            style={{
+              background: statusBg,
+              color: statusColor,
+              borderRadius: 4,
+              padding: "2px 9px",
+              fontSize: 11,
+              fontWeight: 700
+            }}
+          >
+            {statusLabel}
+          </span>
+        </div>
+
+        {/* Dia a corrigir */}
+        <p style={{ margin: "0 0 8px", fontSize: 13, color: "var(--ink-700)", fontWeight: 500 }}>
+          Dia a corrigir:{" "}
+          <strong style={{ fontFamily: "var(--font-mono)" }}>{fmtDt(s.dataReferencia)}</strong>
+          {" · "}Criada em {fmtDt(s.createdAt)} por <strong>{criadoPor}</strong>
+        </p>
+
+        {/* Correções propostas */}
+        {correcoesDia.length > 0 && (
+          <div
+            style={{
+              background: "rgba(122,30,38,0.04)",
+              border: "1px solid rgba(122,30,38,0.10)",
+              borderRadius: "var(--radius-md)",
+              padding: "10px 14px",
+              marginBottom: 8
+            }}
+          >
+            <p
+              style={{
+                margin: "0 0 6px",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--ink-400)",
+                textTransform: "uppercase",
+                letterSpacing: "0.06em"
+              }}
+            >
+              Alterações propostas
+            </p>
+            {correcoesDia.map((c, i) => {
+              const tipoLabel: Record<string, string> = {
+                ENTRADA: "Entrada",
+                INICIO_INTERVALO: "Início Intervalo",
+                FIM_INTERVALO: "Fim Intervalo",
+                SAIDA: "Saída"
+              };
+              return (
+                <p key={i} style={{ margin: "0 0 3px", fontSize: 13, color: "var(--ink-800)" }}>
+                  {c.acao === "CORRIGIR" ? "✏️" : c.acao === "INCLUIR" ? "➕" : "🗑️"}{" "}
+                  <strong>{tipoLabel[c.tipoRegistro] ?? c.tipoRegistro}</strong>
+                  {c.acao === "CORRIGIR" && c.horarioOriginal && (
+                    <span style={{ color: "var(--ink-500)", marginLeft: 4 }}>
+                      {c.horarioOriginal}
+                    </span>
+                  )}
+                  {c.acao === "CORRIGIR" && (
+                    <span style={{ margin: "0 4px", color: "var(--ink-400)" }}>→</span>
+                  )}
+                  {(c.acao === "CORRIGIR" || c.acao === "INCLUIR") && (
+                    <strong style={{ fontFamily: "var(--font-mono)", color: "#2f7d4f" }}>
+                      {c.horario}
+                    </strong>
+                  )}
+                  {c.acao === "EXCLUIR" && (
+                    <span style={{ color: "#c8393f", marginLeft: 4 }}>(excluir)</span>
+                  )}
+                </p>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Justificativa */}
+        {s.descricao && (
+          <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-600)", fontStyle: "italic" }}>
+            Justificativa: "{s.descricao}"
+          </p>
+        )}
+        {s.rhObservacao && (
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: 12,
+              color: s.status === "APROVADA" ? "#065f46" : "#7a1e26",
+              fontStyle: "italic"
+            }}
+          >
+            {s.status === "APROVADA" ? "✅" : "❌"} {s.rhObservacao}
+          </p>
+        )}
+      </div>
+
+      {/* Ações */}
+      {mostrarAcoes && isAguardando && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={onAprovar}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "8px 16px",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: "#2f7d4f",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 600
+            }}
+          >
+            ✅ Aprovar
+          </button>
+          <button
+            onClick={onRejeitar}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "8px 16px",
+              border: "none",
+              borderRadius: "var(--radius-md)",
+              background: "#c8393f",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 600
+            }}
+          >
+            ❌ Rejeitar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
+   MODAL DE DECISÃO — GERENTE DE RH
+══════════════════════════════════════════ */
+
+function ModalDecisaoAdmin({
+  solicitacao,
+  decisao,
+  onConfirm,
+  onClose,
+  loading,
+  erro,
+  setErro
+}: {
+  solicitacao: Solicitacao;
+  decisao: "APROVAR" | "REJEITAR";
+  onConfirm: (obs: string) => void;
+  onClose: () => void;
+  loading: boolean;
+  erro: string;
+  setErro: (e: string) => void;
+}) {
+  const [obs, setObs] = useState("");
+  const isAprovar = decisao === "APROVAR";
+  const cor = isAprovar ? "#2f7d4f" : "#c8393f";
+  const corBg = isAprovar ? "rgba(47,125,79,0.07)" : "rgba(200,57,63,0.07)";
+
+  const meta = solicitacao.metadados as Record<string, unknown> | null;
+  const correcoesDia = Array.isArray(meta?.correcoesDia)
+    ? (meta!.correcoesDia as Array<{
+        acao: string;
+        tipoRegistro: string;
+        horario: string;
+        horarioOriginal?: string;
+      }>)
+    : [];
+
+  function handleConfirm() {
+    if (!isAprovar && !obs.trim()) {
+      setErro("O motivo da rejeição é obrigatório.");
+      return;
+    }
+    onConfirm(obs);
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        zIndex: 400,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && !loading && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 520,
+          boxShadow: "0 24px 80px rgba(0,0,0,0.28)",
+          overflow: "hidden"
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            background: corBg,
+            borderBottom: `1px solid ${cor}33`,
+            padding: "20px 24px",
+            display: "flex",
+            alignItems: "center",
+            gap: 14
+          }}
+        >
+          <span style={{ fontSize: 30, lineHeight: 1 }}>{isAprovar ? "✅" : "❌"}</span>
+          <div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 16,
+                fontWeight: 700,
+                color: cor,
+                fontFamily: "var(--font-display)"
+              }}
+            >
+              {isAprovar ? "Aprovar Correção de Ponto" : "Rejeitar Correção de Ponto"}
+            </p>
+            <p style={{ margin: "3px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+              {solicitacao.funcionario.user.name} ·{" "}
+              {new Date(solicitacao.dataReferencia).toLocaleDateString("pt-BR")}
+            </p>
+          </div>
+        </div>
+
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Resumo das correções */}
+          {isAprovar && correcoesDia.length > 0 && (
+            <div
+              style={{
+                background: "rgba(122,30,38,0.04)",
+                border: "1px solid rgba(122,30,38,0.10)",
+                borderRadius: "var(--radius-md)",
+                padding: "10px 14px"
+              }}
+            >
+              <p
+                style={{
+                  margin: "0 0 6px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "var(--ink-400)",
+                  textTransform: "uppercase"
+                }}
+              >
+                Alterações que serão aplicadas
+              </p>
+              {correcoesDia.map((c, i) => {
+                const tipoLabel: Record<string, string> = {
+                  ENTRADA: "Entrada",
+                  INICIO_INTERVALO: "Início Intervalo",
+                  FIM_INTERVALO: "Fim Intervalo",
+                  SAIDA: "Saída"
+                };
+                return (
+                  <p key={i} style={{ margin: "0 0 3px", fontSize: 13 }}>
+                    {c.acao === "CORRIGIR" ? "✏️" : c.acao === "INCLUIR" ? "➕" : "🗑️"}{" "}
+                    <strong>{tipoLabel[c.tipoRegistro] ?? c.tipoRegistro}</strong>
+                    {c.acao === "CORRIGIR" && c.horarioOriginal && (
+                      <span style={{ color: "var(--ink-500)", margin: "0 4px" }}>
+                        {c.horarioOriginal} →
+                      </span>
+                    )}
+                    {(c.acao === "CORRIGIR" || c.acao === "INCLUIR") && (
+                      <strong
+                        style={{ fontFamily: "var(--font-mono)", color: "#2f7d4f", marginLeft: 4 }}
+                      >
+                        {c.horario}
+                      </strong>
+                    )}
+                  </p>
+                );
+              })}
+            </div>
+          )}
+
+          {isAprovar && (
+            <p style={{ margin: 0, fontSize: 13, color: "var(--ink-700)", lineHeight: 1.6 }}>
+              Os registros serão alterados e marcados como <strong>modificados pelo RH</strong>.
+              Esta ação não pode ser desfeita.
+            </p>
+          )}
+
+          <div>
+            <label
+              style={{
+                display: "block",
+                marginBottom: 6,
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "var(--ink-700)"
+              }}
+            >
+              {isAprovar ? (
+                "Observação (opcional)"
+              ) : (
+                <>
+                  Motivo da rejeição <span style={{ color: "var(--red)" }}>*</span>
+                </>
+              )}
+            </label>
+            <textarea
+              value={obs}
+              onChange={(e) => {
+                setObs(e.target.value);
+                setErro("");
+              }}
+              rows={3}
+              placeholder={
+                isAprovar ? "Observação para o RH..." : "Informe o motivo da rejeição..."
+              }
+              style={{
+                width: "100%",
+                padding: "9px 11px",
+                border: `1px solid ${!isAprovar && !obs.trim() && erro ? "rgba(200,57,63,0.5)" : "rgba(122,30,38,0.14)"}`,
+                borderRadius: "var(--radius-md)",
+                fontSize: 13,
+                resize: "vertical",
+                boxSizing: "border-box"
+              }}
+            />
+          </div>
+
+          {erro && <p style={{ margin: 0, fontSize: 12.5, color: "var(--red)" }}>⚠️ {erro}</p>}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button
+              onClick={onClose}
+              disabled={loading}
+              style={{
+                padding: "10px 20px",
+                border: "1px solid rgba(0,0,0,0.15)",
+                borderRadius: "var(--radius-md)",
+                background: "#fff",
+                cursor: loading ? "not-allowed" : "pointer",
+                fontSize: 13,
+                color: "var(--ink-600)"
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={loading}
+              style={{
+                padding: "10px 24px",
+                border: "none",
+                borderRadius: "var(--radius-md)",
+                background: loading ? "#9ca3af" : cor,
+                color: "#fff",
+                cursor: loading ? "not-allowed" : "pointer",
+                fontSize: 13,
+                fontWeight: 700
+              }}
+            >
+              {loading ? "Processando…" : isAprovar ? "Confirmar aprovação" : "Confirmar rejeição"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

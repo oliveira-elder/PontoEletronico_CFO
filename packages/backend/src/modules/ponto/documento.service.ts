@@ -92,16 +92,104 @@ export class DocumentoService {
     }
   }
 
-  // Salvar PDF de guia (upload do admin)
-  async salvarGuia(arquivoBase64: string): Promise<string> {
-    const dirPath = join(this.baseDir, "guias");
+  // Salvar PDF da guia médica individual enviada pelo RH para uma solicitação específica
+  async salvarGuiaMedica(solicitacaoId: string, arquivoBase64: string): Promise<string> {
+    const dirPath = join(this.baseDir, "guias-medicas");
     if (!existsSync(dirPath)) {
       await mkdir(dirPath, { recursive: true });
     }
     const base64Data = arquivoBase64.replace(/^data:[^;]+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
-    const filename = `guia-medico-trabalho.pdf`;
+    const filename = `${solicitacaoId}.pdf`;
     await writeFile(join(dirPath, filename), buffer);
-    return `${this.urlPrefix}/guias/${filename}`;
+    const relUrl = `${this.urlPrefix}/guias-medicas/${filename}`;
+    this.logger.log(`Guia médica salva → ${relUrl}`);
+    return relUrl;
+  }
+
+  // Salvar documento de retorno da consulta (aptidão/inaptidão) enviado pelo funcionário
+  async salvarDocumentoRetorno(params: {
+    funcionarioId: string;
+    solicitacaoId: string;
+    arquivoBase64: string;
+    mimeType?: string;
+  }): Promise<string> {
+    const { funcionarioId, solicitacaoId, arquivoBase64, mimeType } = params;
+
+    const base64Data = arquivoBase64.replace(/^data:[^;]+;base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+
+    const dirPath = join(this.baseDir, funcionarioId);
+    if (!existsSync(dirPath)) {
+      await mkdir(dirPath, { recursive: true });
+    }
+
+    const isPdf =
+      mimeType === "application/pdf" || arquivoBase64.startsWith("data:application/pdf");
+
+    let filename: string;
+    const filePath = (ext: string) => join(dirPath, `${solicitacaoId}-retorno.${ext}`);
+
+    if (isPdf) {
+      filename = `${solicitacaoId}-retorno.pdf`;
+      await writeFile(filePath("pdf"), buffer);
+    } else {
+      filename = `${solicitacaoId}-retorno.jpg`;
+      const sharp = tryLoadSharp();
+      if (sharp) {
+        await sharp(buffer)
+          .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 90 })
+          .toFile(filePath("jpg"));
+      } else {
+        await writeFile(filePath("jpg"), buffer);
+      }
+    }
+
+    const relUrl = `${this.urlPrefix}/${funcionarioId}/${filename}`;
+    this.logger.log(`Documento de retorno salvo → ${relUrl}`);
+    return relUrl;
+  }
+
+  /** Documento enviado pelo funcionário ao RH (fora de solicitações) */
+  async salvarDocumentoRhEnvio(params: {
+    funcionarioId: string;
+    documentoId: string;
+    arquivoBase64: string;
+    mimeType?: string;
+  }): Promise<string> {
+    const { funcionarioId, documentoId, arquivoBase64, mimeType } = params;
+
+    const base64Data = arquivoBase64.replace(/^data:[^;]+;base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+
+    const dirPath = join(this.baseDir, funcionarioId, "rh-envios");
+    if (!existsSync(dirPath)) {
+      await mkdir(dirPath, { recursive: true });
+    }
+
+    const isPdf =
+      mimeType === "application/pdf" || arquivoBase64.startsWith("data:application/pdf");
+
+    const filename = isPdf ? `${documentoId}.pdf` : `${documentoId}.jpg`;
+    const filePath = join(dirPath, filename);
+
+    if (isPdf) {
+      await writeFile(filePath, buffer);
+    } else {
+      const sharp = tryLoadSharp();
+      if (sharp) {
+        await sharp(buffer)
+          .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 90 })
+          .toFile(filePath);
+      } else {
+        await writeFile(filePath, buffer);
+      }
+    }
+
+    const relUrl = `${this.urlPrefix}/${funcionarioId}/rh-envios/${filename}`;
+    this.logger.log(`Documento RH enviado → ${relUrl}`);
+    return relUrl;
   }
 }

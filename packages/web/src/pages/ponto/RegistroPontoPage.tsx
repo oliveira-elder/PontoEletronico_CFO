@@ -5,8 +5,11 @@ import {
   RefreshCwIcon,
   MapPinIcon,
   InfoIcon,
-  ArrowRightIcon
+  ArrowRightIcon,
+  PauseIcon,
+  PlayIcon
 } from "../../components/icons";
+
 import { CameraModal } from "../../components/CameraModal";
 import { CameraPermissionGuide, useCameraPermission } from "../../components/CameraPermissionGuide";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -42,7 +45,14 @@ function horarioDentroFaixa(horario: string, min: string, max: string): boolean 
   return atual >= hMin * 60 + mMin && atual <= hMax * 60 + mMax;
 }
 
-/* ─── Fluxo fixo ─── */
+/* ─── Observações (anotações automáticas de ajuste) ─── */
+interface ObservacaoRegistro {
+  data: string;
+  texto: string;
+  tipo?: string;
+}
+
+/* ─── Informações visuais de cada tipo de registro ─── */
 interface AcaoInfo {
   tipo: TipoRegistro;
   label: string;
@@ -51,74 +61,184 @@ interface AcaoInfo {
   bg: string;
 }
 
-const FLUXO: AcaoInfo[] = [
-  {
+const ACAO_INFO: Record<TipoRegistro, AcaoInfo> = {
+  ENTRADA: {
     tipo: "ENTRADA",
     label: "Iniciar Jornada",
     desc: "Início do expediente",
     cor: "var(--green)",
     bg: "rgba(47,125,79,0.12)"
   },
-  {
+  INICIO_INTERVALO: {
     tipo: "INICIO_INTERVALO",
     label: "Início do Almoço",
     desc: "Saída para intervalo de almoço",
     cor: "#8a6a00",
     bg: "rgba(247,196,55,0.14)"
   },
-  {
+  FIM_INTERVALO: {
     tipo: "FIM_INTERVALO",
     label: "Fim do Almoço",
     desc: "Retorno do intervalo",
     cor: "var(--blue-ink)",
     bg: "rgba(30,74,122,0.10)"
   },
-  {
+  SAIDA: {
     tipo: "SAIDA",
     label: "Encerrar Jornada",
     desc: "Encerramento do expediente",
     cor: "var(--red)",
     bg: "rgba(200,57,63,0.10)"
+  },
+  INTERROMPER_EXPEDIENTE: {
+    tipo: "INTERROMPER_EXPEDIENTE",
+    label: "Interromper Expediente",
+    desc: "Pausa temporária do expediente",
+    cor: "var(--gray-cfo)",
+    bg: "rgba(109,110,113,0.12)"
+  },
+  REINICIAR_EXPEDIENTE: {
+    tipo: "REINICIAR_EXPEDIENTE",
+    label: "Reiniciar Jornada",
+    desc: "Retomar o expediente após a pausa",
+    cor: "var(--gray-cfo)",
+    bg: "rgba(109,110,113,0.12)"
   }
-];
-
-type EstadoJornada = "AGUARDANDO" | "TRABALHANDO" | "ALMOCO" | "POS_ALMOCO" | "ENCERRADA";
-
-function getEstado(n: number): EstadoJornada {
-  if (n === 0) return "AGUARDANDO";
-  if (n === 1) return "TRABALHANDO";
-  if (n === 2) return "ALMOCO";
-  if (n === 3) return "POS_ALMOCO";
-  return "ENCERRADA";
-}
-
-const ESTADO_INFO: Record<
-  EstadoJornada,
-  { label: string; cor: string; bg: string; pulse?: boolean }
-> = {
-  AGUARDANDO: { label: "Aguardando início", cor: "var(--gray-cfo)", bg: "rgba(109,110,113,0.12)" },
-  TRABALHANDO: {
-    label: "Trabalhando",
-    cor: "var(--green)",
-    bg: "rgba(47,125,79,0.12)",
-    pulse: true
-  },
-  ALMOCO: { label: "Intervalo de almoço", cor: "#8a6a00", bg: "rgba(247,196,55,0.14)" },
-  POS_ALMOCO: {
-    label: "Trabalhando (pós-almoço)",
-    cor: "var(--green)",
-    bg: "rgba(47,125,79,0.12)",
-    pulse: true
-  },
-  ENCERRADA: { label: "Jornada encerrada", cor: "var(--blue-ink)", bg: "rgba(30,74,122,0.10)" }
 };
 
 const TIPO_LABEL: Record<TipoRegistro, string> = {
   ENTRADA: "Iniciar Jornada",
   INICIO_INTERVALO: "Início do Almoço",
   FIM_INTERVALO: "Fim do Almoço",
-  SAIDA: "Encerrar Jornada"
+  SAIDA: "Encerrar Jornada",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
+
+/* ─── Marcos do fluxo principal (para a barra de progresso) ─── */
+const MARCOS: TipoRegistro[] = ["ENTRADA", "INICIO_INTERVALO", "FIM_INTERVALO", "SAIDA"];
+
+/* ══════════════════════════════════════════════════════
+   MÁQUINA DE ESTADOS — fase da jornada
+══════════════════════════════════════════════════════ */
+type FaseJornada =
+  | "NENHUMA"
+  | "MANHA"
+  | "PAUSA_MANHA"
+  | "ALMOCO"
+  | "TARDE"
+  | "PAUSA_TARDE"
+  | "ENCERRADA";
+
+function getFase(registros: { tipo: TipoRegistro }[]): FaseJornada {
+  let fase: FaseJornada = "NENHUMA";
+  for (const r of registros) {
+    switch (r.tipo) {
+      case "ENTRADA":
+        fase = "MANHA";
+        break;
+      case "INICIO_INTERVALO":
+        fase = "ALMOCO";
+        break;
+      case "FIM_INTERVALO":
+        fase = "TARDE";
+        break;
+      case "SAIDA":
+        fase = "ENCERRADA";
+        break;
+      case "INTERROMPER_EXPEDIENTE":
+        if (fase === "MANHA") fase = "PAUSA_MANHA";
+        else if (fase === "TARDE") fase = "PAUSA_TARDE";
+        break;
+      case "REINICIAR_EXPEDIENTE":
+        if (fase === "PAUSA_MANHA") fase = "MANHA";
+        else if (fase === "PAUSA_TARDE") fase = "TARDE";
+        break;
+    }
+  }
+  return fase;
+}
+
+const FASE_INFO: Record<FaseJornada, { label: string; cor: string; bg: string; pulse?: boolean }> =
+  {
+    NENHUMA: { label: "Aguardando início", cor: "var(--gray-cfo)", bg: "rgba(109,110,113,0.12)" },
+    MANHA: { label: "Trabalhando", cor: "var(--green)", bg: "rgba(47,125,79,0.12)", pulse: true },
+    PAUSA_MANHA: { label: "Expediente pausado", cor: "#8a6a00", bg: "rgba(247,196,55,0.14)" },
+    ALMOCO: { label: "Intervalo de almoço", cor: "#8a6a00", bg: "rgba(247,196,55,0.14)" },
+    TARDE: {
+      label: "Trabalhando (pós-almoço)",
+      cor: "var(--green)",
+      bg: "rgba(47,125,79,0.12)",
+      pulse: true
+    },
+    PAUSA_TARDE: { label: "Expediente pausado", cor: "#8a6a00", bg: "rgba(247,196,55,0.14)" },
+    ENCERRADA: { label: "Jornada encerrada", cor: "var(--blue-ink)", bg: "rgba(30,74,122,0.10)" }
+  };
+
+const FASE_DESC: Record<FaseJornada, string> = {
+  NENHUMA: "Início do expediente",
+  MANHA: "Vá para o almoço ou interrompa o expediente, se necessário",
+  PAUSA_MANHA:
+    "Retome o expediente para continuar trabalhando, ou inicie o almoço se já chegou a hora",
+  ALMOCO: "Intervalo de almoço em andamento",
+  TARDE: "Encerre a jornada ou interrompa o expediente, se necessário",
+  PAUSA_TARDE: "Retome o expediente para continuar trabalhando",
+  ENCERRADA: "Jornada do dia encerrada"
+};
+
+/* ─── Layout dos botões de ação para cada fase ─── */
+interface AcaoSlot {
+  tipo: TipoRegistro;
+  width: number;
+  iconOnly?: boolean;
+}
+
+function getLayout(fase: FaseJornada, cfg: SistemaConfig): AcaoSlot[] {
+  switch (fase) {
+    case "NENHUMA":
+      return [{ tipo: "ENTRADA", width: 100 }];
+    case "MANHA":
+      return [
+        { tipo: "INICIO_INTERVALO", width: 80 },
+        { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
+      ];
+    case "PAUSA_MANHA": {
+      const dentroJanela = horarioDentroFaixa(
+        horarioBrasiliaAgora(),
+        cfg.almocoPodeIniciarA ?? "11:30",
+        cfg.almocoPodeIniciarAte ?? "13:00"
+      );
+      if (dentroJanela) {
+        return [
+          { tipo: "INICIO_INTERVALO", width: 50 },
+          { tipo: "REINICIAR_EXPEDIENTE", width: 50 }
+        ];
+      }
+      return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
+    }
+    case "ALMOCO":
+      return [{ tipo: "FIM_INTERVALO", width: 100 }];
+    case "TARDE":
+      return [
+        { tipo: "SAIDA", width: 80 },
+        { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
+      ];
+    case "PAUSA_TARDE":
+      return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
+    case "ENCERRADA":
+    default:
+      return [];
+  }
+}
+
+/* ─── Cor de fundo do botão a partir da cor de destaque ─── */
+function btnBgFor(cor: string): string {
+  if (cor === "var(--green)") return "#1e5c38";
+  if (cor === "var(--blue-ink)") return "var(--blue-ink)";
+  if (cor === "var(--red)") return "#8b1d23";
+  if (cor === "var(--gray-cfo)") return "#5a5b5e";
+  return "var(--burgundy-600)";
+}
 
 /* ─── Tipo local de registro do dia ─── */
 export interface RegistroDia {
@@ -130,6 +250,7 @@ export interface RegistroDia {
   latitude?: number;
   longitude?: number;
   modo: string;
+  observacoes?: ObservacaoRegistro[];
 }
 
 /* ══════════════════════════════════════════════════════
@@ -545,12 +666,19 @@ export function RegistroPontoPage() {
   const [cameraAberta, setCameraAberta] = useState(false);
   const [guiaAberto, setGuiaAberto] = useState(false);
   const [fotoCapturada, setFotoCapturada] = useState<string | null>(null);
+  const [pendingTipo, setPendingTipo] = useState<TipoRegistro | null>(null);
   const [confirmado, setConfirmado] = useState<RegistroConfirmado | null>(null);
   const [geoloc, setGeoloc] = useState(true);
   const [geoStatus, setGeoStatus] = useState<"pendente" | "ok" | "fora">("pendente");
+  const [categoriaFuncional, setCategoriaFuncional] = useState<string | null>(null);
 
   const [cfg, setCfg] = useState<SistemaConfig | null>(null);
   const [erroCfg, setErroCfg] = useState(false);
+
+  /* ── Feriado hoje ── */
+  const [feriadoHoje, setFeriadoHoje] = useState<{ bloqueado: boolean; nome?: string } | null>(
+    null
+  );
 
   /* Modo detectado pelo viewport */
   const modo: ModoRegistro = isMobile ? "MOBILE" : "DESKTOP";
@@ -571,23 +699,77 @@ export function RegistroPontoPage() {
   }, []);
 
   useEffect(() => {
-    api
-      .get<SistemaConfig>("/ponto/config/sistema")
-      .then((data) => {
-        if (data) setCfg(data);
+    Promise.all([
+      api.get<SistemaConfig>("/ponto/config/sistema"),
+      api
+        .get<
+          Array<{ id: string; lat: number; lng: number; raioMetros: number; ativa: boolean }>
+        >("/ponto/config/areas")
+        .catch(() => [])
+    ])
+      .then(([data, areas]) => {
+        if (data) setCfg({ ...data, areasViagem: (areas ?? []).filter((a) => a.ativa) });
         else setErroCfg(true);
       })
       .catch(() => setErroCfg(true));
   }, []);
 
-  /* ── Carrega registros de hoje do backend ── */
+  useEffect(() => {
+    const tk = token();
+    if (!tk) return;
+    api
+      .get<{ bloqueado: boolean; nome?: string }>("/ponto/feriado-hoje", tk)
+      .then((data) => {
+        if (data) setFeriadoHoje(data);
+      })
+      .catch(() => {
+        /* Se falhar, não bloqueia — o backend ainda rejeitará se for feriado */
+      });
+  }, []);
+
+  /* ── Afastamento (atestado, licença, abono, férias) que cobre o dia de hoje ── */
+  const [afastamentoHoje, setAfastamentoHoje] = useState<{
+    tipo: string;
+    label: string;
+    dataInicio: string;
+    dataFim: string;
+  } | null>(null);
+
+  /* ── Carrega registros de hoje + dados de home office do backend ── */
   useEffect(() => {
     const tk = token();
     if (!tk) return;
 
     api
-      .get<{ registrosHoje: { tipo: string; dataHora: string }[] }>("/ponto/status", tk)
+      .get<{
+        registrosHoje: { tipo: string; dataHora: string; observacoes?: ObservacaoRegistro[] }[];
+        afastamentoHoje: {
+          tipo: string;
+          label: string;
+          dataInicio: string;
+          dataFim: string;
+        } | null;
+        categoria?: string;
+        modoHomeOffice?: boolean;
+        modoHibridoLocal?: boolean;
+        enderecoResidencial?: { lat: number | null; lng: number | null; raioMetros: number } | null;
+      }>("/ponto/status", tk)
       .then((status) => {
+        setAfastamentoHoje(status?.afastamentoHoje ?? null);
+        if (status?.categoria) setCategoriaFuncional(status.categoria);
+        // Mescla dados de home office/híbrido no cfg para o hook usePontoRegistration
+        if (status?.modoHomeOffice !== undefined || status?.modoHibridoLocal !== undefined) {
+          setCfg((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  modoHomeOffice: status.modoHomeOffice ?? false,
+                  modoHibridoLocal: status.modoHibridoLocal ?? false,
+                  enderecoResidencial: status.enderecoResidencial ?? null
+                }
+              : prev
+          );
+        }
         if (!status?.registrosHoje?.length) return;
         const regs: RegistroDia[] = status.registrosHoje.map((r) => {
           const d = new Date(r.dataHora);
@@ -601,7 +783,8 @@ export function RegistroPontoPage() {
               year: "numeric"
             }),
             timestamp: d.getTime(),
-            modo
+            modo,
+            observacoes: r.observacoes
           };
         });
         setRegistros(regs);
@@ -610,9 +793,10 @@ export function RegistroPontoPage() {
   }, []);
 
   /* ── Derivações ── */
-  const proximaAcao = FLUXO[registros.length] ?? null;
-  const estado = getEstado(registros.length);
-  const estadoInfo = ESTADO_INFO[estado];
+  const fase = getFase(registros);
+  const faseInfo = FASE_INFO[fase];
+  const slots = cfg ? getLayout(fase, cfg) : [];
+  const marcosFeitos = registros.filter((r) => MARCOS.includes(r.tipo)).length;
 
   /* ── Validações panel items ── */
   const validacoes: ValidacaoItem[] = [
@@ -679,13 +863,17 @@ export function RegistroPontoPage() {
 
       setRegistros((prev) => [...prev, novoReg]);
       setFotoCapturada(null);
+      setPendingTipo(null);
       setConfirmado(resultado);
     },
     [registrar, fotoCapturada, modo, cfg, checkGeo, geoloc]
   );
 
-  async function handleAcao() {
-    if (!proximaAcao) return;
+  async function handleAcao(tipo: TipoRegistro) {
+    if (afastamentoHoje) {
+      setErro(`Você está em ${afastamentoHoje.label} hoje. Não é possível registrar ponto.`);
+      return;
+    }
     setErro(null);
     const min = cfg?.pontoHorarioMinimo ?? "06:00";
     const max = cfg?.pontoHorarioMaximo ?? "23:59";
@@ -697,26 +885,19 @@ export function RegistroPontoPage() {
       return;
     }
     if (exigirFoto && !fotoCapturada) {
+      setPendingTipo(tipo);
       abrirCamera();
       return;
     }
-    await executarRegistro(proximaAcao.tipo);
+    await executarRegistro(tipo);
   }
 
   async function onFotoCapturada(dataUrl: string) {
-    if (!proximaAcao) return;
+    const tipo = pendingTipo ?? slots[0]?.tipo;
+    if (!tipo) return;
     setFotoCapturada(dataUrl);
     setCameraAberta(false);
-    await executarRegistro(proximaAcao.tipo, dataUrl);
-  }
-
-  /* ── Cor do botão de ação ── */
-  function btnBg() {
-    if (!proximaAcao) return "var(--burgundy-600)";
-    if (proximaAcao.cor === "var(--green)") return "#1e5c38";
-    if (proximaAcao.cor === "var(--blue-ink)") return "var(--blue-ink)";
-    if (proximaAcao.cor === "var(--red)") return "#8b1d23";
-    return "var(--burgundy-600)";
+    await executarRegistro(tipo, dataUrl);
   }
 
   /* ── Confirmação ── */
@@ -869,8 +1050,8 @@ export function RegistroPontoPage() {
               gap: 7,
               padding: "5px 14px",
               borderRadius: "var(--radius-full)",
-              background: estadoInfo.bg,
-              border: `1px solid ${estadoInfo.cor}40`
+              background: faseInfo.bg,
+              border: `1px solid ${faseInfo.cor}40`
             }}
           >
             <span
@@ -878,30 +1059,64 @@ export function RegistroPontoPage() {
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: estadoInfo.cor,
+                background: faseInfo.cor,
                 flexShrink: 0,
-                animation: estadoInfo.pulse ? "pulse-dot 2s ease-in-out infinite" : "none"
+                animation: faseInfo.pulse ? "pulse-dot 2s ease-in-out infinite" : "none"
               }}
             />
-            <span style={{ fontSize: 12, fontWeight: 600, color: estadoInfo.cor }}>
-              {estadoInfo.label}
+            <span style={{ fontSize: 12, fontWeight: 600, color: faseInfo.cor }}>
+              {faseInfo.label}
             </span>
           </div>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "5px 12px",
-              borderRadius: "var(--radius-full)",
-              background: "rgba(255,255,255,0.10)",
-              border: "1px solid rgba(255,255,255,0.18)"
-            }}
-          >
-            <span style={{ fontSize: 11 }}>{modo === "MOBILE" ? "📱" : "🖥"}</span>
-            <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.80)" }}>
-              {modo === "MOBILE" ? "Mobile" : "Desktop"}
-            </span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "5px 12px",
+                borderRadius: "var(--radius-full)",
+                background: "rgba(255,255,255,0.10)",
+                border: "1px solid rgba(255,255,255,0.18)"
+              }}
+            >
+              <span style={{ fontSize: 11 }}>{modo === "MOBILE" ? "📱" : "🖥"}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.80)" }}>
+                {modo === "MOBILE" ? "Mobile" : "Desktop"}
+              </span>
+            </div>
+            {cfg?.modoHomeOffice && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "5px 12px",
+                  borderRadius: "var(--radius-full)",
+                  background: "rgba(47,125,79,0.30)",
+                  border: "1px solid rgba(47,125,79,0.50)"
+                }}
+              >
+                <span style={{ fontSize: 11 }}>🏠</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>Home Office</span>
+              </div>
+            )}
+            {cfg?.modoHibridoLocal && !cfg?.modoHomeOffice && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "5px 12px",
+                  borderRadius: "var(--radius-full)",
+                  background: "rgba(247,196,55,0.30)",
+                  border: "1px solid rgba(247,196,55,0.50)"
+                }}
+              >
+                <span style={{ fontSize: 11 }}>🏠</span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "#fff" }}>Híbrido</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -916,18 +1131,24 @@ export function RegistroPontoPage() {
           marginBottom: 14
         }}
       >
-        <ProgressoJornada n={registros.length} />
+        <ProgressoJornada n={marcosFeitos} />
 
         <div style={{ textAlign: "center", paddingTop: 10 }}>
-          {proximaAcao ? (
+          {fase !== "ENCERRADA" ? (
             <>
               <p style={{ fontSize: 11, color: "var(--ink-500)", fontWeight: 500 }}>
-                Próximo registro:
+                {slots.length > 1 ? "Próximas ações:" : "Próximo registro:"}
               </p>
-              <p style={{ fontSize: 14, fontWeight: 700, color: proximaAcao.cor }}>
-                {proximaAcao.label}
+              <p
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: slots.length ? ACAO_INFO[slots[0].tipo].cor : "var(--burgundy-600)"
+                }}
+              >
+                {slots.map((s) => ACAO_INFO[s.tipo].label).join(" ou ")}
               </p>
-              <p style={{ fontSize: 11.5, color: "var(--ink-500)" }}>{proximaAcao.desc}</p>
+              <p style={{ fontSize: 11.5, color: "var(--ink-500)" }}>{FASE_DESC[fase]}</p>
             </>
           ) : (
             <>
@@ -935,7 +1156,7 @@ export function RegistroPontoPage() {
                 ✅ Jornada completa para hoje
               </p>
               <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 2 }}>
-                Os 4 registros do dia foram efetuados.
+                Os registros do dia foram efetuados.
               </p>
             </>
           )}
@@ -1021,7 +1242,141 @@ export function RegistroPontoPage() {
       )}
 
       {/* ── Painel de ação ── */}
-      {proximaAcao ? (
+      {categoriaFuncional === "ASSESSOR" || categoriaFuncional === "GERENTE" ? (
+        <div
+          style={{
+            background: "rgba(122,30,38,0.04)",
+            border: "1px solid rgba(122,30,38,0.16)",
+            borderRadius: "var(--radius-lg)",
+            padding: "24px 20px",
+            marginBottom: 14,
+            textAlign: "center"
+          }}
+        >
+          <p style={{ fontSize: 28, marginBottom: 12 }}>
+            {categoriaFuncional === "GERENTE" ? "👑" : "📋"}
+          </p>
+          <p
+            style={{ fontSize: 15, fontWeight: 700, color: "var(--burgundy-600)", marginBottom: 8 }}
+          >
+            Registro de ponto não aplicável
+          </p>
+          <p style={{ fontSize: 13, color: "var(--ink-500)", lineHeight: 1.7, margin: 0 }}>
+            Funcionários na categoria{" "}
+            <strong>{categoriaFuncional === "GERENTE" ? "Gerente" : "Assessor"}</strong> não
+            utilizam o sistema de registro de ponto eletrônico. Em caso de dúvidas, entre em contato
+            com o setor de RH.
+          </p>
+        </div>
+      ) : feriadoHoje?.bloqueado ? (
+        /* Feriado nacional/estadual/municipal hoje — registro de ponto bloqueado */
+        <div
+          style={{
+            background: "rgba(247,196,55,0.08)",
+            border: "1px solid rgba(247,196,55,0.35)",
+            borderRadius: "var(--radius-lg)",
+            padding: "20px 16px",
+            marginBottom: 14,
+            textAlign: "center"
+          }}
+        >
+          <p style={{ fontSize: 22, marginBottom: 10 }}>🎉</p>
+          <p style={{ fontSize: 15, fontWeight: 700, color: "#8a6a00", marginBottom: 8 }}>
+            Hoje é feriado: {feriadoHoje.nome}
+          </p>
+          <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 0, lineHeight: 1.6 }}>
+            O registro de ponto está suspenso. Em caso de dúvidas, fale com o RH.
+          </p>
+        </div>
+      ) : afastamentoHoje ? (
+        afastamentoHoje.tipo === "FERIAS" ? (
+          /* Funcionário em período de gozo de férias aprovado */
+          <div
+            style={{
+              background: "rgba(47,125,79,0.06)",
+              border: "1px solid rgba(47,125,79,0.22)",
+              borderRadius: "var(--radius-lg)",
+              padding: "24px 20px",
+              marginBottom: 14,
+              textAlign: "center"
+            }}
+          >
+            <div style={{ fontSize: 40, lineHeight: 1, marginBottom: 12 }}>🌴</div>
+            <p style={{ fontSize: 16, fontWeight: 700, color: "#2f7d4f", marginBottom: 6 }}>
+              Você está de férias hoje!
+            </p>
+            <p style={{ fontSize: 13, color: "#2f7d4f", marginBottom: 4, lineHeight: 1.6 }}>
+              Período de gozo aprovado:{" "}
+              <strong>
+                {new Date(afastamentoHoje.dataInicio + "T12:00:00").toLocaleDateString("pt-BR")}
+                {" até "}
+                {new Date(afastamentoHoje.dataFim + "T12:00:00").toLocaleDateString("pt-BR")}
+              </strong>
+            </p>
+            <p
+              style={{ fontSize: 12.5, color: "var(--ink-500)", marginBottom: 20, lineHeight: 1.6 }}
+            >
+              O registro de ponto está suspenso durante o período de férias. Aproveite o descanso!
+            </p>
+            <Link
+              to="/ponto/solicitacoes"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "9px 18px",
+                borderRadius: "var(--radius-md)",
+                background: "#2f7d4f",
+                color: "#fff",
+                textDecoration: "none",
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: "var(--font-body)"
+              }}
+            >
+              Ver minhas férias
+            </Link>
+          </div>
+        ) : (
+          /* Outros afastamentos: atestado, licença, abono */
+          <div
+            style={{
+              background: "rgba(37,99,235,0.05)",
+              border: "1px solid rgba(37,99,235,0.15)",
+              borderRadius: "var(--radius-lg)",
+              padding: "20px 16px",
+              marginBottom: 14,
+              textAlign: "center"
+            }}
+          >
+            <p style={{ fontSize: 15, fontWeight: 700, color: "#1e40af", marginBottom: 8 }}>
+              Registro de ponto desabilitado hoje
+            </p>
+            <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16, lineHeight: 1.6 }}>
+              Você está em <strong>{afastamentoHoje.label}</strong> hoje, conforme solicitação
+              aprovada. Não é necessário (nem possível) registrar ponto neste dia.
+            </p>
+            <Link
+              to="/ponto/historico"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "10px 18px",
+                borderRadius: "var(--radius-md)",
+                background: "var(--burgundy-600)",
+                color: "#fff",
+                textDecoration: "none",
+                fontSize: 13,
+                fontWeight: 600,
+                fontFamily: "var(--font-body)"
+              }}
+            >
+              Ver Histórico
+            </Link>
+          </div>
+        )
+      ) : slots.length > 0 ? (
         <div
           style={{
             background: "#fff",
@@ -1034,28 +1389,51 @@ export function RegistroPontoPage() {
           {/* Validações — mesmo componente em mobile e desktop */}
           <ValidacoesPanel items={validacoes} />
 
-          {/* Botão principal — mesmo visual em ambos */}
-          <button
-            className="btn btn-primary"
-            onClick={handleAcao}
-            disabled={regLoading}
-            style={{
-              width: "100%",
-              fontSize: 15,
-              minHeight: 54,
-              background: btnBg(),
-              opacity: regLoading ? 0.7 : 1
-            }}
-          >
-            {regLoading ? (
-              <>
-                <RefreshCwIcon size={18} style={{ animation: "spin 1s linear infinite" }} />{" "}
-                Registrando…
-              </>
-            ) : (
-              proximaAcao.label
-            )}
-          </button>
+          {/* Botões de ação — proporção definida pela fase atual */}
+          <div style={{ display: "flex", gap: 10 }}>
+            {slots.map((slot) => {
+              const info = ACAO_INFO[slot.tipo];
+              const Icon =
+                slot.tipo === "INTERROMPER_EXPEDIENTE"
+                  ? PauseIcon
+                  : slot.tipo === "REINICIAR_EXPEDIENTE"
+                    ? PlayIcon
+                    : null;
+              return (
+                <button
+                  key={slot.tipo}
+                  className="btn btn-primary"
+                  onClick={() => handleAcao(slot.tipo)}
+                  disabled={regLoading}
+                  title={slot.iconOnly ? info.label : undefined}
+                  aria-label={slot.iconOnly ? info.label : undefined}
+                  style={{
+                    flex: `${slot.width} 1 0%`,
+                    fontSize: 15,
+                    minHeight: 54,
+                    background: btnBgFor(info.cor),
+                    opacity: regLoading ? 0.7 : 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    padding: slot.iconOnly ? "0 6px" : undefined
+                  }}
+                >
+                  {regLoading ? (
+                    <RefreshCwIcon size={18} style={{ animation: "spin 1s linear infinite" }} />
+                  ) : slot.iconOnly ? (
+                    Icon && <Icon size={20} />
+                  ) : (
+                    <>
+                      {Icon && <Icon size={16} />}
+                      {info.label}
+                    </>
+                  )}
+                </button>
+              );
+            })}
+          </div>
 
           {/* Toggle de geolocalização */}
           <div
@@ -1120,8 +1498,7 @@ export function RegistroPontoPage() {
             Jornada do dia encerrada
           </p>
           <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16, lineHeight: 1.6 }}>
-            Todos os 4 registros foram efetuados. Para corrigir algum registro, abra uma
-            solicitação.
+            Todos os registros foram efetuados. Para corrigir algum registro, abra uma solicitação.
           </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
             <Link
@@ -1183,11 +1560,18 @@ export function RegistroPontoPage() {
               marginBottom: 14
             }}
           >
-            Registros de Hoje ({registros.length}/4)
+            Registros de Hoje ({marcosFeitos}/4)
           </p>
           {registros.map((r, i) => {
-            const info = FLUXO.find((f) => f.tipo === r.tipo);
+            const info = ACAO_INFO[r.tipo];
             const cor = info?.cor ?? "var(--burgundy-600)";
+            const Icon =
+              r.tipo === "INTERROMPER_EXPEDIENTE"
+                ? PauseIcon
+                : r.tipo === "REINICIAR_EXPEDIENTE"
+                  ? PlayIcon
+                  : null;
+            const ajusteAutomatico = r.observacoes?.find((o) => o.tipo === "AJUSTE_AUTOMATICO");
             return (
               <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                 <div
@@ -1221,7 +1605,17 @@ export function RegistroPontoPage() {
                   )}
                 </div>
                 <div style={{ paddingBottom: i < registros.length - 1 ? 12 : 0 }}>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)" }}>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6
+                    }}
+                  >
+                    {Icon && <Icon size={13} style={{ color: cor }} />}
                     {TIPO_LABEL[r.tipo]}
                   </p>
                   <p
@@ -1237,6 +1631,19 @@ export function RegistroPontoPage() {
                       {r.modo === "MOBILE" ? "📱" : "🖥"}
                     </span>
                   </p>
+                  {ajusteAutomatico && (
+                    <p
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ink-500)",
+                        fontStyle: "italic",
+                        marginTop: 2,
+                        maxWidth: 320
+                      }}
+                    >
+                      {ajusteAutomatico.texto}
+                    </p>
+                  )}
                 </div>
               </div>
             );
@@ -1248,7 +1655,8 @@ export function RegistroPontoPage() {
       <div style={{ display: "flex", gap: 8, padding: "12px 4px", marginTop: 8 }}>
         <InfoIcon size={13} style={{ color: "var(--ink-500)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1.6 }}>
-          Fluxo diário: <strong>Iniciar → Almoço → Retorno → Encerrar</strong>. Inconsistências via{" "}
+          Fluxo diário: <strong>Iniciar → Almoço → Retorno → Encerrar</strong>, com pausas opcionais
+          via <strong>Interromper/Reiniciar Expediente</strong>. Inconsistências via{" "}
           <Link to="/ponto/solicitacoes" style={{ color: "var(--burgundy-600)", fontWeight: 500 }}>
             Solicitações
           </Link>

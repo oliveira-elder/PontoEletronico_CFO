@@ -4,7 +4,9 @@ export enum TipoPontoDto {
   ENTRADA = "ENTRADA",
   INICIO_INTERVALO = "INICIO_INTERVALO",
   FIM_INTERVALO = "FIM_INTERVALO",
-  SAIDA = "SAIDA"
+  SAIDA = "SAIDA",
+  INTERROMPER_EXPEDIENTE = "INTERROMPER_EXPEDIENTE",
+  REINICIAR_EXPEDIENTE = "REINICIAR_EXPEDIENTE"
 }
 
 export enum OrigemPontoDto {
@@ -41,4 +43,8 @@ export class CreateRegistroDto {
   @IsOptional()
   @IsString()
   fotoBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  modoRegistro?: string;
 }

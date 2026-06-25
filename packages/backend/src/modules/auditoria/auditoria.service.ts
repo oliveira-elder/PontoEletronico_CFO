@@ -4,9 +4,14 @@ import { PrismaService } from "../../prisma/prisma.service";
 import {
   aplicarHorarioBrasilia,
   horarioDeDataBrasilia,
-  validarHorarioPermitido
+  validarHorarioPermitido,
+  dataBrasiliaISO,
+  hojeBrasiliaISO,
+  intervaloDiaBrasilia
 } from "../../utils/horario-brasilia";
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
+import { DocumentoService } from "../ponto/documento.service";
+import { PontoService } from "../ponto/ponto.service";
 
 export interface PeriodoPontoRaw {
   id: string;
@@ -24,7 +29,11 @@ export interface PeriodoPontoRaw {
 
 @Injectable()
 export class AuditoriaService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly documentoService: DocumentoService,
+    private readonly pontoService: PontoService
+  ) {}
 
   private startOfDay(date: Date) {
     const d = new Date(date);
@@ -77,6 +86,49 @@ export class AuditoriaService {
     return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}m`;
   }
 
+  private static readonly STATUS_SOLICITACAO_ABERTA = [
+    "PENDENTE",
+    "AGUARDANDO_RH",
+    "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+    "AGUARDANDO_GESTOR_RH"
+  ] as const;
+
+  private mesIntervaloBrasilia(mes: number, ano: number) {
+    const mm = String(mes).padStart(2, "0");
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const dd = String(ultimoDia).padStart(2, "0");
+    return {
+      inicio: intervaloDiaBrasilia(`${ano}-${mm}-01`).inicio,
+      fim: intervaloDiaBrasilia(`${ano}-${mm}-${dd}`).fim
+    };
+  }
+
+  private calcResumoMensalFromRegistros(
+    porDia: Map<string, { tipo: string; dataHora: Date }[]>,
+    jornadaHorasDia: number,
+    hojeIso: string
+  ) {
+    let totalMinutos = 0;
+    let diasTrabalhados = 0;
+
+    for (const [diaIso, regs] of porDia) {
+      const capMs = diaIso === hojeIso ? undefined : intervaloDiaBrasilia(diaIso).fim.getTime();
+      const minutos = this.calcHorasMinutos(regs, capMs);
+      if (minutos > 0) diasTrabalhados++;
+      totalMinutos += minutos;
+    }
+
+    const jornadaEsperadaMin = diasTrabalhados * jornadaHorasDia * 60;
+    const saldo = totalMinutos - jornadaEsperadaMin;
+
+    return {
+      horasTrabalhadasMinutos: totalMinutos,
+      horasExtrasMinutos: Math.max(0, saldo),
+      horasFaltaMinutos: Math.max(0, -saldo),
+      diasTrabalhados
+    };
+  }
+
   /* ─── Dashboard ─── */
 
   async getDashboard() {
@@ -116,9 +168,12 @@ export class AuditoriaService {
 
     let trabalhando = 0;
     let emIntervalo = 0;
+    let pausados = 0;
     for (const [, tipo] of estadoPorFunc) {
-      if (tipo === "ENTRADA" || tipo === "FIM_INTERVALO") trabalhando++;
+      if (tipo === "ENTRADA" || tipo === "FIM_INTERVALO" || tipo === "REINICIAR_EXPEDIENTE")
+        trabalhando++;
       else if (tipo === "INICIO_INTERVALO") emIntervalo++;
+      else if (tipo === "INTERROMPER_EXPEDIENTE") pausados++;
     }
 
     /* Afastamentos ativos hoje */
@@ -186,6 +241,7 @@ export class AuditoriaService {
       registrosHoje,
       trabalhando,
       emIntervalo,
+      pausados,
       solicitacoesPendentes,
       afastamentosAtivos,
       periodosAbertos,
@@ -248,6 +304,8 @@ export class AuditoriaService {
 
     const mes = filtros.mes ?? new Date().getMonth() + 1;
     const ano = filtros.ano ?? new Date().getFullYear();
+    const hojeIso = hojeBrasiliaISO();
+    const { inicio: inicioMes, fim: fimMes } = this.mesIntervaloBrasilia(mes, ano);
 
     /* Buscar período atual para cada funcionário */
     const periodos = (await this.prisma.periodoPonto.findMany({
@@ -261,6 +319,27 @@ export class AuditoriaService {
 
     /* Último registro de cada funcionário */
     const ids = funcionarios.map((f) => f.id);
+
+    /* Registros do mês — cálculo em lote das horas trabalhadas */
+    const registrosMes = ids.length
+      ? await this.prisma.registroPonto.findMany({
+          where: { funcionarioId: { in: ids }, dataHora: { gte: inicioMes, lte: fimMes } },
+          orderBy: { dataHora: "asc" },
+          select: { funcionarioId: true, tipo: true, dataHora: true }
+        })
+      : [];
+
+    const registrosPorFunc = new Map<string, Map<string, { tipo: string; dataHora: Date }[]>>();
+    for (const r of registrosMes) {
+      if (!registrosPorFunc.has(r.funcionarioId)) {
+        registrosPorFunc.set(r.funcionarioId, new Map());
+      }
+      const porDia = registrosPorFunc.get(r.funcionarioId)!;
+      const dia = dataBrasiliaISO(r.dataHora);
+      if (!porDia.has(dia)) porDia.set(dia, []);
+      porDia.get(dia)!.push({ tipo: r.tipo, dataHora: r.dataHora });
+    }
+
     const ultimosRegistros = await this.prisma.registroPonto.findMany({
       where: { funcionarioId: { in: ids } },
       orderBy: { dataHora: "desc" },
@@ -271,42 +350,82 @@ export class AuditoriaService {
       ultimosRegistros.map((r) => [r.funcionarioId, r] as [string, typeof r])
     );
 
-    /* Solicitações pendentes por funcionário */
+    /* Solicitações em aberto por funcionário */
     const pendentes = await this.prisma.solicitacao.groupBy({
       by: ["funcionarioId"],
-      where: { status: "PENDENTE", funcionarioId: { in: ids } },
+      where: {
+        status: { in: [...AuditoriaService.STATUS_SOLICITACAO_ABERTA] },
+        funcionarioId: { in: ids }
+      },
       _count: { _all: true }
     });
     const pendentesMap = new Map(
       pendentes.map((p) => [p.funcionarioId, p._count._all] as [string, number])
     );
 
-    return funcionarios.map((f) => ({
-      id: f.id,
-      matricula: f.matricula,
-      cargo: f.cargo,
-      departamento: f.departamento,
-      categoria: f.categoria,
-      ativo: f.ativo,
-      jornadaHorasDia: f.jornadaHorasDia,
-      createdAt: f.createdAt,
-      user: f.user,
-      gerencia: f.gerencia,
-      totalRegistros: f._count.registros,
-      totalSolicitacoes: f._count.solicitacoes,
-      totalAfastamentos: f._count.afastamentos,
-      periodo: periodosMap.get(f.id) ?? null,
-      periodoFormatado: periodosMap.get(f.id)
-        ? {
-            horasTrabalhadas: this.formatMinutes(periodosMap.get(f.id)!.horasTrabalhadasMinutos),
-            horasExtras: this.formatMinutes(periodosMap.get(f.id)!.horasExtrasMinutos),
-            horasFalta: this.formatMinutes(periodosMap.get(f.id)!.horasFaltaMinutos),
-            status: periodosMap.get(f.id)!.status
-          }
-        : null,
-      ultimoRegistro: ultimosMap.get(f.id) ?? null,
-      solicitacoesPendentes: pendentesMap.get(f.id) ?? 0
-    }));
+    return funcionarios.map((f) => {
+      const periodo = periodosMap.get(f.id) ?? null;
+      const porDia = registrosPorFunc.get(f.id) ?? new Map();
+      const resumo = this.calcResumoMensalFromRegistros(porDia, f.jornadaHorasDia, hojeIso);
+
+      const usarPeriodoOficial =
+        periodo &&
+        (periodo.status === "FECHADO" || periodo.status === "APROVADO") &&
+        periodo.horasTrabalhadasMinutos > 0;
+
+      const horasTrabalhadasMinutos = usarPeriodoOficial
+        ? periodo!.horasTrabalhadasMinutos
+        : resumo.horasTrabalhadasMinutos;
+      const horasExtrasMinutos = usarPeriodoOficial
+        ? periodo!.horasExtrasMinutos
+        : resumo.horasExtrasMinutos;
+      const horasFaltaMinutos = usarPeriodoOficial
+        ? periodo!.horasFaltaMinutos
+        : resumo.horasFaltaMinutos;
+
+      return {
+        id: f.id,
+        matricula: f.matricula,
+        cargo: f.cargo,
+        departamento: f.departamento,
+        categoria: f.categoria,
+        ativo: f.ativo,
+        jornadaHorasDia: f.jornadaHorasDia,
+        fotoPerfilUrl: f.fotoPerfilUrl,
+        createdAt: f.createdAt,
+        user: f.user,
+        gerencia: f.gerencia,
+        totalRegistros: f._count.registros,
+        totalSolicitacoes: f._count.solicitacoes,
+        totalAfastamentos: f._count.afastamentos,
+        periodo: periodo
+          ? {
+              ...periodo,
+              ...resumo,
+              horasTrabalhadasMinutos,
+              horasExtrasMinutos,
+              horasFaltaMinutos
+            }
+          : {
+              id: "",
+              funcionarioId: f.id,
+              mes,
+              ano,
+              ...resumo,
+              status: "ABERTO",
+              fechadoEm: null,
+              aprovadoPor: null
+            },
+        periodoFormatado: {
+          horasTrabalhadas: this.formatMinutes(horasTrabalhadasMinutos),
+          horasExtras: this.formatMinutes(horasExtrasMinutos),
+          horasFalta: this.formatMinutes(horasFaltaMinutos),
+          status: periodo?.status ?? "ABERTO"
+        },
+        ultimoRegistro: ultimosMap.get(f.id) ?? null,
+        solicitacoesPendentes: pendentesMap.get(f.id) ?? 0
+      };
+    });
   }
 
   async getFuncionarioDetalhe(id: string) {
@@ -368,6 +487,7 @@ export class AuditoriaService {
               id: true,
               matricula: true,
               cargo: true,
+              fotoPerfilUrl: true,
               user: { select: { name: true, email: true } },
               gerencia: { select: { nome: true, sigla: true } }
             }
@@ -499,25 +619,31 @@ export class AuditoriaService {
       });
     }
 
-    // PROVISÓRIO: ativa o fallback se o usuário tem isManager=true no DB (via sync da API Extensions)
-    // OU se possui o papel GESTOR_APROVACAO/gestor no Keycloak (mas ainda não passou pelo sync).
-    // Remover quando gerências estiverem configuradas via responsavelUserId.
+    // Fallback: gerente identificado pelo flag isManager na API de ramais.
+    // Usa o campo section para encontrar todos os funcionários do mesmo guarda-chuva,
+    // independente de subseção (ex.: GERTI/Desenvolvimento, GERTI/CPD → todos sob GERTI).
     const funcGestor = await this.prisma.funcionario.findUnique({
       where: { userId: user.id },
       select: { isManager: true, section: true }
     });
 
-    const ehGestorProvisorio = funcGestor?.isManager || temRoleGestor; // PROVISÓRIO
-
-    if (ehGestorProvisorio) {
+    if (funcGestor?.isManager && funcGestor.section) {
       return this.prisma.funcionario.findMany({
         where: {
-          isManager: false,
           ativo: true,
-          section: "TI - Desenvolvimento", // PROVISÓRIO: hardcoded — remover quando gerências estiverem configuradas
+          section: funcGestor.section,
           NOT: { userId: user.id }
         },
         include: includeBase
+      });
+    }
+
+    // Último recurso: papel de gestor no Keycloak sem sync da API de ramais
+    if (temRoleGestor) {
+      return this.prisma.funcionario.findMany({
+        where: { ativo: true, NOT: { userId: user.id } },
+        include: includeBase,
+        take: 200
       });
     }
 
@@ -630,15 +756,33 @@ export class AuditoriaService {
     }
 
     const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
-    const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
+    const agora = new Date();
 
+    /* Correção de ponto: aprovação do gestor já finaliza — não precisa de RH */
+    if (decisao === "APROVAR" && solicitacao.tipo === "CORRECAO_PONTO") {
+      await this.aplicarMudancaSolicitacao(solicitacao, keycloakSub);
+      return this.prisma.solicitacao.update({
+        where: { id },
+        data: {
+          status: "APROVADA",
+          gestorUserId: user?.id,
+          gestorObservacao: observacao,
+          gestorResolvidoEm: agora,
+          resolvidoPor: keycloakSub,
+          resolvidoEm: agora
+        }
+      });
+    }
+
+    /* Demais tipos: fluxo bifásico normal (gestor → RH) */
+    const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
     return this.prisma.solicitacao.update({
       where: { id },
       data: {
         status: novoStatus,
         gestorUserId: user?.id,
         gestorObservacao: observacao,
-        gestorResolvidoEm: new Date()
+        gestorResolvidoEm: agora
       }
     });
   }
@@ -658,7 +802,9 @@ export class AuditoriaService {
     const limit = Math.min(filtros.limit ?? 50, 200);
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = { status: "AGUARDANDO_RH" };
+    const where: Record<string, unknown> = {
+      status: { in: ["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO"] }
+    };
     if (filtros.tipo) where.tipo = filtros.tipo;
     if (filtros.funcionarioId) where.funcionarioId = filtros.funcionarioId;
     if (filtros.gerenciaId) where.funcionario = { gerenciaId: filtros.gerenciaId };
@@ -700,6 +846,32 @@ export class AuditoriaService {
       );
     }
 
+    if (decisao === "APROVAR") {
+      const metadados = solicitacao.metadados as Record<string, unknown> | null;
+      const requerHomologacao = metadados?.requerHomologacao === true;
+      if (
+        solicitacao.tipo === "ATESTADO" &&
+        requerHomologacao &&
+        !solicitacao.documentoRetornoUrl
+      ) {
+        throw new BadRequestException(
+          "Aguardando o funcionário enviar o documento de retorno da consulta médica antes da aprovação."
+        );
+      }
+      if (solicitacao.tipo === "FERIAS") {
+        if (!solicitacao.guiaMedicoUrl) {
+          throw new BadRequestException(
+            "Envie a folha de pagamento de férias ao funcionário antes de aprovar."
+          );
+        }
+        if (!solicitacao.documentoRetornoUrl) {
+          throw new BadRequestException(
+            "Aguardando o funcionário enviar a folha de pagamento de férias assinada antes da aprovação."
+          );
+        }
+      }
+    }
+
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
     const agora = new Date();
 
@@ -720,6 +892,15 @@ export class AuditoriaService {
     // Aprovar: aplicar a mudança conforme o tipo
     await this.aplicarMudancaSolicitacao(solicitacao, keycloakSub);
 
+    // Se for uma alteração de férias, cancela a solicitação original substituída
+    const metaAprov = solicitacao.metadados as Record<string, unknown> | null;
+    if (solicitacao.tipo === "FERIAS" && typeof metaAprov?.alteracaoDeId === "string") {
+      await this.prisma.solicitacao.update({
+        where: { id: metaAprov.alteracaoDeId },
+        data: { status: "CANCELADA" }
+      });
+    }
+
     return this.prisma.solicitacao.update({
       where: { id },
       data: {
@@ -729,6 +910,239 @@ export class AuditoriaService {
         rhResolvidoEm: agora,
         resolvidoPor: keycloakSub,
         resolvidoEm: agora
+      }
+    });
+  }
+
+  async rhEnviarGuiaMedica(
+    id: string,
+    guiaMedicoBase64: string,
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({
+      where: { id }
+    });
+
+    if (solicitacao.status !== "AGUARDANDO_RH") {
+      throw new BadRequestException(
+        "Apenas solicitações aguardando RH podem receber a guia médica."
+      );
+    }
+
+    if (solicitacao.tipo !== "ATESTADO") {
+      throw new BadRequestException("A guia médica só pode ser enviada para atestados.");
+    }
+
+    const url = await this.documentoService.salvarGuiaMedica(id, guiaMedicoBase64);
+    const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        guiaMedicoUrl: url,
+        guiaMedicoEnviadaEm: new Date(),
+        guiaMedicoObservacao: observacao,
+        status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+        rhUserId: rhUser?.id
+      }
+    });
+  }
+
+  async rhEnviarFolhaFerias(
+    id: string,
+    folhaBase64: string,
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+
+    if (solicitacao.status !== "AGUARDANDO_RH") {
+      throw new BadRequestException(
+        "Apenas solicitações aguardando RH podem receber a folha de férias."
+      );
+    }
+    if (solicitacao.tipo !== "FERIAS") {
+      throw new BadRequestException(
+        "A folha de férias só pode ser enviada para solicitações de férias."
+      );
+    }
+
+    const url = await this.documentoService.salvarGuiaMedica(id, folhaBase64);
+    const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        guiaMedicoUrl: url,
+        guiaMedicoEnviadaEm: new Date(),
+        guiaMedicoObservacao: observacao || "Folha de pagamento de férias enviada para assinatura.",
+        status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+        rhUserId: rhUser?.id
+      }
+    });
+  }
+
+  async getSaldoFeriasFuncionario(funcionarioId: string) {
+    return this.pontoService.calcularSaldoFeriasFuncionario(funcionarioId);
+  }
+
+  /* ─── Correção de ponto criada pelo RH → aguarda aprovação do PONTO_ADMIN ─── */
+
+  async criarCorrecaoRH(
+    keycloakSub: string,
+    funcionarioId: string,
+    body: {
+      dataReferencia: string;
+      justificativa: string;
+      correcoes: Array<{
+        acao: "CORRIGIR" | "INCLUIR" | "EXCLUIR";
+        tipoRegistro: string;
+        horario: string;
+        registroId?: string;
+        horarioOriginal?: string;
+      }>;
+    }
+  ) {
+    const dataRef = new Date(body.dataReferencia);
+    const mes = dataRef.getUTCMonth() + 1;
+    const ano = dataRef.getUTCFullYear();
+
+    const periodo = await this.prisma.periodoPonto.findUnique({
+      where: { funcionarioId_mes_ano: { funcionarioId, mes, ano } },
+      include: { assinatura: { select: { status: true } } }
+    });
+
+    if (periodo?.assinatura?.status === "CONCLUIDA") {
+      throw new BadRequestException(
+        "O período de " +
+          new Date(ano, mes - 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) +
+          " já foi assinado pelo funcionário e pelo gestor. Correções não são permitidas."
+      );
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+
+    return this.prisma.solicitacao.create({
+      data: {
+        funcionarioId,
+        tipo: "CORRECAO_PONTO",
+        dataReferencia: new Date(body.dataReferencia),
+        descricao: body.justificativa,
+        status: "AGUARDANDO_GESTOR_RH",
+        metadados: {
+          criadoPeloRH: true,
+          criadoPorNome: user?.name ?? keycloakSub,
+          correcoesDia: body.correcoes
+        }
+      }
+    });
+  }
+
+  async adminAprovarCorrecaoRH(
+    id: string,
+    decisao: "APROVAR" | "REJEITAR",
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const sol = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+
+    if (sol.status !== "AGUARDANDO_GESTOR_RH") {
+      throw new BadRequestException(
+        "Esta solicitação não está aguardando aprovação do Gerente de RH."
+      );
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    const agora = new Date();
+    const dataFormatada = agora.toLocaleDateString("pt-BR");
+    const meta = (sol.metadados ?? {}) as Record<string, unknown>;
+    const criadoPorNome = (meta.criadoPorNome as string) ?? "RH";
+    const marker = `Modificado pelo RH (${criadoPorNome}) em ${dataFormatada} — aprovado pelo Gerente de RH`;
+
+    if (decisao === "REJEITAR") {
+      return this.prisma.solicitacao.update({
+        where: { id },
+        data: {
+          status: "REJEITADA_RH",
+          rhObservacao: observacao || "Correção rejeitada pelo Gerente de RH.",
+          rhResolvidoEm: agora,
+          rhUserId: user?.id
+        }
+      });
+    }
+
+    const correcoes = (meta.correcoesDia ?? []) as Array<{
+      acao: string;
+      tipoRegistro: string;
+      horario: string;
+      registroId?: string;
+      horarioOriginal?: string;
+    }>;
+
+    for (const c of correcoes) {
+      if (c.acao === "CORRIGIR" && c.registroId) {
+        const atual = await this.prisma.registroPonto.findUnique({
+          where: { id: c.registroId }
+        });
+        if (atual) {
+          const novaDataHora = aplicarHorarioBrasilia(atual.dataHora, c.horario);
+          const novaObs = criarObservacaoAjuste({
+            tipoRegistro: c.tipoRegistro,
+            horarioAnterior: c.horarioOriginal ?? horarioDeDataBrasilia(atual.dataHora),
+            horarioNovo: c.horario,
+            solicitacaoId: id,
+            acao: "CORRIGIR",
+            autorRH: criadoPorNome
+          });
+          const observacoes = appendObservacao(atual.observacoes, novaObs);
+          await this.prisma.registroPonto.update({
+            where: { id: atual.id },
+            data: {
+              dataHora: novaDataHora,
+              ajustado: true,
+              ajustadoPor: keycloakSub,
+              observacao: marker,
+              observacoes: observacoes as unknown as Prisma.InputJsonValue
+            }
+          });
+        }
+      } else if (c.acao === "INCLUIR") {
+        const dataHora = aplicarHorarioBrasilia(sol.dataReferencia, c.horario);
+        const novaObs = criarObservacaoAjuste({
+          tipoRegistro: c.tipoRegistro,
+          horarioNovo: c.horario,
+          solicitacaoId: id,
+          acao: "INCLUIR",
+          autorRH: criadoPorNome
+        });
+        await this.prisma.registroPonto.create({
+          data: {
+            funcionarioId: sol.funcionarioId,
+            tipo: c.tipoRegistro as import("@prisma/client").TipoPonto,
+            dataHora,
+            origem: "WEB",
+            modoRegistro: "DESKTOP",
+            ajustado: true,
+            ajustadoPor: keycloakSub,
+            observacao: marker,
+            observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+          }
+        });
+      } else if (c.acao === "EXCLUIR" && c.registroId) {
+        await this.prisma.registroPonto.delete({ where: { id: c.registroId } }).catch(() => null);
+      }
+    }
+
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        status: "APROVADA",
+        rhObservacao: observacao || marker,
+        rhResolvidoEm: agora,
+        rhUserId: user?.id,
+        resolvidoEm: agora,
+        resolvidoPor: keycloakSub
       }
     });
   }
@@ -765,10 +1179,85 @@ export class AuditoriaService {
     const obs = `Aprovado via solicitação #${solicitacao.id}`;
 
     if (tipo === "CORRECAO_PONTO") {
+      const limites = await this.obterLimitesHorarioPonto();
+
+      // Suporte ao novo formato com múltiplas correções de uma só vez (correcoesDia)
+      const correcoesDia = Array.isArray(meta.correcoesDia)
+        ? (meta.correcoesDia as Array<{
+            acao: string;
+            tipoRegistro: string;
+            horario: string;
+            registroId?: string;
+            horarioOriginal?: string;
+          }>)
+        : null;
+
+      if (correcoesDia) {
+        for (const c of correcoesDia) {
+          if (!c.horario && c.acao !== "EXCLUIR") continue;
+          if (c.horario) {
+            const v = validarHorarioPermitido(c.horario, limites.min, limites.max);
+            if (!v.ok) throw new BadRequestException(v.message);
+          }
+          if (c.acao === "CORRIGIR" && c.registroId) {
+            const atual = await this.prisma.registroPonto.findUnique({
+              where: { id: c.registroId }
+            });
+            if (atual) {
+              const novaDataHora = aplicarHorarioBrasilia(atual.dataHora, c.horario);
+              const novaObs = criarObservacaoAjuste({
+                tipoRegistro: c.tipoRegistro,
+                horarioAnterior: c.horarioOriginal ?? horarioDeDataBrasilia(atual.dataHora),
+                horarioNovo: c.horario,
+                solicitacaoId: solicitacao.id,
+                acao: "CORRIGIR"
+              });
+              const observacoes = appendObservacao(atual.observacoes, novaObs);
+              await this.prisma.registroPonto.update({
+                where: { id: atual.id },
+                data: {
+                  dataHora: novaDataHora,
+                  ajustado: true,
+                  ajustadoPor: rhKeycloakSub,
+                  observacao: obs,
+                  observacoes: observacoes as unknown as Prisma.InputJsonValue
+                }
+              });
+            }
+          } else if (c.acao === "INCLUIR") {
+            const dataHora = aplicarHorarioBrasilia(solicitacao.dataReferencia, c.horario);
+            const novaObs = criarObservacaoAjuste({
+              tipoRegistro: c.tipoRegistro,
+              horarioNovo: c.horario,
+              solicitacaoId: solicitacao.id,
+              acao: "INCLUIR"
+            });
+            await this.prisma.registroPonto.create({
+              data: {
+                funcionarioId: funcId,
+                tipo: c.tipoRegistro as import("@prisma/client").TipoPonto,
+                dataHora,
+                origem: "WEB",
+                modoRegistro: "DESKTOP",
+                ajustado: true,
+                ajustadoPor: rhKeycloakSub,
+                observacao: obs,
+                observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+              }
+            });
+          } else if (c.acao === "EXCLUIR" && c.registroId) {
+            await this.prisma.registroPonto
+              .delete({ where: { id: c.registroId } })
+              .catch(() => null);
+          }
+        }
+        return; // correcoesDia aplicado — encerra aqui
+      }
+
+      // Formato legado: ação única
       const acao = meta.acao as string;
       const horario = meta.horarioSolicitado as string;
       const tipoRegistro = (meta.tipoRegistro as string) ?? "ENTRADA";
-      const limites = await this.obterLimitesHorarioPonto();
       const validacao = validarHorarioPermitido(horario, limites.min, limites.max);
       if (!validacao.ok) {
         throw new BadRequestException(validacao.message);
@@ -825,16 +1314,35 @@ export class AuditoriaService {
         });
       }
     } else if (tipo === "FERIAS") {
-      await this.prisma.afastamento.create({
-        data: {
-          funcionarioId: funcId,
-          tipo: "FERIAS",
-          dataInicio: ref,
-          dataFim: fim,
-          justificativa: solicitacao.descricao || obs,
-          aprovadoPor: rhKeycloakSub
+      const periodos = Array.isArray(meta.periodos)
+        ? (meta.periodos as Array<{ dataInicio: string; dataFim: string }>)
+        : null;
+      if (periodos && periodos.length > 0) {
+        // Cria um afastamento por período
+        for (const p of periodos) {
+          await this.prisma.afastamento.create({
+            data: {
+              funcionarioId: funcId,
+              tipo: "FERIAS",
+              dataInicio: new Date(p.dataInicio),
+              dataFim: new Date(p.dataFim),
+              justificativa: solicitacao.descricao || obs,
+              aprovadoPor: rhKeycloakSub
+            }
+          });
         }
-      });
+      } else {
+        await this.prisma.afastamento.create({
+          data: {
+            funcionarioId: funcId,
+            tipo: "FERIAS",
+            dataInicio: ref,
+            dataFim: fim,
+            justificativa: solicitacao.descricao || obs,
+            aprovadoPor: rhKeycloakSub
+          }
+        });
+      }
     } else if (tipo === "ATESTADO") {
       await this.prisma.afastamento.create({
         data: {
@@ -843,6 +1351,7 @@ export class AuditoriaService {
           dataInicio: ref,
           dataFim: fim,
           justificativa: solicitacao.descricao || obs,
+          documentoUrl: typeof meta.documentoUrl === "string" ? meta.documentoUrl : null,
           aprovadoPor: rhKeycloakSub
         }
       });
@@ -857,8 +1366,19 @@ export class AuditoriaService {
           aprovadoPor: rhKeycloakSub
         }
       });
+    } else if (tipo === "ABONO") {
+      await this.prisma.afastamento.create({
+        data: {
+          funcionarioId: funcId,
+          tipo: "ABONO",
+          dataInicio: ref,
+          dataFim: fim,
+          justificativa: solicitacao.descricao || obs,
+          aprovadoPor: rhKeycloakSub
+        }
+      });
     }
-    // ABONO: apenas registrado como aprovado; não há ação automática adicional
+    /* HORA_EXTRA: aprovação registrada no status da solicitação; sem efeito adicional no banco */
   }
 
   /* ─── Afastamentos ─── */
@@ -907,6 +1427,7 @@ export class AuditoriaService {
               id: true,
               matricula: true,
               cargo: true,
+              fotoPerfilUrl: true,
               user: { select: { name: true, email: true } },
               gerencia: { select: { nome: true, sigla: true } }
             }
@@ -954,6 +1475,7 @@ export class AuditoriaService {
               matricula: true,
               cargo: true,
               jornadaHorasDia: true,
+              fotoPerfilUrl: true,
               user: { select: { name: true, email: true } },
               gerencia: { select: { nome: true, sigla: true } }
             }
@@ -983,6 +1505,321 @@ export class AuditoriaService {
         ...(status === "FECHADO" ? { fechadoEm: new Date() } : {}),
         ...(status === "APROVADO" ? { aprovadoPor } : {})
       }
+    });
+  }
+
+  /* ─── Banco de Horas ─── */
+
+  /** Ciclo atual do banco de horas: começa no dia seguinte à última data marco
+   *  já passada (ou desde sempre, se nenhuma marco passou ainda). */
+  private async getCicloBancoHoras() {
+    const marcos = await this.prisma.bancoHorasMarco.findMany({ orderBy: { data: "asc" } });
+    const hojeIso = hojeBrasiliaISO();
+    const marcosIso = marcos.map((m) => dataBrasiliaISO(m.data));
+    const marcosPassados = marcosIso.filter((d) => d <= hojeIso);
+    const marcosFuturos = marcosIso.filter((d) => d > hojeIso);
+
+    let cicloInicio: string | null = null;
+    if (marcosPassados.length > 0) {
+      const ultimaMarco = marcosPassados[marcosPassados.length - 1];
+      const d = new Date(`${ultimaMarco}T00:00:00-03:00`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      cicloInicio = dataBrasiliaISO(d);
+    }
+    const proximaZeragem = marcosFuturos.length > 0 ? marcosFuturos[0] : null;
+    return { cicloInicio, proximaZeragem, hojeIso };
+  }
+
+  /** Soma minutos trabalhados de uma lista de registros.
+   *  @param capMs  Teto para entradas sem saída — use fim-do-dia em dias históricos. */
+  private calcHorasMinutos(registros: { tipo: string; dataHora: Date }[], capMs?: number): number {
+    let total = 0;
+    let entradaTs: Date | null = null;
+    for (const r of registros) {
+      if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
+        entradaTs = r.dataHora;
+      } else if (
+        (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
+        entradaTs
+      ) {
+        total += Math.round((r.dataHora.getTime() - entradaTs.getTime()) / 60000);
+        entradaTs = null;
+      } else if (r.tipo === "FIM_INTERVALO") {
+        entradaTs = r.dataHora;
+      } else if (r.tipo === "SAIDA" && entradaTs) {
+        total += Math.round((r.dataHora.getTime() - entradaTs.getTime()) / 60000);
+        entradaTs = null;
+      }
+    }
+    if (entradaTs) {
+      total += Math.round(((capMs ?? Date.now()) - entradaTs.getTime()) / 60000);
+    }
+    return total;
+  }
+
+  /** Saldo do banco de horas no ciclo atual, iterando todos os dias úteis
+   *  e contabilizando feriados/afastamentos como saldo neutro (0). */
+  private async calcularBancoHoras(
+    funcionarioId: string,
+    jornadaHorasDia: number,
+    cicloInicio: string | null,
+    hojeIso: string
+  ) {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { diasUteis: true }
+    });
+    const diasUteisCfg: boolean[] = JSON.parse(
+      cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
+    );
+
+    // Sem marco: inicia do primeiro registro do funcionário (evita iterar desde 1970)
+    let cicloInicioEfetivo = cicloInicio;
+    if (!cicloInicioEfetivo) {
+      const primeiroRegistro = await this.prisma.registroPonto.findFirst({
+        where: { funcionarioId },
+        orderBy: { dataHora: "asc" },
+        select: { dataHora: true }
+      });
+      cicloInicioEfetivo = primeiroRegistro ? dataBrasiliaISO(primeiroRegistro.dataHora) : hojeIso;
+    }
+
+    const { inicio } = intervaloDiaBrasilia(cicloInicioEfetivo);
+    const { fim } = intervaloDiaBrasilia(hojeIso);
+
+    const registros = await this.prisma.registroPonto.findMany({
+      where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
+      orderBy: { dataHora: "asc" },
+      select: { tipo: true, dataHora: true }
+    });
+
+    const porDia = new Map<string, { tipo: string; dataHora: Date }[]>();
+    for (const r of registros) {
+      const key = dataBrasiliaISO(r.dataHora);
+      if (!porDia.has(key)) porDia.set(key, []);
+      porDia.get(key)!.push(r);
+    }
+
+    const afastamentos = await this.prisma.afastamento.findMany({
+      where: { funcionarioId, dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+      select: { dataInicio: true, dataFim: true }
+    });
+
+    const feriados = await this.prisma.feriadoConfig.findMany({
+      where: { data: { gte: inicio, lte: fim } },
+      select: { data: true, nome: true }
+    });
+    const feriadoMap = new Map(feriados.map((f) => [dataBrasiliaISO(f.data), f.nome]));
+
+    const cfgMult = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { bancoHorasSabadoPct: true, bancoHorasDomingoPct: true, bancoHorasFeriadoPct: true }
+    });
+    const sabadoPct = cfgMult?.bancoHorasSabadoPct ?? 100;
+    const domingoPct = cfgMult?.bancoHorasDomingoPct ?? 200;
+    const feriadoPct = cfgMult?.bancoHorasFeriadoPct ?? 200;
+
+    const jornadaEsperadaMinutos = jornadaHorasDia * 60;
+    const dias: {
+      data: string;
+      horasTrabalhadasMinutos: number;
+      jornadaEsperadaMinutos: number;
+      saldoDiaMinutos: number;
+      saldoAcumuladoMinutos: number;
+      observacao?: string;
+    }[] = [];
+
+    let saldoAcumulado = 0;
+    let dataAtual = cicloInicioEfetivo;
+
+    while (dataAtual <= hojeIso) {
+      const [year, month, day] = dataAtual.split("-").map(Number);
+      const diaSemana = new Date(year, month - 1, day).getDay();
+      const eDiaUtil = diasUteisCfg[diaSemana];
+      const nomeFeriado = feriadoMap.get(dataAtual);
+      const temAfastamento = afastamentos.some((a) => {
+        const aInicio = dataBrasiliaISO(a.dataInicio);
+        const aFim = dataBrasiliaISO(a.dataFim);
+        return dataAtual >= aInicio && dataAtual <= aFim;
+      });
+      const regsDodia = porDia.get(dataAtual) ?? [];
+      const eHoje = dataAtual === hojeIso;
+      const capMs = eHoje ? undefined : new Date(`${dataAtual}T23:59:59-03:00`).getTime();
+
+      if (eDiaUtil) {
+        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        let saldoDiaMinutos: number;
+        let jornadaDia: number;
+        let obs: string | undefined;
+
+        if (temAfastamento) {
+          saldoDiaMinutos = 0;
+          jornadaDia = 0;
+          obs = "Afastamento";
+        } else if (nomeFeriado && regsDodia.length > 0) {
+          saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
+          jornadaDia = 0;
+          obs = `Feriado trabalhado: ${nomeFeriado} (${feriadoPct}%)`;
+        } else if (nomeFeriado) {
+          saldoDiaMinutos = 0;
+          jornadaDia = 0;
+          obs = `Feriado: ${nomeFeriado}`;
+        } else {
+          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaEsperadaMinutos;
+          jornadaDia = jornadaEsperadaMinutos;
+          obs = undefined;
+        }
+
+        saldoAcumulado += saldoDiaMinutos;
+        dias.push({
+          data: dataAtual,
+          horasTrabalhadasMinutos,
+          jornadaEsperadaMinutos: jornadaDia,
+          saldoDiaMinutos,
+          saldoAcumuladoMinutos: saldoAcumulado,
+          observacao: obs
+        });
+      } else if (!temAfastamento && regsDodia.length > 0) {
+        // Fim de semana com registros: aplica multiplicador
+        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
+        const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
+        const tipoLabel = nomeFeriado
+          ? `Feriado: ${nomeFeriado}`
+          : diaSemana === 6
+            ? "Sábado"
+            : "Domingo";
+        saldoAcumulado += saldoDiaMinutos;
+        dias.push({
+          data: dataAtual,
+          horasTrabalhadasMinutos,
+          jornadaEsperadaMinutos: 0,
+          saldoDiaMinutos,
+          saldoAcumuladoMinutos: saldoAcumulado,
+          observacao: `Trabalho em ${tipoLabel} (${pct}%)`
+        });
+      }
+
+      const prox = new Date(year, month - 1, day);
+      prox.setDate(prox.getDate() + 1);
+      dataAtual = `${prox.getFullYear()}-${String(prox.getMonth() + 1).padStart(2, "0")}-${String(prox.getDate()).padStart(2, "0")}`;
+    }
+
+    return { saldoAtualMinutos: saldoAcumulado, dias };
+  }
+
+  async getBancoHorasGeral(filtros: {
+    busca?: string;
+    gerenciaId?: string;
+    status?: "POSITIVO" | "NEGATIVO" | "EXCEDIDO";
+    page?: number;
+    limit?: number;
+  }) {
+    const page = filtros.page ?? 1;
+    const limit = Math.min(filtros.limit ?? 50, 200);
+
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { bancoHorasLimiteMin: true }
+    });
+    const limiteMinutos = cfg?.bancoHorasLimiteMin ?? 120;
+    const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras();
+
+    const where: Record<string, unknown> = { ativo: true };
+    if (filtros.gerenciaId) where.gerenciaId = filtros.gerenciaId;
+    if (filtros.busca) {
+      where.OR = [
+        { user: { name: { contains: filtros.busca, mode: "insensitive" } } },
+        { matricula: { contains: filtros.busca, mode: "insensitive" } }
+      ];
+    }
+
+    const funcionarios = await this.prisma.funcionario.findMany({
+      where,
+      orderBy: { createdAt: "asc" },
+      include: {
+        user: { select: { name: true, email: true } },
+        gerencia: { select: { nome: true, sigla: true } }
+      }
+    });
+
+    let itens = await Promise.all(
+      funcionarios.map(async (f) => {
+        const { saldoAtualMinutos } = await this.calcularBancoHoras(
+          f.id,
+          f.jornadaHorasDia,
+          cicloInicio,
+          hojeIso
+        );
+        const excedeLimite = Math.abs(saldoAtualMinutos) > limiteMinutos;
+        return {
+          funcionario: { id: f.id, matricula: f.matricula, nome: f.user.name, email: f.user.email },
+          gerencia: f.gerencia,
+          cicloInicio,
+          proximaZeragem,
+          saldoAtualMinutos,
+          saldoFormatado: this.formatMinutes(saldoAtualMinutos),
+          limiteMinutos,
+          excedeLimite
+        };
+      })
+    );
+
+    if (filtros.status === "POSITIVO") itens = itens.filter((i) => i.saldoAtualMinutos >= 0);
+    else if (filtros.status === "NEGATIVO") itens = itens.filter((i) => i.saldoAtualMinutos < 0);
+    else if (filtros.status === "EXCEDIDO") itens = itens.filter((i) => i.excedeLimite);
+
+    const total = itens.length;
+    const skip = (page - 1) * limit;
+
+    return { total, page, limit, itens: itens.slice(skip, skip + limit) };
+  }
+
+  async getBancoHorasFuncionario(funcionarioId: string) {
+    const func = await this.prisma.funcionario.findUniqueOrThrow({
+      where: { id: funcionarioId },
+      include: {
+        user: { select: { name: true, email: true } },
+        gerencia: { select: { nome: true, sigla: true } }
+      }
+    });
+
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { bancoHorasLimiteMin: true, tipoFlexibilidade: true }
+    });
+    const limiteMinutos = cfg?.bancoHorasLimiteMin ?? 120;
+    const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras();
+    const { saldoAtualMinutos, dias } = await this.calcularBancoHoras(
+      func.id,
+      func.jornadaHorasDia,
+      cicloInicio,
+      hojeIso
+    );
+
+    return {
+      funcionario: {
+        id: func.id,
+        matricula: func.matricula,
+        nome: func.user.name,
+        email: func.user.email
+      },
+      gerencia: func.gerencia,
+      cicloInicio,
+      proximaZeragem,
+      saldoAtualMinutos,
+      saldoFormatado: this.formatMinutes(saldoAtualMinutos),
+      limiteMinutos,
+      tipoFlexibilidade: cfg?.tipoFlexibilidade ?? "FIXO",
+      dias
+    };
+  }
+
+  async getDocumentosRhFuncionario(funcionarioId: string) {
+    await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
+    return this.prisma.documentoRhEnvio.findMany({
+      where: { funcionarioId },
+      orderBy: { createdAt: "desc" }
     });
   }
 
@@ -1084,8 +1921,13 @@ export class AuditoriaService {
       let minutos = 0;
       let entrada: Date | null = null;
       for (const r of regs) {
-        if (r.tipo === "ENTRADA") entrada = r.dataHora;
-        else if ((r.tipo === "INICIO_INTERVALO" || r.tipo === "SAIDA") && entrada) {
+        if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") entrada = r.dataHora;
+        else if (
+          (r.tipo === "INICIO_INTERVALO" ||
+            r.tipo === "INTERROMPER_EXPEDIENTE" ||
+            r.tipo === "SAIDA") &&
+          entrada
+        ) {
           minutos += Math.round((r.dataHora.getTime() - entrada.getTime()) / 60000);
           entrada = null;
         } else if (r.tipo === "FIM_INTERVALO") entrada = r.dataHora;

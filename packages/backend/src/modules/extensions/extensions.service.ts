@@ -1,38 +1,81 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { HttpService } from "@nestjs/axios";
 import { Cron, CronExpression } from "@nestjs/schedule";
+import https from "https";
 import { firstValueFrom } from "rxjs";
 import { PrismaService } from "../../prisma/prisma.service";
 
-interface ExtensionRecord {
+/* ─── Tipos da nova API ─── */
+interface ApiUser {
   id: string;
-  floor: string;
-  section: string;
-  room: string;
   name: string;
-  extension: string;
   email: string;
   staffId: number | null;
-  Manager: boolean;
-  isSuperAdmin: boolean;
+  extension: string;
+  room: string;
+  floor: string;
+}
+
+interface ApiSubsection {
+  id: string;
+  name: string;
+  users: ApiUser[];
+}
+
+interface ApiSection {
+  id: string;
+  name: string; // slug kebab-case, ex: "gerti", "ti-desenvolvimento"
+  managers: ApiUser[];
+  users: ApiUser[];
+  subsections: ApiSubsection[];
+}
+
+/* Converte slug kebab-case → nome de exibição capitalizado.
+   Siglas conhecidas ficam em maiúsculas; demais palavras são capitalizadas. */
+const SIGLAS = new Set(["ti", "rh", "cfo", "cpd", "gerti", "tj", "tcu"]);
+
+function slugParaNome(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => (SIGLAS.has(w.toLowerCase()) ? w.toUpperCase() : capitalize(w)))
+    .join(" ");
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function slugParaSigla(slug: string): string {
+  const palavras = slug.split("-");
+  if (palavras.length === 1) return slug.toUpperCase().slice(0, 10);
+  return palavras
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("")
+    .slice(0, 10);
 }
 
 @Injectable()
 export class ExtensionsService {
   private readonly logger = new Logger(ExtensionsService.name);
   private readonly apiUrl =
-    process.env.EXTENSIONS_API_URL ?? "http://192.168.100.32:11003/api/extensions";
+    process.env.SECTIONS_INTEGRATION_URL ??
+    "https://192.168.100.32:11010/api/sections/integration/users";
+  private readonly apiToken = process.env.SECTIONS_INTEGRATION_TOKEN ?? "";
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService
   ) {}
 
-  async fetchExtensions(): Promise<ExtensionRecord[]> {
+  async fetchSections(): Promise<ApiSection[]> {
     const response = await firstValueFrom(
-      this.http.get<ExtensionRecord[]>(this.apiUrl, { timeout: 10_000 })
+      this.http.get<ApiSection[]>(this.apiUrl, {
+        timeout: 15_000,
+        headers: this.apiToken ? { Authorization: `Bearer ${this.apiToken}` } : {},
+        httpsAgent: new https.Agent({ rejectUnauthorized: false })
+      })
     );
-    return (response as { data: ExtensionRecord[] }).data;
+    return (response as { data: ApiSection[] }).data;
   }
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -48,11 +91,11 @@ export class ExtensionsService {
     skipped: number;
     errors: number;
   }> {
-    let records: ExtensionRecord[] = [];
+    let sections: ApiSection[] = [];
     const notMapped: string[] = [];
 
     try {
-      records = await this.fetchExtensions();
+      sections = await this.fetchSections();
     } catch (err) {
       this.logger.error("Falha ao buscar API Extensions:", err);
       await this.prisma.syncLog.create({
@@ -65,109 +108,69 @@ export class ExtensionsService {
     let updated = 0;
     let skipped = 0;
     let errors = 0;
+    let totalUsers = 0;
 
-    // Agrupar por seção para processar gerentes primeiro
-    const porSecao = new Map<string, ExtensionRecord[]>();
-    for (const rec of records) {
-      if (!rec.section) continue;
-      if (!porSecao.has(rec.section)) porSecao.set(rec.section, []);
-      porSecao.get(rec.section)!.push(rec);
-    }
+    for (const section of sections) {
+      const todosUsuarios = this.coletarUsuariosSecao(section);
+      if (todosUsuarios.length === 0) continue;
 
-    for (const [section, membros] of porSecao.entries()) {
       try {
-        // Garantir que a Gerencia existe
-        const sigla = section
-          .split(/[\s-]+/)
-          .map((w) => w[0]?.toUpperCase() ?? "")
-          .join("")
-          .slice(0, 10);
+        totalUsers += todosUsuarios.length;
+
+        /* ── Upsert da Gerência ── */
+        const nomeDisplay = slugParaNome(section.name);
+        const sigla = slugParaSigla(section.name);
 
         let gerencia = await this.prisma.gerencia.findFirst({
-          where: { OR: [{ nome: section }, { sigla }] }
+          where: { OR: [{ nome: nomeDisplay }, { sigla }] }
         });
 
         if (!gerencia) {
           gerencia = await this.prisma.gerencia.create({
-            data: { nome: section, sigla, responsavel: "", ativa: true }
+            data: { nome: nomeDisplay, sigla, responsavel: "", ativa: true }
           });
-          created++;
         }
 
-        // Identificar o gerente da seção
-        const gerente = membros.find((m) => m.Manager);
-        if (gerente) {
-          const userGerente = await this.resolveUser(gerente.email);
+        /* ── Gestor da seção ── */
+        const manager = section.managers[0] ?? null;
+        if (manager) {
+          const userGerente = await this.resolveUser(manager.email);
           if (userGerente) {
             await this.prisma.gerencia.update({
               where: { id: gerencia.id },
               data: {
-                responsavel: gerente.name,
+                responsavel: manager.name,
                 responsavelUserId: userGerente.id
               }
             });
           }
         }
 
-        // Atualizar cada membro
-        for (const rec of membros) {
-          const user = await this.resolveUser(rec.email);
-          if (!user) {
-            notMapped.push(rec.email);
+        /* ── Usuários diretos da seção ── */
+        for (const u of section.users) {
+          const r = await this.syncUser(u, gerencia.id, section.name, null, section.managers);
+          if (r === "created") created++;
+          else if (r === "updated") updated++;
+          else if (r === "skipped") {
             skipped++;
-            continue;
-          }
+            notMapped.push(u.email);
+          } else errors++;
+        }
 
-          let funcionario = await this.prisma.funcionario.findUnique({
-            where: { userId: user.id }
-          });
-
-          // Atualiza emailReal com o e-mail da API se ainda não foi definido
-          if (!user.emailReal && rec.email) {
-            await this.prisma.user.update({
-              where: { id: user.id },
-              data: { emailReal: rec.email }
-            });
-          }
-
-          const matriculaAtualizada = rec.staffId != null ? String(rec.staffId) : undefined;
-
-          if (!funcionario) {
-            // Usuário logou via SSO mas ainda não tem Funcionario — cria automaticamente
-            try {
-              funcionario = await this.prisma.funcionario.create({
-                data: {
-                  userId: user.id,
-                  matricula: matriculaAtualizada ?? user.id.slice(0, 12),
-                  cargo: "A definir",
-                  ativo: true,
-                  gerenciaId: gerencia.id,
-                  extensionsId: rec.id,
-                  section: rec.section,
-                  isManager: rec.Manager
-                }
-              });
-              created++;
-            } catch {
+        /* ── Usuários das subseções (mantidos na Gerência pai) ── */
+        for (const sub of section.subsections) {
+          for (const u of sub.users) {
+            const r = await this.syncUser(u, gerencia.id, section.name, sub.name, section.managers);
+            if (r === "created") created++;
+            else if (r === "updated") updated++;
+            else if (r === "skipped") {
               skipped++;
-            }
-            continue;
+              notMapped.push(u.email);
+            } else errors++;
           }
-
-          await this.prisma.funcionario.update({
-            where: { id: funcionario.id },
-            data: {
-              gerenciaId: gerencia.id,
-              extensionsId: rec.id,
-              section: rec.section,
-              isManager: rec.Manager,
-              ...(matriculaAtualizada ? { matricula: matriculaAtualizada } : {})
-            }
-          });
-          updated++;
         }
       } catch (err) {
-        this.logger.error(`Erro ao processar seção "${section}":`, err);
+        this.logger.error(`Erro ao processar seção "${section.name}":`, err);
         errors++;
       }
     }
@@ -175,7 +178,7 @@ export class ExtensionsService {
     await this.prisma.syncLog.create({
       data: {
         source: "extensions",
-        status: errors > 0 && updated === 0 ? "error" : "success",
+        status: errors > 0 && updated === 0 && created === 0 ? "error" : "success",
         created,
         updated,
         skipped,
@@ -185,9 +188,95 @@ export class ExtensionsService {
     });
 
     this.logger.log(
-      `Sync Extensions: ${created} criados, ${updated} atualizados, ${skipped} ignorados, ${errors} erros.`
+      `Sync Extensions: ${totalUsers} usuários na API | ` +
+        `${created} criados, ${updated} atualizados, ${skipped} ignorados, ${errors} erros.`
     );
-    return { total: records.length, created, updated, skipped, errors };
+    return { total: totalUsers, created, updated, skipped, errors };
+  }
+
+  /** Sincroniza um único usuário da API com o banco. */
+  private async syncUser(
+    u: ApiUser,
+    gerenciaId: string,
+    sectionSlug: string,
+    subsecaoSlug: string | null,
+    managers: ApiUser[]
+  ): Promise<"created" | "updated" | "skipped" | "error"> {
+    try {
+      const user = await this.resolveUser(u.email);
+      if (!user) return "skipped";
+
+      /* Atualiza emailReal se ainda não foi definido */
+      if (!user.emailReal && u.email) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { emailReal: u.email }
+        });
+      }
+
+      const isManager = managers.some((m) => m.email === u.email);
+      const existente = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
+
+      if (!existente) {
+        /* Primeira inserção: preenche todos os campos disponíveis da API.
+           Se a API indica que é gerente, já categoriza como GERENTE. */
+        const matricula = u.staffId != null ? String(u.staffId) : user.id.slice(0, 12);
+        try {
+          await this.prisma.funcionario.create({
+            data: {
+              userId: user.id,
+              matricula,
+              cargo: "A definir",
+              ativo: true,
+              categoria: isManager ? "GERENTE" : "CONCURSADO",
+              gerenciaId,
+              extensionsId: u.id,
+              section: sectionSlug,
+              subsecao: subsecaoSlug ?? null,
+              isManager,
+              ramal: u.extension || null,
+              sala: u.room || null,
+              andar: u.floor || null
+            }
+          });
+          return "created";
+        } catch {
+          return "skipped";
+        }
+      }
+
+      /* Atualização: apenas Gerência e Subseção têm prioridade da API.
+         Se a API indica gerente, promove automaticamente para GERENTE.
+         Nunca rebaixa categoria automaticamente (preserva edições manuais). */
+      await this.prisma.funcionario.update({
+        where: { id: existente.id },
+        data: {
+          gerenciaId,
+          section: sectionSlug,
+          subsecao: subsecaoSlug ?? null,
+          isManager,
+          extensionsId: u.id,
+          ...(isManager ? { categoria: "GERENTE" } : {})
+        }
+      });
+      return "updated";
+    } catch (err) {
+      this.logger.warn(`Erro ao sincronizar usuário ${u.email}:`, err);
+      return "error";
+    }
+  }
+
+  /** Retorna todos os usuários únicos de uma seção (diretos + subseções). */
+  private coletarUsuariosSecao(section: ApiSection): ApiUser[] {
+    const vistos = new Set<string>();
+    const todos: ApiUser[] = [];
+    for (const u of [...section.users, ...section.subsections.flatMap((s) => s.users)]) {
+      if (!vistos.has(u.id)) {
+        vistos.add(u.id);
+        todos.push(u);
+      }
+    }
+    return todos;
   }
 
   async getLastSync() {
@@ -197,19 +286,16 @@ export class ExtensionsService {
     });
   }
 
-  // Resolve User pelo e-mail da API externa (tenta emailReal primeiro, depois prefixo)
+  /** Resolve User pelo e-mail da API (emailReal exato → prefixo SSO). */
   private async resolveUser(emailExterno: string) {
-    // Tenta pelo emailReal exato
     const porEmailReal = await this.prisma.user.findFirst({
       where: { emailReal: emailExterno }
     });
     if (porEmailReal) return porEmailReal;
 
-    // Extrai o prefixo (ex: "elder.oliveira" de "elder.oliveira@cfo.org.br")
     const prefixo = emailExterno.split("@")[0];
     if (!prefixo) return null;
 
-    // Busca por e-mail SSO cujo início seja o prefixo
     return this.prisma.user.findFirst({
       where: { email: { startsWith: `${prefixo}@` } }
     });

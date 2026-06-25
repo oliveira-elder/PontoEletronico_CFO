@@ -70,7 +70,10 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
     const validateAudience = configService.get<string>("KEYCLOAK_VALIDATE_AUDIENCE") === "true";
 
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+        ExtractJwt.fromUrlQueryParameter("access_token") // necessário para SSE/EventSource
+      ]),
       ignoreExpiration: false,
       issuer: issuer || undefined,
       audience: validateAudience ? audience : undefined,

@@ -21,9 +21,10 @@ model User {
   externalId        String?       @unique
   memberships       Membership[]
   chatSession       ChatSession[]
-  funcionario       Funcionario?
-  gerenciasGeridas  Gerencia[]    @relation("GerenciaResponsavel")
-  createdAt         DateTime      @default(now())
+  funcionario         Funcionario?
+  gerenciasGeridas    Gerencia[]    @relation("GerenciaResponsavel")
+  requisicoesCriadas  RequisicaoRh[] @relation("RequisicaoRhCriador")
+  createdAt           DateTime      @default(now())
 }
 
 model Role {
@@ -158,6 +159,8 @@ model MeetingAudit {
 
 model AuditLog {
   id          String   @id @default(cuid())
+  tracker     String?  // UUID de rastreio por requisição (X-Trace-Id)
+  category    String   @default("SUCCESS") // SUCCESS | FAILURE | ERROR
   actorUserId String?
   username    String?
   method      String?
@@ -173,6 +176,74 @@ model AuditLog {
   @@index([createdAt])
   @@index([actorUserId])
   @@index([path])
+  @@index([category])
+  @@index([tracker])
+}
+
+// ════════════════════════════════════════
+// MÓDULO LOGS / OBSERVABILIDADE
+// ════════════════════════════════════════
+
+model IngestEvent {
+  id            String   @id @default(cuid())
+  eventId       String   @unique          // idempotência: mesmo eventId ignorado
+  schemaVersion String   @default("v1")
+  timestamp     DateTime
+  systemKey     String
+  environment   String                    // dev | homolog | prod
+  serviceName   String
+  operation     String
+  status        String                    // SUCCESS | FAILURE | ERROR
+  severity      String                    // INFO | WARN | ERROR | CRITICAL
+  message       String
+  errorCode     String?
+  traceId       String?
+  correlationId String?
+  redirectUrl   String?
+  userContext   Json?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([systemKey])
+  @@index([status])
+  @@index([severity])
+}
+
+model BackupJob {
+  id            String    @id @default(cuid())
+  systemKey     String
+  engine        String                    // postgresql | mysql
+  backupMode    String    @default("full") // full | incremental
+  config        Json?
+  status        String    @default("PENDING") // PENDING | RUNNING | SUCCESS | FAILED
+  runToken      String?   @unique           // Bearer para upload do artefato
+  retentionDays Int       @default(30)
+  scheduledAt   DateTime
+  startedAt     DateTime?
+  completedAt   DateTime?
+  lastHeartbeat DateTime?
+  artifactPath  String?
+  artifactSize  Int?                      // bytes
+  failureMsg    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([systemKey, status])
+  @@index([scheduledAt])
+}
+
+model ApiToken {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  tokenHash   String    @unique           // SHA-256 do token pleno
+  tokenPrefix String                      // primeiros 8 chars para identificação visual
+  active      Boolean   @default(true)
+  lastUsedAt  DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime?
 }
 
 // ════════════════════════════════════════
@@ -196,6 +267,8 @@ enum TipoPonto {
   INICIO_INTERVALO
   FIM_INTERVALO
   SAIDA
+  INTERROMPER_EXPEDIENTE
+  REINICIAR_EXPEDIENTE
 }
 
 enum OrigemPonto {
@@ -211,6 +284,13 @@ enum StatusPeriodo {
   APROVADO
 }
 
+enum StatusAssinatura {
+  PENDENTE_FUNCIONARIO
+  PENDENTE_GESTOR
+  CONCLUIDA
+  DISPENSADA
+}
+
 enum TipoAfastamento {
   FERIAS
   LICENCA_MEDICA
@@ -223,12 +303,15 @@ enum TipoAfastamento {
 }
 
 enum StatusSolicitacao {
-  PENDENTE         // aguardando aprovação do gestor
-  AGUARDANDO_RH    // gestor aprovou, aguardando aprovação do RH
-  APROVADA         // RH aprovou e mudança foi aplicada
-  REJEITADA        // legado: rejeitada sem distinção de etapa
-  REJEITADA_GESTOR // gestor rejeitou
-  REJEITADA_RH     // RH rejeitou
+  PENDENTE                         // aguardando aprovação do gestor
+  AGUARDANDO_RH                    // gestor aprovou, aguardando aprovação do RH
+  AGUARDANDO_DOCUMENTO_FUNCIONARIO // RH enviou guia médica, aguardando retorno do funcionário
+  AGUARDANDO_GESTOR_RH             // correção criada pelo RH, aguardando aprovação do Gerente de RH (PONTO_ADMIN)
+  APROVADA                         // RH aprovou e mudança foi aplicada
+  REJEITADA                        // legado: rejeitada sem distinção de etapa
+  REJEITADA_GESTOR                 // gestor rejeitou
+  REJEITADA_RH                     // RH rejeitou
+  CANCELADA                        // substituída por uma solicitação de alteração aprovada
 }
 
 enum ModoRegistro {
@@ -236,6 +319,7 @@ enum ModoRegistro {
   MOBILE
   HIBRIDO
   VIAGEM
+  HOME_OFFICE
 }
 
 enum TipoFlexibilidade {
@@ -248,6 +332,16 @@ enum CategoriaFuncional {
   ESTAGIARIO
   CONCURSADO
   ASSESSOR
+  GERENTE
+}
+
+model BancoHorasMarco {
+  id        String   @id @default(cuid())
+  data      DateTime @db.Date
+  descricao String?
+  createdAt DateTime @default(now())
+
+  @@unique([data])
 }
 
 model ConfiguracaoSistema {
@@ -307,6 +401,12 @@ model ConfiguracaoSistema {
   // Banco de horas
   bancoHorasLimiteMin    Int               @default(120)
   bancoHorasVigenciaDias Int               @default(30)
+  // Multiplicadores de banco de horas para trabalho em fins de semana/feriados (%)
+  bancoHorasSabadoPct    Int               @default(100)  // 100% = 1h→1h (banco normal)
+  bancoHorasDomingoPct   Int               @default(200)  // 200% = 1h→2h (hora em dobro)
+  bancoHorasFeriadoPct   Int               @default(200)  // 200% = 1h→2h (hora em dobro)
+  // Hora extra — limite (em minutos) acima da jornada que dispara solicitação automática
+  horaExtraLimiteAuto    Int               @default(120)
   updatedAt              DateTime          @updatedAt
   createdAt              DateTime          @default(now())
 }
@@ -351,6 +451,15 @@ model AreaViagem {
   createdAt  DateTime @default(now())
 }
 
+model RequerimentoEndereco {
+  id            String      @id @default(cuid())
+  funcionarioId String      @unique
+  status        String      @default("PENDENTE") // PENDENTE | RESPONDIDO
+  respondidoEm  DateTime?
+  criadoEm      DateTime    @default(now())
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+}
+
 model EnderecoResidencial {
   id            String      @id @default(cuid())
   funcionarioId String      @unique
@@ -363,34 +472,76 @@ model EnderecoResidencial {
   uf            String?
   lat           Float?
   lng           Float?
-  raioMetros    Int         @default(100)
+  raioMetros    Int         @default(20)
   funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   updatedAt     DateTime    @updatedAt
+}
+
+model JornadaPeriodo {
+  id                     String            @id @default(cuid())
+  nome                   String
+  descricao              String?
+  ePadrao                Boolean           @default(false)
+  ativo                  Boolean           @default(true)
+  horaEntrada            String            @default("08:00")
+  horaSaida              String            @default("17:00")
+  jornadaDiariaMin       Int               @default(480)
+  jornadaSemanalMin      Int               @default(2400)
+  diasUteis              String            @default("[false,true,true,true,true,true,false]")
+  tipoFlexibilidade      TipoFlexibilidade @default(FIXO)
+  toleranciaEntradaMin   Int               @default(15)
+  toleranciaSaidaMin     Int               @default(15)
+  toleranciaHoraExtraMin Int               @default(10)
+  toleranciaCalculoMin   Int               @default(5)
+  almocoPodeIniciarA     String            @default("11:30")
+  almocoPodeIniciarAte   String            @default("13:00")
+  almocoMinMin           Int               @default(60)
+  almocoMaxMin           Int               @default(90)
+  bancoHorasLimiteMin    Int               @default(120)
+  bancoHorasVigenciaDias Int               @default(30)
+  horaExtraLimiteAuto    Int               @default(120)
+  funcionarios           Funcionario[]
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
 }
 
 model Funcionario {
   id                       String             @id @default(cuid())
   userId                   String             @unique
   matricula                String?            @unique // nullable: usuários AD sincronizados podem não ter matrícula
+  cpf                      String?
   cargo                    String             @default("")
   departamento             String?
   gerenciaId               String?
+  jornadaPeriodoId         String?
+  modoHomeOffice           Boolean            @default(false)
+  modoHibridoLocal         Boolean            @default(false)
   categoria                CategoriaFuncional @default(CONCURSADO)
   ativo                    Boolean            @default(true)
   jornadaHorasDia          Int                @default(8)
   extensionsId             String?            @unique // id na API externa de ramais
-  section                  String?            // seção na API externa (ex: "TI - Desenvolvimento")
-  isManager                Boolean            @default(false) // Manager: true na API externa
+  section                  String?            // seção (slug) na API externa
+  subsecao                 String?            // subseção (slug), quando aplicável
+  isManager                Boolean            @default(false) // gerente da seção
+  ramal                    String?            // ramal telefônico
+  sala                     String?            // sala/room
+  andar                    String?            // andar/floor
   user                     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   gerencia                 Gerencia?          @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
+  jornadaPeriodo           JornadaPeriodo?    @relation(fields: [jornadaPeriodoId], references: [id], onDelete: SetNull)
   registros                RegistroPonto[]
   periodos                 PeriodoPonto[]
   afastamentos             Afastamento[]
   solicitacoes             Solicitacao[]
+  documentosRh             DocumentoRhEnvio[]
+  requisicoes              RequisicaoRhDestinatario[]
   jornadas                 JornadaTrabalho[]
   enderecoResidencial      EnderecoResidencial?
+  requerimentoEndereco     RequerimentoEndereco?
   fotoPerfilUrl            String?
   solicitarAtualizacaoFoto Boolean            @default(false)
+  dataNascimento           DateTime?          @db.Date
+  dataAdmissao             DateTime?          @db.Date
   createdAt                DateTime           @default(now())
 }
 
@@ -440,7 +591,33 @@ model PeriodoPonto {
   fechadoEm              DateTime?
   aprovadoPor            String?
   funcionario            Funcionario   @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  assinatura             AssinaturaQuadro?
   @@unique([funcionarioId, mes, ano])
+}
+
+model AssinaturaQuadro {
+  id                          String           @id @default(cuid())
+  periodoId                   String           @unique
+  periodo                     PeriodoPonto     @relation(fields: [periodoId], references: [id], onDelete: Cascade)
+  status                      StatusAssinatura @default(PENDENTE_FUNCIONARIO)
+  bancoHorasSaldoTotalMinutos Int              @default(0)
+  // Assinatura do funcionário
+  assinadoFuncionarioEm         DateTime?
+  assinadoFuncionarioIp         String? // IP real do PC (primeiro salto do X-Forwarded-For)
+  assinadoFuncionarioIpGateway  String? // IP da gateway de borda (peer imediato / último proxy)
+  assinadoFuncionarioUserAgent  String?
+  assinadoFuncionarioUserId     String?
+  // Assinatura do gestor
+  assinadoGestorEm              DateTime?
+  assinadoGestorIp              String? // IP real do PC (primeiro salto do X-Forwarded-For)
+  assinadoGestorIpGateway       String? // IP da gateway de borda (peer imediato / último proxy)
+  assinadoGestorUserAgent       String?
+  assinadoGestorUserId          String?
+  assinadoGestorNome            String?
+  criadoEm                    DateTime         @default(now())
+  criadoPor                   String           @default("SISTEMA")
+
+  @@index([status])
 }
 
 model Afastamento {
@@ -474,6 +651,13 @@ model Solicitacao {
   rhUserId          String?   // User.id do analista de RH que resolveu
   rhObservacao      String?
   rhResolvidoEm     DateTime?
+  // Guia médica individual (ATESTADO com homologação) — enviada pelo RH ao funcionário
+  guiaMedicoUrl         String?
+  guiaMedicoEnviadaEm   DateTime?
+  guiaMedicoObservacao  String?
+  // Documento de retorno da consulta (aptidão/inaptidão) — enviado pelo funcionário
+  documentoRetornoUrl   String?
+  documentoRetornoEm    DateTime?
   // Campos legados mantidos para compatibilidade
   observacaoGestor  String?
   resolvidoPor      String?   // Keycloak sub (aponta para RH no novo fluxo)
@@ -482,12 +666,24 @@ model Solicitacao {
   createdAt       DateTime          @default(now())
 }
 
+model DocumentoRhEnvio {
+  id            String      @id @default(cuid())
+  funcionarioId String
+  descricao     String
+  arquivoUrl    String
+  nomeArquivo   String?
+  mimeType      String?
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  @@index([funcionarioId, createdAt])
+}
+
 model ConfiguracaoSolicitacoes {
   id                          String   @id @default("singleton")
   // Regras de Atestado
   atestadoDiasLimiteSimples   Int      @default(3)
   atestadoDiasLimiteInss      Int      @default(14)
-  atestadoGuiaUrl             String?
   atestadoMensagemOriginais   String   @default("Os originais devem ser entregues ao setor de RH.")
   // Regras de Férias
   feriasAntecedenciaMinDias   Int      @default(30)
@@ -496,8 +692,30 @@ model ConfiguracaoSolicitacoes {
   feriasMaxPeriodos           Int      @default(3)
   feriasMaxDiasVenda          Int      @default(10)
   feriasVedacaoPreFeriadoDias Int      @default(2)
+  // Tipos de solicitação ativos no portal do funcionário
+  tipoAtivoCorrecaoPonto      Boolean  @default(true)
+  tipoAtivoAtestado           Boolean  @default(true)
+  tipoAtivoFerias             Boolean  @default(true)
+  tipoAtivoLicenca            Boolean  @default(true)
+  tipoAtivoAbono              Boolean  @default(true)
+  tipoAtivoDayOff             Boolean  @default(true)
+  tipoAtivoHoraExtra          Boolean  @default(true)
   updatedAt                   DateTime @updatedAt
   createdAt                   DateTime @default(now())
+}
+
+model FeriadoConfig {
+  id               String   @id @default(cuid())
+  data             DateTime @db.Date
+  nome             String
+  tipo             String   // "NACIONAL" | "DISTRITAL" | "FACULTATIVO" | "MANUAL"
+  bloqueiaRegistro Boolean  @default(true)
+  origem           String   // "API" | "MANUAL"
+  observacao       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([data])
 }
 
 model SyncLog {
@@ -510,4 +728,50 @@ model SyncLog {
   errors    Int      @default(0)
   details   Json?
   createdAt DateTime @default(now())
+}
+
+enum TipoRequisicaoRh {
+  PERIODICO
+  EXAME_MEDICO
+  FERIAS
+  ASSINATURA_DOCUMENTOS
+  OUTRO
+}
+
+enum StatusRequisicaoDestinatario {
+  PENDENTE
+  VISUALIZADO
+  RESPONDIDO
+}
+
+model RequisicaoRh {
+  id            String                     @id @default(cuid())
+  tipo          TipoRequisicaoRh
+  titulo        String
+  descricao     String?
+  arquivoUrl    String?
+  prazo         DateTime?
+  ativa         Boolean                    @default(true)
+  criadoPorId   String
+  criadoPor     User                       @relation("RequisicaoRhCriador", fields: [criadoPorId], references: [id])
+  destinatarios RequisicaoRhDestinatario[]
+  criadaEm      DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+}
+
+model RequisicaoRhDestinatario {
+  id                 String                       @id @default(cuid())
+  requisicaoId       String
+  funcionarioId      String
+  requisicao         RequisicaoRh                 @relation(fields: [requisicaoId], references: [id], onDelete: Cascade)
+  funcionario        Funcionario                  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  status             StatusRequisicaoDestinatario @default(PENDENTE)
+  visualizadaEm      DateTime?
+  respondidaEm       DateTime?
+  respostaTexto        String?
+  respostaArquivoUrl   String?
+  arquivoIndividualUrl String?
+  createdAt            DateTime                     @default(now())
+
+  @@unique([requisicaoId, funcionarioId])
 }

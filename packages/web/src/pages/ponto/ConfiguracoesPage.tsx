@@ -11,7 +11,10 @@ import {
   ShieldCheckIcon,
   UsersIcon,
   AlertCircleIcon,
-  CalendarIcon
+  CalendarIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  XIcon
 } from "../../components/icons";
 import { api } from "../../hooks/useApi";
 
@@ -27,6 +30,11 @@ interface Subrede {
   id: string;
   cidr: string;
   descricao: string;
+}
+interface MarcoBancoHoras {
+  id: string;
+  data: string;
+  descricao: string | null;
 }
 interface AreaViagem {
   id: string;
@@ -85,6 +93,10 @@ interface SistemaApi {
   viagemExigeAprovacao: boolean;
   bancoHorasLimiteMin: number;
   bancoHorasVigenciaDias: number;
+  horaExtraLimiteAuto: number;
+  bancoHorasSabadoPct: number;
+  bancoHorasDomingoPct: number;
+  bancoHorasFeriadoPct: number;
 }
 
 interface Config {
@@ -274,12 +286,11 @@ function Secao({
   );
 }
 
-type Tab = "institucional" | "rede" | "modos" | "areas" | "periodos" | "solicitacoes";
+type Tab = "institucional" | "rede" | "modos" | "areas" | "periodos" | "solicitacoes" | "feriados";
 
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
   atestadoDiasLimiteInss: number;
-  atestadoGuiaUrl: string | null;
   atestadoMensagemOriginais: string;
   feriasAntecedenciaMinDias: number;
   feriasMinimoGrandePeriodo: number;
@@ -287,7 +298,72 @@ interface ConfigSolicitacoes {
   feriasMaxPeriodos: number;
   feriasMaxDiasVenda: number;
   feriasVedacaoPreFeriadoDias: number;
+  tipoAtivoCorrecaoPonto: boolean;
+  tipoAtivoAtestado: boolean;
+  tipoAtivoFerias: boolean;
+  tipoAtivoLicenca: boolean;
+  tipoAtivoAbono: boolean;
+  tipoAtivoDayOff: boolean;
+  tipoAtivoHoraExtra: boolean;
 }
+
+interface FeriadoConfig {
+  id: string;
+  data: string; // ISO date string
+  nome: string;
+  tipo: string; // "NACIONAL" | "DISTRITAL" | "FACULTATIVO" | "MANUAL"
+  bloqueiaRegistro: boolean;
+  origem: string;
+  observacao?: string | null;
+}
+
+/* ─── JornadaPeriodo ─── */
+interface JornadaPeriodo {
+  id: string;
+  nome: string;
+  descricao?: string | null;
+  ePadrao: boolean;
+  ativo: boolean;
+  horaEntrada: string;
+  horaSaida: string;
+  jornadaDiariaMin: number;
+  jornadaSemanalMin: number;
+  diasUteis: string;
+  tipoFlexibilidade: "FIXO" | "ELASTICO" | "BANCO_HORAS";
+  toleranciaEntradaMin: number;
+  toleranciaSaidaMin: number;
+  toleranciaHoraExtraMin: number;
+  toleranciaCalculoMin: number;
+  almocoPodeIniciarA: string;
+  almocoPodeIniciarAte: string;
+  almocoMinMin: number;
+  almocoMaxMin: number;
+  bancoHorasLimiteMin: number;
+  bancoHorasVigenciaDias: number;
+  horaExtraLimiteAuto: number;
+}
+
+const JP_VAZIO: Omit<JornadaPeriodo, "id" | "ePadrao" | "ativo"> = {
+  nome: "",
+  descricao: "",
+  horaEntrada: "08:00",
+  horaSaida: "17:00",
+  jornadaDiariaMin: 480,
+  jornadaSemanalMin: 2400,
+  diasUteis: "[false,true,true,true,true,true,false]",
+  tipoFlexibilidade: "FIXO",
+  toleranciaEntradaMin: 15,
+  toleranciaSaidaMin: 15,
+  toleranciaHoraExtraMin: 10,
+  toleranciaCalculoMin: 5,
+  almocoPodeIniciarA: "11:30",
+  almocoPodeIniciarAte: "13:00",
+  almocoMinMin: 60,
+  almocoMaxMin: 90,
+  bancoHorasLimiteMin: 120,
+  bancoHorasVigenciaDias: 30,
+  horaExtraLimiteAuto: 120
+};
 
 /* ─── Tipos de períodos ─── */
 interface ConfigPeriodos {
@@ -319,6 +395,36 @@ interface ConfigPeriodos {
   // Banco de horas
   bancoHorasLimiteMin: number; // 120 = 2h
   bancoHorasVigenciaDias: number; // 30
+  // Hora extra
+  horaExtraLimiteAuto: number; // 120 = 2h — acima deste valor cria solicitação automática
+  // Multiplicadores banco de horas fins de semana/feriados (%)
+  bancoHorasSabadoPct: number;
+  bancoHorasDomingoPct: number;
+  bancoHorasFeriadoPct: number;
+}
+
+function patchPeriodos(
+  prev: ConfigPeriodos | null,
+  patch: Partial<ConfigPeriodos>
+): ConfigPeriodos | null {
+  return prev ? { ...prev, ...patch } : prev;
+}
+
+function horaParaMin(h: string): number {
+  const [hh, mm] = h.split(":").map(Number);
+  return (hh || 0) * 60 + (mm || 0);
+}
+
+function calcJornadaEfetiva(
+  horaEntrada: string,
+  horaSaida: string,
+  almocoDuracaoMin: number,
+  diasUteis: boolean[]
+): { diaria: number; semanal: number } {
+  const span = horaParaMin(horaSaida) - horaParaMin(horaEntrada);
+  const diaria = Math.max(0, span - almocoDuracaoMin);
+  const semanal = diaria * diasUteis.filter(Boolean).length;
+  return { diaria, semanal };
 }
 
 /* ═══════════════════════════════════════════════ */
@@ -327,12 +433,43 @@ export function ConfiguracoesPage() {
   const [config, setConfig] = useState<Config | null>(null);
   const [periodos, setPeriodos] = useState<ConfigPeriodos | null>(null);
   const [configSol, setConfigSol] = useState<ConfigSolicitacoes | null>(null);
-  const [guiaBase64, setGuiaBase64] = useState<string | null>(null);
   const [provedores, setProvedores] = useState<Provedor[]>([]);
   const [subredes, setSubredes] = useState<Subrede[]>([]);
+  const [marcosBancoHoras, setMarcosBancoHoras] = useState<MarcoBancoHoras[]>([]);
   const [areas, setAreas] = useState<AreaViagem[]>([]);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // JornadaPeriodo
+  const [jornadas, setJornadas] = useState<JornadaPeriodo[]>([]);
+  const [jpModal, setJpModal] = useState(false);
+  const [jpEditando, setJpEditando] = useState<JornadaPeriodo | null>(null);
+  const [jpForm, setJpForm] = useState<Omit<JornadaPeriodo, "id" | "ePadrao" | "ativo">>(JP_VAZIO);
+  const [jpDiasUteis, setJpDiasUteis] = useState<boolean[]>([
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    false
+  ]);
+
+  // Feriados
+  const hoje = new Date();
+  const [feriadosAno, setFeriadosAno] = useState(hoje.getFullYear());
+  const [feriadosMes, setFeriadosMes] = useState(hoje.getMonth()); // 0-based
+  const [feriados, setFeriados] = useState<FeriadoConfig[]>([]);
+  const [feriadosLoading, setFeriadosLoading] = useState(false);
+  const [feriadoModal, setFeriadoModal] = useState(false);
+  const [feriadoForm, setFeriadoForm] = useState({
+    data: "",
+    nome: "",
+    tipo: "MANUAL",
+    observacao: "",
+    bloqueiaRegistro: true
+  });
+  const [editandoFeriado, setEditandoFeriado] = useState<FeriadoConfig | null>(null);
 
   // Mapa modal
   const [mapaModal, setMapaModal] = useState(false);
@@ -342,6 +479,8 @@ export function ConfiguracoesPage() {
   const [novoProvedor, setNovoProvedor] = useState({ nome: "", ip: "", isPrincipal: false });
   // Nova subrede form
   const [novaSubrede, setNovaSubrede] = useState({ cidr: "", descricao: "" });
+  // Nova data marco do Banco de Horas
+  const [novoMarco, setNovoMarco] = useState({ data: "", descricao: "" });
   // Nova área
   const [novaArea, setNovaArea] = useState({ nome: "", descricao: "" });
 
@@ -363,13 +502,21 @@ export function ConfiguracoesPage() {
       })
       .catch(() => {});
 
+    api
+      .get<JornadaPeriodo[]>("/ponto/config/jornadas")
+      .then((jps) => {
+        setJornadas(jps ?? []);
+      })
+      .catch(() => {});
+
     Promise.all([
       api.get<SistemaApi>("/ponto/config/sistema"),
       api.get<Provedor[]>("/ponto/config/provedores"),
       api.get<Subrede[]>("/ponto/config/subredes"),
-      api.get<AreaViagem[]>("/ponto/config/areas")
+      api.get<AreaViagem[]>("/ponto/config/areas"),
+      api.get<MarcoBancoHoras[]>("/ponto/config/banco-horas/marcos")
     ])
-      .then(([sis, provs, subs, areasApi]) => {
+      .then(([sis, provs, subs, areasApi, marcos]) => {
         if (sis) {
           setConfig({
             nome: sis.nome,
@@ -396,20 +543,27 @@ export function ConfiguracoesPage() {
             mobileExigirFoto: sis.mobileExigirFoto,
             hibridoExigirFoto: sis.hibridoExigirFoto
           });
+          const diasUteisParsed: boolean[] =
+            typeof sis.diasUteis === "string" ? JSON.parse(sis.diasUteis) : sis.diasUteis;
+          const calcFallback = calcJornadaEfetiva(
+            sis.horaEntrada,
+            sis.horaSaida,
+            sis.almocoMinMin,
+            diasUteisParsed
+          );
           setPeriodos({
             horaEntrada: sis.horaEntrada,
             horaSaida: sis.horaSaida,
             pontoHorarioMinimo: sis.pontoHorarioMinimo ?? "06:00",
             pontoHorarioMaximo: sis.pontoHorarioMaximo ?? "23:59",
-            jornadaDiariaMin: sis.jornadaDiariaMin,
-            jornadaSemanalMin: sis.jornadaSemanalMin,
-            diasUteis:
-              typeof sis.diasUteis === "string" ? JSON.parse(sis.diasUteis) : sis.diasUteis,
+            jornadaDiariaMin: calcFallback.diaria,
+            jornadaSemanalMin: calcFallback.semanal,
+            diasUteis: diasUteisParsed,
             toleranciaEntradaMin: sis.toleranciaEntradaMin,
             toleranciaSaidaMin: sis.toleranciaSaidaMin,
             toleranciaHoraExtraMin: sis.toleranciaHoraExtraMin,
             toleranciaCalculoMin: sis.toleranciaCalculoMin,
-            tipoFlexibilidade: sis.tipoFlexibilidade,
+            tipoFlexibilidade: sis.tipoFlexibilidade as ConfigPeriodos["tipoFlexibilidade"],
             almocoPodeIniciarA: sis.almocoPodeIniciarA,
             almocoPodeIniciarAte: sis.almocoPodeIniciarAte,
             almocoMinMin: sis.almocoMinMin,
@@ -419,12 +573,17 @@ export function ConfiguracoesPage() {
             viagemJanelaMinutos: sis.viagemJanelaMinutos,
             viagemExigeAprovacao: sis.viagemExigeAprovacao,
             bancoHorasLimiteMin: sis.bancoHorasLimiteMin,
-            bancoHorasVigenciaDias: sis.bancoHorasVigenciaDias
+            bancoHorasVigenciaDias: sis.bancoHorasVigenciaDias,
+            horaExtraLimiteAuto: sis.horaExtraLimiteAuto ?? 120,
+            bancoHorasSabadoPct: sis.bancoHorasSabadoPct ?? 100,
+            bancoHorasDomingoPct: sis.bancoHorasDomingoPct ?? 200,
+            bancoHorasFeriadoPct: sis.bancoHorasFeriadoPct ?? 200
           });
         }
         setProvedores(provs ?? []);
         setSubredes(subs ?? []);
         setAreas(areasApi ?? []);
+        setMarcosBancoHoras(marcos ?? []);
       })
       .catch(() => {
         /* config/periodos permanecem null → tela de erro */
@@ -438,6 +597,155 @@ export function ConfiguracoesPage() {
       .then((d) => setIpPublico(d.ip))
       .catch(() => setIpPublico("Não detectado"));
   }, []);
+
+  useEffect(() => {
+    if (tab !== "feriados") return;
+    setFeriadosLoading(true);
+    api
+      .get<FeriadoConfig[]>(`/ponto/config/feriados?ano=${feriadosAno}`)
+      .then(async (d) => {
+        const lista = d ?? [];
+        if (lista.length === 0) {
+          // Auto-importa silenciosamente quando não há feriados para o ano
+          await api.post(`/ponto/config/feriados/importar`, { ano: feriadosAno }).catch(() => {});
+          const importados = await api
+            .get<FeriadoConfig[]>(`/ponto/config/feriados?ano=${feriadosAno}`)
+            .catch(() => null);
+          setFeriados(importados ?? []);
+        } else {
+          setFeriados(lista);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setFeriadosLoading(false));
+  }, [tab, feriadosAno]);
+
+  function feriadoDoMes() {
+    return feriados.filter((f) => {
+      const d = new Date(f.data);
+      return d.getUTCMonth() === feriadosMes && d.getUTCFullYear() === feriadosAno;
+    });
+  }
+
+  function feriadoPorDia(dia: number): FeriadoConfig | undefined {
+    return feriados.find((f) => {
+      const d = new Date(f.data);
+      return (
+        d.getUTCMonth() === feriadosMes &&
+        d.getUTCFullYear() === feriadosAno &&
+        d.getUTCDate() === dia
+      );
+    });
+  }
+
+  async function toggleFeriadoBloqueio(f: FeriadoConfig) {
+    const updated = await api.patch<FeriadoConfig>(`/ponto/config/feriados/${f.id}/bloqueio`);
+    setFeriados((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
+  }
+
+  async function deletarFeriado(id: string) {
+    await api.delete(`/ponto/config/feriados/${id}`);
+    setFeriados((prev) => prev.filter((x) => x.id !== id));
+  }
+
+  function abrirModalDia(dia: number, feriado: FeriadoConfig | null) {
+    const mm = String(feriadosMes + 1).padStart(2, "0");
+    const dd = String(dia).padStart(2, "0");
+    const dataStr = `${feriadosAno}-${mm}-${dd}`;
+    if (feriado) {
+      setEditandoFeriado(feriado);
+      setFeriadoForm({
+        data: dataStr,
+        nome: feriado.nome,
+        tipo: feriado.tipo,
+        observacao: feriado.observacao ?? "",
+        bloqueiaRegistro: feriado.bloqueiaRegistro
+      });
+    } else {
+      setEditandoFeriado(null);
+      setFeriadoForm({
+        data: dataStr,
+        nome: "",
+        tipo: "MANUAL",
+        observacao: "",
+        bloqueiaRegistro: true
+      });
+    }
+    setFeriadoModal(true);
+  }
+
+  async function salvarFeriadoModal() {
+    if (!feriadoForm.data || !feriadoForm.nome) return;
+    if (editandoFeriado) {
+      const atualizado = await api.patch<FeriadoConfig>(
+        `/ponto/config/feriados/${editandoFeriado.id}`,
+        {
+          nome: feriadoForm.nome,
+          tipo: feriadoForm.tipo,
+          bloqueiaRegistro: feriadoForm.bloqueiaRegistro,
+          observacao: feriadoForm.observacao || undefined
+        }
+      );
+      setFeriados((prev) => prev.map((f) => (f.id === editandoFeriado.id ? atualizado : f)));
+    } else {
+      const novo = await api.post<FeriadoConfig>("/ponto/config/feriados", {
+        data: feriadoForm.data,
+        nome: feriadoForm.nome,
+        tipo: feriadoForm.tipo,
+        bloqueiaRegistro: feriadoForm.bloqueiaRegistro,
+        observacao: feriadoForm.observacao || undefined
+      });
+      setFeriados((prev) => [...prev, novo].sort((a, b) => (a.data < b.data ? -1 : 1)));
+      const d = new Date(`${feriadoForm.data}T00:00:00.000Z`);
+      setFeriadosAno(d.getUTCFullYear());
+      setFeriadosMes(d.getUTCMonth());
+    }
+    setFeriadoModal(false);
+    setFeriadoForm({ data: "", nome: "", tipo: "MANUAL", observacao: "", bloqueiaRegistro: true });
+    setEditandoFeriado(null);
+  }
+
+  function navMes(delta: number) {
+    let m = feriadosMes + delta;
+    let a = feriadosAno;
+    if (m < 0) {
+      m = 11;
+      a--;
+    }
+    if (m > 11) {
+      m = 0;
+      a++;
+    }
+    setFeriadosMes(m);
+    if (a !== feriadosAno) setFeriadosAno(a);
+  }
+
+  const MESES_PT = [
+    "Janeiro",
+    "Fevereiro",
+    "Março",
+    "Abril",
+    "Maio",
+    "Junho",
+    "Julho",
+    "Agosto",
+    "Setembro",
+    "Outubro",
+    "Novembro",
+    "Dezembro"
+  ];
+  const TIPO_COR: Record<string, string> = {
+    NACIONAL: "#b91c1c",
+    DISTRITAL: "#1d4ed8",
+    FACULTATIVO: "#b45309",
+    MANUAL: "#7c3aed"
+  };
+  const TIPO_LABEL_F: Record<string, string> = {
+    NACIONAL: "Nacional",
+    DISTRITAL: "Distrital (DF)",
+    FACULTATIVO: "Facultativo",
+    MANUAL: "Manual"
+  };
 
   function upd(k: keyof Config, v: Config[keyof Config]) {
     setConfig((c) => (c ? { ...c, [k]: v } : c));
@@ -539,19 +847,90 @@ export function ConfiguracoesPage() {
       viagemJanelaMinutos: periodos.viagemJanelaMinutos,
       viagemExigeAprovacao: periodos.viagemExigeAprovacao,
       bancoHorasLimiteMin: periodos.bancoHorasLimiteMin,
-      bancoHorasVigenciaDias: periodos.bancoHorasVigenciaDias
+      bancoHorasVigenciaDias: periodos.bancoHorasVigenciaDias,
+      horaExtraLimiteAuto: periodos.horaExtraLimiteAuto
     });
     // Salva regras de solicitações se na aba correspondente ou se foi editada
     if (configSol) {
-      await api.put("/ponto/config/solicitacoes", {
-        ...configSol,
-        ...(guiaBase64 ? { atestadoGuiaBase64: guiaBase64 } : {})
-      });
-      setGuiaBase64(null);
+      await api.put("/ponto/config/solicitacoes", configSol);
     }
 
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
+  }
+
+  /* ── JornadaPeriodo ── */
+  function abrirJpModal(jp: JornadaPeriodo | null) {
+    if (jp) {
+      setJpEditando(jp);
+      const dias: boolean[] =
+        typeof jp.diasUteis === "string" ? JSON.parse(jp.diasUteis) : jp.diasUteis;
+      setJpDiasUteis(dias);
+      const calc = calcJornadaEfetiva(jp.horaEntrada, jp.horaSaida, jp.almocoMinMin, dias);
+      setJpForm({
+        nome: jp.nome,
+        descricao: jp.descricao ?? "",
+        horaEntrada: jp.horaEntrada,
+        horaSaida: jp.horaSaida,
+        jornadaDiariaMin: calc.diaria,
+        jornadaSemanalMin: calc.semanal,
+        diasUteis: jp.diasUteis,
+        tipoFlexibilidade: jp.tipoFlexibilidade,
+        toleranciaEntradaMin: jp.toleranciaEntradaMin,
+        toleranciaSaidaMin: jp.toleranciaSaidaMin,
+        toleranciaHoraExtraMin: jp.toleranciaHoraExtraMin,
+        toleranciaCalculoMin: jp.toleranciaCalculoMin,
+        almocoPodeIniciarA: jp.almocoPodeIniciarA,
+        almocoPodeIniciarAte: jp.almocoPodeIniciarAte,
+        almocoMinMin: jp.almocoMinMin,
+        almocoMaxMin: jp.almocoMaxMin,
+        bancoHorasLimiteMin: jp.bancoHorasLimiteMin,
+        bancoHorasVigenciaDias: jp.bancoHorasVigenciaDias,
+        horaExtraLimiteAuto: jp.horaExtraLimiteAuto
+      });
+    } else {
+      const diasPadrao = [false, true, true, true, true, true, false];
+      setJpEditando(null);
+      setJpDiasUteis(diasPadrao);
+      const calc = calcJornadaEfetiva(
+        JP_VAZIO.horaEntrada,
+        JP_VAZIO.horaSaida,
+        JP_VAZIO.almocoMinMin,
+        diasPadrao
+      );
+      setJpForm({ ...JP_VAZIO, jornadaDiariaMin: calc.diaria, jornadaSemanalMin: calc.semanal });
+    }
+    setJpModal(true);
+  }
+
+  async function salvarJornada() {
+    if (!jpForm.nome.trim()) return;
+    const payload = { ...jpForm, diasUteis: JSON.stringify(jpDiasUteis) };
+    if (jpEditando) {
+      const atualizado = await api.put<JornadaPeriodo>(
+        `/ponto/config/jornadas/${jpEditando.id}`,
+        payload
+      );
+      setJornadas((prev) => prev.map((j) => (j.id === jpEditando.id ? atualizado : j)));
+    } else {
+      const novo = await api.post<JornadaPeriodo>("/ponto/config/jornadas", payload);
+      setJornadas((prev) => [...prev, novo]);
+    }
+    setJpModal(false);
+  }
+
+  async function excluirJornada(id: string) {
+    try {
+      await api.delete(`/ponto/config/jornadas/${id}`);
+      setJornadas((prev) => prev.filter((j) => j.id !== id));
+    } catch (e: unknown) {
+      alert((e as { message?: string })?.message ?? "Erro ao excluir.");
+    }
+  }
+
+  async function setJornadaPadrao(id: string) {
+    const atualizada = await api.patch<JornadaPeriodo>(`/ponto/config/jornadas/${id}/padrao`);
+    setJornadas((prev) => prev.map((j) => ({ ...j, ePadrao: j.id === atualizada.id })));
   }
 
   /* ── Provedores ── */
@@ -580,6 +959,23 @@ export function ConfiguracoesPage() {
   async function removeSubrede(id: string) {
     await api.delete(`/ponto/config/subredes/${id}`);
     setSubredes((s) => s.filter((x) => x.id !== id));
+  }
+
+  /* ── Banco de Horas: datas marco ── */
+  async function addMarcoBancoHoras() {
+    if (!novoMarco.data) return;
+    const novo = await api.post<MarcoBancoHoras>("/ponto/config/banco-horas/marcos", {
+      data: novoMarco.data,
+      descricao: novoMarco.descricao || undefined
+    });
+    setMarcosBancoHoras((m) =>
+      [...m, novo].sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0))
+    );
+    setNovoMarco({ data: "", descricao: "" });
+  }
+  async function removeMarcoBancoHoras(id: string) {
+    await api.delete(`/ponto/config/banco-horas/marcos/${id}`);
+    setMarcosBancoHoras((m) => m.filter((x) => x.id !== id));
   }
 
   /* ── Áreas ── */
@@ -631,7 +1027,8 @@ export function ConfiguracoesPage() {
     { key: "periodos", label: "Períodos" },
     { key: "modos", label: "Modos de Registro" },
     { key: "areas", label: "Áreas Especiais" },
-    { key: "solicitacoes", label: "Solicitações" }
+    { key: "solicitacoes", label: "Solicitações" },
+    { key: "feriados", label: "Feriados" }
   ];
 
   if (loading) {
@@ -722,7 +1119,8 @@ export function ConfiguracoesPage() {
           borderRadius: "var(--radius-lg)",
           padding: 4,
           marginBottom: 20,
-          flexWrap: "wrap"
+          flexWrap: "nowrap",
+          overflowX: "auto"
         }}
       >
         {TABS.map((t) => (
@@ -730,15 +1128,16 @@ export function ConfiguracoesPage() {
             key={t.key}
             onClick={() => setTab(t.key)}
             style={{
-              flex: 1,
-              minWidth: 120,
-              padding: "9px 14px",
+              flex: "1 1 0",
+              minWidth: 0,
+              padding: "9px 10px",
               borderRadius: "var(--radius-md)",
               border: "none",
               cursor: "pointer",
               fontFamily: "var(--font-body)",
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: 600,
+              whiteSpace: "nowrap",
               transition: "all 160ms",
               background: tab === t.key ? "#fff" : "transparent",
               color: tab === t.key ? "var(--burgundy-600)" : "var(--ink-500)",
@@ -1748,10 +2147,1006 @@ export function ConfiguracoesPage() {
       {/* ═══════ TAB: PERÍODOS ═══════ */}
       {tab === "periodos" && (
         <>
-          {/* ── Jornada Padrão ── */}
-          <Secao titulo="Jornada de Trabalho" icon={<SettingsIcon size={18} />}>
+          {/* ── Jornadas de Trabalho (JornadaPeriodo CRUD) ── */}
+          <Secao titulo="Jornadas de Trabalho" icon={<SettingsIcon size={18} />}>
+            <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16, lineHeight: 1.6 }}>
+              Configure uma ou mais jornadas nomeadas. Cada funcionário pode ter uma jornada
+              específica atribuída em{" "}
+              <a href="/ponto/gestao" style={{ color: "var(--burgundy-600)", fontWeight: 500 }}>
+                Gestão de Funcionários
+              </a>
+              . Se não houver jornada atribuída, a marcada como <strong>Padrão</strong> é usada.
+            </p>
+
+            {/* Lista de jornadas */}
+            <div style={{ marginBottom: 16 }}>
+              {jornadas.length === 0 && (
+                <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 8 }}>
+                  Nenhuma jornada cadastrada. Crie uma abaixo.
+                </p>
+              )}
+              {jornadas.map((jp) => {
+                const dias: boolean[] =
+                  typeof jp.diasUteis === "string" ? JSON.parse(jp.diasUteis) : jp.diasUteis;
+                const diasNomes = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+                const diasAtivos = diasNomes.filter((_, i) => dias[i]).join(", ");
+                return (
+                  <div
+                    key={jp.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "12px 16px",
+                      background: jp.ePadrao ? "rgba(122,30,38,0.04)" : "#fff",
+                      border: `1px solid ${jp.ePadrao ? "rgba(122,30,38,0.20)" : "rgba(122,30,38,0.08)"}`,
+                      borderRadius: "var(--radius-md)",
+                      marginBottom: 8
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}
+                      >
+                        <p
+                          style={{
+                            fontSize: 14,
+                            fontWeight: 600,
+                            color: "var(--ink-900)",
+                            margin: 0
+                          }}
+                        >
+                          {jp.nome}
+                        </p>
+                        {jp.ePadrao && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              background: "var(--burgundy-600)",
+                              color: "#fff",
+                              padding: "2px 7px",
+                              borderRadius: "var(--radius-full)",
+                              letterSpacing: "0.06em"
+                            }}
+                          >
+                            PADRÃO
+                          </span>
+                        )}
+                        {!jp.ativo && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              background: "var(--ink-300)",
+                              color: "#fff",
+                              padding: "2px 7px",
+                              borderRadius: "var(--radius-full)"
+                            }}
+                          >
+                            INATIVA
+                          </span>
+                        )}
+                      </div>
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color: "var(--ink-500)",
+                          margin: 0,
+                          fontFamily: "var(--font-mono)"
+                        }}
+                      >
+                        {jp.horaEntrada}–{jp.horaSaida} · {Math.floor(jp.jornadaDiariaMin / 60)}
+                        h/dia · {diasAtivos}
+                      </p>
+                      {jp.descricao && (
+                        <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: "2px 0 0" }}>
+                          {jp.descricao}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      {!jp.ePadrao && (
+                        <button
+                          onClick={() => setJornadaPadrao(jp.id)}
+                          title="Definir como padrão"
+                          style={{
+                            padding: "5px 10px",
+                            border: "1px solid rgba(122,30,38,0.20)",
+                            borderRadius: "var(--radius-sm)",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: "var(--ink-600)",
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            fontFamily: "var(--font-body)"
+                          }}
+                        >
+                          Definir padrão
+                        </button>
+                      )}
+                      <button
+                        onClick={() => abrirJpModal(jp)}
+                        title="Editar"
+                        style={{
+                          padding: 6,
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          borderRadius: "var(--radius-sm)",
+                          background: "transparent",
+                          cursor: "pointer",
+                          color: "var(--ink-700)",
+                          fontSize: 12,
+                          fontFamily: "var(--font-body)",
+                          fontWeight: 500
+                        }}
+                      >
+                        Editar
+                      </button>
+                      {!jp.ePadrao && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Excluir jornada "${jp.nome}"?`)) excluirJornada(jp.id);
+                          }}
+                          title="Excluir"
+                          style={{
+                            padding: 6,
+                            border: "1px solid rgba(200,57,63,0.20)",
+                            borderRadius: "var(--radius-sm)",
+                            background: "transparent",
+                            cursor: "pointer",
+                            color: "var(--red)",
+                            display: "flex"
+                          }}
+                        >
+                          <Trash2Icon size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <button
+              className="btn btn-primary"
+              onClick={() => abrirJpModal(null)}
+              style={{ gap: 6, fontSize: 13 }}
+            >
+              <PlusIcon size={14} /> Nova Jornada
+            </button>
+          </Secao>
+
+          {/* ── Modal de edição/criação de JornadaPeriodo ── */}
+          {jpModal && (
+            <>
+              <div
+                onClick={() => setJpModal(false)}
+                style={{ position: "fixed", inset: 0, background: "rgba(10,5,6,0.40)", zIndex: 60 }}
+              />
+              <div
+                style={{
+                  position: "fixed",
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: 520,
+                  maxWidth: "100vw",
+                  background: "#fff",
+                  zIndex: 70,
+                  display: "flex",
+                  flexDirection: "column",
+                  boxShadow: "-8px 0 40px rgba(10,5,6,0.14)",
+                  overflowY: "auto"
+                }}
+              >
+                <div
+                  style={{
+                    padding: "20px 24px",
+                    borderBottom: "1px solid rgba(122,30,38,0.08)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    flexShrink: 0
+                  }}
+                >
+                  <div>
+                    <p className="eyebrow" style={{ marginBottom: 2 }}>
+                      Jornada de Trabalho
+                    </p>
+                    <h2
+                      style={{
+                        fontFamily: "var(--font-display)",
+                        fontStyle: "italic",
+                        fontSize: 20,
+                        color: "var(--burgundy-600)",
+                        fontWeight: 400
+                      }}
+                    >
+                      {jpEditando ? "Editar Jornada" : "Nova Jornada"}
+                    </h2>
+                  </div>
+                  <button
+                    onClick={() => setJpModal(false)}
+                    style={{
+                      padding: 8,
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      color: "var(--ink-500)"
+                    }}
+                  >
+                    <XIcon size={18} />
+                  </button>
+                </div>
+
+                <div style={{ flex: 1, padding: "24px", overflowY: "auto" }}>
+                  {/* Nome e descrição */}
+                  <div style={{ marginBottom: 16 }}>
+                    <label
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 5
+                      }}
+                    >
+                      Nome da Jornada *
+                    </label>
+                    <input
+                      type="text"
+                      value={jpForm.nome}
+                      onChange={(e) => setJpForm((f) => ({ ...f, nome: e.target.value }))}
+                      placeholder="Ex: Jornada 8h, Estagiário 6h, Turno Tarde"
+                      style={{
+                        width: "100%",
+                        padding: "9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-body)",
+                        outline: "none",
+                        boxSizing: "border-box"
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginBottom: 20 }}>
+                    <label
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 5
+                      }}
+                    >
+                      Descrição
+                    </label>
+                    <input
+                      type="text"
+                      value={jpForm.descricao ?? ""}
+                      onChange={(e) => setJpForm((f) => ({ ...f, descricao: e.target.value }))}
+                      placeholder="Opcional — ex: Concursados com carga horária de 40h semanais"
+                      style={{
+                        width: "100%",
+                        padding: "9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-body)",
+                        outline: "none",
+                        boxSizing: "border-box"
+                      }}
+                    />
+                  </div>
+
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "0 0 18px"
+                    }}
+                  />
+
+                  {/* Horários */}
+                  <p
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--burgundy-600)",
+                      marginBottom: 12
+                    }}
+                  >
+                    Horários
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 14,
+                      marginBottom: 14
+                    }}
+                  >
+                    {(
+                      [
+                        ["horaEntrada", "Hora de Entrada"],
+                        ["horaSaida", "Hora de Saída"]
+                      ] as const
+                    ).map(([k, l]) => (
+                      <div key={k}>
+                        <label
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 5
+                          }}
+                        >
+                          {l}
+                        </label>
+                        <input
+                          type="time"
+                          value={jpForm[k]}
+                          onChange={(e) => {
+                            const novo = { ...jpForm, [k]: e.target.value };
+                            const calc = calcJornadaEfetiva(
+                              novo.horaEntrada,
+                              novo.horaSaida,
+                              novo.almocoMinMin,
+                              jpDiasUteis
+                            );
+                            setJpForm((f) => ({
+                              ...f,
+                              [k]: e.target.value,
+                              jornadaDiariaMin: calc.diaria,
+                              jornadaSemanalMin: calc.semanal
+                            }));
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "9px 11px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            fontSize: 14,
+                            fontFamily: "var(--font-mono)",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                    ))}
+                    <div>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 5
+                        }}
+                      >
+                        Duração do Almoço (min)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={120}
+                        value={jpForm.almocoMinMin}
+                        onChange={(e) => {
+                          const almoco = +e.target.value;
+                          const calc = calcJornadaEfetiva(
+                            jpForm.horaEntrada,
+                            jpForm.horaSaida,
+                            almoco,
+                            jpDiasUteis
+                          );
+                          setJpForm((f) => ({
+                            ...f,
+                            almocoMinMin: almoco,
+                            jornadaDiariaMin: calc.diaria,
+                            jornadaSemanalMin: calc.semanal
+                          }));
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "9px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                      <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                        Subtrai do total de horas do expediente
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Resumo calculado */}
+                  {(() => {
+                    const d = jpForm.jornadaDiariaMin;
+                    const s = jpForm.jornadaSemanalMin;
+                    const dH = Math.floor(d / 60),
+                      dM = d % 60;
+                    const sH = Math.floor(s / 60),
+                      sM = s % 60;
+                    return (
+                      <div
+                        style={{
+                          marginBottom: 18,
+                          padding: "10px 14px",
+                          background: "rgba(47,125,79,0.07)",
+                          border: "1px solid rgba(47,125,79,0.18)",
+                          borderRadius: "var(--radius-md)",
+                          display: "flex",
+                          gap: 24,
+                          flexWrap: "wrap"
+                        }}
+                      >
+                        <div>
+                          <p
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              color: "var(--green)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              margin: "0 0 2px"
+                            }}
+                          >
+                            Jornada Diária
+                          </p>
+                          <p
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 18,
+                              fontWeight: 700,
+                              color: "var(--green)",
+                              margin: 0
+                            }}
+                          >
+                            {dH}h{dM > 0 ? `${String(dM).padStart(2, "0")}` : ""}
+                          </p>
+                        </div>
+                        <div>
+                          <p
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              color: "var(--green)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              margin: "0 0 2px"
+                            }}
+                          >
+                            Jornada Semanal
+                          </p>
+                          <p
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 18,
+                              fontWeight: 700,
+                              color: "var(--green)",
+                              margin: 0
+                            }}
+                          >
+                            {sH}h{sM > 0 ? `${String(sM).padStart(2, "0")}` : ""}
+                          </p>
+                        </div>
+                        <div style={{ flex: 1, display: "flex", alignItems: "center" }}>
+                          <p
+                            style={{
+                              fontSize: 11.5,
+                              color: "var(--green)",
+                              margin: 0,
+                              lineHeight: 1.5
+                            }}
+                          >
+                            {jpForm.horaEntrada} → {jpForm.horaSaida} − {jpForm.almocoMinMin}min
+                            almoço
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Dias úteis */}
+                  <div style={{ marginBottom: 18 }}>
+                    <label
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 8
+                      }}
+                    >
+                      Dias Úteis
+                    </label>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((dia, i) => (
+                        <button
+                          key={dia}
+                          onClick={() => {
+                            setJpDiasUteis((d) => {
+                              const nd = [...d];
+                              nd[i] = !nd[i];
+                              const calc = calcJornadaEfetiva(
+                                jpForm.horaEntrada,
+                                jpForm.horaSaida,
+                                jpForm.almocoMinMin,
+                                nd
+                              );
+                              setJpForm((f) => ({ ...f, jornadaSemanalMin: calc.semanal }));
+                              return nd;
+                            });
+                          }}
+                          style={{
+                            padding: "7px 12px",
+                            borderRadius: "var(--radius-md)",
+                            border: `2px solid ${jpDiasUteis[i] ? "var(--burgundy-600)" : "rgba(122,30,38,0.14)"}`,
+                            background: jpDiasUteis[i] ? "rgba(122,30,38,0.08)" : "transparent",
+                            fontFamily: "var(--font-body)",
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: jpDiasUteis[i] ? "var(--burgundy-600)" : "var(--ink-500)",
+                            cursor: "pointer",
+                            transition: "all 140ms"
+                          }}
+                        >
+                          {dia}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "0 0 18px"
+                    }}
+                  />
+
+                  {/* Tipo de controle */}
+                  <p
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--burgundy-600)",
+                      marginBottom: 12
+                    }}
+                  >
+                    Tipo de Controle
+                  </p>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+                    {(
+                      [
+                        ["FIXO", "Fixo", "Horário rígido com tolerância"],
+                        ["ELASTICO", "Elástico", "Entrada variável, total de horas fixo"],
+                        ["BANCO_HORAS", "Banco de Horas", "Saldo acumulado e compensado"]
+                      ] as const
+                    ).map(([v, l, d]) => (
+                      <button
+                        key={v}
+                        onClick={() => setJpForm((f) => ({ ...f, tipoFlexibilidade: v }))}
+                        style={{
+                          flex: 1,
+                          minWidth: 100,
+                          padding: "10px 12px",
+                          borderRadius: "var(--radius-md)",
+                          border: `2px solid ${jpForm.tipoFlexibilidade === v ? "var(--burgundy-600)" : "rgba(122,30,38,0.12)"}`,
+                          background:
+                            jpForm.tipoFlexibilidade === v ? "rgba(122,30,38,0.06)" : "transparent",
+                          cursor: "pointer",
+                          textAlign: "left"
+                        }}
+                      >
+                        <p
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color:
+                              jpForm.tipoFlexibilidade === v
+                                ? "var(--burgundy-600)"
+                                : "var(--ink-700)",
+                            marginBottom: 2
+                          }}
+                        >
+                          {l}
+                        </p>
+                        <p style={{ fontSize: 11, color: "var(--ink-500)", lineHeight: 1.4 }}>
+                          {d}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "0 0 18px"
+                    }}
+                  />
+
+                  {/* Tolerâncias */}
+                  <p
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--burgundy-600)",
+                      marginBottom: 12
+                    }}
+                  >
+                    Tolerâncias (minutos)
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 14,
+                      marginBottom: 18
+                    }}
+                  >
+                    {(
+                      [
+                        ["toleranciaEntradaMin", "Tolerância Entrada"],
+                        ["toleranciaSaidaMin", "Tolerância Saída"],
+                        ["toleranciaHoraExtraMin", "Tolerância Hora Extra"],
+                        ["toleranciaCalculoMin", "Margem Cálculo"]
+                      ] as const
+                    ).map(([k, l]) => (
+                      <div key={k}>
+                        <label
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 5
+                          }}
+                        >
+                          {l}
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={60}
+                          value={jpForm[k]}
+                          onChange={(e) => setJpForm((f) => ({ ...f, [k]: +e.target.value }))}
+                          style={{
+                            width: "100%",
+                            padding: "9px 11px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            fontSize: 14,
+                            fontFamily: "var(--font-mono)",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "0 0 18px"
+                    }}
+                  />
+
+                  {/* Almoço — janela e validação */}
+                  <p
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--burgundy-600)",
+                      marginBottom: 12
+                    }}
+                  >
+                    Janela do Almoço
+                  </p>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      marginBottom: 12,
+                      lineHeight: 1.5
+                    }}
+                  >
+                    Define o horário em que o almoço pode começar e a duração máxima aceita.
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 14,
+                      marginBottom: 18
+                    }}
+                  >
+                    {(
+                      [
+                        ["almocoPodeIniciarA", "Pode Iniciar A Partir De"],
+                        ["almocoPodeIniciarAte", "Pode Iniciar Até"]
+                      ] as const
+                    ).map(([k, l]) => (
+                      <div key={k}>
+                        <label
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 5
+                          }}
+                        >
+                          {l}
+                        </label>
+                        <input
+                          type="time"
+                          value={jpForm[k]}
+                          onChange={(e) => setJpForm((f) => ({ ...f, [k]: e.target.value }))}
+                          style={{
+                            width: "100%",
+                            padding: "9px 11px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            fontSize: 14,
+                            fontFamily: "var(--font-mono)",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                    ))}
+                    <div>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 5
+                        }}
+                      >
+                        Duração Máxima (min)
+                      </label>
+                      <input
+                        type="number"
+                        min={30}
+                        max={180}
+                        value={jpForm.almocoMaxMin}
+                        onChange={(e) =>
+                          setJpForm((f) => ({ ...f, almocoMaxMin: +e.target.value }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "9px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <hr
+                    style={{
+                      border: "none",
+                      borderTop: "1px solid rgba(122,30,38,0.08)",
+                      margin: "0 0 18px"
+                    }}
+                  />
+
+                  {/* Banco de Horas / Hora Extra */}
+                  <p
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--burgundy-600)",
+                      marginBottom: 12
+                    }}
+                  >
+                    Banco de Horas & Hora Extra
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 14,
+                      marginBottom: 18
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 5
+                        }}
+                      >
+                        Limite do Banco (horas)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={jpForm.bancoHorasLimiteMin / 60}
+                        onChange={(e) =>
+                          setJpForm((f) => ({
+                            ...f,
+                            bancoHorasLimiteMin: Math.round(+e.target.value * 60)
+                          }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "9px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 5
+                        }}
+                      >
+                        Vigência (dias)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={jpForm.bancoHorasVigenciaDias}
+                        onChange={(e) =>
+                          setJpForm((f) => ({ ...f, bancoHorasVigenciaDias: +e.target.value }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "9px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 5
+                        }}
+                      >
+                        Limite Hora Extra (horas)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={8}
+                        step={0.5}
+                        value={jpForm.horaExtraLimiteAuto / 60}
+                        onChange={(e) =>
+                          setJpForm((f) => ({
+                            ...f,
+                            horaExtraLimiteAuto: Math.round(+e.target.value * 60)
+                          }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "9px 11px",
+                          borderRadius: "var(--radius-md)",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          boxSizing: "border-box"
+                        }}
+                      />
+                      <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                        Hora extra acima deste limite gera solicitação automática
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    padding: "16px 24px",
+                    borderTop: "1px solid rgba(122,30,38,0.08)",
+                    display: "flex",
+                    gap: 10,
+                    flexShrink: 0
+                  }}
+                >
+                  <button
+                    className="btn btn-primary"
+                    onClick={salvarJornada}
+                    disabled={!jpForm.nome.trim()}
+                    style={{ flex: 1, opacity: jpForm.nome.trim() ? 1 : 0.5 }}
+                  >
+                    {jpEditando ? "Salvar Alterações" : "Criar Jornada"}
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setJpModal(false)}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── Configuração Global (Fallback) ── */}
+          <Secao titulo="Configuração Global (Fallback)" icon={<SettingsIcon size={18} />}>
             <div
-              style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}
+              style={{
+                marginBottom: 14,
+                padding: "10px 14px",
+                background: "rgba(37,99,235,0.05)",
+                border: "1px solid rgba(37,99,235,0.15)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 12.5,
+                color: "#1e40af",
+                lineHeight: 1.6
+              }}
+            >
+              Estes parâmetros são usados como <strong>fallback do sistema</strong> quando nenhuma
+              Jornada de Trabalho está definida como padrão nem atribuída ao funcionário.
+              Mantenha-os atualizados.
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 14,
+                marginBottom: 14
+              }}
             >
               <div>
                 <label
@@ -1770,7 +3165,23 @@ export function ConfiguracoesPage() {
                 <input
                   type="time"
                   value={periodos.horaEntrada}
-                  onChange={(e) => setPeriodos((p) => ({ ...p, horaEntrada: e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodos((p) => {
+                      if (!p) return p;
+                      const calc = calcJornadaEfetiva(
+                        e.target.value,
+                        p.horaSaida,
+                        p.almocoMinMin,
+                        p.diasUteis
+                      );
+                      return {
+                        ...p,
+                        horaEntrada: e.target.value,
+                        jornadaDiariaMin: calc.diaria,
+                        jornadaSemanalMin: calc.semanal
+                      };
+                    })
+                  }
                   style={{
                     width: "100%",
                     padding: "9px 11px",
@@ -1799,7 +3210,23 @@ export function ConfiguracoesPage() {
                 <input
                   type="time"
                   value={periodos.horaSaida}
-                  onChange={(e) => setPeriodos((p) => ({ ...p, horaSaida: e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodos((p) => {
+                      if (!p) return p;
+                      const calc = calcJornadaEfetiva(
+                        p.horaEntrada,
+                        e.target.value,
+                        p.almocoMinMin,
+                        p.diasUteis
+                      );
+                      return {
+                        ...p,
+                        horaSaida: e.target.value,
+                        jornadaDiariaMin: calc.diaria,
+                        jornadaSemanalMin: calc.semanal
+                      };
+                    })
+                  }
                   style={{
                     width: "100%",
                     padding: "9px 11px",
@@ -1811,7 +3238,134 @@ export function ConfiguracoesPage() {
                   }}
                 />
               </div>
+              <div>
+                <label
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 5
+                  }}
+                >
+                  Duração do Almoço (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={periodos.almocoMinMin}
+                  onChange={(e) =>
+                    setPeriodos((p) => {
+                      if (!p) return p;
+                      const almoco = +e.target.value;
+                      const calc = calcJornadaEfetiva(
+                        p.horaEntrada,
+                        p.horaSaida,
+                        almoco,
+                        p.diasUteis
+                      );
+                      return {
+                        ...p,
+                        almocoMinMin: almoco,
+                        jornadaDiariaMin: calc.diaria,
+                        jornadaSemanalMin: calc.semanal
+                      };
+                    })
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "9px 11px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)",
+                    boxSizing: "border-box" as const
+                  }}
+                />
+                <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                  Subtrai do total do expediente
+                </p>
+              </div>
             </div>
+
+            {/* Resumo em tempo real */}
+            {(() => {
+              const d = periodos.jornadaDiariaMin;
+              const s = periodos.jornadaSemanalMin;
+              return (
+                <div
+                  style={{
+                    marginBottom: 16,
+                    padding: "10px 14px",
+                    background: "rgba(47,125,79,0.07)",
+                    border: "1px solid rgba(47,125,79,0.18)",
+                    borderRadius: "var(--radius-md)",
+                    display: "flex",
+                    gap: 24,
+                    flexWrap: "wrap",
+                    alignItems: "center"
+                  }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "var(--green)",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                        margin: "0 0 2px"
+                      }}
+                    >
+                      Jornada Diária
+                    </p>
+                    <p
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 17,
+                        fontWeight: 700,
+                        color: "var(--green)",
+                        margin: 0
+                      }}
+                    >
+                      {Math.floor(d / 60)}h{d % 60 > 0 ? String(d % 60).padStart(2, "0") : ""}
+                    </p>
+                  </div>
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: "var(--green)",
+                        textTransform: "uppercase",
+                        letterSpacing: "0.06em",
+                        margin: "0 0 2px"
+                      }}
+                    >
+                      Jornada Semanal
+                    </p>
+                    <p
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 17,
+                        fontWeight: 700,
+                        color: "var(--green)",
+                        margin: 0
+                      }}
+                    >
+                      {Math.floor(s / 60)}h{s % 60 > 0 ? String(s % 60).padStart(2, "0") : ""}
+                    </p>
+                  </div>
+                  <p style={{ fontSize: 11.5, color: "var(--green)", margin: 0 }}>
+                    {periodos.horaEntrada} → {periodos.horaSaida} − {periodos.almocoMinMin}min
+                    almoço
+                  </p>
+                </div>
+              );
+            })()}
 
             <div
               style={{
@@ -1919,9 +3473,16 @@ export function ConfiguracoesPage() {
                     key={dia}
                     onClick={() =>
                       setPeriodos((p) => {
+                        if (!p) return p;
                         const d = [...p.diasUteis];
                         d[i] = !d[i];
-                        return { ...p, diasUteis: d };
+                        const calc = calcJornadaEfetiva(
+                          p.horaEntrada,
+                          p.horaSaida,
+                          p.almocoMinMin,
+                          d
+                        );
+                        return { ...p, diasUteis: d, jornadaSemanalMin: calc.semanal };
                       })
                     }
                     style={{
@@ -1941,58 +3502,6 @@ export function ConfiguracoesPage() {
                   </button>
                 ))}
               </div>
-            </div>
-
-            {/* Resumo da jornada */}
-            <div
-              style={{
-                background: "var(--cream-50)",
-                borderRadius: "var(--radius-md)",
-                padding: "12px 14px",
-                display: "flex",
-                gap: 20,
-                flexWrap: "wrap"
-              }}
-            >
-              {[
-                {
-                  label: "Jornada Diária",
-                  value: `${Math.floor(periodos.jornadaDiariaMin / 60)}h${String(periodos.jornadaDiariaMin % 60).padStart(2, "0")}min`
-                },
-                {
-                  label: "Jornada Semanal",
-                  value: `${Math.floor(periodos.jornadaSemanalMin / 60)}h`
-                },
-                {
-                  label: "Dias úteis/semana",
-                  value: `${periodos.diasUteis.filter(Boolean).length} dias`
-                }
-              ].map((s) => (
-                <div key={s.label}>
-                  <p
-                    style={{
-                      fontSize: 10.5,
-                      fontWeight: 600,
-                      color: "var(--ink-500)",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em"
-                    }}
-                  >
-                    {s.label}
-                  </p>
-                  <p
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 16,
-                      fontWeight: 700,
-                      color: "var(--burgundy-600)",
-                      marginTop: 2
-                    }}
-                  >
-                    {s.value}
-                  </p>
-                </div>
-              ))}
             </div>
           </Secao>
 
@@ -2026,7 +3535,7 @@ export function ConfiguracoesPage() {
                   max={60}
                   value={periodos.toleranciaEntradaMin}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, toleranciaEntradaMin: +e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { toleranciaEntradaMin: +e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2064,7 +3573,7 @@ export function ConfiguracoesPage() {
                   max={60}
                   value={periodos.toleranciaSaidaMin}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, toleranciaSaidaMin: +e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { toleranciaSaidaMin: +e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2102,7 +3611,9 @@ export function ConfiguracoesPage() {
                   max={60}
                   value={periodos.toleranciaHoraExtraMin}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, toleranciaHoraExtraMin: +e.target.value }))
+                    setPeriodos((p) =>
+                      patchPeriodos(p, { toleranciaHoraExtraMin: +e.target.value })
+                    )
                   }
                   style={{
                     width: "100%",
@@ -2118,6 +3629,47 @@ export function ConfiguracoesPage() {
                   Permanência além do horário até este limite{" "}
                   <strong>não é computada como hora extra</strong>. Ex: 10 min → saída até 17:10 não
                   gera crédito
+                </p>
+              </div>
+              {/* Limite para solicitação automática de hora extra */}
+              <div>
+                <label
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 5
+                  }}
+                >
+                  Limite para Solicitação de Hora Extra (horas)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={8}
+                  step={0.5}
+                  value={periodos.horaExtraLimiteAuto / 60}
+                  onChange={(e) =>
+                    setPeriodos((p) =>
+                      patchPeriodos(p, { horaExtraLimiteAuto: Math.round(+e.target.value * 60) })
+                    )
+                  }
+                  style={{
+                    width: "100%",
+                    padding: "9px 11px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)",
+                    boxSizing: "border-box" as const
+                  }}
+                />
+                <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                  Hora extra além deste limite gera <strong>solicitação automática</strong> de
+                  aprovação pelo gestor e RH. Abaixo do limite, vai direto para o banco de horas.
                 </p>
               </div>
               {/* Margem geral do cálculo diário */}
@@ -2141,7 +3693,7 @@ export function ConfiguracoesPage() {
                   max={30}
                   value={periodos.toleranciaCalculoMin}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, toleranciaCalculoMin: +e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { toleranciaCalculoMin: +e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2280,7 +3832,7 @@ export function ConfiguracoesPage() {
                 ).map(([v, l, d]) => (
                   <button
                     key={v}
-                    onClick={() => setPeriodos((p) => ({ ...p, tipoFlexibilidade: v }))}
+                    onClick={() => setPeriodos((p) => patchPeriodos(p, { tipoFlexibilidade: v }))}
                     style={{
                       flex: 1,
                       minWidth: 100,
@@ -2335,7 +3887,9 @@ export function ConfiguracoesPage() {
                     min={0}
                     value={Math.floor(periodos.bancoHorasLimiteMin / 60)}
                     onChange={(e) =>
-                      setPeriodos((p) => ({ ...p, bancoHorasLimiteMin: +e.target.value * 60 }))
+                      setPeriodos((p) =>
+                        patchPeriodos(p, { bancoHorasLimiteMin: +e.target.value * 60 })
+                      )
                     }
                     style={{
                       width: "100%",
@@ -2367,7 +3921,9 @@ export function ConfiguracoesPage() {
                     min={1}
                     value={periodos.bancoHorasVigenciaDias}
                     onChange={(e) =>
-                      setPeriodos((p) => ({ ...p, bancoHorasVigenciaDias: +e.target.value }))
+                      setPeriodos((p) =>
+                        patchPeriodos(p, { bancoHorasVigenciaDias: +e.target.value })
+                      )
                     }
                     style={{
                       width: "100%",
@@ -2379,6 +3935,151 @@ export function ConfiguracoesPage() {
                       boxSizing: "border-box" as const
                     }}
                   />
+                </div>
+              </div>
+            )}
+
+            {periodos.tipoFlexibilidade === "BANCO_HORAS" && (
+              <div style={{ marginTop: 20 }}>
+                <p
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-500)",
+                    marginBottom: 10,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase"
+                  }}
+                >
+                  Datas Marco (zeram o Banco de Horas)
+                </p>
+                <p
+                  style={{
+                    fontSize: 13,
+                    color: "var(--ink-500)",
+                    marginBottom: 14,
+                    lineHeight: 1.6
+                  }}
+                >
+                  Nas datas configuradas abaixo, o ciclo do banco de horas é encerrado e um novo
+                  ciclo é iniciado no dia seguinte (saldo zera para todos os funcionários).
+                </p>
+
+                {/* Lista */}
+                <div style={{ marginBottom: 16 }}>
+                  {marcosBancoHoras.length === 0 && (
+                    <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 8 }}>
+                      Nenhuma data marco configurada.
+                    </p>
+                  )}
+                  {marcosBancoHoras.map((m) => (
+                    <div
+                      key={m.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "10px 14px",
+                        background: "var(--cream-50)",
+                        border: "1px solid rgba(122,30,38,0.08)",
+                        borderRadius: "var(--radius-md)",
+                        marginBottom: 8
+                      }}
+                    >
+                      <CalendarIcon size={16} style={{ color: "var(--burgundy-600)" }} />
+                      <div style={{ flex: 1 }}>
+                        <p style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>
+                          {new Date(`${m.data}T00:00:00`).toLocaleDateString("pt-BR")}
+                        </p>
+                        {m.descricao && (
+                          <p style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 2 }}>
+                            {m.descricao}
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => removeMarcoBancoHoras(m.id)}
+                        style={{
+                          padding: 6,
+                          border: "1px solid rgba(200,57,63,0.20)",
+                          borderRadius: "var(--radius-sm)",
+                          background: "transparent",
+                          cursor: "pointer",
+                          color: "var(--red)",
+                          display: "flex"
+                        }}
+                      >
+                        <Trash2Icon size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Adicionar data marco */}
+                <div
+                  style={{
+                    background: "var(--cream-50)",
+                    borderRadius: "var(--radius-md)",
+                    padding: "14px",
+                    border: "1px dashed rgba(122,30,38,0.20)"
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--ink-500)",
+                      marginBottom: 10,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase"
+                    }}
+                  >
+                    Adicionar data marco
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 2fr",
+                      gap: 10,
+                      marginBottom: 10
+                    }}
+                  >
+                    <input
+                      type="date"
+                      value={novoMarco.data}
+                      onChange={(e) => setNovoMarco((p) => ({ ...p, data: e.target.value }))}
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        background: "#fff",
+                        fontSize: 13,
+                        fontFamily: "var(--font-body)",
+                        outline: "none"
+                      }}
+                    />
+                    <input
+                      value={novoMarco.descricao}
+                      onChange={(e) => setNovoMarco((p) => ({ ...p, descricao: e.target.value }))}
+                      placeholder="Descrição (opcional)"
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        background: "#fff",
+                        fontSize: 13,
+                        fontFamily: "var(--font-body)",
+                        outline: "none"
+                      }}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={addMarcoBancoHoras}
+                    style={{ gap: 6, fontSize: 13, padding: "7px 14px" }}
+                  >
+                    <PlusIcon size={14} /> Adicionar
+                  </button>
                 </div>
               </div>
             )}
@@ -2411,7 +4112,7 @@ export function ConfiguracoesPage() {
                   type="time"
                   value={periodos.almocoPodeIniciarA}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, almocoPodeIniciarA: e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { almocoPodeIniciarA: e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2442,7 +4143,7 @@ export function ConfiguracoesPage() {
                   type="time"
                   value={periodos.almocoPodeIniciarAte}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, almocoPodeIniciarAte: e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { almocoPodeIniciarAte: e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2474,7 +4175,9 @@ export function ConfiguracoesPage() {
                   min={30}
                   max={120}
                   value={periodos.almocoMinMin}
-                  onChange={(e) => setPeriodos((p) => ({ ...p, almocoMinMin: +e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodos((p) => patchPeriodos(p, { almocoMinMin: +e.target.value }))
+                  }
                   style={{
                     width: "100%",
                     padding: "9px 11px",
@@ -2505,7 +4208,9 @@ export function ConfiguracoesPage() {
                   min={30}
                   max={180}
                   value={periodos.almocoMaxMin}
-                  onChange={(e) => setPeriodos((p) => ({ ...p, almocoMaxMin: +e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodos((p) => patchPeriodos(p, { almocoMaxMin: +e.target.value }))
+                  }
                   style={{
                     width: "100%",
                     padding: "9px 11px",
@@ -2564,7 +4269,7 @@ export function ConfiguracoesPage() {
                   max={5}
                   value={periodos.hibridoMaxDiasSemana}
                   onChange={(e) =>
-                    setPeriodos((p) => ({ ...p, hibridoMaxDiasSemana: +e.target.value }))
+                    setPeriodos((p) => patchPeriodos(p, { hibridoMaxDiasSemana: +e.target.value }))
                   }
                   style={{
                     width: "100%",
@@ -2580,7 +4285,7 @@ export function ConfiguracoesPage() {
             </div>
             <Toggle
               value={periodos.hibridoExigeAprovacao}
-              onChange={(v) => setPeriodos((p) => ({ ...p, hibridoExigeAprovacao: v }))}
+              onChange={(v) => setPeriodos((p) => patchPeriodos(p, { hibridoExigeAprovacao: v }))}
               label="Exigir aprovação prévia do gestor"
               desc="O funcionário deve ter o dia híbrido aprovado antes de registrar o ponto de casa"
             />
@@ -2613,7 +4318,7 @@ export function ConfiguracoesPage() {
                 max={480}
                 value={periodos.viagemJanelaMinutos}
                 onChange={(e) =>
-                  setPeriodos((p) => ({ ...p, viagemJanelaMinutos: +e.target.value }))
+                  setPeriodos((p) => patchPeriodos(p, { viagemJanelaMinutos: +e.target.value }))
                 }
                 style={{
                   width: "100%",
@@ -2632,7 +4337,7 @@ export function ConfiguracoesPage() {
             </div>
             <Toggle
               value={periodos.viagemExigeAprovacao}
-              onChange={(v) => setPeriodos((p) => ({ ...p, viagemExigeAprovacao: v }))}
+              onChange={(v) => setPeriodos((p) => patchPeriodos(p, { viagemExigeAprovacao: v }))}
               label="Exigir aprovação prévia de viagem"
               desc="O gestor deve autorizar o modo viagem antes do registro ser aceito"
             />
@@ -2643,6 +4348,128 @@ export function ConfiguracoesPage() {
       {/* ═══════ TAB: SOLICITAÇÕES ═══════ */}
       {tab === "solicitacoes" && configSol && (
         <>
+          {/* ── Tipos ativos ── */}
+          <Secao titulo="Tipos de Solicitação Disponíveis" icon={<CheckCircleIcon size={18} />}>
+            <p
+              style={{
+                fontSize: 12.5,
+                color: "var(--ink-500)",
+                margin: "0 0 16px",
+                lineHeight: 1.5
+              }}
+            >
+              Tipos desativados não aparecem como opção para os funcionários ao abrir uma nova
+              solicitação.
+            </p>
+            {(
+              [
+                {
+                  key: "tipoAtivoCorrecaoPonto",
+                  emoji: "🕐",
+                  label: "Correção de Ponto",
+                  desc: "Ajuste ou inclusão de registros de ponto"
+                },
+                {
+                  key: "tipoAtivoAtestado",
+                  emoji: "🏥",
+                  label: "Atestado Médico",
+                  desc: "Afastamento por doença com documento médico"
+                },
+                {
+                  key: "tipoAtivoFerias",
+                  emoji: "🌴",
+                  label: "Férias",
+                  desc: "Solicitação de período de férias"
+                },
+                {
+                  key: "tipoAtivoLicenca",
+                  emoji: "📋",
+                  label: "Licença",
+                  desc: "Licença de qualquer natureza"
+                },
+                {
+                  key: "tipoAtivoAbono",
+                  emoji: "📆",
+                  label: "Abono",
+                  desc: "Abono de falta passada ou futura"
+                },
+                {
+                  key: "tipoAtivoDayOff",
+                  emoji: "🎂",
+                  label: "Day Off de Aniversário",
+                  desc: "Um dia de folga no mês do aniversário"
+                },
+                {
+                  key: "tipoAtivoHoraExtra",
+                  emoji: "⏱️",
+                  label: "Hora Extra",
+                  desc: "Solicitação antecipada de hora extra (≥ limite configurado) — aprovação do gestor e RH"
+                }
+              ] as { key: keyof ConfigSolicitacoes; emoji: string; label: string; desc: string }[]
+            ).map(({ key, emoji, label, desc }) => (
+              <div
+                key={key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "12px 0",
+                  borderBottom: "1px solid rgba(122,30,38,0.06)"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 22, lineHeight: 1 }}>{emoji}</span>
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: "var(--ink-900)",
+                        margin: 0
+                      }}
+                    >
+                      {label}
+                    </p>
+                    <p style={{ fontSize: 12, color: "var(--ink-500)", margin: "2px 0 0" }}>
+                      {desc}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setConfigSol((c) => (c ? { ...c, [key]: !c[key] } : c))}
+                  style={{
+                    width: 44,
+                    height: 24,
+                    borderRadius: 12,
+                    border: "none",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                    background: (configSol[key] as boolean)
+                      ? "var(--burgundy-600)"
+                      : "rgba(122,30,38,0.15)",
+                    position: "relative",
+                    transition: "background 200ms"
+                  }}
+                >
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: 3,
+                      left: (configSol[key] as boolean) ? 22 : 3,
+                      width: 18,
+                      height: 18,
+                      borderRadius: "50%",
+                      background: "#fff",
+                      transition: "left 200ms",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.25)"
+                    }}
+                  />
+                </button>
+              </div>
+            ))}
+          </Secao>
+
           {/* ── Regras de Atestado ── */}
           <Secao titulo="Regras de Atestado Médico" icon={<AlertCircleIcon size={18} />}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -2715,71 +4542,6 @@ export function ConfiguracoesPage() {
                     fontFamily: "var(--font-mono)"
                   }}
                 />
-              </div>
-            </div>
-
-            <div style={{ marginTop: 16 }}>
-              <label
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: "var(--ink-700)",
-                  display: "block",
-                  marginBottom: 4
-                }}
-              >
-                Guia do Médico do Trabalho (PDF)
-              </label>
-              <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 8px" }}>
-                Modelo PDF exibido para atestados entre {configSol.atestadoDiasLimiteSimples + 1} e{" "}
-                {configSol.atestadoDiasLimiteInss - 1} dias
-              </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  id="guia-upload"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = (ev) => setGuiaBase64(ev.target?.result as string);
-                    reader.readAsDataURL(file);
-                  }}
-                />
-                <label
-                  htmlFor="guia-upload"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "8px 14px",
-                    border: "1px solid rgba(122,30,38,0.22)",
-                    borderRadius: "var(--radius-md)",
-                    cursor: "pointer",
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    color: "var(--burgundy-600)",
-                    background: "#fff"
-                  }}
-                >
-                  📎 {guiaBase64 ? "PDF selecionado (salvar para enviar)" : "Selecionar PDF"}
-                </label>
-                {configSol.atestadoGuiaUrl && (
-                  <a
-                    href={configSol.atestadoGuiaUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      fontSize: 12.5,
-                      color: "var(--burgundy-600)",
-                      textDecoration: "underline"
-                    }}
-                  >
-                    Ver guia atual
-                  </a>
-                )}
               </div>
             </div>
 
@@ -2884,7 +4646,801 @@ export function ConfiguracoesPage() {
               ))}
             </div>
           </Secao>
+
+          {/* ── Banco de Horas — Fins de Semana e Feriados ── */}
+          <Secao
+            titulo="Banco de Horas — Fins de Semana e Feriados"
+            icon={<SettingsIcon size={18} />}
+          >
+            <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 20, lineHeight: 1.6 }}>
+              Define o multiplicador aplicado ao banco de horas quando o funcionário trabalha em
+              fins de semana ou feriados. 100% = banco normal (1 h trabalhada = 1 h no banco). 200%
+              = hora em dobro (1 h = 2 h). Conforme acordo coletivo.
+            </p>
+            {periodos && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                  gap: 20
+                }}
+              >
+                {(
+                  [
+                    [
+                      "bancoHorasSabadoPct",
+                      "Sábado (%)",
+                      "100%  = banco normal  |  200% = hora em dobro"
+                    ],
+                    ["bancoHorasDomingoPct", "Domingo (%)", "200% padrão (hora em dobro)"],
+                    ["bancoHorasFeriadoPct", "Feriados (%)", "200% padrão (hora em dobro)"]
+                  ] as const
+                ).map(([campo, label, dica]) => (
+                  <div key={campo}>
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--ink-700)",
+                        marginBottom: 4
+                      }}
+                    >
+                      {label}
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="number"
+                        min={100}
+                        max={500}
+                        step={10}
+                        value={
+                          (periodos[campo as keyof typeof periodos] as number) ??
+                          (campo === "bancoHorasSabadoPct" ? 100 : 200)
+                        }
+                        onChange={(e) => {
+                          const v = Math.max(100, Math.min(500, parseInt(e.target.value) || 100));
+                          setPeriodos((p) => (p ? { ...p, [campo]: v } : p));
+                        }}
+                        style={{
+                          width: 90,
+                          padding: "8px 10px",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: 14,
+                          fontFamily: "var(--font-mono)",
+                          textAlign: "right"
+                        }}
+                      />
+                      <span style={{ fontSize: 12, color: "var(--ink-500)" }}>{dica}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: 20 }}>
+              <button
+                className="btn btn-primary"
+                onClick={async () => {
+                  if (!periodos) return;
+                  try {
+                    await api.put("/ponto/config/sistema", {
+                      bancoHorasSabadoPct: periodos.bancoHorasSabadoPct,
+                      bancoHorasDomingoPct: periodos.bancoHorasDomingoPct,
+                      bancoHorasFeriadoPct: periodos.bancoHorasFeriadoPct
+                    });
+                    alert("Multiplicadores salvos com sucesso.");
+                  } catch (e) {
+                    alert("Erro ao salvar: " + (e as Error).message);
+                  }
+                }}
+              >
+                Salvar Multiplicadores
+              </button>
+            </div>
+          </Secao>
         </>
+      )}
+
+      {/* ═══════ TAB: FERIADOS ═══════ */}
+      {tab === "feriados" &&
+        (() => {
+          const diasNoMes = new Date(feriadosAno, feriadosMes + 1, 0).getDate();
+          const primeiroDia = new Date(Date.UTC(feriadosAno, feriadosMes, 1)).getUTCDay(); // 0=Dom
+          const celulas = primeiroDia + diasNoMes;
+          const semanas = Math.ceil(celulas / 7);
+          const feriadosMesAtual = feriadoDoMes();
+
+          return (
+            <>
+              {/* Cabeçalho do calendário: navegação */}
+              <Secao titulo="Calendário de Feriados" icon={<CalendarIcon size={18} />}>
+                {/* Navegação mês/ano */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginBottom: 16,
+                    flexWrap: "wrap"
+                  }}
+                >
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => navMes(-1)}
+                    style={{ padding: "6px 10px" }}
+                  >
+                    <ArrowLeftIcon size={15} />
+                  </button>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: 15,
+                      color: "var(--ink-900)",
+                      minWidth: 160,
+                      textAlign: "center"
+                    }}
+                  >
+                    {MESES_PT[feriadosMes]} {feriadosAno}
+                  </span>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => navMes(1)}
+                    style={{ padding: "6px 10px" }}
+                  >
+                    <ArrowRightIcon size={15} />
+                  </button>
+                  <select
+                    value={feriadosAno}
+                    onChange={(e) => setFeriadosAno(parseInt(e.target.value))}
+                    style={{
+                      marginLeft: 8,
+                      padding: "5px 8px",
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      fontSize: 13,
+                      background: "#fff"
+                    }}
+                  >
+                    {Array.from({ length: 10 }, (_, i) => hoje.getFullYear() - 3 + i).map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => abrirModalDia(new Date().getDate(), null)}
+                    style={{ gap: 6 }}
+                  >
+                    <PlusIcon size={14} />
+                    Adicionar
+                  </button>
+                </div>
+
+                {feriadosLoading ? (
+                  <p
+                    style={{
+                      fontSize: 13,
+                      color: "var(--ink-500)",
+                      textAlign: "center",
+                      padding: 32
+                    }}
+                  >
+                    Carregando feriados…
+                  </p>
+                ) : (
+                  <>
+                    {/* Grade do calendário */}
+                    <div style={{ overflowX: "auto" }}>
+                      <div style={{ minWidth: 280 }}>
+                        {/* Cabeçalho dias da semana */}
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "repeat(7,1fr)",
+                            gap: 2,
+                            marginBottom: 4
+                          }}
+                        >
+                          {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((d) => (
+                            <div
+                              key={d}
+                              style={{
+                                textAlign: "center",
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: "var(--ink-400)",
+                                padding: "4px 0",
+                                letterSpacing: "0.04em"
+                              }}
+                            >
+                              {d}
+                            </div>
+                          ))}
+                        </div>
+                        {/* Semanas */}
+                        {Array.from({ length: semanas }, (_, s) => (
+                          <div
+                            key={s}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(7,1fr)",
+                              gap: 2,
+                              marginBottom: 2
+                            }}
+                          >
+                            {Array.from({ length: 7 }, (_, dow) => {
+                              const idx = s * 7 + dow;
+                              const dia = idx - primeiroDia + 1;
+                              if (dia < 1 || dia > diasNoMes) {
+                                return (
+                                  <div
+                                    key={dow}
+                                    style={{ aspectRatio: "1", borderRadius: "var(--radius-md)" }}
+                                  />
+                                );
+                              }
+                              const feriado = feriadoPorDia(dia);
+                              const isBloq = feriado?.bloqueiaRegistro;
+                              const cor = feriado
+                                ? (TIPO_COR[feriado.tipo] ?? "#7c3aed")
+                                : undefined;
+                              const ehHoje =
+                                dia === hoje.getDate() &&
+                                feriadosMes === hoje.getMonth() &&
+                                feriadosAno === hoje.getFullYear();
+
+                              const tituloCell = feriado
+                                ? `${feriado.nome} — ${isBloq ? "Bloqueado (clique para editar)" : "Liberado (clique para editar)"}`
+                                : "Clique para adicionar feriado ou bloqueio neste dia";
+
+                              return (
+                                <div
+                                  key={dow}
+                                  title={tituloCell}
+                                  onClick={() => abrirModalDia(dia, feriado ?? null)}
+                                  style={{
+                                    aspectRatio: "1",
+                                    borderRadius: "var(--radius-md)",
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    cursor: "pointer",
+                                    background: feriado
+                                      ? isBloq
+                                        ? cor
+                                        : `${cor}22`
+                                      : ehHoje
+                                        ? "var(--cream-100)"
+                                        : "transparent",
+                                    border: ehHoje
+                                      ? "1.5px solid var(--burgundy-300)"
+                                      : "1.5px solid transparent",
+                                    transition: "all 120ms",
+                                    position: "relative"
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (!feriado)
+                                      (e.currentTarget as HTMLDivElement).style.background =
+                                        "rgba(122,30,38,0.06)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (!feriado && !ehHoje)
+                                      (e.currentTarget as HTMLDivElement).style.background =
+                                        "transparent";
+                                    if (!feriado && ehHoje)
+                                      (e.currentTarget as HTMLDivElement).style.background =
+                                        "var(--cream-100)";
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 13,
+                                      fontWeight: feriado || ehHoje ? 700 : 400,
+                                      color: feriado
+                                        ? isBloq
+                                          ? "#fff"
+                                          : cor
+                                        : ehHoje
+                                          ? "var(--burgundy-700)"
+                                          : "var(--ink-700)"
+                                    }}
+                                  >
+                                    {dia}
+                                  </span>
+                                  {feriado && (
+                                    <span
+                                      style={{
+                                        fontSize: 7,
+                                        marginTop: 1,
+                                        color: isBloq ? "rgba(255,255,255,0.85)" : cor
+                                      }}
+                                    >
+                                      {isBloq ? "●" : "○"}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Legenda */}
+                    <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
+                      {Object.entries(TIPO_COR).map(([tipo, cor]) => (
+                        <div key={tipo} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span
+                            style={{
+                              width: 10,
+                              height: 10,
+                              borderRadius: "50%",
+                              background: cor,
+                              display: "inline-block"
+                            }}
+                          />
+                          <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                            {TIPO_LABEL_F[tipo]}
+                          </span>
+                        </div>
+                      ))}
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                          ● bloqueado &nbsp; ○ liberado
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </Secao>
+
+              {/* Lista de feriados do mês */}
+              <Secao
+                titulo={`Feriados — ${MESES_PT[feriadosMes]} ${feriadosAno}`}
+                icon={<AlertCircleIcon size={18} />}
+              >
+                {feriadosMesAtual.length === 0 ? (
+                  <p
+                    style={{
+                      fontSize: 13,
+                      color: "var(--ink-400)",
+                      textAlign: "center",
+                      padding: "20px 0"
+                    }}
+                  >
+                    Nenhum feriado cadastrado para este mês.
+                  </p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                    {feriadosMesAtual.map((f) => {
+                      const d = new Date(f.data);
+                      const dd = String(d.getUTCDate()).padStart(2, "0");
+                      const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+                      const cor = TIPO_COR[f.tipo] ?? "#7c3aed";
+                      return (
+                        <div
+                          key={f.id}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 12,
+                            padding: "10px 0",
+                            borderBottom: "1px solid rgba(122,30,38,0.06)"
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: cor,
+                              minWidth: 42,
+                              fontFamily: "var(--font-mono)"
+                            }}
+                          >
+                            {dd}/{mm}
+                          </span>
+                          <span
+                            style={{
+                              flex: 1,
+                              fontSize: 13.5,
+                              color: "var(--ink-900)",
+                              fontWeight: 500
+                            }}
+                          >
+                            {f.nome}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              padding: "2px 7px",
+                              borderRadius: 20,
+                              background: `${cor}18`,
+                              color: cor,
+                              fontWeight: 600
+                            }}
+                          >
+                            {TIPO_LABEL_F[f.tipo] ?? f.tipo}
+                          </span>
+                          <button
+                            onClick={() => toggleFeriadoBloqueio(f)}
+                            title={
+                              f.bloqueiaRegistro
+                                ? "Clique para liberar o registro de ponto"
+                                : "Clique para bloquear o registro de ponto"
+                            }
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "var(--radius-md)",
+                              border: `1.5px solid ${f.bloqueiaRegistro ? "#b91c1c" : "#15803d"}`,
+                              background: f.bloqueiaRegistro ? "#fef2f2" : "#f0fdf4",
+                              color: f.bloqueiaRegistro ? "#b91c1c" : "#15803d",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer"
+                            }}
+                          >
+                            {f.bloqueiaRegistro ? "Bloqueado" : "Liberado"}
+                          </button>
+                          <button
+                            onClick={() => deletarFeriado(f.id)}
+                            title="Remover feriado"
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              color: "var(--ink-400)",
+                              padding: 4,
+                              display: "flex",
+                              alignItems: "center"
+                            }}
+                          >
+                            <Trash2Icon size={14} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Secao>
+            </>
+          );
+        })()}
+
+      {/* Modal: adicionar / editar feriado */}
+      {feriadoModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9000,
+            padding: 16
+          }}
+          onClick={() => {
+            setFeriadoModal(false);
+            setEditandoFeriado(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "var(--radius-lg)",
+              padding: 24,
+              width: "100%",
+              maxWidth: 440,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.18)"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Cabeçalho */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 6
+              }}
+            >
+              <h3
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontStyle: "italic",
+                  fontSize: 18,
+                  color: "var(--burgundy-600)",
+                  fontWeight: 400
+                }}
+              >
+                {editandoFeriado ? "Editar Feriado" : "Adicionar Feriado"}
+              </h3>
+              <button
+                onClick={() => {
+                  setFeriadoModal(false);
+                  setEditandoFeriado(null);
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--ink-400)"
+                }}
+              >
+                <XIcon size={18} />
+              </button>
+            </div>
+            {/* Data selecionada */}
+            {feriadoForm.data && (
+              <p style={{ fontSize: 12.5, color: "var(--ink-500)", marginBottom: 18 }}>
+                {new Date(`${feriadoForm.data}T12:00:00`).toLocaleDateString("pt-BR", {
+                  weekday: "long",
+                  day: "2-digit",
+                  month: "long",
+                  year: "numeric"
+                })}
+              </p>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {/* Data — só aparece no modo criar */}
+              {!editandoFeriado && (
+                <div>
+                  <label
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "var(--ink-500)",
+                      display: "block",
+                      marginBottom: 5
+                    }}
+                  >
+                    Data
+                  </label>
+                  <input
+                    type="date"
+                    value={feriadoForm.data}
+                    onChange={(e) => setFeriadoForm((f) => ({ ...f, data: e.target.value }))}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: 13.5,
+                      boxSizing: "border-box" as const
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Nome */}
+              <div>
+                <label
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 5
+                  }}
+                >
+                  Nome *
+                </label>
+                <input
+                  type="text"
+                  value={feriadoForm.nome}
+                  onChange={(e) => setFeriadoForm((f) => ({ ...f, nome: e.target.value }))}
+                  placeholder="Ex: Aniversário da cidade"
+                  autoFocus
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 13.5,
+                    boxSizing: "border-box" as const
+                  }}
+                />
+              </div>
+
+              {/* Tipo */}
+              <div>
+                <label
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 5
+                  }}
+                >
+                  Tipo
+                </label>
+                <select
+                  value={feriadoForm.tipo}
+                  onChange={(e) => setFeriadoForm((f) => ({ ...f, tipo: e.target.value }))}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 13.5,
+                    background: "#fff",
+                    boxSizing: "border-box" as const
+                  }}
+                >
+                  <option value="NACIONAL">Nacional</option>
+                  <option value="DISTRITAL">Distrital (DF)</option>
+                  <option value="FACULTATIVO">Facultativo</option>
+                  <option value="MANUAL">Manual</option>
+                </select>
+              </div>
+
+              {/* Bloqueio de registro */}
+              <div
+                style={{
+                  background: feriadoForm.bloqueiaRegistro
+                    ? "rgba(185,28,28,0.05)"
+                    : "rgba(21,128,61,0.05)",
+                  border: `1px solid ${feriadoForm.bloqueiaRegistro ? "rgba(185,28,28,0.18)" : "rgba(21,128,61,0.18)"}`,
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px"
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12
+                  }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: feriadoForm.bloqueiaRegistro ? "#b91c1c" : "#15803d",
+                        margin: 0
+                      }}
+                    >
+                      {feriadoForm.bloqueiaRegistro
+                        ? "🔒 Registro bloqueado"
+                        : "🔓 Registro liberado"}
+                    </p>
+                    <p
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        margin: "3px 0 0",
+                        lineHeight: 1.4
+                      }}
+                    >
+                      {feriadoForm.bloqueiaRegistro
+                        ? "Funcionários não poderão registrar ponto neste dia."
+                        : "Funcionários poderão registrar ponto normalmente neste dia."}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setFeriadoForm((f) => ({ ...f, bloqueiaRegistro: !f.bloqueiaRegistro }))
+                    }
+                    style={{
+                      width: 44,
+                      height: 24,
+                      borderRadius: 12,
+                      border: "none",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      background: feriadoForm.bloqueiaRegistro ? "#b91c1c" : "#15803d",
+                      position: "relative",
+                      transition: "background 200ms"
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 3,
+                        left: feriadoForm.bloqueiaRegistro ? 22 : 3,
+                        width: 18,
+                        height: 18,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        transition: "left 200ms",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.25)"
+                      }}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {/* Justificativa / Observação */}
+              <div>
+                <label
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    color: "var(--ink-500)",
+                    display: "block",
+                    marginBottom: 5
+                  }}
+                >
+                  Justificativa / Observação
+                  <span style={{ fontWeight: 400, textTransform: "none", marginLeft: 4 }}>
+                    (opcional)
+                  </span>
+                </label>
+                <textarea
+                  value={feriadoForm.observacao}
+                  onChange={(e) => setFeriadoForm((f) => ({ ...f, observacao: e.target.value }))}
+                  placeholder="Ex: Ponto facultativo concedido pela direção"
+                  rows={2}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 13,
+                    resize: "vertical",
+                    boxSizing: "border-box" as const,
+                    fontFamily: "var(--font-body)"
+                  }}
+                />
+              </div>
+            </div>
+
+            <div
+              style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 20 }}
+            >
+              <div>
+                {editandoFeriado && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    style={{ color: "var(--red)", borderColor: "rgba(200,57,63,0.25)" }}
+                    onClick={() => {
+                      void deletarFeriado(editandoFeriado.id);
+                      setFeriadoModal(false);
+                      setEditandoFeriado(null);
+                    }}
+                  >
+                    <Trash2Icon size={13} /> Excluir
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setFeriadoModal(false);
+                    setEditandoFeriado(null);
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => void salvarFeriadoModal()}
+                  disabled={!feriadoForm.data || !feriadoForm.nome}
+                  style={{ opacity: !feriadoForm.data || !feriadoForm.nome ? 0.5 : 1 }}
+                >
+                  {editandoFeriado ? "Salvar alterações" : "Adicionar feriado"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal de mapa */}

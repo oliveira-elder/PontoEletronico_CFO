@@ -14,6 +14,11 @@ import { ConfiguracoesPage } from "../pages/ponto/ConfiguracoesPage";
 import { GestaoUsuariosPage } from "../pages/ponto/GestaoUsuariosPage";
 import { AuditoriaPage } from "../pages/ponto/AuditoriaPage";
 import { AprovacaoGestorPage } from "../pages/ponto/AprovacaoGestorPage";
+import { BancoHorasPage } from "../pages/ponto/BancoHorasPage";
+import { DocumentosRhPage } from "../pages/ponto/DocumentosRhPage";
+import { RequisicaoRhAdminPage } from "../pages/ponto/RequisicaoRhAdminPage";
+import { MinhasRequisicoesRhPage } from "../pages/ponto/MinhasRequisicoesRhPage";
+import { LogsPage } from "../pages/ponto/LogsPage";
 
 export const router = createBrowserRouter([
   /* Página de login — pública */
@@ -34,6 +39,8 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "registrar", element: <RegistroPontoPage /> },
       { path: "historico", element: <HistoricoPage /> },
+      { path: "banco-horas", element: <BancoHorasPage /> },
+      { path: "documentos-rh", element: <DocumentosRhPage /> },
       { path: "relatorios", element: <RelatoriosPage /> },
       { path: "solicitacoes", element: <SolicitacoesPage /> },
       { path: "gestao", element: <GestaoPage /> },
@@ -41,7 +48,10 @@ export const router = createBrowserRouter([
       { path: "usuarios", element: <GestaoUsuariosPage /> },
       { path: "configuracoes", element: <ConfiguracoesPage /> },
       { path: "auditoria", element: <AuditoriaPage /> },
-      { path: "aprovacoes", element: <AprovacaoGestorPage /> }
+      { path: "aprovacoes", element: <AprovacaoGestorPage /> },
+      { path: "requisicoes-rh", element: <RequisicaoRhAdminPage /> },
+      { path: "minhas-requisicoes", element: <MinhasRequisicoesRhPage /> },
+      { path: "logs", element: <LogsPage /> }
     ]
   }
 ]);

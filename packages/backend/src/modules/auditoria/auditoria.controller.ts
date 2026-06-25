@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Put,
   Patch,
   Param,
@@ -81,6 +82,16 @@ export class AuditoriaController {
       mes ? parseInt(mes) : agora.getMonth() + 1,
       ano ? parseInt(ano) : agora.getFullYear()
     );
+  }
+
+  @Get("funcionarios/:id/banco-horas")
+  getBancoHorasFuncionario(@Param("id") id: string) {
+    return this.auditoriaService.getBancoHorasFuncionario(id);
+  }
+
+  @Get("funcionarios/:id/documentos-rh")
+  getDocumentosRhFuncionario(@Param("id") id: string) {
+    return this.auditoriaService.getDocumentosRhFuncionario(id);
   }
 
   /* ─── Registros ─── */
@@ -206,6 +217,25 @@ export class AuditoriaController {
     return this.auditoriaService.atualizarStatusPeriodo(id, body.status, req.user.sub);
   }
 
+  /* ─── Banco de Horas ─── */
+
+  @Get("banco-horas")
+  getBancoHorasGeral(
+    @Query("busca") busca?: string,
+    @Query("gerenciaId") gerenciaId?: string,
+    @Query("status") status?: "POSITIVO" | "NEGATIVO" | "EXCEDIDO",
+    @Query("page") page?: string,
+    @Query("limit") limit?: string
+  ) {
+    return this.auditoriaService.getBancoHorasGeral({
+      busca,
+      gerenciaId,
+      status,
+      page: page ? parseInt(page) : undefined,
+      limit: limit ? parseInt(limit) : undefined
+    });
+  }
+
   /* ─── Gestão (Gestor de Área) ─── */
 
   @Get("gestao/equipe")
@@ -299,6 +329,80 @@ export class AuditoriaController {
       id,
       body.decisao,
       body.observacao,
+      req.user.sub
+    );
+  }
+
+  @Patch("rh/solicitacoes/:id/enviar-guia")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  enviarGuiaMedica(
+    @Param("id") id: string,
+    @Body() body: { guiaMedicoBase64: string; observacao?: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhEnviarGuiaMedica(
+      id,
+      body.guiaMedicoBase64,
+      body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
+  @Patch("rh/solicitacoes/:id/enviar-folha-ferias")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  enviarFolhaFerias(
+    @Param("id") id: string,
+    @Body() body: { folhaBase64: string; observacao?: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhEnviarFolhaFerias(
+      id,
+      body.folhaBase64,
+      body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
+  @Get("rh/funcionarios/:id/ferias/saldo")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getSaldoFerias(@Param("id") id: string) {
+    return this.auditoriaService.getSaldoFeriasFuncionario(id);
+  }
+
+  /* ─── Correção de ponto pelo RH ─── */
+
+  @Post("rh/funcionarios/:id/correcao-ponto")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  criarCorrecaoRH(
+    @Param("id") id: string,
+    @Body()
+    body: {
+      dataReferencia: string;
+      justificativa: string;
+      correcoes: Array<{
+        acao: "CORRIGIR" | "INCLUIR" | "EXCLUIR";
+        tipoRegistro: string;
+        horario: string;
+        registroId?: string;
+        horarioOriginal?: string;
+      }>;
+    },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.criarCorrecaoRH(req.user.sub, id, body);
+  }
+
+  @Patch("admin/correcoes-rh/:id")
+  @Roles("ponto-admin", "PONTO_ADMIN")
+  adminAprovarCorrecaoRH(
+    @Param("id") id: string,
+    @Body() body: { decisao: "APROVAR" | "REJEITAR"; observacao?: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.adminAprovarCorrecaoRH(
+      id,
+      body.decisao,
+      body.observacao ?? "",
       req.user.sub
     );
   }

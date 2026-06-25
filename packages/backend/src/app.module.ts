@@ -15,6 +15,12 @@ import { PontoModule } from "./modules/ponto/ponto.module";
 import { AdminModule } from "./modules/admin/admin.module";
 import { AuditoriaModule } from "./modules/auditoria/auditoria.module";
 import { ExtensionsModule } from "./modules/extensions/extensions.module";
+import { RequisicaoRhModule } from "./modules/requisicao-rh/requisicao-rh.module";
+import { LogsModule } from "./modules/logs/logs.module";
+import { IngestModule } from "./modules/ingest/ingest.module";
+import { BackupModule } from "./modules/backup/backup.module";
+import { ApiServidoraModule } from "./modules/api-servidora/api-servidora.module";
+import { AssinaturaModule } from "./modules/assinatura/assinatura.module";
 
 @Module({
   imports: [
@@ -28,10 +34,16 @@ import { ExtensionsModule } from "./modules/extensions/extensions.module";
     GlpiModule,
     ChatModule,
     RealtimeModule,
+    LogsModule,
     PontoModule,
     AdminModule,
     AuditoriaModule,
-    ExtensionsModule
+    ExtensionsModule,
+    RequisicaoRhModule,
+    IngestModule,
+    BackupModule,
+    ApiServidoraModule,
+    AssinaturaModule
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor }]
 })

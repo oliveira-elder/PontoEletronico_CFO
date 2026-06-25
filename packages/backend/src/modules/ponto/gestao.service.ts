@@ -63,9 +63,40 @@ export class GestaoService {
       orderBy: { createdAt: "asc" },
       include: {
         user: { select: { id: true, name: true, email: true, emailReal: true } },
-        gerencia: { select: { id: true, nome: true, sigla: true } }
+        gerencia: { select: { id: true, nome: true, sigla: true } },
+        jornadaPeriodo: { select: { id: true, nome: true, ePadrao: true } },
+        enderecoResidencial: true,
+        requerimentoEndereco: {
+          select: { id: true, status: true, criadoEm: true, respondidoEm: true }
+        }
       }
     });
+  }
+
+  criarRequerimentoEndereco(funcionarioId: string) {
+    return this.prisma.requerimentoEndereco.upsert({
+      where: { funcionarioId },
+      create: { funcionarioId, status: "PENDENTE" },
+      update: { status: "PENDENTE", respondidoEm: null, criadoEm: new Date() }
+    });
+  }
+
+  async criarRequerimentoEnderecoTodos() {
+    const ativos = await this.prisma.funcionario.findMany({
+      where: { ativo: true },
+      select: { id: true }
+    });
+    const agora = new Date();
+    await this.prisma.$transaction(
+      ativos.map((f) =>
+        this.prisma.requerimentoEndereco.upsert({
+          where: { funcionarioId: f.id },
+          create: { funcionarioId: f.id, status: "PENDENTE" },
+          update: { status: "PENDENTE", respondidoEm: null, criadoEm: agora }
+        })
+      )
+    );
+    return { total: ativos.length };
   }
 
   async createFuncionario(data: {
@@ -85,6 +116,7 @@ export class GestaoService {
         data: {
           userId: user.id,
           matricula: data.matricula,
+          cpf: data.cpf ?? null,
           cargo: data.cargo,
           categoria: data.categoria as CategoriaFuncional,
           gerenciaId: data.gerenciaId ?? null
@@ -102,10 +134,17 @@ export class GestaoService {
     data: Partial<{
       nome: string;
       email: string;
+      matricula: string;
+      cpf: string;
       cargo: string;
       categoria: string;
       gerenciaId: string;
+      subsecao: string | null;
       ativo: boolean;
+      dataNascimento: string | null;
+      dataAdmissao: string | null;
+      modoHomeOffice: boolean;
+      modoHibridoLocal: boolean;
     }>
   ) {
     const func = await this.prisma.funcionario.findUnique({
@@ -114,30 +153,128 @@ export class GestaoService {
     });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
 
-    const { nome, email, ...funcData } = data;
+    const {
+      nome,
+      email,
+      matricula,
+      cpf,
+      dataNascimento,
+      cargo,
+      categoria,
+      gerenciaId,
+      subsecao,
+      ativo,
+      modoHomeOffice,
+      modoHibridoLocal
+    } = data;
 
     await this.prisma.$transaction(async (tx) => {
-      if (nome || email) {
-        await tx.user.update({ where: { id: func.userId }, data: { name: nome, email } });
+      const userUpdate: Record<string, string> = {};
+      if (nome !== undefined && nome !== "") userUpdate.name = nome;
+      if (email !== undefined && email !== "") userUpdate.email = email;
+      if (Object.keys(userUpdate).length) {
+        await tx.user.update({ where: { id: func.userId }, data: userUpdate });
       }
-      if (Object.keys(funcData).length) {
-        await tx.funcionario.update({
-          where: { id },
-          data: funcData as Partial<{
-            cargo: string;
-            categoria: CategoriaFuncional;
-            gerenciaId: string;
-            ativo: boolean;
-          }>
-        });
+      const funcUpdate: {
+        matricula?: string | null;
+        cpf?: string | null;
+        cargo?: string;
+        categoria?: CategoriaFuncional;
+        gerenciaId?: string | null;
+        subsecao?: string | null;
+        ativo?: boolean;
+        dataNascimento?: Date | null;
+        modoHomeOffice?: boolean;
+        modoHibridoLocal?: boolean;
+      } = {};
+      if (matricula !== undefined) funcUpdate.matricula = matricula || null;
+      if (cpf !== undefined) funcUpdate.cpf = cpf || null;
+      if (cargo !== undefined) funcUpdate.cargo = cargo;
+      if (categoria !== undefined) funcUpdate.categoria = categoria as CategoriaFuncional;
+      if (gerenciaId !== undefined) funcUpdate.gerenciaId = gerenciaId || null;
+      if (subsecao !== undefined) funcUpdate.subsecao = subsecao || null;
+      if (ativo !== undefined) funcUpdate.ativo = ativo;
+      if (dataNascimento !== undefined) {
+        funcUpdate.dataNascimento = dataNascimento ? new Date(dataNascimento) : null;
+      }
+      if ((data as Record<string, unknown>).dataAdmissao !== undefined) {
+        const da = (data as Record<string, unknown>).dataAdmissao as string | null;
+        (funcUpdate as Record<string, unknown>).dataAdmissao = da ? new Date(da) : null;
+      }
+      if (modoHomeOffice !== undefined) funcUpdate.modoHomeOffice = modoHomeOffice;
+      if (modoHibridoLocal !== undefined) funcUpdate.modoHibridoLocal = modoHibridoLocal;
+      if (Object.keys(funcUpdate).length) {
+        await tx.funcionario.update({ where: { id }, data: funcUpdate });
       }
     });
 
     return this.prisma.funcionario.findUnique({
       where: { id },
       include: {
-        user: { select: { id: true, name: true, email: true } },
-        gerencia: { select: { id: true, nome: true, sigla: true } }
+        user: { select: { id: true, name: true, email: true, emailReal: true } },
+        gerencia: { select: { id: true, nome: true, sigla: true } },
+        jornadaPeriodo: { select: { id: true, nome: true, ePadrao: true } },
+        enderecoResidencial: true,
+        requerimentoEndereco: {
+          select: { id: true, status: true, criadoEm: true, respondidoEm: true }
+        }
+      }
+    });
+  }
+
+  getEndereco(funcionarioId: string) {
+    return this.prisma.enderecoResidencial.findUnique({ where: { funcionarioId } });
+  }
+
+  async upsertEndereco(
+    funcionarioId: string,
+    data: {
+      cep?: string;
+      logradouro?: string;
+      numero?: string;
+      complemento?: string;
+      bairro?: string;
+      cidade?: string;
+      uf?: string;
+      lat?: number | null;
+      lng?: number | null;
+      raioMetros?: number;
+    }
+  ) {
+    const { lat, lng, raioMetros, ...addr } = data;
+    const payload = {
+      ...addr,
+      lat: lat ?? null,
+      lng: lng ?? null,
+      raioMetros: raioMetros ?? 20
+    };
+    return this.prisma.enderecoResidencial.upsert({
+      where: { funcionarioId },
+      create: { funcionarioId, ...payload },
+      update: payload
+    });
+  }
+
+  async setModalidade(id: string, modoHomeOffice: boolean, modoHibridoLocal: boolean) {
+    const update: { modoHomeOffice: boolean; modoHibridoLocal: boolean } = {
+      modoHomeOffice,
+      modoHibridoLocal
+    };
+    return this.prisma.funcionario.update({
+      where: { id },
+      data: update,
+      select: { id: true, modoHomeOffice: true, modoHibridoLocal: true }
+    });
+  }
+
+  async setJornadaPeriodo(id: string, jornadaPeriodoId: string | null) {
+    return this.prisma.funcionario.update({
+      where: { id },
+      data: { jornadaPeriodoId: jornadaPeriodoId || null },
+      include: {
+        user: { select: { id: true, name: true, email: true, emailReal: true } },
+        gerencia: { select: { id: true, nome: true, sigla: true } },
+        jornadaPeriodo: true
       }
     });
   }

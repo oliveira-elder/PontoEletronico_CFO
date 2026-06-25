@@ -16,6 +16,12 @@ export function dataBrasiliaParaPartes(data: Date): { year: string; month: strin
   };
 }
 
+/** Data civil (YYYY-MM-DD) de um instante, no fuso de Brasília. */
+export function dataBrasiliaISO(data: Date): string {
+  const { year, month, day } = dataBrasiliaParaPartes(data);
+  return `${year}-${month}-${day}`;
+}
+
 /** Data de hoje (YYYY-MM-DD) no fuso de Brasília. */
 export function hojeBrasiliaISO(): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -44,6 +50,14 @@ export function aplicarHorarioBrasilia(dataBase: Date, horario: string): Date {
   const hh = String(h).padStart(2, "0");
   const mm = String(m).padStart(2, "0");
   return new Date(`${year}-${month}-${day}T${hh}:${mm}:00${OFFSET_BRASILIA}`);
+}
+
+/** Data/hora completa em pt-BR no fuso de Brasília. */
+export function formatDateTimeBrasilia(
+  data: Date,
+  options: Intl.DateTimeFormatOptions = { dateStyle: "short", timeStyle: "medium" }
+): string {
+  return new Intl.DateTimeFormat("pt-BR", { ...options, timeZone: FUSO_BRASILIA }).format(data);
 }
 
 export function horarioDeDataBrasilia(data: Date): string {

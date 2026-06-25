@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -13,9 +13,21 @@ import {
   AlertCircleIcon,
   ShieldCheckIcon,
   ArrowLeftIcon,
-  ChevronDownIcon
+  ArrowRightIcon,
+  ChevronDownIcon,
+  TrendingUpIcon,
+  CheckCircleIcon,
+  Edit2Icon,
+  FileTextIcon,
+  DatabaseIcon,
+  InfoIcon
 } from "../../components/icons";
-import { LogTimelineGestor, SolicitacaoResumo, textoResumo } from "./solicitacaoUi";
+import {
+  FeriasDetalheBlock,
+  LogTimelineGestor,
+  SolicitacaoResumo,
+  textoResumo
+} from "./solicitacaoUi";
 
 /* ═══════════════════════════════════════════════
    TIPOS
@@ -56,6 +68,12 @@ interface Funcionario {
   categoria: string;
   ativo: boolean;
   jornadaHorasDia: number;
+  fotoPerfilUrl?: string | null;
+  subsecao?: string | null;
+  isManager?: boolean;
+  ramal?: string | null;
+  sala?: string | null;
+  andar?: string | null;
   user: { name: string; email: string };
   gerencia: { nome: string; sigla: string } | null;
   totalRegistros: number;
@@ -67,9 +85,29 @@ interface Funcionario {
     horasExtras: string;
     horasFalta: string;
     status: string;
-  } | null;
+  };
   ultimoRegistro: { tipo: string; dataHora: string; origem: string } | null;
   periodo: PeriodoRaw | null;
+}
+
+function slugLabel(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function infoContato(f: {
+  ramal?: string | null;
+  sala?: string | null;
+  andar?: string | null;
+}): string | null {
+  const partes = [
+    f.ramal ? `Ramal ${f.ramal}` : null,
+    f.sala ? `Sala ${f.sala}` : null,
+    f.andar ?? null
+  ].filter((v): v is string => Boolean(v));
+  return partes.length ? partes.join(" · ") : null;
 }
 
 interface PeriodoRaw {
@@ -101,6 +139,7 @@ interface Registro {
     id: string;
     matricula: string;
     cargo: string;
+    fotoPerfilUrl?: string | null;
     user: { name: string; email: string };
     gerencia: { nome: string; sigla: string } | null;
   };
@@ -141,9 +180,22 @@ interface Afastamento {
     id: string;
     matricula: string;
     cargo: string;
+    fotoPerfilUrl?: string | null;
     user: { name: string; email: string };
     gerencia: { nome: string; sigla: string } | null;
   };
+}
+
+interface SaldoFerias {
+  dataAdmissao: string;
+  ciclosVencidos: number;
+  diasDisponiveis: number;
+  diasGozo: number;
+  diasVendidos: number;
+  totalVencido: number;
+  obrigatorio: boolean;
+  mesesTotal: number;
+  ciclos: Array<{ numero: number; inicio: string; fim: string }>;
 }
 
 interface Periodo {
@@ -165,9 +217,44 @@ interface Periodo {
     matricula: string;
     cargo: string;
     jornadaHorasDia: number;
+    fotoPerfilUrl?: string | null;
     user: { name: string; email: string };
     gerencia: { nome: string; sigla: string } | null;
   };
+}
+
+interface BancoHorasDia {
+  data: string;
+  horasTrabalhadasMinutos: number;
+  jornadaEsperadaMinutos: number;
+  saldoDiaMinutos: number;
+  saldoAcumuladoMinutos: number;
+  observacao?: string;
+}
+
+interface BancoHorasItem {
+  funcionario: { id: string; matricula: string; nome: string; email: string };
+  gerencia: { nome: string; sigla: string } | null;
+  cicloInicio: string | null;
+  proximaZeragem: string | null;
+  saldoAtualMinutos: number;
+  saldoFormatado: string;
+  limiteMinutos: number;
+  excedeLimite: boolean;
+}
+
+interface BancoHorasFuncionarioDetalhe extends BancoHorasItem {
+  tipoFlexibilidade: string;
+  dias: BancoHorasDia[];
+}
+
+interface DocumentoRhEnvio {
+  id: string;
+  descricao: string;
+  arquivoUrl: string;
+  nomeArquivo: string | null;
+  mimeType: string | null;
+  createdAt: string;
 }
 
 interface AuditLog {
@@ -397,7 +484,8 @@ type Aba =
   | "solicitacoes"
   | "afastamentos"
   | "periodos"
-  | "logs";
+  | "logs"
+  | "validacoes";
 
 /* ═══════════════════════════════════════════════
    UTILITÁRIOS
@@ -423,6 +511,24 @@ function fmtDate(iso: string) {
   return d.toLocaleDateString("pt-BR");
 }
 
+function fmtDataCurta(iso: string) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString("pt-BR");
+}
+
+function fmtDataAssinatura(iso: string): string {
+  return new Date(iso).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit"
+  });
+}
+
+function toHM(min: number) {
+  const sign = min < 0 ? "-" : "";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}`;
+}
+
 function fmtDateTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleString("pt-BR", {
@@ -439,7 +545,9 @@ function tipoPontoLabel(tipo: string) {
     ENTRADA: "Entrada",
     INICIO_INTERVALO: "Início Intervalo",
     FIM_INTERVALO: "Fim Intervalo",
-    SAIDA: "Saída"
+    SAIDA: "Saída",
+    INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+    REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
   };
   return map[tipo] ?? tipo;
 }
@@ -449,7 +557,9 @@ function tipoPontoCor(tipo: string) {
     ENTRADA: "#2f7d4f",
     SAIDA: "#c8393f",
     INICIO_INTERVALO: "#c67f00",
-    FIM_INTERVALO: "#2563eb"
+    FIM_INTERVALO: "#2563eb",
+    INTERROMPER_EXPEDIENTE: "#6b7280",
+    REINICIAR_EXPEDIENTE: "#6b7280"
   };
   return map[tipo] ?? "#6b7280";
 }
@@ -459,6 +569,14 @@ function statusSolBadge(status: string) {
     return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Aguardando Gestor" };
   if (status === "AGUARDANDO_RH")
     return { bg: "rgba(37,99,235,0.12)", color: "#2563eb", label: "Aguardando RH" };
+  if (status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO")
+    return {
+      bg: "rgba(198,127,0,0.12)",
+      color: "#c67f00",
+      label: "Aguardando Doc. Funcionário"
+    };
+  if (status === "AGUARDANDO_GESTOR_RH")
+    return { bg: "rgba(122,30,38,0.10)", color: "#7a1e26", label: "Aguardando Gerente de RH" };
   if (status === "APROVADA")
     return { bg: "rgba(47,125,79,0.12)", color: "#2f7d4f", label: "Aprovada pelo RH" };
   if (status === "REJEITADA_GESTOR")
@@ -572,6 +690,49 @@ function StatCard({
         {value}
       </span>
       {sub && <span style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}>{sub}</span>}
+    </div>
+  );
+}
+
+function FuncAvatar({
+  name,
+  fotoUrl,
+  size = 36
+}: {
+  name: string;
+  fotoUrl?: string | null;
+  size?: number;
+}) {
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: fotoUrl ? "transparent" : "var(--burgundy-600)",
+        border: fotoUrl ? "2px solid var(--burgundy-600)" : "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#fff",
+        fontSize: Math.round(size * 0.38),
+        fontWeight: 700,
+        flexShrink: 0,
+        overflow: "hidden"
+      }}
+    >
+      {fotoUrl ? (
+        <img
+          src={fotoUrl}
+          alt={name}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
+        />
+      ) : (
+        (name[0] ?? "?").toUpperCase()
+      )}
     </div>
   );
 }
@@ -1394,11 +1555,13 @@ function TabFuncionarios({ token }: { token: string }) {
         Email: f.user.email,
         Cargo: f.cargo,
         Gerencia: f.gerencia?.nome ?? "",
+        Subsecao: f.subsecao ? slugLabel(f.subsecao) : "",
+        Ramal: f.ramal ?? "",
+        Sala: f.sala ?? "",
+        Andar: f.andar ?? "",
         Status: f.ativo ? "Ativo" : "Inativo",
-        HorasTrabalhadas: f.periodoFormatado?.horasTrabalhadas ?? "",
-        HorasExtras: f.periodoFormatado?.horasExtras ?? "",
-        HorasFalta: f.periodoFormatado?.horasFalta ?? "",
-        PeriodoStatus: f.periodoFormatado?.status ?? "",
+        HorasExtras: f.solicitacoesPendentes > 0 ? "0h00m" : f.periodoFormatado.horasExtras,
+        HorasFalta: f.solicitacoesPendentes > 0 ? "0h00m" : f.periodoFormatado.horasFalta,
         SolicitacoesPendentes: f.solicitacoesPendentes
       })),
       `funcionarios_${mes}_${ano}.csv`
@@ -1503,20 +1666,13 @@ function TabFuncionarios({ token }: { token: string }) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 80px",
+            gridTemplateColumns: "2fr 1fr 1fr 1fr 80px",
             padding: "10px 16px",
             background: "var(--cream-50)",
             borderBottom: "1px solid rgba(122,30,38,0.08)"
           }}
         >
-          {[
-            "Funcionário",
-            "Cargo / Gerência",
-            "Horas trab.",
-            "Extras / Falta",
-            "Sol. pend.",
-            ""
-          ].map((c) => (
+          {["Funcionário", "Cargo / Gerência", "Extras / Falta", "Sol. pend.", ""].map((c) => (
             <span
               key={c}
               style={{
@@ -1542,80 +1698,62 @@ function TabFuncionarios({ token }: { token: string }) {
           </p>
         ) : (
           lista.map((f) => {
-            const sb = statusPeriodoBadge(f.periodoFormatado?.status ?? "ABERTO");
+            const comPendentes = f.solicitacoesPendentes > 0;
+            const horasExtras = comPendentes ? "0h00m" : f.periodoFormatado.horasExtras;
+            const horasFalta = comPendentes ? "0h00m" : f.periodoFormatado.horasFalta;
             return (
               <div
                 key={f.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 80px",
+                  gridTemplateColumns: "2fr 1fr 1fr 1fr 80px",
                   padding: "12px 16px",
                   borderBottom: "1px solid rgba(122,30,38,0.04)",
                   alignItems: "center"
                 }}
               >
                 {/* Funcionário */}
-                <div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}>
-                    {f.user.name}
-                    {!f.ativo && (
-                      <Badge label="Inativo" bg="rgba(200,57,63,0.10)" color="#c8393f" />
-                    )}
-                  </p>
-                  <p
-                    style={{
-                      fontSize: 10.5,
-                      color: "var(--ink-500)",
-                      margin: "2px 0 0",
-                      fontFamily: "var(--font-mono)"
-                    }}
-                  >
-                    {f.matricula} · {f.user.email}
-                  </p>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <FuncAvatar name={f.user.name} fotoUrl={f.fotoPerfilUrl} size={32} />
+                  <div>
+                    <p
+                      style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}
+                    >
+                      {f.user.name}
+                      {!f.ativo && (
+                        <Badge label="Inativo" bg="rgba(200,57,63,0.10)" color="#c8393f" />
+                      )}
+                    </p>
+                    <p
+                      style={{
+                        fontSize: 10.5,
+                        color: "var(--ink-500)",
+                        margin: "2px 0 0",
+                        fontFamily: "var(--font-mono)"
+                      }}
+                    >
+                      {f.matricula} · {f.user.email}
+                    </p>
+                  </div>
                 </div>
-                {/* Cargo */}
+                {/* Cargo / Hierarquia */}
                 <div>
                   <p style={{ fontSize: 12, color: "var(--ink-700)", margin: 0 }}>{f.cargo}</p>
                   <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "1px 0 0" }}>
-                    {f.gerencia?.sigla ?? "—"}
+                    {f.gerencia?.nome ?? "—"}
+                    {f.subsecao ? ` / ${slugLabel(f.subsecao)}` : ""}
+                    {f.isManager ? " · Gerente" : ""}
                   </p>
-                </div>
-                {/* Horas trab. */}
-                <div>
-                  {f.periodoFormatado ? (
-                    <>
-                      <p
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: "var(--ink-900)",
-                          margin: 0
-                        }}
-                      >
-                        {f.periodoFormatado.horasTrabalhadas}
-                      </p>
-                      <Badge label={sb.label} bg={sb.bg} color={sb.color} />
-                    </>
-                  ) : (
-                    <span style={{ fontSize: 11, color: "var(--ink-400)", fontStyle: "italic" }}>
-                      sem período
-                    </span>
+                  {infoContato(f) && (
+                    <p style={{ fontSize: 10.5, color: "var(--ink-400)", margin: "1px 0 0" }}>
+                      {infoContato(f)}
+                    </p>
                   )}
                 </div>
                 {/* Extras / Falta */}
                 <div>
-                  {f.periodoFormatado ? (
-                    <>
-                      <p style={{ fontSize: 11, color: "#2f7d4f", margin: 0 }}>
-                        +{f.periodoFormatado.horasExtras}
-                      </p>
-                      <p style={{ fontSize: 11, color: "#c8393f", margin: "1px 0 0" }}>
-                        -{f.periodoFormatado.horasFalta}
-                      </p>
-                    </>
-                  ) : (
-                    <span>—</span>
-                  )}
+                  <p style={{ fontSize: 11, color: "#2f7d4f", margin: 0 }}>+{horasExtras}</p>
+                  <p style={{ fontSize: 11, color: "#c8393f", margin: "1px 0 0" }}>-{horasFalta}</p>
                 </div>
                 {/* Pendentes */}
                 <div>
@@ -1626,7 +1764,7 @@ function TabFuncionarios({ token }: { token: string }) {
                       color="#c67f00"
                     />
                   ) : (
-                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>—</span>
+                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>0</span>
                   )}
                 </div>
                 {/* Ação */}
@@ -1665,15 +1803,26 @@ function DetalhesFuncionario({
   token: string;
   onBack: () => void;
 }) {
-  const [subAba, setSubAba] = useState<"registros" | "periodos" | "solicitacoes" | "afastamentos">(
-    "registros"
-  );
+  const [subAba, setSubAba] = useState<
+    | "registros"
+    | "historico"
+    | "periodos"
+    | "solicitacoes"
+    | "afastamentos"
+    | "bancoHoras"
+    | "documentos"
+    | "ferias"
+  >("registros");
   const [mes, setMes] = useState(String(new Date().getMonth() + 1));
   const [ano, setAno] = useState(String(new Date().getFullYear()));
   const [registros, setRegistros] = useState<Registro[]>([]);
   const [relatorio, setRelatorio] = useState<Record<string, unknown> | null>(null);
   const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
   const [afastamentos, setAfastamentos] = useState<Afastamento[]>([]);
+  const [bancoHoras, setBancoHoras] = useState<BancoHorasFuncionarioDetalhe | null>(null);
+  const [documentosRh, setDocumentosRh] = useState<DocumentoRhEnvio[]>([]);
+  const [feriasHistorico, setFeriasHistorico] = useState<Solicitacao[]>([]);
+  const [feriasSaldo, setFeriasSaldo] = useState<SaldoFerias | null>(null);
   const [loading, setLoading] = useState(false);
 
   const carregarRegistros = useCallback(async () => {
@@ -1722,11 +1871,67 @@ function DetalhesFuncionario({
     }
   }, [funcionario.id, token]);
 
+  const carregarBancoHoras = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<BancoHorasFuncionarioDetalhe>(
+        `/auditoria/funcionarios/${funcionario.id}/banco-horas`,
+        token
+      );
+      setBancoHoras(data);
+    } finally {
+      setLoading(false);
+    }
+  }, [funcionario.id, token]);
+
+  const carregarDocumentosRh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<DocumentoRhEnvio[]>(
+        `/auditoria/funcionarios/${funcionario.id}/documentos-rh`,
+        token
+      );
+      setDocumentosRh(data ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [funcionario.id, token]);
+
+  const carregarFerias = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [solData, saldoData] = await Promise.all([
+        api.get<{ solicitacoes: Solicitacao[] }>(
+          `/auditoria/solicitacoes?funcionarioId=${funcionario.id}&tipo=FERIAS&limit=200`,
+          token
+        ),
+        api
+          .get<SaldoFerias>(`/auditoria/rh/funcionarios/${funcionario.id}/ferias/saldo`, token)
+          .catch(() => null)
+      ]);
+      setFeriasHistorico((solData as { solicitacoes: Solicitacao[] }).solicitacoes ?? []);
+      setFeriasSaldo(saldoData);
+    } finally {
+      setLoading(false);
+    }
+  }, [funcionario.id, token]);
+
   useEffect(() => {
     if (subAba === "registros") carregarRegistros();
     else if (subAba === "solicitacoes") carregarSolicitacoes();
     else if (subAba === "afastamentos") carregarAfastamentos();
-  }, [subAba, carregarRegistros, carregarSolicitacoes, carregarAfastamentos]);
+    else if (subAba === "bancoHoras") carregarBancoHoras();
+    else if (subAba === "documentos") carregarDocumentosRh();
+    else if (subAba === "ferias") carregarFerias();
+  }, [
+    subAba,
+    carregarRegistros,
+    carregarSolicitacoes,
+    carregarAfastamentos,
+    carregarBancoHoras,
+    carregarDocumentosRh,
+    carregarFerias
+  ]);
 
   function exportarRelatorio() {
     if (!registros.length) return;
@@ -1776,6 +1981,7 @@ function DetalhesFuncionario({
         >
           <ArrowLeftIcon size={13} /> Voltar
         </button>
+        <FuncAvatar name={funcionario.user.name} fotoUrl={funcionario.fotoPerfilUrl} size={40} />
         <div>
           <h2
             style={{
@@ -1789,8 +1995,16 @@ function DetalhesFuncionario({
           </h2>
           <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
             {funcionario.matricula} · {funcionario.cargo}
-            {funcionario.gerencia ? ` · ${funcionario.gerencia.nome}` : ""}
+            {funcionario.gerencia
+              ? ` · ${funcionario.gerencia.nome}${funcionario.subsecao ? ` / ${slugLabel(funcionario.subsecao)}` : ""}`
+              : ""}
+            {funcionario.isManager ? " · Gerente" : ""}
           </p>
+          {infoContato(funcionario) && (
+            <p style={{ fontSize: 10.5, color: "var(--ink-400)", margin: "2px 0 0" }}>
+              {infoContato(funcionario)}
+            </p>
+          )}
         </div>
       </div>
 
@@ -1930,31 +2144,84 @@ function DetalhesFuncionario({
       </div>
 
       {/* Sub-abas */}
-      <div style={{ display: "flex", gap: 4, borderBottom: "2px solid rgba(122,30,38,0.08)" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 4,
+          borderBottom: "2px solid rgba(122,30,38,0.08)",
+          flexWrap: "wrap"
+        }}
+      >
         {(
           [
-            { id: "registros", label: "Registros de Ponto" },
-            { id: "solicitacoes", label: "Solicitações" },
-            { id: "afastamentos", label: "Afastamentos" }
+            {
+              id: "registros",
+              label: "Registros de Ponto",
+              cor: "#2563eb",
+              icone: <ClockIcon size={13} />
+            },
+            {
+              id: "historico",
+              label: "Histórico",
+              cor: "#6b0f1a",
+              icone: <BarChart2Icon size={13} />
+            },
+            {
+              id: "solicitacoes",
+              label: "Solicitações",
+              cor: "#c67f00",
+              icone: <InboxIcon size={13} />
+            },
+            {
+              id: "ferias",
+              label: "Férias",
+              cor: "#2f7d4f",
+              icone: <span style={{ fontSize: 13, lineHeight: 1 }}>🌴</span>
+            },
+            {
+              id: "afastamentos",
+              label: "Afastamentos",
+              cor: "#7c3aed",
+              icone: <CalendarIcon size={13} />
+            },
+            {
+              id: "bancoHoras",
+              label: "Banco de Horas",
+              cor: "#0891b2",
+              icone: <DatabaseIcon size={13} />
+            },
+            {
+              id: "documentos",
+              label: "Documentos",
+              cor: "#475569",
+              icone: <FileTextIcon size={13} />
+            }
           ] as const
-        ).map((a) => (
-          <button
-            key={a.id}
-            onClick={() => setSubAba(a.id)}
-            style={{
-              padding: "7px 16px",
-              borderRadius: "var(--radius-md) var(--radius-md) 0 0",
-              border: "none",
-              background: subAba === a.id ? "var(--burgundy-600)" : "transparent",
-              color: subAba === a.id ? "#fff" : "var(--ink-500)",
-              fontWeight: 600,
-              fontSize: 12,
-              cursor: "pointer"
-            }}
-          >
-            {a.label}
-          </button>
-        ))}
+        ).map((a) => {
+          const ativo = subAba === a.id;
+          return (
+            <button
+              key={a.id}
+              onClick={() => setSubAba(a.id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "7px 16px",
+                borderRadius: "var(--radius-md) var(--radius-md) 0 0",
+                border: "none",
+                background: ativo ? a.cor : "transparent",
+                color: ativo ? "#fff" : a.cor,
+                fontWeight: 600,
+                fontSize: 12,
+                cursor: "pointer"
+              }}
+            >
+              {a.icone}
+              {a.label}
+            </button>
+          );
+        })}
         {subAba === "registros" && (
           <button
             onClick={exportarRelatorio}
@@ -1983,11 +2250,23 @@ function DetalhesFuncionario({
         <Loading />
       ) : subAba === "registros" ? (
         <RegistrosPorDia registros={registros} />
+      ) : subAba === "historico" ? (
+        <TabHistoricoFunc funcionarioId={funcionario.id} token={token} />
       ) : subAba === "solicitacoes" ? (
         <TabelaSolicitacoes solicitacoes={solicitacoes} />
-      ) : (
+      ) : subAba === "ferias" ? (
+        <PainelFerias
+          saldo={feriasSaldo}
+          historico={feriasHistorico}
+          onRecarregar={carregarFerias}
+        />
+      ) : subAba === "afastamentos" ? (
         <TabelaAfastamentos afastamentos={afastamentos} />
-      )}
+      ) : subAba === "bancoHoras" && bancoHoras ? (
+        <BancoHorasDiasTabela dados={bancoHoras} />
+      ) : subAba === "documentos" ? (
+        <TabelaDocumentosRh documentos={documentosRh} />
+      ) : null}
     </div>
   );
 }
@@ -2033,6 +2312,25 @@ const TIPO_CONFIG: Record<string, { cor: string; label: string; icone: React.Rea
     icone: (
       <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor">
         <rect x="4" y="4" width="16" height="16" rx="3" />
+      </svg>
+    )
+  },
+  INTERROMPER_EXPEDIENTE: {
+    cor: "#6b7280",
+    label: "Interromper Expediente",
+    icone: (
+      <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="4" width="4" height="16" rx="1" />
+        <rect x="14" y="4" width="4" height="16" rx="1" />
+      </svg>
+    )
+  },
+  REINICIAR_EXPEDIENTE: {
+    cor: "#6b7280",
+    label: "Reiniciar Expediente",
+    icone: (
+      <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor">
+        <path d="M5 3l14 9-14 9V3z" />
       </svg>
     )
   }
@@ -2372,9 +2670,14 @@ function DiaRow({
   let entrada: Date | null = null;
   for (const r of regs) {
     const ts = new Date(r.dataHora);
-    if (r.tipo === "ENTRADA") {
+    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
       entrada = ts;
-    } else if ((r.tipo === "INICIO_INTERVALO" || r.tipo === "SAIDA") && entrada) {
+    } else if (
+      (r.tipo === "INICIO_INTERVALO" ||
+        r.tipo === "INTERROMPER_EXPEDIENTE" ||
+        r.tipo === "SAIDA") &&
+      entrada
+    ) {
       minutos += Math.round((ts.getTime() - entrada.getTime()) / 60000);
       entrada = null;
     } else if (r.tipo === "FIM_INTERVALO") {
@@ -2652,7 +2955,7 @@ function TabRegistros({ token }: { token: string }) {
         Data: fmtDateTime(r.dataHora),
         Funcionario: r.funcionario.user.name,
         Matricula: r.funcionario.matricula,
-        Gerencia: r.funcionario.gerencia?.sigla ?? "",
+        Gerencia: r.funcionario.gerencia?.nome ?? "",
         Tipo: tipoPontoLabel(r.tipo),
         Origem: r.origem,
         Modo: r.modoRegistro,
@@ -2680,7 +2983,9 @@ function TabRegistros({ token }: { token: string }) {
             { value: "ENTRADA", label: "Entrada" },
             { value: "INICIO_INTERVALO", label: "Início Intervalo" },
             { value: "FIM_INTERVALO", label: "Fim Intervalo" },
-            { value: "SAIDA", label: "Saída" }
+            { value: "SAIDA", label: "Saída" },
+            { value: "INTERROMPER_EXPEDIENTE", label: "Interromper Expediente" },
+            { value: "REINICIAR_EXPEDIENTE", label: "Reiniciar Expediente" }
           ]}
         />
         <SelectField
@@ -2784,21 +3089,28 @@ function TabelaRegistros({
             {fmtDateTime(r.dataHora)}
           </span>
           {showFuncionario && (
-            <div>
-              <p style={{ fontSize: 12, fontWeight: 600, margin: 0, color: "var(--ink-900)" }}>
-                {r.funcionario.user.name}
-              </p>
-              <p
-                style={{
-                  fontSize: 10.5,
-                  color: "var(--ink-400)",
-                  margin: 0,
-                  fontFamily: "var(--font-mono)"
-                }}
-              >
-                {r.funcionario.matricula}
-                {r.funcionario.gerencia ? ` · ${r.funcionario.gerencia.sigla}` : ""}
-              </p>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <FuncAvatar
+                name={r.funcionario.user.name}
+                fotoUrl={r.funcionario.fotoPerfilUrl}
+                size={28}
+              />
+              <div>
+                <p style={{ fontSize: 12, fontWeight: 600, margin: 0, color: "var(--ink-900)" }}>
+                  {r.funcionario.user.name}
+                </p>
+                <p
+                  style={{
+                    fontSize: 10.5,
+                    color: "var(--ink-400)",
+                    margin: 0,
+                    fontFamily: "var(--font-mono)"
+                  }}
+                >
+                  {r.funcionario.matricula}
+                  {r.funcionario.gerencia ? ` · ${r.funcionario.gerencia.nome}` : ""}
+                </p>
+              </div>
             </div>
           )}
           <span
@@ -2854,7 +3166,13 @@ function TabelaRegistros({
    ABA SOLICITAÇÕES
 ═══════════════════════════════════════════════ */
 
-function TabSolicitacoes({ token }: { token: string }) {
+function TabSolicitacoes({
+  token,
+  isPontoAdmin = false
+}: {
+  token: string;
+  isPontoAdmin?: boolean;
+}) {
   const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -2862,6 +3180,12 @@ function TabSolicitacoes({ token }: { token: string }) {
   const [erro, setErro] = useState<string | null>(null);
   const [statusFiltro, setStatusFiltro] = useState("PENDENTE");
   const [tipoFiltro, setTipoFiltro] = useState("");
+  const [modalAdminSol, setModalAdminSol] = useState<Solicitacao | null>(null);
+  const [modalAdminDecisao, setModalAdminDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
+  const [adminObs, setAdminObs] = useState("");
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminErro, setAdminErro] = useState("");
+  const [feedback, setFeedback] = useState("");
 
   const limit = 30;
 
@@ -2893,6 +3217,34 @@ function TabSolicitacoes({ token }: { token: string }) {
     carregar(1);
   }, [carregar]);
 
+  async function confirmarAdmin() {
+    if (!modalAdminSol) return;
+    if (modalAdminDecisao === "REJEITAR" && !adminObs.trim()) {
+      setAdminErro("O motivo da rejeição é obrigatório.");
+      return;
+    }
+    setAdminLoading(true);
+    setAdminErro("");
+    try {
+      await api.patch(
+        `/auditoria/admin/correcoes-rh/${modalAdminSol.id}`,
+        { decisao: modalAdminDecisao, observacao: adminObs },
+        token
+      );
+      setModalAdminSol(null);
+      setFeedback(
+        modalAdminDecisao === "APROVAR"
+          ? "Correção aprovada e aplicada no histórico."
+          : "Correção rejeitada."
+      );
+      await carregar(page);
+    } catch (e) {
+      setAdminErro((e as Error).message || "Erro ao processar decisão.");
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
   function exportar() {
     exportCSV(
       solicitacoes.map((s) => ({
@@ -2913,6 +3265,162 @@ function TabSolicitacoes({ token }: { token: string }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Modal aprovação Gerente de RH */}
+      {modalAdminSol && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 500,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16
+          }}
+          onClick={(e) => e.target === e.currentTarget && !adminLoading && setModalAdminSol(null)}
+        >
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "var(--radius-xl)",
+              width: "100%",
+              maxWidth: 480,
+              boxShadow: "0 24px 80px rgba(0,0,0,0.28)",
+              overflow: "hidden"
+            }}
+          >
+            <div
+              style={{
+                background:
+                  modalAdminDecisao === "APROVAR" ? "rgba(47,125,79,0.06)" : "rgba(200,57,63,0.06)",
+                borderBottom: "1px solid rgba(122,30,38,0.10)",
+                padding: "18px 22px"
+              }}
+            >
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 16,
+                  fontWeight: 700,
+                  color: modalAdminDecisao === "APROVAR" ? "#2f7d4f" : "#c8393f",
+                  fontFamily: "var(--font-display)"
+                }}
+              >
+                {modalAdminDecisao === "APROVAR"
+                  ? "✅ Aprovar Correção de Ponto"
+                  : "❌ Rejeitar Correção de Ponto"}
+              </p>
+              <p style={{ margin: "3px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+                {modalAdminSol.funcionario.user.name} · {fmtDate(modalAdminSol.dataReferencia)}
+              </p>
+            </div>
+            <div
+              style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}
+            >
+              {modalAdminDecisao === "APROVAR" && (
+                <p style={{ margin: 0, fontSize: 13, color: "var(--ink-700)", lineHeight: 1.6 }}>
+                  Os registros de ponto do dia serão alterados conforme solicitado pelo RH e
+                  marcados como <strong>modificados pelo RH</strong>. Confirma?
+                </p>
+              )}
+              <div>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                    display: "block",
+                    marginBottom: 4
+                  }}
+                >
+                  {modalAdminDecisao === "REJEITAR" ? (
+                    <>
+                      Motivo da rejeição <span style={{ color: "var(--red)" }}>*</span>
+                    </>
+                  ) : (
+                    "Observação (opcional)"
+                  )}
+                </label>
+                <textarea
+                  value={adminObs}
+                  onChange={(e) => setAdminObs(e.target.value)}
+                  rows={3}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 13,
+                    resize: "vertical",
+                    boxSizing: "border-box"
+                  }}
+                />
+              </div>
+              {adminErro && (
+                <p style={{ margin: 0, fontSize: 12.5, color: "var(--red)" }}>⚠️ {adminErro}</p>
+              )}
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => setModalAdminSol(null)}
+                  disabled={adminLoading}
+                  style={{
+                    padding: "9px 18px",
+                    border: "1px solid rgba(0,0,0,0.15)",
+                    borderRadius: "var(--radius-md)",
+                    background: "#fff",
+                    cursor: adminLoading ? "not-allowed" : "pointer",
+                    fontSize: 13
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmarAdmin}
+                  disabled={adminLoading}
+                  style={{
+                    padding: "9px 22px",
+                    border: "none",
+                    borderRadius: "var(--radius-md)",
+                    background: adminLoading
+                      ? "#9ca3af"
+                      : modalAdminDecisao === "APROVAR"
+                        ? "#2f7d4f"
+                        : "#c8393f",
+                    color: "#fff",
+                    cursor: adminLoading ? "not-allowed" : "pointer",
+                    fontSize: 13,
+                    fontWeight: 700
+                  }}
+                >
+                  {adminLoading
+                    ? "Processando…"
+                    : modalAdminDecisao === "APROVAR"
+                      ? "Confirmar aprovação"
+                      : "Confirmar rejeição"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {feedback && (
+        <div
+          style={{
+            background: feedback.startsWith("Correção aprovada") ? "#d1fae5" : "#fee2e2",
+            border: `1px solid ${feedback.startsWith("Correção aprovada") ? "#6ee7b7" : "#fca5a5"}`,
+            borderRadius: "var(--radius-md)",
+            padding: "10px 16px",
+            fontSize: 13,
+            color: feedback.startsWith("Correção aprovada") ? "#065f46" : "#7a1e26",
+            fontWeight: 500
+          }}
+        >
+          {feedback}
+        </div>
+      )}
+
       <FiltrosBox>
         <SelectField
           label="Status"
@@ -2922,6 +3430,8 @@ function TabSolicitacoes({ token }: { token: string }) {
             { value: "", label: "Todos" },
             { value: "PENDENTE", label: "Aguardando Gestor" },
             { value: "AGUARDANDO_RH", label: "Aguardando RH" },
+            { value: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", label: "Aguardando Doc. Funcionário" },
+            { value: "AGUARDANDO_GESTOR_RH", label: "Aguardando Gerente de RH" },
             { value: "APROVADA", label: "Aprovadas pelo RH" },
             { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Gestor" },
             { value: "REJEITADA_RH", label: "Rejeitadas pelo RH" },
@@ -2948,20 +3458,44 @@ function TabSolicitacoes({ token }: { token: string }) {
       {erro && <ErroBox msg={erro} />}
 
       <CardTabela>
-        <TabelaSolicitacoes solicitacoes={loading ? [] : solicitacoes} loading={loading} />
+        <TabelaSolicitacoes
+          solicitacoes={loading ? [] : solicitacoes}
+          loading={loading}
+          isPontoAdmin={isPontoAdmin}
+          onAprovarAdmin={(s) => {
+            setModalAdminSol(s);
+            setModalAdminDecisao("APROVAR");
+            setAdminObs("");
+            setAdminErro("");
+            setFeedback("");
+          }}
+          onRejeitarAdmin={(s) => {
+            setModalAdminSol(s);
+            setModalAdminDecisao("REJEITAR");
+            setAdminObs("");
+            setAdminErro("");
+            setFeedback("");
+          }}
+        />
         <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
       </CardTabela>
     </div>
   );
 }
 
-/* ─── Tabela de solicitações reutilizável (somente consulta) ─── */
+/* ─── Tabela de solicitações (com ações de admin para AGUARDANDO_GESTOR_RH) ─── */
 function TabelaSolicitacoes({
   solicitacoes,
-  loading = false
+  loading = false,
+  isPontoAdmin = false,
+  onAprovarAdmin,
+  onRejeitarAdmin
 }: {
   solicitacoes: Solicitacao[];
   loading?: boolean;
+  isPontoAdmin?: boolean;
+  onAprovarAdmin?: (s: Solicitacao) => void;
+  onRejeitarAdmin?: (s: Solicitacao) => void;
 }) {
   if (loading) return <Loading />;
   if (!solicitacoes.length)
@@ -2976,12 +3510,24 @@ function TabelaSolicitacoes({
       {solicitacoes.map((s) => {
         const bd = statusSolBadge(s.status);
         const resumo = textoResumo(s);
+        const isCorrecaoRH = s.status === "AGUARDANDO_GESTOR_RH";
+        const meta = s.metadados as Record<string, unknown> | null;
+        const correcoesDia = Array.isArray(meta?.correcoesDia)
+          ? (meta!.correcoesDia as Array<{
+              acao: string;
+              tipoRegistro: string;
+              horario: string;
+              horarioOriginal?: string;
+            }>)
+          : null;
+
         return (
           <div
             key={s.id}
             style={{
               padding: "14px 16px",
               borderBottom: "1px solid rgba(122,30,38,0.04)",
+              borderLeft: isCorrecaoRH ? "3px solid #7a1e26" : "none",
               display: "flex",
               gap: 16,
               alignItems: "flex-start",
@@ -2994,17 +3540,30 @@ function TabelaSolicitacoes({
                 width: 36,
                 height: 36,
                 borderRadius: "50%",
-                background: "var(--burgundy-600)",
+                background: s.funcionario.fotoPerfilUrl ? "transparent" : "var(--burgundy-600)",
+                border: s.funcionario.fotoPerfilUrl ? "2px solid var(--burgundy-600)" : "none",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: "#fff",
                 fontSize: 13,
                 fontWeight: 700,
-                flexShrink: 0
+                flexShrink: 0,
+                overflow: "hidden"
               }}
             >
-              {s.funcionario.user.name[0].toUpperCase()}
+              {s.funcionario.fotoPerfilUrl ? (
+                <img
+                  src={s.funcionario.fotoPerfilUrl}
+                  alt={s.funcionario.user.name}
+                  style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ) : (
+                s.funcionario.user.name[0].toUpperCase()
+              )}
             </div>
 
             {/* Info */}
@@ -3021,7 +3580,7 @@ function TabelaSolicitacoes({
                 }}
               >
                 {s.funcionario.matricula}
-                {s.funcionario.gerencia ? ` · ${s.funcionario.gerencia.sigla}` : ""}
+                {s.funcionario.gerencia ? ` · ${s.funcionario.gerencia.nome}` : ""}
               </p>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <Badge
@@ -3047,7 +3606,47 @@ function TabelaSolicitacoes({
               >
                 {resumo}
               </p>
+              {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
               {s.status === "AGUARDANDO_RH" && <LogTimelineGestor s={s} />}
+
+              {/* Detalhes da correção criada pelo RH */}
+              {isCorrecaoRH && correcoesDia && correcoesDia.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "8px 12px",
+                    background: "rgba(122,30,38,0.04)",
+                    border: "1px solid rgba(122,30,38,0.12)",
+                    borderRadius: "var(--radius-md)"
+                  }}
+                >
+                  <p
+                    style={{
+                      margin: "0 0 6px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: "var(--ink-400)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em"
+                    }}
+                  >
+                    Correções propostas pelo RH{" "}
+                    {meta?.criadoPorNome ? `(${meta.criadoPorNome as string})` : ""}
+                  </p>
+                  {correcoesDia.map((c, i) => (
+                    <p key={i} style={{ margin: "0 0 2px", fontSize: 12, color: "var(--ink-700)" }}>
+                      {c.acao === "CORRIGIR" ? "✏️" : c.acao === "INCLUIR" ? "➕" : "🗑️"}{" "}
+                      <strong>{c.tipoRegistro.replace(/_/g, " ")}</strong>
+                      {c.acao === "CORRIGIR" && c.horarioOriginal
+                        ? `: ${c.horarioOriginal} → ${c.horario}`
+                        : c.acao === "INCLUIR"
+                          ? `: ${c.horario}`
+                          : " (excluir)"}
+                    </p>
+                  ))}
+                </div>
+              )}
+
               {s.descricao && (
                 <p
                   style={{
@@ -3095,6 +3694,46 @@ function TabelaSolicitacoes({
                 <span style={{ fontSize: 10.5, color: "var(--ink-400)" }}>
                   {fmtDate(s.resolvidoEm)}
                 </span>
+              )}
+              {isCorrecaoRH && isPontoAdmin && onAprovarAdmin && onRejeitarAdmin && (
+                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                  <button
+                    onClick={() => onAprovarAdmin(s)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "5px 12px",
+                      border: "none",
+                      borderRadius: "var(--radius-md)",
+                      background: "#2f7d4f",
+                      color: "#fff",
+                      cursor: "pointer",
+                      fontSize: 11.5,
+                      fontWeight: 600
+                    }}
+                  >
+                    <CheckCircleIcon size={12} /> Aprovar
+                  </button>
+                  <button
+                    onClick={() => onRejeitarAdmin(s)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      padding: "5px 12px",
+                      border: "none",
+                      borderRadius: "var(--radius-md)",
+                      background: "#c8393f",
+                      color: "#fff",
+                      cursor: "pointer",
+                      fontSize: 11.5,
+                      fontWeight: 600
+                    }}
+                  >
+                    Rejeitar
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -3204,6 +3843,1716 @@ function TabAfastamentos({ token }: { token: string }) {
   );
 }
 
+/* ═══════════════════════════════════════════════
+   ABA HISTÓRICO DO FUNCIONÁRIO — tipos e helpers
+═══════════════════════════════════════════════ */
+
+type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO" | "FOLGA";
+
+interface DiaHist {
+  data: string;
+  diaSemana: string;
+  entrada: string | null;
+  inicioIntervalo: string | null;
+  fimIntervalo: string | null;
+  saida: string | null;
+  pausas?: { inicio: string; fim: string | null }[];
+  horasMin: number;
+  jornadaMin: number;
+  status: StatusDia;
+  obs?: string;
+  observacoes?: { data: string; texto: string }[];
+  entradaEditada?: boolean;
+  inicioIntervaloEditado?: boolean;
+  fimIntervaloEditado?: boolean;
+  saidaEditada?: boolean;
+}
+
+interface ApiRegHist {
+  id: string;
+  tipo: string;
+  dataHora: string;
+  ajustado?: boolean;
+  observacoes?: { data: string; texto: string }[];
+}
+interface ApiAfast {
+  tipo: string;
+  dataInicio: string;
+  dataFim: string;
+}
+interface ApiFeriadoH {
+  data: string;
+  nome: string;
+}
+
+const TIPO_AFAST_LABEL: Record<string, string> = {
+  FERIAS: "Férias",
+  ATESTADO: "Atestado médico",
+  LICENCA_MEDICA: "Licença",
+  LICENCA_MATERNIDADE: "Lic. maternidade",
+  LICENCA_PATERNIDADE: "Lic. paternidade",
+  FALTA_JUSTIFICADA: "Falta justificada",
+  ABONO: "Abono"
+};
+
+function toMinH(h: string) {
+  const [hh, mm] = h.split(":").map(Number);
+  return hh * 60 + mm;
+}
+function fmtHoraH(iso: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date(iso));
+}
+function dtKeyH(iso: string) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(iso));
+}
+function calcHorasH(regs: ApiRegHist[], agoraMin?: number): number {
+  let total = 0,
+    entrada: number | null = null;
+  for (const r of regs) {
+    const ts = toMinH(fmtHoraH(r.dataHora));
+    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
+      entrada = ts;
+    } else if (
+      (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
+      entrada !== null
+    ) {
+      total += ts - entrada;
+      entrada = null;
+    } else if (r.tipo === "FIM_INTERVALO") {
+      entrada = ts;
+    } else if (r.tipo === "SAIDA" && entrada !== null) {
+      total += ts - entrada;
+      entrada = null;
+    }
+  }
+  if (entrada !== null && agoraMin !== undefined) total += agoraMin - entrada;
+  return total;
+}
+function afastDoDia(key: string, lista: ApiAfast[]) {
+  return lista.find((a) => key >= dtKeyH(a.dataInicio) && key <= dtKeyH(a.dataFim));
+}
+function textoObsLeg(t: string) {
+  return t.replace(/\s*\(#[a-z0-9]+\)/gi, "").replace(/\s*#[a-z0-9]+\.?/gi, ".");
+}
+function fmtObsDt(iso: string) {
+  try {
+    const d = new Date(iso);
+    return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  } catch {
+    return iso;
+  }
+}
+
+function buildHistorico(
+  regs: ApiRegHist[],
+  afasts: ApiAfast[],
+  mes: number,
+  ano: number,
+  feriados: ApiFeriadoH[] = [],
+  sabadoPct = 100,
+  domingoPct = 200,
+  feriadoPct = 200
+): DiaHist[] {
+  const hoje = new Date();
+  const dias = new Date(ano, mes, 0).getDate();
+  const NOMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+  const byDay: Record<string, ApiRegHist[]> = {};
+  for (const r of regs) {
+    const k = dtKeyH(r.dataHora);
+    (byDay[k] ??= []).push(r);
+  }
+  const feriadoMap: Record<string, string> = {};
+  for (const f of feriados) {
+    feriadoMap[dtKeyH(f.data)] = f.nome;
+  }
+  const result: DiaHist[] = [];
+  for (let d = 1; d <= dias; d++) {
+    const dt = new Date(ano, mes - 1, d);
+    const dow = dt.getDay();
+    const fimDeSemana = dow === 0 || dow === 6;
+    const isFuture = dt > hoje;
+    const isoKey = `${ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const dataStr = `${String(d).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
+    const nomeFeriado = feriadoMap[isoKey];
+    if (isFuture) {
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 480,
+        status: "FUTURO"
+      });
+      continue;
+    }
+    const af = afastDoDia(isoKey, afasts);
+    if (af) {
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "AFASTAMENTO",
+        obs: TIPO_AFAST_LABEL[af.tipo] ?? "Afastamento justificado"
+      });
+      continue;
+    }
+    const dayRegs = byDay[isoKey] ?? [];
+    // Fim de semana sem registros: FOLGA (aparece na view do RH sempre)
+    if (fimDeSemana && dayRegs.length === 0) {
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "FUTURO",
+        obs: nomeFeriado ? `Folga — Feriado: ${nomeFeriado}` : "Folga"
+      });
+      continue;
+    }
+    if (!fimDeSemana && dayRegs.length === 0) {
+      if (nomeFeriado) {
+        result.push({
+          data: dataStr,
+          diaSemana: NOMES[dow],
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: 0,
+          status: "AFASTAMENTO",
+          obs: `Feriado: ${nomeFeriado}`
+        });
+      } else {
+        result.push({
+          data: dataStr,
+          diaSemana: NOMES[dow],
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: 480,
+          status: "FALTA",
+          obs: "Ausência não registrada"
+        });
+      }
+      continue;
+    }
+    const get = (t: string) => dayRegs.find((r) => r.tipo === t);
+    const eR = get("ENTRADA"),
+      iiR = get("INICIO_INTERVALO"),
+      fiR = get("FIM_INTERVALO"),
+      sR = get("SAIDA");
+    const entrada = eR ? fmtHoraH(eR.dataHora) : null;
+    const inicioIntervalo = iiR ? fmtHoraH(iiR.dataHora) : null;
+    const fimIntervalo = fiR ? fmtHoraH(fiR.dataHora) : null;
+    const saida = sR ? fmtHoraH(sR.dataHora) : null;
+    const isHoje = dt.toDateString() === hoje.toDateString();
+    let horasMin = 0,
+      status: StatusDia,
+      obs: string | undefined;
+    if (entrada && saida) {
+      horasMin = calcHorasH(dayRegs);
+      status = "OK";
+    } else if (entrada && isHoje) {
+      horasMin = calcHorasH(dayRegs, hoje.getHours() * 60 + hoje.getMinutes());
+      status = "PENDENTE";
+    } else if (entrada && inicioIntervalo) {
+      horasMin = calcHorasH(dayRegs);
+      status = "PENDENTE";
+    } else if (entrada) {
+      horasMin = 0;
+      status = "FALTA";
+      obs = "Apenas entrada registrada — dia considerado falta";
+    } else {
+      status = "PENDENTE";
+    }
+    horasMin = Math.max(0, horasMin);
+    // Multiplicador para fins de semana e feriados
+    let jornadaMin = 480;
+    if (fimDeSemana || nomeFeriado) {
+      const pct = nomeFeriado ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
+      jornadaMin = Math.round(horasMin * (1 - pct / 100));
+      const tipo = nomeFeriado ? `Feriado: ${nomeFeriado}` : dow === 6 ? "Sábado" : "Domingo";
+      if (!obs) obs = `${tipo} — banco de horas: ${pct}%`;
+    }
+    const pausas: { inicio: string; fim: string | null }[] = [];
+    let aberta: string | null = null;
+    for (const r of dayRegs) {
+      if (r.tipo === "INTERROMPER_EXPEDIENTE") {
+        aberta = fmtHoraH(r.dataHora);
+      } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
+        pausas.push({ inicio: aberta ?? "—", fim: fmtHoraH(r.dataHora) });
+        aberta = null;
+      }
+    }
+    if (aberta) pausas.push({ inicio: aberta, fim: null });
+    const observacoes = dayRegs.flatMap((r) => r.observacoes ?? []);
+    result.push({
+      data: dataStr,
+      diaSemana: NOMES[dow],
+      entrada,
+      inicioIntervalo,
+      fimIntervalo,
+      saida,
+      pausas: pausas.length ? pausas : undefined,
+      horasMin,
+      jornadaMin,
+      status,
+      obs,
+      observacoes: observacoes.length ? observacoes : undefined,
+      entradaEditada: !!eR?.ajustado,
+      inicioIntervaloEditado: !!iiR?.ajustado,
+      fimIntervaloEditado: !!fiR?.ajustado,
+      saidaEditada: !!sR?.ajustado
+    });
+  }
+  return result;
+}
+
+/* Sub-components do histórico */
+function StatusPillH({ status, obs }: { status: StatusDia; obs?: string }) {
+  const map: Record<StatusDia, { label: string; cls: string }> = {
+    OK: { label: "OK", cls: "badge-green" },
+    FALTA: { label: "Falta", cls: "badge-red" },
+    PENDENTE: { label: "Pendente", cls: "badge-amber" },
+    AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
+    FERIADO: { label: "Feriado", cls: "badge-gray" },
+    FUTURO: { label: "Folga", cls: "badge-gray" },
+    FOLGA: { label: "Folga", cls: "badge-gray" }
+  };
+  const { label, cls } = map[status] ?? { label: status, cls: "badge-gray" };
+  const titulo = obs ?? undefined;
+  return (
+    <span className={`badge ${cls}`} title={titulo}>
+      {status === "AFASTAMENTO" && obs ? obs : label}
+    </span>
+  );
+}
+function HoraCellH({ hora, editado }: { hora: string | null; editado?: boolean }) {
+  if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  return (
+    <span
+      style={{
+        fontFamily: "var(--font-mono)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3
+      }}
+    >
+      {hora}
+      {editado && <Edit2Icon size={11} style={{ color: "#1e40af", opacity: 0.85 }} />}
+    </span>
+  );
+}
+function HorasCellH({ min, status }: { min: number; status: StatusDia }) {
+  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO")
+    return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  return (
+    <span style={{ fontFamily: "var(--font-mono)" }}>
+      {Math.floor(min / 60)}h{String(min % 60).padStart(2, "0")}
+    </span>
+  );
+}
+function SaldoCellH({
+  trabMin,
+  jornadaMin,
+  status
+}: {
+  trabMin: number;
+  jornadaMin: number;
+  status: StatusDia;
+}) {
+  if (status === "FUTURO" || status === "AFASTAMENTO")
+    return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  if (status === "FALTA") return <span style={{ color: "var(--red)" }}>−8h00</span>;
+  const s = trabMin - jornadaMin;
+  return (
+    <span
+      style={{
+        color: s >= 0 ? "var(--green)" : "var(--red)",
+        fontFamily: "var(--font-mono)",
+        fontWeight: 500
+      }}
+    >
+      {s >= 0 ? "+" : "−"}
+      {Math.floor(Math.abs(s) / 60)}h{String(Math.abs(s) % 60).padStart(2, "0")}
+    </span>
+  );
+}
+function PausaCellH({ pausas }: { pausas?: { inicio: string; fim: string | null }[] }) {
+  if (!pausas?.length) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  return (
+    <span
+      style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 2
+      }}
+    >
+      {pausas.map((p, i) => (
+        <span key={i}>
+          {p.inicio}–{p.fim ?? "…"}
+        </span>
+      ))}
+    </span>
+  );
+}
+function ModalObsH({
+  dia,
+  observacoes,
+  onClose
+}: {
+  dia: string;
+  observacoes: { data: string; texto: string }[];
+  onClose: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 480,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+          overflow: "hidden"
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center"
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Observações do dia</p>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>{dia}</p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 18,
+              color: "var(--ink-500)"
+            }}
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {observacoes.map((o, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "10px 12px",
+                background: "rgba(37,99,235,0.05)",
+                border: "1px solid rgba(37,99,235,0.12)",
+                borderRadius: "var(--radius-md)"
+              }}
+            >
+              <p style={{ margin: 0, fontSize: 13.5, color: "var(--ink-800)", lineHeight: 1.5 }}>
+                {textoObsLeg(o.texto)}
+              </p>
+              <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--ink-400)" }}>
+                Registrado em {fmtObsDt(o.data)}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+function BotaoObsH({
+  observacoes,
+  onClick
+}: {
+  observacoes: { data: string; texto: string }[];
+  onClick: () => void;
+}) {
+  if (!observacoes.length) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Ver observações"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 18,
+        height: 18,
+        padding: 0,
+        border: "none",
+        borderRadius: "50%",
+        background: "transparent",
+        color: "var(--ink-400)",
+        cursor: "pointer",
+        flexShrink: 0
+      }}
+    >
+      <InfoIcon size={13} />
+    </button>
+  );
+}
+function PopupMesAnoH({
+  mes,
+  ano,
+  onSelect,
+  onClose
+}: {
+  mes: number;
+  ano: number;
+  onSelect: (m: number, a: number) => void;
+  onClose: () => void;
+}) {
+  const hoje = new Date();
+  const [anoLocal, setAnoLocal] = useState(ano);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        top: "calc(100% + 6px)",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 500,
+        background: "white",
+        borderRadius: 12,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+        border: "1px solid rgba(122,30,38,0.12)",
+        padding: "14px 16px",
+        minWidth: 240
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 12
+        }}
+      >
+        <button
+          onClick={() => setAnoLocal((a) => a - 1)}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            padding: "4px 8px",
+            color: "#6B0F1A",
+            fontSize: 16
+          }}
+        >
+          ‹
+        </button>
+        <span
+          style={{
+            fontFamily: "var(--font-display)",
+            fontStyle: "italic",
+            fontSize: 16,
+            color: "var(--burgundy-700)"
+          }}
+        >
+          {anoLocal}
+        </span>
+        <button
+          onClick={() => setAnoLocal((a) => Math.min(a + 1, hoje.getFullYear()))}
+          disabled={anoLocal >= hoje.getFullYear()}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: anoLocal >= hoje.getFullYear() ? "default" : "pointer",
+            padding: "4px 8px",
+            color: anoLocal >= hoje.getFullYear() ? "#ccc" : "#6B0F1A",
+            fontSize: 16
+          }}
+        >
+          ›
+        </button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+        {MESES.map((nome, i) => {
+          const m = i + 1,
+            isFut = anoLocal === hoje.getFullYear() && m > hoje.getMonth() + 1,
+            isSel = m === mes && anoLocal === ano;
+          return (
+            <button
+              key={m}
+              disabled={isFut}
+              onClick={() => {
+                onSelect(m, anoLocal);
+                onClose();
+              }}
+              style={{
+                padding: "6px 4px",
+                borderRadius: 6,
+                border: "none",
+                cursor: isFut ? "default" : "pointer",
+                fontSize: 11.5,
+                fontWeight: isSel ? 700 : 400,
+                background: isSel ? "var(--burgundy-700)" : "transparent",
+                color: isSel ? "white" : isFut ? "#ccc" : "#334155"
+              }}
+            >
+              {nome.slice(0, 3)}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* Modal de correção de ponto pelo RH */
+interface EditDayState {
+  dia: DiaHist;
+  isoKey: string; // YYYY-MM-DD
+  regsNoDia: ApiRegHist[];
+}
+
+function ModalCorrecaoRH({
+  state,
+  funcionarioId,
+  token,
+  onClose,
+  onEnviada
+}: {
+  state: EditDayState;
+  funcionarioId: string;
+  token: string;
+  onClose: () => void;
+  onEnviada: () => void;
+}) {
+  const { dia, isoKey, regsNoDia } = state;
+
+  const getH = (tipo: string) => regsNoDia.find((r) => r.tipo === tipo);
+  const fmtAtual = (tipo: string) => {
+    const r = getH(tipo);
+    return r ? fmtHoraH(r.dataHora) : "";
+  };
+
+  const [entrada, setEntrada] = useState(fmtAtual("ENTRADA"));
+  const [inicioIntervalo, setInicioIntervalo] = useState(fmtAtual("INICIO_INTERVALO"));
+  const [fimIntervalo, setFimIntervalo] = useState(fmtAtual("FIM_INTERVALO"));
+  const [saida, setSaida] = useState(fmtAtual("SAIDA"));
+  const [justificativa, setJustificativa] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  async function handleSubmit() {
+    if (!justificativa.trim()) {
+      setErro("A justificativa é obrigatória.");
+      return;
+    }
+
+    const pares: Array<[string, string, string]> = [
+      ["ENTRADA", entrada, fmtAtual("ENTRADA")],
+      ["INICIO_INTERVALO", inicioIntervalo, fmtAtual("INICIO_INTERVALO")],
+      ["FIM_INTERVALO", fimIntervalo, fmtAtual("FIM_INTERVALO")],
+      ["SAIDA", saida, fmtAtual("SAIDA")]
+    ];
+
+    const correcoes: Array<{
+      acao: "CORRIGIR" | "INCLUIR" | "EXCLUIR";
+      tipoRegistro: string;
+      horario: string;
+      registroId?: string;
+      horarioOriginal?: string;
+    }> = [];
+
+    for (const [tipo, novo, atual] of pares) {
+      const reg = getH(tipo);
+      if (novo && novo !== atual) {
+        correcoes.push(
+          reg
+            ? {
+                acao: "CORRIGIR",
+                tipoRegistro: tipo,
+                horario: novo,
+                registroId: reg.id,
+                horarioOriginal: atual
+              }
+            : { acao: "INCLUIR", tipoRegistro: tipo, horario: novo }
+        );
+      } else if (!novo && atual && reg) {
+        correcoes.push({ acao: "EXCLUIR", tipoRegistro: tipo, horario: "", registroId: reg.id });
+      }
+    }
+
+    if (correcoes.length === 0) {
+      setErro("Nenhuma alteração detectada.");
+      return;
+    }
+
+    setEnviando(true);
+    setErro("");
+    try {
+      // data de referência: meio-dia do dia em questão no horário de Brasília
+      const dataReferencia = new Date(`${isoKey}T12:00:00-03:00`).toISOString();
+      await api.post(
+        `/auditoria/rh/funcionarios/${funcionarioId}/correcao-ponto`,
+        { dataReferencia, justificativa, correcoes },
+        token
+      );
+      onEnviada();
+    } catch (e) {
+      setErro((e as Error).message || "Erro ao enviar solicitação.");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    fontFamily: "var(--font-mono)",
+    fontSize: 13,
+    padding: "7px 10px",
+    border: "1px solid rgba(122,30,38,0.14)",
+    borderRadius: "var(--radius-md)",
+    width: "100%",
+    boxSizing: "border-box"
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 11.5,
+    fontWeight: 600,
+    color: "var(--ink-500)",
+    display: "block",
+    marginBottom: 3
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && !enviando && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 500,
+          boxShadow: "0 24px 80px rgba(0,0,0,0.28)",
+          overflow: "hidden"
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            background: "rgba(122,30,38,0.05)",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            padding: "18px 22px"
+          }}
+        >
+          <p
+            style={{
+              margin: 0,
+              fontSize: 16,
+              fontWeight: 700,
+              color: "var(--burgundy-700)",
+              fontFamily: "var(--font-display)"
+            }}
+          >
+            Corrigir Registros de Ponto
+          </p>
+          <p style={{ margin: "3px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+            {dia.diaSemana}, {dia.data}
+          </p>
+        </div>
+
+        <div style={{ padding: "18px 22px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Aviso fluxo */}
+          <div
+            style={{
+              background: "rgba(37,99,235,0.06)",
+              border: "1px solid rgba(37,99,235,0.18)",
+              borderRadius: "var(--radius-md)",
+              padding: "10px 13px",
+              fontSize: 12.5,
+              color: "#1e40af",
+              lineHeight: 1.5
+            }}
+          >
+            ℹ️ Esta correção será enviada ao <strong>Gerente de RH</strong> para aprovação. O
+            histórico só será alterado após aprovação.
+          </div>
+
+          {/* Campos de horário */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {(
+              [
+                ["Entrada", entrada, setEntrada, "ENTRADA"],
+                ["Início Intervalo", inicioIntervalo, setInicioIntervalo, "INICIO_INTERVALO"],
+                ["Fim Intervalo", fimIntervalo, setFimIntervalo, "FIM_INTERVALO"],
+                ["Saída", saida, setSaida, "SAIDA"]
+              ] as const
+            ).map(([lbl, val, setter, tipo]) => {
+              const original = fmtAtual(tipo);
+              const mudou = val !== original;
+              return (
+                <div key={lbl}>
+                  <label style={labelStyle}>
+                    {lbl}
+                    {original && (
+                      <span style={{ fontWeight: 400, color: "var(--ink-400)", marginLeft: 6 }}>
+                        (atual: {original})
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    type="time"
+                    value={val}
+                    onChange={(e) => (setter as (v: string) => void)(e.target.value)}
+                    style={{
+                      ...inputStyle,
+                      borderColor: mudou ? "rgba(37,99,235,0.50)" : "rgba(122,30,38,0.14)"
+                    }}
+                  />
+                  {mudou && original && (
+                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "#1e40af" }}>
+                      Corrigir: {original} → {val || "excluir"}
+                    </p>
+                  )}
+                  {mudou && !original && val && (
+                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "#2f7d4f" }}>
+                      Incluir registro
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Justificativa */}
+          <div>
+            <label style={{ ...labelStyle, color: "var(--ink-700)" }}>
+              Justificativa <span style={{ color: "var(--red)" }}>*</span>
+            </label>
+            <textarea
+              value={justificativa}
+              onChange={(e) => setJustificativa(e.target.value)}
+              rows={3}
+              placeholder="Descreva o motivo da correção…"
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                border: "1px solid rgba(122,30,38,0.14)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 13,
+                resize: "vertical",
+                boxSizing: "border-box"
+              }}
+            />
+          </div>
+
+          {erro && <p style={{ margin: 0, fontSize: 12.5, color: "var(--red)" }}>⚠️ {erro}</p>}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button
+              onClick={onClose}
+              disabled={enviando}
+              style={{
+                padding: "9px 18px",
+                border: "1px solid rgba(0,0,0,0.15)",
+                borderRadius: "var(--radius-md)",
+                background: "#fff",
+                cursor: enviando ? "not-allowed" : "pointer",
+                fontSize: 13,
+                color: "var(--ink-600)"
+              }}
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={enviando}
+              style={{
+                padding: "9px 22px",
+                border: "none",
+                borderRadius: "var(--radius-md)",
+                background: enviando ? "#9ca3af" : "var(--burgundy-600)",
+                color: "#fff",
+                cursor: enviando ? "not-allowed" : "pointer",
+                fontSize: 13,
+                fontWeight: 700
+              }}
+            >
+              {enviando ? "Enviando…" : "Enviar para aprovação"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; token: string }) {
+  const hoje = new Date();
+  const [mes, setMes] = useState(hoje.getMonth() + 1);
+  const [ano, setAno] = useState(hoje.getFullYear());
+  const [dias, setDias] = useState<DiaHist[]>([]);
+  const [rawPorDia, setRawPorDia] = useState<Record<string, ApiRegHist[]>>({});
+  const [periodoLocked, setPeriodoLocked] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [modalObs, setModalObs] = useState<{
+    dia: string;
+    observacoes: { data: string; texto: string }[];
+  } | null>(null);
+  const [modalEdit, setModalEdit] = useState<EditDayState | null>(null);
+  const [feedbackEnviada, setFeedbackEnviada] = useState(false);
+  const [popupMes, setPopupMes] = useState(false);
+  const mesNavRef = useRef<HTMLDivElement>(null);
+
+  const carregar = useCallback(async () => {
+    setLoading(true);
+    setFeedbackEnviada(false);
+    try {
+      const [regsRaw, afastsRaw, assinData, feriadosRaw, cfgRaw] = await Promise.all([
+        api.get<ApiRegHist[]>(
+          `/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`,
+          token
+        ),
+        api.get<{ afastamentos: ApiAfast[] }>(
+          `/auditoria/afastamentos?funcionarioId=${funcionarioId}&limit=200`,
+          token
+        ),
+        api
+          .get<{
+            data: { status: string }[];
+          }>(`/auditoria/assinaturas?funcionarioId=${funcionarioId}&mes=${mes}&ano=${ano}&limit=1`, token)
+          .catch(() => null),
+        api
+          .get<
+            { data: ApiFeriadoH[] } | ApiFeriadoH[]
+          >(`/api-publica/v1/feriados?ano=${ano}&mes=${mes}`, token)
+          .catch(() => null),
+        api
+          .get<{
+            bancoHorasSabadoPct?: number;
+            bancoHorasDomingoPct?: number;
+            bancoHorasFeriadoPct?: number;
+          }>(`/api-publica/v1/configuracoes`, token)
+          .catch(() => null)
+      ]);
+      const regs = regsRaw ?? [];
+      const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
+      const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
+        ? feriadosRaw
+        : ((feriadosRaw as { data?: ApiFeriadoH[] })?.data ?? []);
+      const sabadoPct =
+        (cfgRaw as { bancoHorasSabadoPct?: number } | null)?.bancoHorasSabadoPct ?? 100;
+      const domingoPct =
+        (cfgRaw as { bancoHorasDomingoPct?: number } | null)?.bancoHorasDomingoPct ?? 200;
+      const feriadoPct =
+        (cfgRaw as { bancoHorasFeriadoPct?: number } | null)?.bancoHorasFeriadoPct ?? 200;
+
+      // índice bruto por data para o modal de edição
+      const byDay: Record<string, ApiRegHist[]> = {};
+      for (const r of regs) {
+        const k = dtKeyH(r.dataHora);
+        (byDay[k] ??= []).push(r);
+      }
+      setRawPorDia(byDay);
+
+      setDias(buildHistorico(regs, afasts, mes, ano, feriados, sabadoPct, domingoPct, feriadoPct));
+
+      // Bloqueia edição se o período estiver concluído (assinado pelos dois)
+      const assinResp = assinData as { assinaturas?: { status: string }[] } | null;
+      const assinaturas = assinResp?.assinaturas ?? [];
+      setPeriodoLocked(assinaturas.some((a) => a.status === "CONCLUIDA"));
+    } catch {
+      setDias(buildHistorico([], [], mes, ano));
+    } finally {
+      setLoading(false);
+    }
+  }, [funcionarioId, token, mes, ano]);
+
+  useEffect(() => {
+    carregar();
+  }, [carregar]);
+
+  function navMes(dir: -1 | 1) {
+    let nm = mes + dir,
+      na = ano;
+    if (nm < 1) {
+      nm = 12;
+      na--;
+    }
+    if (nm > 12) {
+      nm = 1;
+      na++;
+    }
+    setMes(nm);
+    setAno(na);
+  }
+
+  function abrirEdicao(r: DiaHist, isoKey: string) {
+    setModalEdit({ dia: r, isoKey, regsNoDia: rawPorDia[isoKey] ?? [] });
+  }
+
+  const nomeMes = new Date(ano, mes - 1).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric"
+  });
+  const totalTrab = dias
+    .filter((r) => r.status === "OK" || r.status === "PENDENTE")
+    .reduce((s, r) => s + r.horasMin, 0);
+  const totalOK = dias.filter((r) => r.status === "OK").length;
+  const totalFaltas = dias.filter((r) => r.status === "FALTA").length;
+  const totalAfasts = dias.filter((r) => r.status === "AFASTAMENTO").length;
+  const totalUteis = dias.filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO").length;
+  const mesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {modalObs && (
+        <ModalObsH
+          dia={modalObs.dia}
+          observacoes={modalObs.observacoes}
+          onClose={() => setModalObs(null)}
+        />
+      )}
+      {modalEdit && (
+        <ModalCorrecaoRH
+          state={modalEdit}
+          funcionarioId={funcionarioId}
+          token={token}
+          onClose={() => setModalEdit(null)}
+          onEnviada={() => {
+            setModalEdit(null);
+            setFeedbackEnviada(true);
+            carregar();
+          }}
+        />
+      )}
+
+      {/* Feedback pós-envio */}
+      {feedbackEnviada && (
+        <div
+          style={{
+            background: "#d1fae5",
+            border: "1px solid #6ee7b7",
+            borderRadius: "var(--radius-md)",
+            padding: "10px 16px",
+            fontSize: 13,
+            color: "#065f46",
+            fontWeight: 500
+          }}
+        >
+          ✅ Solicitação de correção enviada ao Gerente de RH para aprovação.
+        </div>
+      )}
+
+      {/* Aviso período bloqueado */}
+      {periodoLocked && (
+        <div
+          style={{
+            background: "rgba(122,30,38,0.06)",
+            border: "1px solid rgba(122,30,38,0.20)",
+            borderRadius: "var(--radius-md)",
+            padding: "10px 14px",
+            fontSize: 12.5,
+            color: "var(--burgundy-700)"
+          }}
+        >
+          🔒 Este período já foi assinado pelo funcionário e pelo gestor. Correções não são
+          permitidas.
+        </div>
+      )}
+
+      {/* Navegação de mês */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <button
+          className="btn-icon"
+          onClick={() => navMes(-1)}
+          style={{ background: "white", border: "1px solid rgba(122,30,38,0.12)", flexShrink: 0 }}
+        >
+          <ArrowLeftIcon size={16} />
+        </button>
+        <div
+          ref={mesNavRef}
+          style={{ position: "relative", flex: 1, textAlign: "center", minWidth: 120 }}
+        >
+          <button
+            onClick={() => setPopupMes((v) => !v)}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "2px 8px",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontFamily: "var(--font-display)",
+              fontStyle: "italic",
+              fontSize: 18,
+              color: "var(--burgundy-600)",
+              textTransform: "capitalize",
+              borderRadius: 6
+            }}
+          >
+            {nomeMes} <ChevronDownIcon size={14} style={{ opacity: 0.5, marginTop: 2 }} />
+          </button>
+          {popupMes && (
+            <PopupMesAnoH
+              mes={mes}
+              ano={ano}
+              onSelect={(m, a) => {
+                setMes(m);
+                setAno(a);
+              }}
+              onClose={() => setPopupMes(false)}
+            />
+          )}
+        </div>
+        <button
+          className="btn-icon"
+          onClick={() => navMes(1)}
+          disabled={mesAtual}
+          style={{
+            background: "white",
+            border: "1px solid rgba(122,30,38,0.12)",
+            flexShrink: 0,
+            opacity: mesAtual ? 0.4 : 1
+          }}
+        >
+          <ArrowRightIcon size={16} />
+        </button>
+        <button
+          onClick={carregar}
+          style={{
+            background: "white",
+            border: "1px solid rgba(122,30,38,0.12)",
+            borderRadius: "var(--radius-md)",
+            padding: "6px 10px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 12,
+            color: "var(--ink-600)"
+          }}
+        >
+          <RefreshCwIcon size={13} />
+        </button>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <span className="badge badge-green">{totalOK} dias OK</span>
+          {totalFaltas > 0 && (
+            <span className="badge badge-red">
+              {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
+            </span>
+          )}
+          {totalAfasts > 0 && (
+            <span className="badge badge-blue">
+              {totalAfasts} afastamento{totalAfasts !== 1 ? "s" : ""}
+            </span>
+          )}
+          <span className="badge badge-gray">
+            {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")} trabalhadas
+          </span>
+        </div>
+      </div>
+
+      {/* Tabela */}
+      {loading ? (
+        <div
+          style={{ textAlign: "center", padding: "48px 0", color: "var(--ink-500)", fontSize: 14 }}
+        >
+          Carregando histórico…
+        </div>
+      ) : (
+        <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table className="table-cfo" style={{ minWidth: 860, tableLayout: "auto" }}>
+              <thead>
+                <tr>
+                  {[
+                    "Data",
+                    "Dia",
+                    "Entrada",
+                    "Início Interv.",
+                    "Fim Interv.",
+                    "Saída",
+                    "Pausa",
+                    "Horas",
+                    "Saldo",
+                    "Status",
+                    "Ações"
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      style={
+                        h === "Status" || h === "Ações"
+                          ? { width: "1%", whiteSpace: "nowrap", paddingLeft: 10, paddingRight: 10 }
+                          : undefined
+                      }
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {dias.map((r, i) => {
+                  const isHoje =
+                    r.data ===
+                    `${String(hoje.getDate()).padStart(2, "0")}/${String(hoje.getMonth() + 1).padStart(2, "0")}/${hoje.getFullYear()}`;
+                  const isoKey = (() => {
+                    const [d, m, a] = r.data.split("/");
+                    return `${a}-${m}-${d}`;
+                  })();
+                  const podeEditar =
+                    !periodoLocked && r.status !== "FUTURO" && r.status !== "AFASTAMENTO";
+                  return (
+                    <tr
+                      key={i}
+                      style={{
+                        background: isHoje ? "rgba(122,30,38,0.03)" : undefined,
+                        opacity: r.status === "FUTURO" ? 0.5 : 1
+                      }}
+                    >
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
+                        {r.data}
+                        {isHoje && (
+                          <span className="badge badge-blue" style={{ marginLeft: 6, fontSize: 9 }}>
+                            hoje
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
+                      <td>
+                        <HoraCellH hora={r.entrada} editado={r.entradaEditada} />
+                      </td>
+                      <td>
+                        <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                      </td>
+                      <td>
+                        <HoraCellH hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                      </td>
+                      <td>
+                        <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                      </td>
+                      <td>
+                        <PausaCellH pausas={r.pausas} />
+                      </td>
+                      <td>
+                        <HorasCellH min={r.horasMin} status={r.status} />
+                      </td>
+                      <td>
+                        <SaldoCellH
+                          trabMin={r.horasMin}
+                          jornadaMin={r.jornadaMin}
+                          status={r.status}
+                        />
+                      </td>
+                      <td
+                        style={{
+                          width: "1%",
+                          whiteSpace: "nowrap",
+                          paddingLeft: 10,
+                          paddingRight: 10
+                        }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <StatusPillH status={r.status} obs={r.obs} />
+                          <BotaoObsH
+                            observacoes={r.observacoes ?? []}
+                            onClick={() =>
+                              setModalObs({
+                                dia: `${r.diaSemana}, ${r.data}`,
+                                observacoes: r.observacoes ?? []
+                              })
+                            }
+                          />
+                        </span>
+                      </td>
+                      <td
+                        style={{
+                          width: "1%",
+                          whiteSpace: "nowrap",
+                          paddingLeft: 10,
+                          paddingRight: 10
+                        }}
+                      >
+                        <button
+                          onClick={() => podeEditar && abrirEdicao(r, isoKey)}
+                          disabled={!podeEditar}
+                          title={
+                            periodoLocked
+                              ? "Período assinado — edição bloqueada"
+                              : !podeEditar
+                                ? "Não editável"
+                                : "Corrigir registros deste dia"
+                          }
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            padding: "4px 9px",
+                            border: "1px solid rgba(122,30,38,0.22)",
+                            borderRadius: "var(--radius-md)",
+                            background: podeEditar ? "#fff" : "transparent",
+                            color: podeEditar ? "var(--burgundy-600)" : "var(--ink-300)",
+                            cursor: podeEditar ? "pointer" : "not-allowed",
+                            fontSize: 11,
+                            fontWeight: 600
+                          }}
+                        >
+                          <Edit2Icon size={11} />
+                          {periodoLocked ? "🔒" : "Corrigir"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {dias.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={11}
+                      style={{ textAlign: "center", padding: 40, color: "var(--ink-500)" }}
+                    >
+                      Nenhum registro encontrado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              {totalUteis > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: "2px solid rgba(122,30,38,0.10)" }}>
+                    <td
+                      colSpan={7}
+                      style={{
+                        padding: "12px 14px",
+                        fontWeight: 600,
+                        fontSize: 12,
+                        letterSpacing: "0.05em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)"
+                      }}
+                    >
+                      Total do período
+                    </td>
+                    <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                      {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")}
+                    </td>
+                    <td>
+                      <SaldoCellH trabMin={totalTrab} jornadaMin={totalUteis * 480} status="OK" />
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Legenda */}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <InfoIcon size={13} style={{ color: "var(--ink-500)" }} />
+        {[
+          { cls: "badge-green", l: "Jornada completa" },
+          { cls: "badge-amber", l: "Pendente (saída não registrada)" },
+          { cls: "badge-red", l: "Falta" },
+          { cls: "badge-blue", l: "Afastamento justificado" },
+          { cls: "badge-gray", l: "Feriado ou dia futuro" }
+        ].map((item) => (
+          <span
+            key={item.l}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11.5,
+              color: "var(--ink-500)"
+            }}
+          >
+            <span className={`badge ${item.cls}`} style={{ padding: "1px 6px", fontSize: 9 }}>
+              &nbsp;
+            </span>
+            {item.l}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Painel de Férias do funcionário (sub-aba) ─── */
+function PainelFerias({
+  saldo,
+  historico,
+  onRecarregar
+}: {
+  saldo: SaldoFerias | null;
+  historico: Solicitacao[];
+  onRecarregar: () => void;
+}) {
+  const statusBadge: Record<string, { label: string; cls: string }> = {
+    PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
+    AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
+    AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguard. doc. funcionário", cls: "badge-amber" },
+    APROVADA: { label: "Aprovada", cls: "badge-green" },
+    REJEITADA_GESTOR: { label: "Rej. Gestor", cls: "badge-red" },
+    REJEITADA_RH: { label: "Rej. RH", cls: "badge-red" },
+    REJEITADA: { label: "Rejeitada", cls: "badge-red" },
+    CANCELADA: { label: "Cancelada", cls: "badge-gray" }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Saldo */}
+      {saldo ? (
+        <div
+          style={{
+            background: saldo.obrigatorio ? "rgba(200,57,63,0.06)" : "rgba(47,125,79,0.06)",
+            border: `1px solid ${saldo.obrigatorio ? "rgba(200,57,63,0.22)" : "rgba(47,125,79,0.22)"}`,
+            borderRadius: "var(--radius-lg)",
+            padding: "16px 20px"
+          }}
+        >
+          {saldo.obrigatorio && (
+            <p style={{ fontSize: 12.5, fontWeight: 700, color: "var(--red)", margin: "0 0 10px" }}>
+              ⚠️ Período de gozo obrigatório — férias devem ser tiradas antes do fim do ciclo.
+            </p>
+          )}
+          <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+            {[
+              [
+                "Dias disponíveis",
+                saldo.diasDisponiveis,
+                saldo.diasDisponiveis > 0 ? "#2f7d4f" : "var(--ink-500)"
+              ],
+              ["Já gozados", saldo.diasGozo, "var(--ink-700)"],
+              ["Já vendidos", saldo.diasVendidos, "var(--ink-700)"],
+              ["Total vencido", saldo.totalVencido, "var(--ink-700)"],
+              ["Ciclos vencidos", saldo.ciclosVencidos, "var(--ink-700)"]
+            ].map(([l, v, c]) => (
+              <div key={String(l)}>
+                <p
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: "var(--ink-400)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    margin: 0
+                  }}
+                >
+                  {l}
+                </p>
+                <p
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 22,
+                    fontWeight: 700,
+                    color: String(c),
+                    margin: 0
+                  }}
+                >
+                  {v}
+                </p>
+              </div>
+            ))}
+          </div>
+          {(saldo.ciclos?.length ?? 0) > 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "10px 0 0" }}>
+              Ciclo(s):{" "}
+              {(saldo.ciclos ?? [])
+                .map(
+                  (c) =>
+                    `${new Date(c.inicio).toLocaleDateString("pt-BR")} – ${new Date(c.fim).toLocaleDateString("pt-BR")}`
+                )
+                .join(" | ")}
+              {saldo.dataAdmissao
+                ? ` · Admissão: ${new Date(saldo.dataAdmissao).toLocaleDateString("pt-BR")}`
+                : ""}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div
+          style={{
+            padding: "12px 16px",
+            background: "rgba(247,196,55,0.08)",
+            border: "1px solid rgba(247,196,55,0.25)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "#8a6a00"
+          }}
+        >
+          Data de admissão não cadastrada. O saldo de férias não pode ser calculado.
+        </div>
+      )}
+
+      {/* Histórico */}
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+      >
+        <p
+          style={{
+            margin: 0,
+            fontSize: 12,
+            fontWeight: 700,
+            color: "var(--ink-500)",
+            textTransform: "uppercase",
+            letterSpacing: "0.06em"
+          }}
+        >
+          Histórico de solicitações de férias ({historico?.length ?? 0})
+        </p>
+        <button
+          onClick={onRecarregar}
+          style={{
+            background: "none",
+            border: "1px solid rgba(122,30,38,0.18)",
+            borderRadius: "var(--radius-md)",
+            padding: "5px 10px",
+            fontSize: 11,
+            cursor: "pointer",
+            color: "var(--ink-600)",
+            display: "flex",
+            alignItems: "center",
+            gap: 5
+          }}
+        >
+          <RefreshCwIcon size={11} /> Atualizar
+        </button>
+      </div>
+
+      {(historico?.length ?? 0) === 0 ? (
+        <p
+          style={{ textAlign: "center", padding: "32px 0", fontSize: 13, color: "var(--ink-400)" }}
+        >
+          Nenhuma solicitação de férias registrada.
+        </p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {(historico ?? []).map((s) => {
+            const bd = statusBadge[s.status] ?? { label: s.status, cls: "badge-gray" };
+            const meta = s.metadados as Record<string, unknown> | null;
+            const periodos = Array.isArray(meta?.periodos)
+              ? (meta!.periodos as Array<{ dataInicio: string; dataFim: string; dias: number }>)
+              : null;
+            const diasGozo = periodos?.reduce((acc, p) => acc + p.dias, 0) ?? 0;
+            const diasVenda = Number(meta?.diasVendidos ?? 0);
+            return (
+              <div
+                key={s.id}
+                style={{
+                  background: "#fff",
+                  borderRadius: "var(--radius-lg)",
+                  border: "1px solid rgba(47,125,79,0.14)",
+                  padding: "14px 18px",
+                  display: "flex",
+                  gap: 16,
+                  alignItems: "flex-start",
+                  flexWrap: "wrap"
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      marginBottom: 6
+                    }}
+                  >
+                    <span className={`badge ${bd.cls}`}>{bd.label}</span>
+                    <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
+                      Criada: {fmtDate(s.createdAt)}
+                    </span>
+                    {diasGozo > 0 && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ink-600)",
+                          background: "rgba(47,125,79,0.08)",
+                          borderRadius: 4,
+                          padding: "1px 7px",
+                          fontWeight: 600
+                        }}
+                      >
+                        {diasGozo}d gozo{diasVenda > 0 ? ` + ${diasVenda}d venda` : ""}
+                      </span>
+                    )}
+                  </div>
+                  <FeriasDetalheBlock meta={meta} />
+                  {/* Folha e retorno */}
+                  {(s.guiaMedicoUrl || s.documentoRetornoUrl) && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      {s.guiaMedicoUrl && (
+                        <a
+                          href={s.guiaMedicoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: 11.5, color: "#2f7d4f", fontWeight: 600 }}
+                        >
+                          📄 Folha de pagamento
+                        </a>
+                      )}
+                      {s.documentoRetornoUrl && (
+                        <a
+                          href={s.documentoRetornoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ fontSize: 11.5, color: "#16a34a", fontWeight: 600 }}
+                        >
+                          ✅ Folha assinada
+                        </a>
+                      )}
+                    </div>
+                  )}
+                  {s.rhObservacao && (
+                    <p
+                      style={{
+                        margin: "6px 0 0",
+                        fontSize: 11.5,
+                        color: "#065f46",
+                        fontStyle: "italic"
+                      }}
+                    >
+                      RH: {s.rhObservacao}
+                    </p>
+                  )}
+                  {s.descricao && (
+                    <p
+                      style={{
+                        margin: "4px 0 0",
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        fontStyle: "italic"
+                      }}
+                    >
+                      "{s.descricao}"
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Tabela de documentos enviados ao RH (detalhe do funcionário) ─── */
+function TabelaDocumentosRh({ documentos }: { documentos: DocumentoRhEnvio[] }) {
+  if (!documentos.length) {
+    return (
+      <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
+        Nenhum documento enviado ao RH.
+      </p>
+    );
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+      <div style={{ overflowX: "auto" }}>
+        <table className="table-cfo" style={{ minWidth: 520 }}>
+          <thead>
+            <tr>
+              <th>Data / Hora</th>
+              <th>Descrição</th>
+              <th>Arquivo</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {documentos.map((doc) => (
+              <tr key={doc.id}>
+                <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(doc.createdAt)}</td>
+                <td>{doc.descricao}</td>
+                <td style={{ color: "var(--ink-500)", fontSize: 12 }}>
+                  {doc.nomeArquivo ??
+                    (doc.mimeType?.includes("pdf") ? "documento.pdf" : "documento")}
+                </td>
+                <td>
+                  {doc.arquivoUrl ? (
+                    <a
+                      href={doc.arquivoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-ghost btn-sm"
+                      style={{ gap: 5 }}
+                    >
+                      <DownloadIcon size={13} /> Abrir
+                    </a>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Tabela de afastamentos reutilizável ─── */
 function TabelaAfastamentos({
   afastamentos,
@@ -3262,6 +5611,11 @@ function TabelaAfastamentos({
                 flexShrink: 0
               }}
             />
+            <FuncAvatar
+              name={a.funcionario.user.name}
+              fotoUrl={a.funcionario.fotoPerfilUrl}
+              size={38}
+            />
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: cor }}>
@@ -3291,7 +5645,7 @@ function TabelaAfastamentos({
                 }}
               >
                 {a.funcionario.matricula}
-                {a.funcionario.gerencia ? ` · ${a.funcionario.gerencia.sigla}` : ""}
+                {a.funcionario.gerencia ? ` · ${a.funcionario.gerencia.nome}` : ""}
               </p>
               {a.justificativa && (
                 <p
@@ -3314,10 +5668,572 @@ function TabelaAfastamentos({
 }
 
 /* ═══════════════════════════════════════════════
+   BANCO DE HORAS — saldo + detalhamento por mês
+═══════════════════════════════════════════════ */
+
+function BancoHorasDiasTabela({ dados }: { dados: BancoHorasFuncionarioDetalhe }) {
+  const [mesAtivo, setMesAtivo] = React.useState<string>(() => {
+    if (!dados.dias.length) return "";
+    return dados.dias[dados.dias.length - 1].data.slice(0, 7);
+  });
+
+  const fmtMes = (yyyyMM: string) => {
+    const [year, month] = yyyyMM.split("-").map(Number);
+    return new Date(year, month - 1, 1).toLocaleDateString("pt-BR", {
+      month: "long",
+      year: "numeric"
+    });
+  };
+
+  const mesesDisponiveis = [...new Set(dados.dias.map((d) => d.data.slice(0, 7)))].sort();
+  const idxAtivo = mesesDisponiveis.indexOf(mesAtivo);
+  const podeAnterior = idxAtivo > 0;
+  const podePosterior = idxAtivo < mesesDisponiveis.length - 1;
+
+  const diasMes = dados.dias.filter((d) => d.data.slice(0, 7) === mesAtivo);
+  const saldoAnterior =
+    idxAtivo > 0
+      ? (dados.dias.filter((d) => d.data.slice(0, 7) === mesesDisponiveis[idxAtivo - 1]).at(-1)
+          ?.saldoAcumuladoMinutos ?? 0)
+      : 0;
+
+  const totalTrabalhado = diasMes.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
+  const totalEsperado = diasMes.reduce((s, d) => s + d.jornadaEsperadaMinutos, 0);
+  const saldoMes = diasMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
+  const saldoFinalMes = diasMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Resumo do ciclo */}
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", padding: "8px 0" }}>
+        <div>
+          <p
+            style={{
+              fontSize: 10,
+              color: "var(--ink-400)",
+              margin: 0,
+              textTransform: "uppercase",
+              letterSpacing: "0.10em"
+            }}
+          >
+            Saldo Atual
+          </p>
+          <p
+            style={{
+              fontSize: 18,
+              fontWeight: 700,
+              margin: 0,
+              color: dados.saldoAtualMinutos >= 0 ? "#2f7d4f" : "#c8393f"
+            }}
+          >
+            {dados.saldoFormatado}
+          </p>
+        </div>
+        <div>
+          <p
+            style={{
+              fontSize: 10,
+              color: "var(--ink-400)",
+              margin: 0,
+              textTransform: "uppercase",
+              letterSpacing: "0.10em"
+            }}
+          >
+            Ciclo desde
+          </p>
+          <p style={{ fontSize: 13, fontWeight: 600, margin: 0, color: "var(--ink-900)" }}>
+            {dados.cicloInicio ? fmtDataCurta(dados.cicloInicio) : "início dos registros"}
+          </p>
+        </div>
+        <div>
+          <p
+            style={{
+              fontSize: 10,
+              color: "var(--ink-400)",
+              margin: 0,
+              textTransform: "uppercase",
+              letterSpacing: "0.10em"
+            }}
+          >
+            Próxima Zeragem
+          </p>
+          <p style={{ fontSize: 13, fontWeight: 600, margin: 0, color: "var(--ink-900)" }}>
+            {dados.proximaZeragem ? fmtDataCurta(dados.proximaZeragem) : "não configurada"}
+          </p>
+        </div>
+        <div>
+          <p
+            style={{
+              fontSize: 10,
+              color: "var(--ink-400)",
+              margin: 0,
+              textTransform: "uppercase",
+              letterSpacing: "0.10em"
+            }}
+          >
+            Limite
+          </p>
+          <p style={{ fontSize: 13, fontWeight: 600, margin: 0, color: "var(--ink-900)" }}>
+            ±{toHM(dados.limiteMinutos)}
+          </p>
+        </div>
+      </div>
+
+      {dados.dias.length === 0 ? (
+        <p style={{ fontSize: 13, color: "var(--ink-500)", textAlign: "center", padding: 16 }}>
+          Nenhum registro no ciclo atual.
+        </p>
+      ) : (
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            overflow: "hidden"
+          }}
+        >
+          {/* Navegação mês */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 14px",
+              borderBottom: "1px solid rgba(122,30,38,0.07)"
+            }}
+          >
+            <button
+              onClick={() => setMesAtivo(mesesDisponiveis[idxAtivo - 1])}
+              disabled={!podeAnterior}
+              style={{ ...btnStyle(false, !podeAnterior), width: 28, height: 28 }}
+            >
+              <ArrowLeftIcon size={13} />
+            </button>
+            <p
+              style={{
+                fontFamily: "var(--font-display)",
+                fontStyle: "italic",
+                fontSize: 14,
+                color: "var(--burgundy-600)",
+                textTransform: "capitalize",
+                flex: 1,
+                textAlign: "center",
+                margin: 0
+              }}
+            >
+              {mesAtivo ? fmtMes(mesAtivo) : "—"}
+            </p>
+            <button
+              onClick={() => setMesAtivo(mesesDisponiveis[idxAtivo + 1])}
+              disabled={!podePosterior}
+              style={{ ...btnStyle(false, !podePosterior), width: 28, height: 28 }}
+            >
+              <ArrowLeftIcon size={13} style={{ transform: "rotate(180deg)" }} />
+            </button>
+            <div style={{ marginLeft: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                Trab.: <strong style={{ color: "var(--ink-900)" }}>{toHM(totalTrabalhado)}</strong>
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                Saldo:{" "}
+                <strong style={{ color: saldoMes >= 0 ? "#2f7d4f" : "#c8393f" }}>
+                  {toHM(saldoMes)}
+                </strong>
+              </span>
+              <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                Acum.:{" "}
+                <strong style={{ color: saldoFinalMes >= 0 ? "#2f7d4f" : "#c8393f" }}>
+                  {toHM(saldoFinalMes)}
+                </strong>
+              </span>
+            </div>
+          </div>
+
+          {/* Saldo transportado */}
+          {idxAtivo > 0 && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "6px 14px",
+                background: "rgba(122,30,38,0.02)",
+                borderBottom: "1px dashed rgba(122,30,38,0.10)"
+              }}
+            >
+              <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                Saldo transportado ({fmtMes(mesesDisponiveis[idxAtivo - 1])})
+              </span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: saldoAnterior >= 0 ? "#2f7d4f" : "#c8393f"
+                }}
+              >
+                {toHM(saldoAnterior)}
+              </span>
+            </div>
+          )}
+
+          {/* Tabela */}
+          <div style={{ overflowX: "auto" }}>
+            <table className="table-cfo" style={{ minWidth: 560 }}>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Trabalhado</th>
+                  <th>Esperado</th>
+                  <th>Saldo do Dia</th>
+                  <th>Saldo Acumulado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diasMes.map((d) => {
+                  const neutro = !!d.observacao;
+                  return (
+                    <tr
+                      key={d.data}
+                      style={neutro ? { background: "rgba(247,196,55,0.06)" } : undefined}
+                    >
+                      <td style={{ textTransform: "capitalize" }}>
+                        {fmtDataCurta(d.data)}
+                        {d.observacao && (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              fontSize: 10,
+                              fontWeight: 600,
+                              color: "#8a6a00",
+                              background: "rgba(247,196,55,0.18)",
+                              padding: "1px 5px",
+                              borderRadius: 3
+                            }}
+                          >
+                            {d.observacao}
+                          </span>
+                        )}
+                      </td>
+                      <td>{toHM(d.horasTrabalhadasMinutos)}</td>
+                      <td>{neutro ? "—" : toHM(d.jornadaEsperadaMinutos)}</td>
+                      <td
+                        style={{
+                          color: neutro
+                            ? "var(--ink-500)"
+                            : d.saldoDiaMinutos >= 0
+                              ? "#2f7d4f"
+                              : "#c8393f"
+                        }}
+                      >
+                        {neutro ? "—" : toHM(d.saldoDiaMinutos)}
+                      </td>
+                      <td
+                        style={{
+                          color: d.saldoAcumuladoMinutos >= 0 ? "#2f7d4f" : "#c8393f",
+                          fontWeight: 600
+                        }}
+                      >
+                        {toHM(d.saldoAcumuladoMinutos)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: "2px solid rgba(122,30,38,0.10)" }}>
+                  <td
+                    style={{
+                      padding: "8px 14px",
+                      fontWeight: 600,
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "var(--ink-500)"
+                    }}
+                  >
+                    Total do mês
+                  </td>
+                  <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                    {toHM(totalTrabalhado)}
+                  </td>
+                  <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                    {toHM(totalEsperado)}
+                  </td>
+                  <td
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontWeight: 700,
+                      color: saldoMes >= 0 ? "#2f7d4f" : "#c8393f"
+                    }}
+                  >
+                    {toHM(saldoMes)}
+                  </td>
+                  <td
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontWeight: 700,
+                      color: saldoFinalMes >= 0 ? "#2f7d4f" : "#c8393f"
+                    }}
+                  >
+                    {toHM(saldoFinalMes)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabBancoHorasGeral({ token }: { token: string }) {
+  const [itens, setItens] = useState<BancoHorasItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [busca, setBusca] = useState("");
+  const [statusFiltro, setStatusFiltro] = useState("");
+  const [expandido, setExpandido] = useState<string | null>(null);
+  const [detalhe, setDetalhe] = useState<BancoHorasFuncionarioDetalhe | null>(null);
+  const [detalheLoading, setDetalheLoading] = useState(false);
+
+  const limit = 30;
+
+  const carregar = useCallback(
+    async (pg = 1) => {
+      setLoading(true);
+      setErro(null);
+      try {
+        const params = new URLSearchParams({ page: String(pg), limit: String(limit) });
+        if (busca) params.set("busca", busca);
+        if (statusFiltro) params.set("status", statusFiltro);
+        const data = await api.get<{ total: number; itens: BancoHorasItem[] }>(
+          `/auditoria/banco-horas?${params}`,
+          token
+        );
+        setItens(data?.itens ?? []);
+        setTotal(data?.total ?? 0);
+        setPage(pg);
+      } catch (e) {
+        setErro((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [token, busca, statusFiltro]
+  );
+
+  useEffect(() => {
+    carregar(1);
+  }, [carregar]);
+
+  function exportar() {
+    exportCSV(
+      itens.map((i) => ({
+        Funcionario: i.funcionario.nome,
+        Matricula: i.funcionario.matricula,
+        Gerencia: i.gerencia?.nome ?? "",
+        CicloDesde: i.cicloInicio ? fmtDataCurta(i.cicloInicio) : "",
+        ProximaZeragem: i.proximaZeragem ? fmtDataCurta(i.proximaZeragem) : "",
+        SaldoAtual: i.saldoFormatado,
+        Limite: toHM(i.limiteMinutos),
+        Status: i.saldoAtualMinutos >= 0 ? "Positivo" : "Negativo",
+        ExcedeLimite: i.excedeLimite ? "Sim" : "Não"
+      })),
+      "banco_horas.csv"
+    );
+  }
+
+  async function toggleDetalhe(funcionarioId: string) {
+    if (expandido === funcionarioId) {
+      setExpandido(null);
+      setDetalhe(null);
+      return;
+    }
+    setExpandido(funcionarioId);
+    setDetalhe(null);
+    setDetalheLoading(true);
+    try {
+      const data = await api.get<BancoHorasFuncionarioDetalhe>(
+        `/auditoria/funcionarios/${funcionarioId}/banco-horas`,
+        token
+      );
+      setDetalhe(data);
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setDetalheLoading(false);
+    }
+  }
+
+  const COLS = "2fr 0.8fr 1fr 1fr 100px 90px 110px";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <FiltrosBox>
+        <div style={{ flex: "1 1 200px" }}>
+          <InputField
+            label="Buscar"
+            value={busca}
+            onChange={setBusca}
+            placeholder="Nome ou matrícula…"
+          />
+        </div>
+        <SelectField
+          label="Status"
+          value={statusFiltro}
+          onChange={setStatusFiltro}
+          options={[
+            { value: "", label: "Todos" },
+            { value: "POSITIVO", label: "Positivo" },
+            { value: "NEGATIVO", label: "Negativo" },
+            { value: "EXCEDIDO", label: "Excedido" }
+          ]}
+        />
+        <BtnBuscar onClick={() => carregar(1)} />
+        <BtnCSV onClick={exportar} />
+      </FiltrosBox>
+
+      {erro && <ErroBox msg={erro} />}
+
+      <CardTabela>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: COLS,
+            padding: "10px 16px",
+            background: "var(--cream-50)",
+            borderBottom: "1px solid rgba(122,30,38,0.08)"
+          }}
+        >
+          {[
+            "Funcionário",
+            "Gerência",
+            "Ciclo desde",
+            "Próx. Zeragem",
+            "Saldo Atual",
+            "Limite",
+            ""
+          ].map((c) => (
+            <span
+              key={c}
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "var(--ink-500)"
+              }}
+            >
+              {c}
+            </span>
+          ))}
+        </div>
+
+        {loading ? (
+          <Loading />
+        ) : itens.length === 0 ? (
+          <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
+            Nenhum funcionário encontrado.
+          </p>
+        ) : (
+          itens.map((i) => (
+            <React.Fragment key={i.funcionario.id}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: COLS,
+                  padding: "12px 16px",
+                  borderBottom: "1px solid rgba(122,30,38,0.04)",
+                  alignItems: "center"
+                }}
+              >
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}>
+                    {i.funcionario.nome}
+                  </p>
+                  <p
+                    style={{
+                      fontSize: 10.5,
+                      color: "var(--ink-400)",
+                      margin: 0,
+                      fontFamily: "var(--font-mono)"
+                    }}
+                  >
+                    {i.funcionario.matricula}
+                  </p>
+                </div>
+                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
+                  {i.gerencia?.nome ?? "—"}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
+                  {i.cicloInicio ? fmtDataCurta(i.cicloInicio) : "—"}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
+                  {i.proximaZeragem ? fmtDataCurta(i.proximaZeragem) : "—"}
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: i.saldoAtualMinutos >= 0 ? "#2f7d4f" : "#c8393f"
+                  }}
+                >
+                  {i.saldoFormatado}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
+                  {toHM(i.limiteMinutos)}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {i.excedeLimite && (
+                    <Badge label="Excede" bg="rgba(247,196,55,0.15)" color="#8a6a00" />
+                  )}
+                  <button
+                    onClick={() => toggleDetalhe(i.funcionario.id)}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid rgba(122,30,38,0.20)",
+                      background: "transparent",
+                      color: "var(--burgundy-600)",
+                      cursor: "pointer",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {expandido === i.funcionario.id ? "Ocultar" : "Ver dias"}
+                  </button>
+                </div>
+              </div>
+              {expandido === i.funcionario.id && (
+                <div style={{ padding: "8px 16px 16px", background: "var(--cream-50)" }}>
+                  {detalheLoading ? (
+                    <Loading />
+                  ) : detalhe ? (
+                    <BancoHorasDiasTabela dados={detalhe} />
+                  ) : null}
+                </div>
+              )}
+            </React.Fragment>
+          ))
+        )}
+
+        <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
+      </CardTabela>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════
    ABA PERÍODOS
 ═══════════════════════════════════════════════ */
 
 function TabPeriodos({ token }: { token: string }) {
+  const [subTab, setSubTab] = useState<"saldo" | "fechamento">("saldo");
   const [periodos, setPeriodos] = useState<Periodo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -3360,8 +6276,8 @@ function TabPeriodos({ token }: { token: string }) {
   );
 
   useEffect(() => {
-    carregar(1);
-  }, [carregar]);
+    if (subTab === "fechamento") carregar(1);
+  }, [carregar, subTab]);
 
   async function confirmarStatus() {
     if (!modalPeriodo) return;
@@ -3384,7 +6300,7 @@ function TabPeriodos({ token }: { token: string }) {
       periodos.map((p) => ({
         Funcionario: p.funcionario.user.name,
         Matricula: p.funcionario.matricula,
-        Gerencia: p.funcionario.gerencia?.sigla ?? "",
+        Gerencia: p.funcionario.gerencia?.nome ?? "",
         Mes: p.mes,
         Ano: p.ano,
         DiasTrabalhados: p.diasTrabalhados,
@@ -3403,199 +6319,260 @@ function TabPeriodos({ token }: { token: string }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <FiltrosBox>
-        <SelectField
-          label="Mês"
-          value={mes}
-          onChange={setMes}
-          options={[
-            { value: "", label: "Todos" },
-            ...MESES.map((m, i) => ({ value: String(i + 1), label: m }))
-          ]}
-        />
-        <SelectField
-          label="Ano"
-          value={ano}
-          onChange={setAno}
-          options={[{ value: "", label: "Todos" }, ...anos.map((a) => ({ value: a, label: a }))]}
-        />
-        <SelectField
-          label="Status"
-          value={statusFiltro}
-          onChange={setStatusFiltro}
-          options={[
-            { value: "", label: "Todos" },
-            { value: "ABERTO", label: "Aberto" },
-            { value: "FECHADO", label: "Fechado" },
-            { value: "APROVADO", label: "Aprovado" }
-          ]}
-        />
-        <BtnBuscar onClick={() => carregar(1)} />
-        <BtnCSV onClick={exportar} />
-      </FiltrosBox>
+      {/* Sub-abas */}
+      <div style={{ display: "flex", gap: 4, borderBottom: "2px solid rgba(122,30,38,0.08)" }}>
+        {(
+          [
+            { id: "saldo", label: "Saldo (Banco de Horas)" },
+            { id: "fechamento", label: "Fechamento de Períodos" }
+          ] as const
+        ).map((a) => (
+          <button
+            key={a.id}
+            onClick={() => setSubTab(a.id)}
+            style={{
+              padding: "7px 16px",
+              borderRadius: "var(--radius-md) var(--radius-md) 0 0",
+              border: "none",
+              background: subTab === a.id ? "var(--burgundy-600)" : "transparent",
+              color: subTab === a.id ? "#fff" : "var(--ink-500)",
+              fontWeight: 600,
+              fontSize: 12,
+              cursor: "pointer"
+            }}
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
 
-      {erro && <ErroBox msg={erro} />}
+      {subTab === "saldo" ? (
+        <TabBancoHorasGeral token={token} />
+      ) : (
+        <>
+          <FiltrosBox>
+            <SelectField
+              label="Mês"
+              value={mes}
+              onChange={setMes}
+              options={[
+                { value: "", label: "Todos" },
+                ...MESES.map((m, i) => ({ value: String(i + 1), label: m }))
+              ]}
+            />
+            <SelectField
+              label="Ano"
+              value={ano}
+              onChange={setAno}
+              options={[
+                { value: "", label: "Todos" },
+                ...anos.map((a) => ({ value: a, label: a }))
+              ]}
+            />
+            <SelectField
+              label="Status"
+              value={statusFiltro}
+              onChange={setStatusFiltro}
+              options={[
+                { value: "", label: "Todos" },
+                { value: "ABERTO", label: "Aberto" },
+                { value: "FECHADO", label: "Fechado" },
+                { value: "APROVADO", label: "Aprovado" }
+              ]}
+            />
+            <BtnBuscar onClick={() => carregar(1)} />
+            <BtnCSV onClick={exportar} />
+          </FiltrosBox>
 
-      <CardTabela>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "2fr 1fr 80px 80px 80px 80px 100px 100px",
-            padding: "10px 16px",
-            background: "var(--cream-50)",
-            borderBottom: "1px solid rgba(122,30,38,0.08)"
-          }}
-        >
-          {["Funcionário", "Gerência", "Dias", "Trabalhado", "Extras", "Falta", "Status", ""].map(
-            (c) => (
-              <span
-                key={c}
-                style={{
-                  fontSize: 10,
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                  color: "var(--ink-500)"
-                }}
-              >
-                {c}
-              </span>
-            )
-          )}
-        </div>
+          {erro && <ErroBox msg={erro} />}
 
-        {loading ? (
-          <Loading />
-        ) : periodos.length === 0 ? (
-          <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
-            Nenhum período encontrado.
-          </p>
-        ) : (
-          periodos.map((p) => {
-            const sb = statusPeriodoBadge(p.status);
-            return (
-              <div
-                key={p.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "2fr 1fr 80px 80px 80px 80px 100px 100px",
-                  padding: "12px 16px",
-                  borderBottom: "1px solid rgba(122,30,38,0.04)",
-                  alignItems: "center"
-                }}
-              >
-                <div>
-                  <p style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}>
-                    {p.funcionario.user.name}
-                  </p>
-                  <p
-                    style={{
-                      fontSize: 10.5,
-                      color: "var(--ink-400)",
-                      margin: 0,
-                      fontFamily: "var(--font-mono)"
-                    }}
-                  >
-                    {p.funcionario.matricula}
-                  </p>
-                </div>
-                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
-                  {p.funcionario.gerencia?.sigla ?? "—"}
-                </span>
-                <span style={{ fontSize: 12, fontWeight: 600 }}>{p.diasTrabalhados}</span>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)" }}>
-                  {p.horasTrabalhadasFormatado}
-                </span>
-                <span style={{ fontSize: 12, color: "#2f7d4f", fontWeight: 600 }}>
-                  {p.horasExtrasFormatado}
-                </span>
-                <span style={{ fontSize: 12, color: "#c8393f", fontWeight: 600 }}>
-                  {p.horasFaltaFormatado}
-                </span>
-                <Badge label={sb.label} bg={sb.bg} color={sb.color} />
-                <div style={{ display: "flex", gap: 4 }}>
-                  {p.status === "ABERTO" && (
-                    <button
-                      onClick={() => setModalPeriodo({ p, acao: "FECHADO" })}
-                      style={{
-                        padding: "4px 8px",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid rgba(122,30,38,0.20)",
-                        background: "transparent",
-                        color: "var(--burgundy-600)",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      Fechar
-                    </button>
-                  )}
-                  {p.status === "FECHADO" && (
-                    <button
-                      onClick={() => setModalPeriodo({ p, acao: "APROVADO" })}
-                      style={{
-                        padding: "4px 8px",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        borderRadius: "var(--radius-sm)",
-                        border: "none",
-                        background: "rgba(47,125,79,0.12)",
-                        color: "#2f7d4f",
-                        cursor: "pointer",
-                        whiteSpace: "nowrap"
-                      }}
-                    >
-                      Aprovar
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
-
-        <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
-      </CardTabela>
-
-      {/* Modal confirmação */}
-      {modalPeriodo && (
-        <Modal
-          title={modalPeriodo.acao === "FECHADO" ? "Fechar período" : "Aprovar período"}
-          subtitle={`${MESES[modalPeriodo.p.mes - 1]}/${modalPeriodo.p.ano} · ${modalPeriodo.p.funcionario.user.name}`}
-          onClose={() => setModalPeriodo(null)}
-        >
-          <p style={{ fontSize: 13, color: "var(--ink-600)", marginBottom: 20, lineHeight: 1.6 }}>
-            {modalPeriodo.acao === "FECHADO"
-              ? "Fechar este período impedirá novos registros de ponto para o mês. Confirma?"
-              : "Aprovar o período confirma as horas trabalhadas para folha de pagamento. Confirma?"}
-          </p>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <button
-              onClick={() => setModalPeriodo(null)}
+          <CardTabela>
+            <div
               style={{
-                padding: "9px 18px",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.15)",
-                background: "transparent",
-                color: "var(--ink-500)",
-                fontSize: 13,
-                cursor: "pointer"
+                display: "grid",
+                gridTemplateColumns: "2fr 1fr 80px 80px 80px 80px 100px 100px",
+                padding: "10px 16px",
+                background: "var(--cream-50)",
+                borderBottom: "1px solid rgba(122,30,38,0.08)"
               }}
             >
-              Cancelar
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={confirmarStatus}
-              disabled={salvando}
-              style={{ padding: "9px 20px", fontSize: 13, opacity: salvando ? 0.7 : 1 }}
+              {[
+                "Funcionário",
+                "Gerência",
+                "Dias",
+                "Trabalhado",
+                "Extras",
+                "Falta",
+                "Status",
+                ""
+              ].map((c) => (
+                <span
+                  key={c}
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                    color: "var(--ink-500)"
+                  }}
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+
+            {loading ? (
+              <Loading />
+            ) : periodos.length === 0 ? (
+              <p
+                style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}
+              >
+                Nenhum período encontrado.
+              </p>
+            ) : (
+              periodos.map((p) => {
+                const sb = statusPeriodoBadge(p.status);
+                return (
+                  <div
+                    key={p.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "2fr 1fr 80px 80px 80px 80px 100px 100px",
+                      padding: "12px 16px",
+                      borderBottom: "1px solid rgba(122,30,38,0.04)",
+                      alignItems: "center"
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <FuncAvatar
+                        name={p.funcionario.user.name}
+                        fotoUrl={p.funcionario.fotoPerfilUrl}
+                        size={30}
+                      />
+                      <div>
+                        <p
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--ink-900)",
+                            margin: 0
+                          }}
+                        >
+                          {p.funcionario.user.name}
+                        </p>
+                        <p
+                          style={{
+                            fontSize: 10.5,
+                            color: "var(--ink-400)",
+                            margin: 0,
+                            fontFamily: "var(--font-mono)"
+                          }}
+                        >
+                          {p.funcionario.matricula}
+                        </p>
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 11, color: "var(--ink-600)" }}>
+                      {p.funcionario.gerencia?.nome ?? "—"}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{p.diasTrabalhados}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-900)" }}>
+                      {p.horasTrabalhadasFormatado}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#2f7d4f", fontWeight: 600 }}>
+                      {p.horasExtrasFormatado}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#c8393f", fontWeight: 600 }}>
+                      {p.horasFaltaFormatado}
+                    </span>
+                    <Badge label={sb.label} bg={sb.bg} color={sb.color} />
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {p.status === "ABERTO" && (
+                        <button
+                          onClick={() => setModalPeriodo({ p, acao: "FECHADO" })}
+                          style={{
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid rgba(122,30,38,0.20)",
+                            background: "transparent",
+                            color: "var(--burgundy-600)",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap"
+                          }}
+                        >
+                          Fechar
+                        </button>
+                      )}
+                      {p.status === "FECHADO" && (
+                        <button
+                          onClick={() => setModalPeriodo({ p, acao: "APROVADO" })}
+                          style={{
+                            padding: "4px 8px",
+                            fontSize: 10,
+                            fontWeight: 700,
+                            borderRadius: "var(--radius-sm)",
+                            border: "none",
+                            background: "rgba(47,125,79,0.12)",
+                            color: "#2f7d4f",
+                            cursor: "pointer",
+                            whiteSpace: "nowrap"
+                          }}
+                        >
+                          Aprovar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
+            <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
+          </CardTabela>
+
+          {/* Modal confirmação */}
+          {modalPeriodo && (
+            <Modal
+              title={modalPeriodo.acao === "FECHADO" ? "Fechar período" : "Aprovar período"}
+              subtitle={`${MESES[modalPeriodo.p.mes - 1]}/${modalPeriodo.p.ano} · ${modalPeriodo.p.funcionario.user.name}`}
+              onClose={() => setModalPeriodo(null)}
             >
-              {salvando ? "Salvando…" : "Confirmar"}
-            </button>
-          </div>
-        </Modal>
+              <p
+                style={{ fontSize: 13, color: "var(--ink-600)", marginBottom: 20, lineHeight: 1.6 }}
+              >
+                {modalPeriodo.acao === "FECHADO"
+                  ? "Fechar este período impedirá novos registros de ponto para o mês. Confirma?"
+                  : "Aprovar o período confirma as horas trabalhadas para folha de pagamento. Confirma?"}
+              </p>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => setModalPeriodo(null)}
+                  style={{
+                    padding: "9px 18px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.15)",
+                    background: "transparent",
+                    color: "var(--ink-500)",
+                    fontSize: 13,
+                    cursor: "pointer"
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={confirmarStatus}
+                  disabled={salvando}
+                  style={{ padding: "9px 20px", fontSize: 13, opacity: salvando ? 0.7 : 1 }}
+                >
+                  {salvando ? "Salvando…" : "Confirmar"}
+                </button>
+              </div>
+            </Modal>
+          )}
+        </>
       )}
     </div>
   );
@@ -4187,6 +7164,472 @@ function BtnCSV({ onClick }: { onClick: () => void }) {
 }
 
 /* ═══════════════════════════════════════════════
+   TAB VALIDAÇÕES
+═══════════════════════════════════════════════ */
+
+type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
+
+interface AssinaturaRH {
+  id: string;
+  status: StatusAssinatura;
+  bancoHorasSaldoTotalMinutos: number;
+  assinadoFuncionarioEm: string | null;
+  assinadoFuncionarioIp: string | null;
+  assinadoGestorEm: string | null;
+  assinadoGestorIp: string | null;
+  assinadoGestorNome: string | null;
+  criadoEm: string;
+  periodo: {
+    mes: number;
+    ano: number;
+    funcionario: {
+      id: string;
+      matricula: string | null;
+      user: { name: string };
+      gerencia: { nome: string; sigla: string } | null;
+    };
+  };
+}
+
+function fmtBH(min: number): string {
+  const sign = min < 0 ? "-" : "+";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}m`;
+}
+
+const STATUS_ASSIN_LABEL: Record<StatusAssinatura, { label: string; cls: string }> = {
+  PENDENTE_FUNCIONARIO: { label: "Aguard. func.", cls: "badge-amber" },
+  PENDENTE_GESTOR: { label: "Aguard. gest.", cls: "badge-blue" },
+  CONCLUIDA: { label: "Concluída", cls: "badge-green" },
+  DISPENSADA: { label: "Dispensada", cls: "badge-gray" }
+};
+
+const TH_VALID = {
+  fontSize: 9.5,
+  padding: "8px 6px",
+  whiteSpace: "normal" as const,
+  lineHeight: 1.25,
+  letterSpacing: "0.04em"
+};
+
+const TD_VALID = {
+  padding: "8px 6px",
+  fontSize: 11.5,
+  verticalAlign: "middle" as const
+};
+
+const TD_ELLIPSIS = {
+  ...TD_VALID,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap" as const,
+  maxWidth: 0
+};
+
+function TabValidacoes({ token }: { token: string }) {
+  const agora = new Date();
+  const [gerencias, setGerencias] = useState<{ id: string; nome: string; sigla: string }[]>([]);
+  const [assinaturas, setAssinaturas] = useState<AssinaturaRH[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const limit = 50;
+  const [loading, setLoading] = useState(true);
+  const [gerenciaId, setGerenciaId] = useState("");
+  const [mes, setMes] = useState(agora.getMonth() === 0 ? 12 : agora.getMonth());
+  const [ano, setAno] = useState(
+    agora.getMonth() === 0 ? agora.getFullYear() - 1 : agora.getFullYear()
+  );
+  const [status, setStatus] = useState("");
+  const [gerandoMes, setGerandoMes] = useState(false);
+  const [msgGerar, setMsgGerar] = useState("");
+
+  const carregar = useCallback(() => {
+    setLoading(true);
+    const p = new URLSearchParams();
+    if (gerenciaId) p.set("gerenciaId", gerenciaId);
+    if (mes) p.set("mes", String(mes));
+    if (ano) p.set("ano", String(ano));
+    if (status) p.set("status", status);
+    p.set("page", String(page));
+    p.set("limit", String(limit));
+    api
+      .get<{ total: number; assinaturas: AssinaturaRH[] }>(`/auditoria/assinaturas?${p}`, token)
+      .then((d) => {
+        setAssinaturas(d?.assinaturas ?? []);
+        setTotal(d?.total ?? 0);
+      })
+      .catch(() => setAssinaturas([]))
+      .finally(() => setLoading(false));
+  }, [token, gerenciaId, mes, ano, status, page]);
+
+  useEffect(() => {
+    carregar();
+  }, [carregar]);
+
+  useEffect(() => {
+    api
+      .get<{ id: string; nome: string; sigla: string }[]>("/ponto/gestao/gerencias", token)
+      .then(setGerencias)
+      .catch(() => setGerencias([]));
+  }, [token]);
+
+  async function gerarSolicitacoes() {
+    setGerandoMes(true);
+    setMsgGerar("");
+    try {
+      const r = await api.post<{ criadas: number; ignoradas: number }>(
+        "/auditoria/assinaturas/gerar-mes",
+        { mes, ano },
+        token
+      );
+      setMsgGerar(`${r.criadas} assinaturas criadas, ${r.ignoradas} já existiam.`);
+      carregar();
+    } catch (e) {
+      setMsgGerar("Erro: " + ((e as Error).message ?? "desconhecido"));
+    } finally {
+      setGerandoMes(false);
+    }
+  }
+
+  function baixarPdf(id: string, matricula: string, m: number, a: number) {
+    const filename = `quadro-${matricula}-${String(m).padStart(2, "0")}-${a}.pdf`;
+    api
+      .download(`/auditoria/assinaturas/${id}/pdf`, filename, token)
+      .catch((e: unknown) =>
+        alert("Erro ao baixar PDF: " + ((e as Error)?.message ?? "desconhecido"))
+      );
+  }
+
+  const totalPages = Math.ceil(total / limit);
+
+  return (
+    <div>
+      {/* Filtros */}
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          marginBottom: 16,
+          flexWrap: "wrap",
+          alignItems: "flex-end"
+        }}
+      >
+        <div>
+          <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 4 }}>Mês</p>
+          <select
+            value={mes}
+            onChange={(e) => {
+              setMes(Number(e.target.value));
+              setPage(1);
+            }}
+            style={{
+              padding: "7px 10px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13
+            }}
+          >
+            {MESES.map((m, i) => (
+              <option key={i} value={i + 1}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 4 }}>Ano</p>
+          <select
+            value={ano}
+            onChange={(e) => {
+              setAno(Number(e.target.value));
+              setPage(1);
+            }}
+            style={{
+              padding: "7px 10px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13
+            }}
+          >
+            {[agora.getFullYear() - 1, agora.getFullYear()].map((y) => (
+              <option key={y} value={y}>
+                {y}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 4 }}>Departamento</p>
+          <select
+            value={gerenciaId}
+            onChange={(e) => {
+              setGerenciaId(e.target.value);
+              setPage(1);
+            }}
+            style={{
+              padding: "7px 10px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13
+            }}
+          >
+            <option value="">Todos</option>
+            {gerencias.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.nome}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 4 }}>Status</p>
+          <select
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setPage(1);
+            }}
+            style={{
+              padding: "7px 10px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13
+            }}
+          >
+            <option value="">Todos</option>
+            <option value="PENDENTE_FUNCIONARIO">Aguardando funcionário</option>
+            <option value="PENDENTE_GESTOR">Aguardando gestor</option>
+            <option value="CONCLUIDA">Concluídas</option>
+          </select>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost btn-sm" onClick={carregar} style={{ gap: 5 }}>
+            <RefreshCwIcon size={13} /> Atualizar
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={gerarSolicitacoes}
+            disabled={gerandoMes}
+            style={{
+              gap: 5,
+              background: "var(--burgundy-700)",
+              borderColor: "var(--burgundy-700)"
+            }}
+          >
+            <Edit2Icon size={13} />
+            {gerandoMes ? "Gerando…" : `Gerar Assinaturas ${String(mes).padStart(2, "0")}/${ano}`}
+          </button>
+        </div>
+      </div>
+
+      {msgGerar && (
+        <div
+          style={{
+            background: msgGerar.startsWith("Erro") ? "#fee2e2" : "#d1fae5",
+            color: msgGerar.startsWith("Erro") ? "#7a1e26" : "#065f46",
+            border: `1px solid ${msgGerar.startsWith("Erro") ? "#fca5a5" : "#6ee7b7"}`,
+            borderRadius: "var(--radius-md)",
+            padding: "10px 14px",
+            marginBottom: 14,
+            fontSize: 13
+          }}
+        >
+          {msgGerar}
+        </div>
+      )}
+
+      {/* Tabela */}
+      {loading ? (
+        <p style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
+          Carregando validações…
+        </p>
+      ) : assinaturas.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
+          <p style={{ fontSize: 14 }}>
+            Nenhuma assinatura encontrada para os filtros selecionados.
+          </p>
+          <p style={{ fontSize: 12, marginTop: 6 }}>
+            Use o botão "Gerar Assinaturas" para criar solicitações para o mês selecionado.
+          </p>
+        </div>
+      ) : (
+        <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
+          <table className="table-cfo" style={{ width: "100%", tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: "17%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "15%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "6%" }} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={TH_VALID}>Funcionário</th>
+                <th style={TH_VALID}>Matr.</th>
+                <th style={TH_VALID}>Depto.</th>
+                <th style={TH_VALID}>Mês</th>
+                <th style={TH_VALID}>BH total</th>
+                <th style={TH_VALID}>Assin. func.</th>
+                <th style={TH_VALID}>Assin. gest.</th>
+                <th style={TH_VALID}>Status</th>
+                <th style={{ ...TH_VALID, textAlign: "center" }}>PDF</th>
+              </tr>
+            </thead>
+            <tbody>
+              {assinaturas.map((a) => {
+                const sl = STATUS_ASSIN_LABEL[a.status];
+                const nome = a.periodo.funcionario.user.name;
+                const matricula = a.periodo.funcionario.matricula ?? "—";
+                const depto = a.periodo.funcionario.gerencia?.nome ?? "—";
+                const gestorTitulo = a.assinadoGestorEm
+                  ? `${fmtDataAssinatura(a.assinadoGestorEm)}${a.assinadoGestorNome ? ` — ${a.assinadoGestorNome}` : ""}`
+                  : "";
+                return (
+                  <tr key={a.id}>
+                    <td style={{ ...TD_VALID, fontWeight: 600 }} title={nome}>
+                      <span
+                        style={{
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }}
+                      >
+                        {nome}
+                      </span>
+                    </td>
+                    <td
+                      style={{ ...TD_ELLIPSIS, fontFamily: "var(--font-mono)" }}
+                      title={matricula}
+                    >
+                      {matricula}
+                    </td>
+                    <td style={TD_ELLIPSIS} title={depto}>
+                      {depto}
+                    </td>
+                    <td
+                      style={{ ...TD_VALID, fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}
+                    >
+                      {String(a.periodo.mes).padStart(2, "0")}/{a.periodo.ano}
+                    </td>
+                    <td
+                      style={{
+                        ...TD_VALID,
+                        fontFamily: "var(--font-mono)",
+                        fontWeight: 700,
+                        whiteSpace: "nowrap",
+                        color: a.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C"
+                      }}
+                    >
+                      {fmtBH(a.bancoHorasSaldoTotalMinutos)}
+                    </td>
+                    <td style={{ ...TD_VALID, whiteSpace: "nowrap" }}>
+                      {a.assinadoFuncionarioEm ? (
+                        <span
+                          style={{ color: "#15803D" }}
+                          title={new Date(a.assinadoFuncionarioEm).toLocaleString("pt-BR")}
+                        >
+                          ✓ {fmtDataAssinatura(a.assinadoFuncionarioEm)}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--ink-400)" }}>—</span>
+                      )}
+                    </td>
+                    <td style={TD_VALID} title={gestorTitulo}>
+                      {a.assinadoGestorEm ? (
+                        <span
+                          style={{
+                            color: "#15803D",
+                            display: "block",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap"
+                          }}
+                        >
+                          ✓ {fmtDataAssinatura(a.assinadoGestorEm)}
+                          {a.assinadoGestorNome ? ` (${a.assinadoGestorNome})` : ""}
+                        </span>
+                      ) : (
+                        <span style={{ color: "var(--ink-400)" }}>—</span>
+                      )}
+                    </td>
+                    <td style={TD_VALID}>
+                      <span
+                        className={`badge ${sl.cls}`}
+                        style={{ fontSize: 10, padding: "2px 6px", whiteSpace: "nowrap" }}
+                      >
+                        {sl.label}
+                      </span>
+                    </td>
+                    <td style={{ ...TD_VALID, textAlign: "center" }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        title="Baixar PDF"
+                        onClick={() =>
+                          baixarPdf(
+                            a.id,
+                            a.periodo.funcionario.matricula ?? a.id,
+                            a.periodo.mes,
+                            a.periodo.ano
+                          )
+                        }
+                        style={{ padding: "4px 6px", minWidth: 0 }}
+                      >
+                        <DownloadIcon size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Paginação */}
+      {totalPages > 1 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginTop: 16,
+            justifyContent: "center",
+            alignItems: "center"
+          }}
+        >
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+          >
+            ← Anterior
+          </button>
+          <span style={{ fontSize: 13, color: "var(--ink-500)" }}>
+            {page} / {totalPages}
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+          >
+            Próxima →
+          </button>
+        </div>
+      )}
+
+      <p style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 12 }}>
+        Total: {total} registro{total !== 1 ? "s" : ""}
+      </p>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════
    PÁGINA PRINCIPAL
 ═══════════════════════════════════════════════ */
 
@@ -4196,8 +7639,9 @@ const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
   { id: "registros", label: "Registros", icon: <ClockIcon size={14} /> },
   { id: "solicitacoes", label: "Solicitações", icon: <InboxIcon size={14} /> },
   { id: "afastamentos", label: "Afastamentos", icon: <CalendarIcon size={14} /> },
-  { id: "periodos", label: "Períodos", icon: <BarChart2Icon size={14} /> },
-  { id: "logs", label: "Logs", icon: <ShieldCheckIcon size={14} /> }
+  { id: "periodos", label: "Banco de Horas", icon: <TrendingUpIcon size={14} /> },
+  { id: "logs", label: "Logs", icon: <ShieldCheckIcon size={14} /> },
+  { id: "validacoes", label: "Validações", icon: <CheckCircleIcon size={14} /> }
 ];
 
 export function AuditoriaPage() {
@@ -4210,6 +7654,8 @@ export function AuditoriaPage() {
     hasRole("RH_AUDITORIA") ||
     hasRole("ponto-admin") ||
     hasRole("PONTO_ADMIN");
+
+  const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
 
   const temAcesso = isRH || hasRole("gestor") || hasRole("GESTOR_APROVACAO");
 
@@ -4299,10 +7745,11 @@ export function AuditoriaPage() {
       {aba === "dashboard" && <TabDashboard token={tk} />}
       {aba === "funcionarios" && <TabFuncionarios token={tk} />}
       {aba === "registros" && <TabRegistros token={tk} />}
-      {aba === "solicitacoes" && <TabSolicitacoes token={tk} />}
+      {aba === "solicitacoes" && <TabSolicitacoes token={tk} isPontoAdmin={isPontoAdmin} />}
       {aba === "afastamentos" && <TabAfastamentos token={tk} />}
       {aba === "periodos" && <TabPeriodos token={tk} />}
       {aba === "logs" && <TabLogs token={tk} />}
+      {aba === "validacoes" && <TabValidacoes token={tk} />}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: pontoeletronico
       POSTGRES_PASSWORD: pontoeletronico
@@ -18,16 +19,14 @@ services:
 
   backend:
     image: node:20
+    restart: unless-stopped
     working_dir: /app
-    command: >
-      sh -c "
-        npm install &&
-        npx prisma generate --schema=packages/backend/prisma/schema.prisma &&
-        npx prisma db push --schema=packages/backend/prisma/schema.prisma --accept-data-loss &&
-        (cd packages/backend && npx ts-node --project tsconfig.seed.json prisma/seed.ts) || echo 'Seed ignorado (já executado)' &&
-        npm run dev -w @intranet/backend
-      "
+    command:
+      - sh
+      - -c
+      - sed -i 's/\r$//' /app/docker/backend-entrypoint.sh && exec sh /app/docker/backend-entrypoint.sh
     environment:
+      PORT: "3000"
       DATABASE_URL: postgresql://pontoeletronico:pontoeletronico@postgres:5432/pontoeletronico
       KEYCLOAK_ISSUER: https://sso.cfo.org.br/realms/cfo
       KEYCLOAK_JWKS_URI: https://sso.cfo.org.br/realms/cfo/protocol/openid-connect/certs
@@ -36,48 +35,67 @@ services:
       JWT_SECRET: dev-secret
       GLPI_BASE_URL: http://glpi.local
       VIDEO_CONFERENCE_ENABLED: "false"
-      SUPER_ADMIN_USERNAMES: elder.oliveira
-      # Polling de arquivos para o file-watcher funcionar no Docker/Windows
-      CHOKIDAR_USEPOLLING: "true"
-      WATCHPACK_POLLING: "true"
+      SUPER_ADMIN_USERNAMES: ${SUPER_ADMIN_USERNAMES:-elder.oliveira}
+      # MonitorSistema — ingestão de logs e backup (carregado do .env da raiz)
+      INGEST_SHARED_KEY: ${INGEST_SHARED_KEY:-}
+      BACKUP_AGENT_SHARED_KEY: ${BACKUP_AGENT_SHARED_KEY:-}
+      MONITOR_INGEST_PUSH_URL: ${MONITOR_INGEST_PUSH_URL:-}
+      MONITOR_AUDIT_INGEST_ENABLED: ${MONITOR_AUDIT_INGEST_ENABLED:-true}
+      MONITOR_SERVICE_NAME: ${MONITOR_SERVICE_NAME:-api-ponto}
+      MONITOR_ENVIRONMENT: ${MONITOR_ENVIRONMENT:-prod}
+      API_PUBLICA_SYSTEM_KEY: ${API_PUBLICA_SYSTEM_KEY:-ponto-eletronico-cfo}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://192.168.100.30:12003/api}
+      BACKUP_STORAGE_PATH: ${BACKUP_STORAGE_PATH:-/data/backups}
+      BACKUP_MAX_UPLOAD_MB: ${BACKUP_MAX_UPLOAD_MB:-512}
+      BACKUP_PG_DUMP_FORMAT: ${BACKUP_PG_DUMP_FORMAT:-plain}
+      BACKUP_ARTIFACT_BASENAME: ${BACKUP_ARTIFACT_BASENAME:-backup_sst}
+      # API de Ramais (nova integração — token carregado do .env da raiz)
+      SECTIONS_INTEGRATION_URL: ${SECTIONS_INTEGRATION_URL:-https://192.168.100.32:11010/api/sections/integration/users}
+      SECTIONS_INTEGRATION_TOKEN: ${SECTIONS_INTEGRATION_TOKEN:-}
       # Credenciais opcionais da API Admin do Keycloak (lista grupos/usuários do AD).
       # Deixe em branco para desabilitar — o sistema funciona normalmente sem elas.
       # KEYCLOAK_ADMIN_USER: admin
       # KEYCLOAK_ADMIN_PASSWORD: senha_aqui
     volumes:
       - ./:/app
-      - /app/node_modules
+      - node_modules_root:/app/node_modules
       - uploads_fotos:/app/uploads
     ports:
       - "12003:3000"
     depends_on:
       postgres:
         condition: service_healthy
-    restart: on-failure
     healthcheck:
-      # Qualquer resposta HTTP (mesmo 401) confirma que o NestJS está no ar.
       test:
         - "CMD-SHELL"
         - >
           node -e "
-            require('http').get('http://localhost:3000/api/auth/me', r => {
+            require('http').get('http://127.0.0.1:3000/api/auth/me', r => {
               process.exit(r.statusCode ? 0 : 1);
             }).on('error', () => process.exit(1));
           "
       interval: 10s
-      timeout: 10s
-      retries: 30
-      start_period: 240s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
 
   web:
     build:
       context: .
       dockerfile: packages/web/Dockerfile
+    restart: unless-stopped
     working_dir: /app
+    command:
+      - sh
+      - -c
+      - sed -i 's/\r$//' /app/docker/web-entrypoint.sh && exec sh /app/docker/web-entrypoint.sh
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
     volumes:
       - ./:/app
-      - /app/node_modules
-      - /app/packages/web/node_modules
+      - node_modules_root:/app/node_modules
+      - web_node_modules:/app/packages/web/node_modules
     ports:
       - "12010:12010"
     depends_on:
@@ -87,3 +105,5 @@ services:
 volumes:
   postgres_data:
   uploads_fotos:
+  node_modules_root:
+  web_node_modules:

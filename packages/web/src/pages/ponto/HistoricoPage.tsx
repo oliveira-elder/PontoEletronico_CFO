@@ -1,17 +1,23 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Link } from "react-router-dom";
 import {
   FilterIcon,
   DownloadIcon,
   ArrowLeftIcon,
   ArrowRightIcon,
   InfoIcon,
-  Edit2Icon
+  Edit2Icon,
+  TrendingUpIcon,
+  CheckCircleIcon,
+  AlertCircleIcon,
+  CheckIcon,
+  ChevronDownIcon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { api } from "../../hooks/useApi";
 
 /* ─── Types ─── */
-type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO";
+type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO" | "FOLGA";
 
 interface ObservacaoRegistro {
   data: string;
@@ -22,6 +28,11 @@ interface ObservacaoRegistro {
   horarioNovo?: string;
 }
 
+interface Pausa {
+  inicio: string;
+  fim: string | null;
+}
+
 interface DiaRegistro {
   data: string;
   diaSemana: string;
@@ -29,6 +40,7 @@ interface DiaRegistro {
   inicioIntervalo: string | null;
   fimIntervalo: string | null;
   saida: string | null;
+  pausas?: Pausa[];
   horasMin: number;
   jornadaMin: number;
   status: StatusDia;
@@ -46,6 +58,34 @@ interface ApiRegistro {
   ajustado?: boolean;
   observacoes?: ObservacaoRegistro[];
 }
+
+interface ApiAfastamento {
+  tipo: string;
+  dataInicio: string;
+  dataFim: string;
+  justificativa?: string | null;
+}
+
+interface ApiFeriado {
+  data: string;
+  nome: string;
+}
+
+interface Multiplicadores {
+  sabadoPct: number;
+  domingoPct: number;
+  feriadoPct: number;
+}
+
+const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
+  FERIAS: "Férias",
+  ATESTADO: "Atestado médico",
+  LICENCA_MEDICA: "Licença",
+  LICENCA_MATERNIDADE: "Licença maternidade",
+  LICENCA_PATERNIDADE: "Licença paternidade",
+  FALTA_JUSTIFICADA: "Falta justificada",
+  ABONO: "Abono"
+};
 
 /* ─── Transformação da resposta da API ─── */
 function toMin(h: string): number {
@@ -71,7 +111,58 @@ function dataBrasiliaKey(iso: string): string {
   }).format(new Date(iso));
 }
 
-function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number): DiaRegistro[] {
+/** Soma os minutos trabalhados no dia, tratando REINICIAR_EXPEDIENTE como
+ *  abertura de segmento e INTERROMPER_EXPEDIENTE como fechamento — igual ao
+ *  cálculo do backend (calcHorasMinutos), para que pausas não contem como
+ *  horas trabalhadas. Se `agoraMin` for informado e houver um segmento aberto
+ *  ao final (ENTRADA/FIM_INTERVALO/REINICIAR_EXPEDIENTE sem fechamento), soma
+ *  até esse horário (dia em andamento). */
+function calcHorasMinutosDia(dayRegs: ApiRegistro[], agoraMin?: number): number {
+  let total = 0;
+  let entradaMin: number | null = null;
+  for (const r of dayRegs) {
+    const ts = toMin(fmtHora(r.dataHora));
+    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
+      entradaMin = ts;
+    } else if (
+      (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
+      entradaMin !== null
+    ) {
+      total += ts - entradaMin;
+      entradaMin = null;
+    } else if (r.tipo === "FIM_INTERVALO") {
+      entradaMin = ts;
+    } else if (r.tipo === "SAIDA" && entradaMin !== null) {
+      total += ts - entradaMin;
+      entradaMin = null;
+    }
+  }
+  if (entradaMin !== null && agoraMin !== undefined) {
+    total += agoraMin - entradaMin;
+  }
+  return total;
+}
+
+/** Encontra o afastamento aprovado que cobre o dia (chave YYYY-MM-DD), se houver. */
+function afastamentoDoDia(
+  isoKey: string,
+  afastamentos: ApiAfastamento[]
+): ApiAfastamento | undefined {
+  return afastamentos.find((a) => {
+    const inicio = dataBrasiliaKey(a.dataInicio);
+    const fim = dataBrasiliaKey(a.dataFim);
+    return isoKey >= inicio && isoKey <= fim;
+  });
+}
+
+function transformarHistorico(
+  registros: ApiRegistro[],
+  afastamentos: ApiAfastamento[],
+  mes: number,
+  ano: number,
+  feriados: ApiFeriado[] = [],
+  mult: Multiplicadores = { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 }
+): DiaRegistro[] {
   const hoje = new Date();
   const diasNoMes = new Date(ano, mes, 0).getDate();
   const NOMES_DIA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -85,16 +176,27 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
     byDay[key].push(r);
   }
 
+  /* Mapa de feriados por data (YYYY-MM-DD) */
+  const feriadoMap: Record<string, string> = {};
+  for (const f of feriados) {
+    const key = dataBrasiliaKey(f.data);
+    feriadoMap[key] = f.nome;
+  }
+
   for (let d = 1; d <= diasNoMes; d++) {
     const dt = new Date(ano, mes - 1, d);
     const dow = dt.getDay();
-    if (dow === 0 || dow === 6) continue; // pula fins de semana
+    const fimDeSemana = dow === 0 || dow === 6;
 
     const isFuture = dt > hoje;
     const isoKey = `${ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const dataStr = `${String(d).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
     const diaSemana = NOMES_DIA[dow];
     const dayRegs = byDay[isoKey] ?? [];
+    const nomeFeriado = feriadoMap[isoKey];
+
+    // Fins de semana futuros: não exibir
+    if (isFuture && fimDeSemana) continue;
 
     if (isFuture) {
       result.push({
@@ -111,7 +213,8 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
       continue;
     }
 
-    if (dayRegs.length === 0) {
+    const afastamento = afastamentoDoDia(isoKey, afastamentos);
+    if (afastamento) {
       result.push({
         data: dataStr,
         diaSemana,
@@ -120,13 +223,49 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
         fimIntervalo: null,
         saida: null,
         horasMin: 0,
-        jornadaMin: 480,
-        status: "FALTA",
-        obs: "Ausência não registrada"
+        jornadaMin: 0,
+        status: "AFASTAMENTO",
+        obs: TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? "Afastamento justificado"
       });
       continue;
     }
 
+    // Fins de semana sem registros: não aparecem no histórico do funcionário
+    if (fimDeSemana && dayRegs.length === 0) continue;
+
+    if (!fimDeSemana && dayRegs.length === 0) {
+      // Feriado sem trabalho: aparece como FERIADO (não como falta)
+      if (nomeFeriado) {
+        result.push({
+          data: dataStr,
+          diaSemana,
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: 0,
+          status: "FERIADO" as StatusDia,
+          obs: nomeFeriado
+        });
+      } else {
+        result.push({
+          data: dataStr,
+          diaSemana,
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: 480,
+          status: "FALTA",
+          obs: "Ausência não registrada"
+        });
+      }
+      continue;
+    }
+
+    // Dia com registros (útil, feriado trabalhado, ou fim de semana trabalhado)
     const get = (tipo: string) => dayRegs.find((r) => r.tipo === tipo);
     const entradaR = get("ENTRADA");
     const iniAlmR = get("INICIO_INTERVALO");
@@ -138,22 +277,62 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
     const fimIntervalo = fimAlmR ? fmtHora(fimAlmR.dataHora) : null;
     const saida = saidaR ? fmtHora(saidaR.dataHora) : null;
 
+    const isHoje = dt.toDateString() === hoje.toDateString();
+
     let horasMin = 0;
+    let status: StatusDia;
+    let obs: string | undefined;
+
     if (entrada && saida) {
-      const intervalo =
-        inicioIntervalo && fimIntervalo ? toMin(fimIntervalo) - toMin(inicioIntervalo) : 0;
-      horasMin = toMin(saida) - toMin(entrada) - intervalo;
-    } else if (entrada) {
+      horasMin = calcHorasMinutosDia(dayRegs);
+      status = "OK";
+    } else if (entrada && isHoje) {
       const now = hoje.getHours() * 60 + hoje.getMinutes();
-      const intervalo =
-        inicioIntervalo && fimIntervalo ? toMin(fimIntervalo) - toMin(inicioIntervalo) : 0;
-      horasMin = now - toMin(entrada) - intervalo;
+      horasMin = calcHorasMinutosDia(dayRegs, now);
+      status = "PENDENTE";
+    } else if (entrada && inicioIntervalo) {
+      horasMin = calcHorasMinutosDia(dayRegs);
+      status = "PENDENTE";
+    } else if (entrada) {
+      horasMin = 0;
+      status = "FALTA";
+      obs = "Apenas entrada registrada — dia considerado falta";
+    } else {
+      status = "PENDENTE";
     }
 
-    const isHoje = dt.toDateString() === hoje.toDateString();
-    const status: StatusDia = saida ? "OK" : isHoje || dayRegs.length > 0 ? "PENDENTE" : "FALTA";
+    horasMin = Math.max(0, horasMin);
+
+    // Para fins de semana e feriados: jornadaMin=0, saldo = horas * multiplicador
+    let jornadaMin = 480;
+    if (fimDeSemana || nomeFeriado) {
+      const pct = nomeFeriado ? mult.feriadoPct : dow === 6 ? mult.sabadoPct : mult.domingoPct;
+      jornadaMin = 0;
+      // Sobrescreve o horasMin com o saldo multiplicado para que SaldoCell exiba o valor correto
+      // Armazenamos o pct no obs para informação
+      const tipoLabel = nomeFeriado ? `Feriado: ${nomeFeriado}` : dow === 6 ? "Sábado" : "Domingo";
+      if (!obs) obs = `${tipoLabel} — banco de horas: ${pct}%`;
+      // jornadaMin fica negativo do multiplicador: saldo = horasMin * pct/100
+      // Usamos truque: jornadaMin = -Math.round(horasMin * (pct/100 - 1))
+      // Na verdade, SaldoCell calcula: saldo = horasMin - jornadaMin
+      // Queremos: saldo = horasMin * pct/100
+      // Então: jornadaMin = horasMin - horasMin * pct/100 = horasMin * (1 - pct/100)
+      jornadaMin = Math.round(horasMin * (1 - pct / 100));
+    }
 
     const observacoesDia = dayRegs.flatMap((r) => r.observacoes ?? []);
+
+    const pausas: Pausa[] = [];
+    let pausaAberta: string | null = null;
+    for (const r of dayRegs) {
+      if (r.tipo === "INTERROMPER_EXPEDIENTE") {
+        pausaAberta = fmtHora(r.dataHora);
+      } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
+        pausas.push({ inicio: pausaAberta ?? "—", fim: fmtHora(r.dataHora) });
+        pausaAberta = null;
+      }
+    }
+    if (pausaAberta) pausas.push({ inicio: pausaAberta, fim: null });
 
     result.push({
       data: dataStr,
@@ -162,9 +341,11 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
       inicioIntervalo,
       fimIntervalo,
       saida,
-      horasMin: Math.max(0, horasMin),
-      jornadaMin: 480,
+      pausas: pausas.length ? pausas : undefined,
+      horasMin,
+      jornadaMin,
       status,
+      obs,
       observacoes: observacoesDia.length ? observacoesDia : undefined,
       entradaEditada: !!entradaR?.ajustado,
       inicioIntervaloEditado: !!iniAlmR?.ajustado,
@@ -176,18 +357,317 @@ function transformarHistorico(registros: ApiRegistro[], mes: number, ano: number
   return result;
 }
 
+/* ─── Tipos de Assinatura ─── */
+type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
+
+interface AssinaturaQuadro {
+  id: string;
+  status: StatusAssinatura;
+  bancoHorasSaldoTotalMinutos: number;
+  assinadoFuncionarioEm: string | null;
+  assinadoGestorEm: string | null;
+  assinadoGestorNome: string | null;
+  periodo: {
+    mes: number;
+    ano: number;
+    horasTrabalhadasMinutos: number;
+    horasExtrasMinutos: number;
+    horasFaltaMinutos: number;
+    diasTrabalhados: number;
+  };
+}
+
+function fmtBH(min: number): string {
+  const sign = min < 0 ? "-" : "+";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}min`;
+}
+
+/* ─── Modal de Confirmação de Assinatura ─── */
+function ModalAssinarQuadro({
+  assinatura,
+  totalTrabMin,
+  onClose,
+  onConfirm,
+  loading
+}: {
+  assinatura: AssinaturaQuadro;
+  totalTrabMin: number;
+  onClose: () => void;
+  onConfirm: () => void;
+  loading: boolean;
+}) {
+  const nomeMes = new Date(assinatura.periodo.ano, assinatura.periodo.mes - 1).toLocaleDateString(
+    "pt-BR",
+    { month: "long", year: "numeric" }
+  );
+  const saldoMin = totalTrabMin - assinatura.periodo.diasTrabalhados * 480;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: "white",
+          borderRadius: 12,
+          padding: "28px 28px 24px",
+          maxWidth: 460,
+          width: "100%",
+          boxShadow: "0 8px 40px rgba(0,0,0,0.18)"
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2
+          style={{
+            fontFamily: "var(--font-display)",
+            fontSize: 18,
+            marginBottom: 4,
+            color: "var(--burgundy-700)"
+          }}
+        >
+          Assinar Quadro
+        </h2>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-500)",
+            marginBottom: 20,
+            textTransform: "capitalize"
+          }}
+        >
+          {nomeMes}
+        </p>
+
+        <div
+          style={{
+            background: "var(--ink-50, #f9fafb)",
+            borderRadius: 8,
+            padding: "14px 16px",
+            marginBottom: 20,
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "10px 20px"
+          }}
+        >
+          <div>
+            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>
+              Dias trabalhados
+            </p>
+            <p style={{ fontSize: 15, fontWeight: 700 }}>{assinatura.periodo.diasTrabalhados}</p>
+          </div>
+          <div>
+            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>Total de horas</p>
+            <p style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-mono)" }}>
+              {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}
+            </p>
+          </div>
+          <div>
+            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>Saldo do mês</p>
+            <p
+              style={{
+                fontSize: 15,
+                fontWeight: 700,
+                color: saldoMin >= 0 ? "#15803D" : "#B91C1C",
+                fontFamily: "var(--font-mono)"
+              }}
+            >
+              {fmtBH(saldoMin)}
+            </p>
+          </div>
+          <div>
+            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>
+              Banco de horas (total)
+            </p>
+            <p
+              style={{
+                fontSize: 15,
+                fontWeight: 700,
+                color: assinatura.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C",
+                fontFamily: "var(--font-mono)"
+              }}
+            >
+              {fmtBH(assinatura.bancoHorasSaldoTotalMinutos)}
+            </p>
+          </div>
+        </div>
+
+        <p style={{ fontSize: 12.5, color: "var(--ink-600)", marginBottom: 24, lineHeight: 1.6 }}>
+          Ao assinar, confirmo que li e estou de acordo com os registros de ponto acima referentes
+          ao período indicado.
+        </p>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={loading}>
+            Cancelar
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={onConfirm}
+            disabled={loading}
+            style={{
+              gap: 6,
+              background: "var(--burgundy-700)",
+              borderColor: "var(--burgundy-700)"
+            }}
+          >
+            <Edit2Icon size={13} />
+            {loading ? "Assinando…" : "Assinar Quadro"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Banner de Assinatura ─── */
+function BannerAssinatura({
+  assinatura,
+  onAssinar
+}: {
+  assinatura: AssinaturaQuadro;
+  onAssinar: () => void;
+}) {
+  const fmtDt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("pt-BR") : "—");
+
+  if (assinatura.status === "PENDENTE_FUNCIONARIO") {
+    return (
+      <div
+        style={{
+          background: "#FEF3C7",
+          border: "1px solid #F59E0B",
+          borderRadius: 8,
+          padding: "12px 16px",
+          marginBottom: 16,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap"
+        }}
+      >
+        <AlertCircleIcon size={18} style={{ color: "#D97706", flexShrink: 0 }} />
+        <span style={{ fontSize: 13.5, color: "#92400E", flex: 1 }}>
+          <strong>Quadro pendente de assinatura.</strong> Revise os registros acima e assine para
+          confirmar.
+        </span>
+        <button
+          className="btn btn-sm"
+          onClick={onAssinar}
+          style={{ background: "#D97706", color: "white", border: "none", gap: 6, flexShrink: 0 }}
+        >
+          <Edit2Icon size={13} />
+          Assinar Quadro
+        </button>
+      </div>
+    );
+  }
+
+  if (assinatura.status === "PENDENTE_GESTOR") {
+    return (
+      <div
+        style={{
+          background: "#EFF6FF",
+          border: "1px solid #3B82F6",
+          borderRadius: 8,
+          padding: "12px 16px",
+          marginBottom: 16,
+          display: "flex",
+          alignItems: "center",
+          gap: 10
+        }}
+      >
+        <CheckCircleIcon size={18} style={{ color: "#2563EB", flexShrink: 0 }} />
+        <span style={{ fontSize: 13.5, color: "#1E40AF" }}>
+          <strong>Você assinou em {fmtDt(assinatura.assinadoFuncionarioEm)}.</strong> Aguardando
+          assinatura do gestor.
+        </span>
+      </div>
+    );
+  }
+
+  if (assinatura.status === "CONCLUIDA") {
+    return (
+      <div
+        style={{
+          background: "#F0FDF4",
+          border: "1px solid #22C55E",
+          borderRadius: 8,
+          padding: "12px 16px",
+          marginBottom: 16,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap"
+        }}
+      >
+        <CheckIcon size={18} style={{ color: "#16A34A", flexShrink: 0 }} />
+        <span style={{ fontSize: 13.5, color: "#14532D", flex: 1 }}>
+          <strong>Quadro assinado.</strong> Funcionário em {fmtDt(assinatura.assinadoFuncionarioEm)}{" "}
+          · Gestor {assinatura.assinadoGestorNome ? `(${assinatura.assinadoGestorNome})` : ""} em{" "}
+          {fmtDt(assinatura.assinadoGestorEm)}.
+        </span>
+        <button
+          className="btn btn-sm"
+          style={{
+            gap: 5,
+            background: "#16A34A",
+            color: "white",
+            border: "none",
+            fontSize: 12,
+            flexShrink: 0
+          }}
+          onClick={() => {
+            api
+              .download(
+                `/ponto/assinaturas/${assinatura.id}/pdf`,
+                `quadro-${assinatura.periodo.mes}-${assinatura.periodo.ano}.pdf`
+              )
+              .catch((e: unknown) =>
+                alert("Erro ao baixar PDF: " + ((e as Error)?.message ?? "desconhecido"))
+              );
+          }}
+        >
+          <DownloadIcon size={12} />
+          Baixar PDF
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 /* ─── Sub-componentes ─── */
-function StatusPill({ status }: { status: StatusDia }) {
+function StatusPill({ status, obs }: { status: StatusDia; obs?: string }) {
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
     PENDENTE: { label: "Pendente", cls: "badge-amber" },
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
-    FUTURO: { label: "—", cls: "badge-gray" }
+    FUTURO: { label: "—", cls: "badge-gray" },
+    FOLGA: { label: "Folga", cls: "badge-gray" }
   };
   const { label, cls } = map[status];
-  return <span className={`badge ${cls}`}>{label}</span>;
+  const titulo = (status === "AFASTAMENTO" || status === "FERIADO") && obs ? obs : undefined;
+  return (
+    <span className={`badge ${cls}`} title={titulo}>
+      {status === "AFASTAMENTO" && obs
+        ? obs
+        : status === "FERIADO" && obs
+          ? `Feriado: ${obs}`
+          : label}
+    </span>
+  );
 }
 
 function SaldoCell({
@@ -199,7 +679,8 @@ function SaldoCell({
   jornadaMin: number;
   status: StatusDia;
 }) {
-  if (status === "FUTURO") return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  if (status === "FUTURO" || status === "AFASTAMENTO")
+    return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (status === "FALTA") return <span className="text-red">−8h00</span>;
   const saldo = trabMin - jornadaMin;
   const h = Math.floor(Math.abs(saldo) / 60);
@@ -214,6 +695,27 @@ function SaldoCell({
     >
       {saldo >= 0 ? "+" : "−"}
       {h}h{String(m).padStart(2, "0")}
+    </span>
+  );
+}
+
+function PausaCell({ pausas }: { pausas?: Pausa[] }) {
+  if (!pausas || pausas.length === 0) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  return (
+    <span
+      style={{
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 2
+      }}
+    >
+      {pausas.map((p, i) => (
+        <span key={i} title="Interromper → Reiniciar Expediente">
+          {p.inicio}–{p.fim ?? "…"}
+        </span>
+      ))}
     </span>
   );
 }
@@ -388,12 +890,168 @@ function BotaoObservacoes({
 }
 
 function HorasCell({ min, status }: { min: number; status: StatusDia }) {
-  if (status === "FUTURO" || status === "FALTA")
+  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   return (
     <span style={{ fontFamily: "var(--font-mono)" }}>
       {Math.floor(min / 60)}h{String(min % 60).padStart(2, "0")}
     </span>
+  );
+}
+
+const MESES_PT = [
+  "Janeiro",
+  "Fevereiro",
+  "Março",
+  "Abril",
+  "Maio",
+  "Junho",
+  "Julho",
+  "Agosto",
+  "Setembro",
+  "Outubro",
+  "Novembro",
+  "Dezembro"
+];
+
+/* ─── Popup seletor mês/ano ─── */
+function PopupMesAno({
+  mes,
+  ano,
+  onSelect,
+  onClose
+}: {
+  mes: number;
+  ano: number;
+  onSelect: (m: number, a: number) => void;
+  onClose: () => void;
+}) {
+  const hoje = new Date();
+  const maxAno = hoje.getFullYear();
+  const maxMes = hoje.getMonth() + 1;
+  const [anoLocal, setAnoLocal] = useState(ano);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  function navAno(d: -1 | 1) {
+    const next = anoLocal + d;
+    if (next > maxAno) return;
+    setAnoLocal(next);
+  }
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        top: "calc(100% + 6px)",
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 500,
+        background: "white",
+        borderRadius: 12,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+        border: "1px solid rgba(122,30,38,0.12)",
+        padding: "14px 16px",
+        minWidth: 240
+      }}
+    >
+      {/* Seletor de ano */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 12
+        }}
+      >
+        <button
+          onClick={() => navAno(-1)}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            padding: "4px 8px",
+            color: "#6B0F1A",
+            fontSize: 16,
+            lineHeight: 1
+          }}
+        >
+          ‹
+        </button>
+        <span
+          style={{
+            fontFamily: "var(--font-display)",
+            fontStyle: "italic",
+            fontSize: 16,
+            color: "var(--burgundy-700)"
+          }}
+        >
+          {anoLocal}
+        </span>
+        <button
+          onClick={() => navAno(1)}
+          disabled={anoLocal >= maxAno}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: anoLocal >= maxAno ? "default" : "pointer",
+            padding: "4px 8px",
+            color: anoLocal >= maxAno ? "#ccc" : "#6B0F1A",
+            fontSize: 16,
+            lineHeight: 1
+          }}
+        >
+          ›
+        </button>
+      </div>
+      {/* Grade de meses */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+        {MESES_PT.map((nome, i) => {
+          const m = i + 1;
+          const isFuture = anoLocal === maxAno && m > maxMes;
+          const isSelected = m === mes && anoLocal === ano;
+          return (
+            <button
+              key={m}
+              disabled={isFuture}
+              onClick={() => {
+                onSelect(m, anoLocal);
+                onClose();
+              }}
+              style={{
+                padding: "6px 4px",
+                borderRadius: 6,
+                border: "none",
+                cursor: isFuture ? "default" : "pointer",
+                fontSize: 11.5,
+                fontWeight: isSelected ? 700 : 400,
+                background: isSelected ? "var(--burgundy-700, #6B0F1A)" : "transparent",
+                color: isSelected ? "white" : isFuture ? "#ccc" : "#334155",
+                transition: "background 0.1s"
+              }}
+              onMouseEnter={(e) => {
+                if (!isFuture && !isSelected)
+                  (e.currentTarget as HTMLButtonElement).style.background = "#f1f5f9";
+              }}
+              onMouseLeave={(e) => {
+                if (!isSelected)
+                  (e.currentTarget as HTMLButtonElement).style.background = "transparent";
+              }}
+            >
+              {nome.slice(0, 3)}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -410,18 +1068,42 @@ export function HistoricoPage() {
     observacoes: ObservacaoRegistro[];
   } | null>(null);
   const isMesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
+  const [popupMes, setPopupMes] = useState(false);
+  const [exportandoPdf, setExportandoPdf] = useState(false);
+  const mesNavRef = useRef<HTMLDivElement>(null);
+
+  /* ── Assinatura ── */
+  const [assinatura, setAssinatura] = useState<AssinaturaQuadro | null>(null);
+  const [modalAssinar, setModalAssinar] = useState(false);
+  const [loadingAssinar, setLoadingAssinar] = useState(false);
 
   const fetchHistorico = useCallback(
     (silent = false) => {
       if (!silent) setLoading(true);
 
       api
-        .get<{ mes: number; ano: number; registros: ApiRegistro[] }>(
-          `/ponto/historico?mes=${mes}&ano=${ano}`
+        .get<{
+          mes: number;
+          ano: number;
+          registros: ApiRegistro[];
+          afastamentos: ApiAfastamento[];
+          feriados?: ApiFeriado[];
+          multiplicadores?: Multiplicadores;
+        }>(`/ponto/historico?mes=${mes}&ano=${ano}`)
+        .then((data) =>
+          setRegistros(
+            transformarHistorico(
+              data?.registros ?? [],
+              data?.afastamentos ?? [],
+              mes,
+              ano,
+              data?.feriados ?? [],
+              data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 }
+            )
+          )
         )
-        .then((data) => setRegistros(transformarHistorico(data?.registros ?? [], mes, ano)))
         .catch(() => {
-          if (!silent) setRegistros(transformarHistorico([], mes, ano));
+          if (!silent) setRegistros(transformarHistorico([], [], mes, ano));
         })
         .finally(() => setLoading(false));
     },
@@ -450,6 +1132,47 @@ export function HistoricoPage() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [isMesAtual, fetchHistorico]);
 
+  /* Busca assinatura do mês visualizado */
+  useEffect(() => {
+    setAssinatura(null);
+    api
+      .get<AssinaturaQuadro[]>(`/ponto/assinaturas?mes=${mes}&ano=${ano}`)
+      .then((data) => setAssinatura(data?.[0] ?? null))
+      .catch(() => setAssinatura(null));
+  }, [mes, ano]);
+
+  async function confirmarAssinatura() {
+    if (!assinatura) return;
+    setLoadingAssinar(true);
+    try {
+      const updated = await api.post<AssinaturaQuadro>(
+        `/ponto/assinaturas/${assinatura.id}/assinar`,
+        {}
+      );
+      setAssinatura(updated);
+      setModalAssinar(false);
+    } catch (err: unknown) {
+      alert((err as { message?: string })?.message ?? "Erro ao assinar. Tente novamente.");
+    } finally {
+      setLoadingAssinar(false);
+    }
+  }
+
+  async function exportarPdf() {
+    setExportandoPdf(true);
+    try {
+      const nomeMesPad = String(mes).padStart(2, "0");
+      await api.download(
+        `/ponto/assinaturas/rascunho-pdf?mes=${mes}&ano=${ano}`,
+        `rascunho-frequencia-${nomeMesPad}-${ano}.pdf`
+      );
+    } catch (e: unknown) {
+      alert("Erro ao gerar PDF: " + ((e as Error)?.message ?? "desconhecido"));
+    } finally {
+      setExportandoPdf(false);
+    }
+  }
+
   function navMes(dir: -1 | 1) {
     let nm = mes + dir,
       na = ano;
@@ -474,7 +1197,10 @@ export function HistoricoPage() {
     .reduce((s, r) => s + r.horasMin, 0);
   const totalFaltas = registros.filter((r) => r.status === "FALTA").length;
   const totalOK = registros.filter((r) => r.status === "OK").length;
-  const totalDiasUteis = registros.filter((r) => r.status !== "FUTURO").length;
+  const totalAfastamentos = registros.filter((r) => r.status === "AFASTAMENTO").length;
+  const totalDiasUteis = registros.filter(
+    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO"
+  ).length;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -518,9 +1244,18 @@ export function HistoricoPage() {
                 Filtros
               </button>
             )}
-            <button className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
+            <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
+              <TrendingUpIcon size={14} />
+              {isMobile ? "Banco" : "Banco de Horas"}
+            </Link>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ gap: 6 }}
+              onClick={exportarPdf}
+              disabled={exportandoPdf || loading}
+            >
               <DownloadIcon size={14} />
-              {isMobile ? "PDF" : "Exportar PDF"}
+              {exportandoPdf ? "Gerando…" : isMobile ? "PDF" : "Exportar PDF"}
             </button>
           </div>
         </div>
@@ -538,20 +1273,50 @@ export function HistoricoPage() {
           >
             <ArrowLeftIcon size={16} />
           </button>
-          <p
-            style={{
-              fontFamily: "var(--font-display)",
-              fontStyle: "italic",
-              fontSize: isMobile ? 17 : 20,
-              color: "var(--burgundy-600)",
-              textTransform: "capitalize",
-              flex: 1,
-              textAlign: "center",
-              minWidth: 0
-            }}
+
+          {/* Mês clicável — abre popup de seleção */}
+          <div
+            ref={mesNavRef}
+            style={{ position: "relative", flex: 1, textAlign: "center", minWidth: 0 }}
           >
-            {nomeMes}
-          </p>
+            <button
+              onClick={() => setPopupMes((v) => !v)}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px 8px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontFamily: "var(--font-display)",
+                fontStyle: "italic",
+                fontSize: isMobile ? 17 : 20,
+                color: "var(--burgundy-600)",
+                textTransform: "capitalize",
+                borderRadius: 6,
+                transition: "background 0.1s"
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(122,30,38,0.06)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+              title="Clique para escolher mês e ano"
+            >
+              {nomeMes}
+              <ChevronDownIcon size={14} style={{ opacity: 0.5, marginTop: 2 }} />
+            </button>
+            {popupMes && (
+              <PopupMesAno
+                mes={mes}
+                ano={ano}
+                onSelect={(m, a) => {
+                  setMes(m);
+                  setAno(a);
+                }}
+                onClose={() => setPopupMes(false)}
+              />
+            )}
+          </div>
+
           <button
             className="btn-icon"
             onClick={() => navMes(1)}
@@ -573,6 +1338,11 @@ export function HistoricoPage() {
                   {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
                 </span>
               )}
+              {totalAfastamentos > 0 && (
+                <span className="badge badge-blue">
+                  {totalAfastamentos} afastamento{totalAfastamentos !== 1 ? "s" : ""}
+                </span>
+              )}
               <span className="badge badge-gray">
                 {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
                 trabalhadas
@@ -588,6 +1358,11 @@ export function HistoricoPage() {
                 {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
               </span>
             )}
+            {totalAfastamentos > 0 && (
+              <span className="badge badge-blue">
+                {totalAfastamentos} afastamento{totalAfastamentos !== 1 ? "s" : ""}
+              </span>
+            )}
             <span className="badge badge-gray">
               {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
               trabalhadas
@@ -595,6 +1370,22 @@ export function HistoricoPage() {
           </div>
         )}
       </div>
+
+      {/* Modal de assinatura */}
+      {modalAssinar && assinatura && (
+        <ModalAssinarQuadro
+          assinatura={assinatura}
+          totalTrabMin={totalTrabMin}
+          onClose={() => setModalAssinar(false)}
+          onConfirm={confirmarAssinatura}
+          loading={loadingAssinar}
+        />
+      )}
+
+      {/* Banner de assinatura */}
+      {assinatura && !loading && (
+        <BannerAssinatura assinatura={assinatura} onAssinar={() => setModalAssinar(true)} />
+      )}
 
       {/* Tabela */}
       {loading ? (
@@ -606,7 +1397,7 @@ export function HistoricoPage() {
       ) : (
         <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table className="table-cfo" style={{ minWidth: 700, tableLayout: "auto" }}>
+            <table className="table-cfo" style={{ minWidth: 780, tableLayout: "auto" }}>
               <thead>
                 <tr>
                   {[
@@ -616,6 +1407,7 @@ export function HistoricoPage() {
                     "Início Interv.",
                     "Fim Interv.",
                     "Saída",
+                    "Pausa",
                     "Horas",
                     "Saldo",
                     "Status"
@@ -668,6 +1460,9 @@ export function HistoricoPage() {
                         <HoraCell hora={r.saida} editado={r.saidaEditada} />
                       </td>
                       <td>
+                        <PausaCell pausas={r.pausas} />
+                      </td>
+                      <td>
                         <HorasCell min={r.horasMin} status={r.status} />
                       </td>
                       <td>
@@ -686,7 +1481,7 @@ export function HistoricoPage() {
                         }}
                       >
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <StatusPill status={r.status} />
+                          <StatusPill status={r.status} obs={r.obs} />
                           <BotaoObservacoes
                             observacoes={r.observacoes ?? []}
                             onClick={() =>
@@ -704,7 +1499,7 @@ export function HistoricoPage() {
                 {registros.length === 0 && (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={10}
                       style={{ textAlign: "center", padding: "40px", color: "var(--ink-500)" }}
                     >
                       Nenhum registro encontrado para este período.
@@ -716,7 +1511,7 @@ export function HistoricoPage() {
                 <tfoot>
                   <tr style={{ borderTop: "2px solid rgba(122,30,38,0.10)" }}>
                     <td
-                      colSpan={6}
+                      colSpan={7}
                       style={{
                         padding: "12px 14px",
                         fontWeight: 600,

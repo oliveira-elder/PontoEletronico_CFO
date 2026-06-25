@@ -10,7 +10,9 @@
       "Bash(npm run *)",
       "Bash(git push *)",
       "Bash(dir *)",
-      "PowerShell(docker restart pontoeletronico_cfo-backend-1 *)"
+      "PowerShell(docker restart pontoeletronico_cfo-backend-1 *)",
+      "PowerShell(New-Item *)",
+      "PowerShell(npm run *)"
     ]
   }
 }

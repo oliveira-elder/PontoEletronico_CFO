@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import {
   ClockIcon,
@@ -9,11 +9,15 @@ import {
   SunriseIcon,
   SunsetIcon,
   CoffeeIcon,
-  LogInIcon
+  LogInIcon,
+  PauseIcon,
+  PlayIcon,
+  FileTextIcon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { DocumentoRhUpload } from "../../components/ponto/DocumentoRhUpload";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -33,7 +37,7 @@ const toHM = (m: number) => {
 
 /* ─── Types ─── */
 interface ApiStatus {
-  estado: "FORA" | "TRABALHANDO" | "INTERVALO";
+  estado: "FORA" | "TRABALHANDO" | "INTERVALO" | "PAUSADO";
   registrosHoje: { tipo: string; dataHora: string }[];
   horasTrabalhadasMinutos: number;
   jornadaMinutos: number;
@@ -107,25 +111,40 @@ function computeSemana(registros: { tipo: string; dataHora: string }[], today: D
 }
 
 /* ─── Config visual de estado ─── */
-const ESTADO_COR = { TRABALHANDO: "var(--green)", INTERVALO: "#8a6a00", FORA: "var(--gray-cfo)" };
+const ESTADO_COR = {
+  TRABALHANDO: "var(--green)",
+  INTERVALO: "#8a6a00",
+  PAUSADO: "#8a6a00",
+  FORA: "var(--gray-cfo)"
+};
 const ESTADO_BG = {
   TRABALHANDO: "rgba(47,125,79,0.12)",
   INTERVALO: "rgba(247,196,55,0.14)",
+  PAUSADO: "rgba(247,196,55,0.14)",
   FORA: "rgba(109,110,113,0.12)"
 };
-const ESTADO_LABEL = { TRABALHANDO: "Trabalhando", INTERVALO: "Em intervalo", FORA: "Fora" };
+const ESTADO_LABEL = {
+  TRABALHANDO: "Trabalhando",
+  INTERVALO: "Em intervalo",
+  PAUSADO: "Pausado",
+  FORA: "Fora"
+};
 
 const PROXIMA_LABEL: Record<string, string> = {
   ENTRADA: "Entrada",
   INICIO_INTERVALO: "Início do Almoço",
   FIM_INTERVALO: "Fim do Almoço",
-  SAIDA: "Encerrar Jornada"
+  SAIDA: "Encerrar Jornada",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
 
 function getIconForTipo(tipo: string): React.ElementType {
   if (tipo === "ENTRADA") return SunriseIcon;
   if (tipo === "INICIO_INTERVALO") return CoffeeIcon;
   if (tipo === "FIM_INTERVALO") return LogInIcon;
+  if (tipo === "INTERROMPER_EXPEDIENTE") return PauseIcon;
+  if (tipo === "REINICIAR_EXPEDIENTE") return PlayIcon;
   return SunsetIcon;
 }
 
@@ -138,7 +157,9 @@ const TIPO_LABEL: Record<string, string> = {
   ENTRADA: "Entrada",
   INICIO_INTERVALO: "Início Intervalo",
   FIM_INTERVALO: "Fim Intervalo",
-  SAIDA: "Saída"
+  SAIDA: "Saída",
+  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
+  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
 
 /* ─── Stat pill (mobile) ─── */
@@ -261,6 +282,365 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
       >
         {status === "FUTURO" ? "—" : toHM(horasMin)}
       </p>
+    </div>
+  );
+}
+
+/* ─── Seção: Esta Semana ─── */
+function SemanaSection({ semana, compact }: { semana: DiaSemana[]; compact?: boolean }) {
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: compact ? 12 : 14
+        }}
+      >
+        <p
+          style={{
+            fontFamily: "var(--font-display)",
+            fontStyle: "italic",
+            color: "var(--burgundy-600)",
+            fontSize: compact ? 15 : 16,
+            margin: 0
+          }}
+        >
+          Esta Semana
+        </p>
+        <Link
+          to="/ponto/historico"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: compact ? 3 : 4,
+            fontSize: 12,
+            color: "var(--ink-500)"
+          }}
+        >
+          Ver histórico <ArrowRightIcon size={compact ? 11 : 12} />
+        </Link>
+      </div>
+      <div
+        style={
+          {
+            display: "flex",
+            gap: 8,
+            overflowX: "auto",
+            paddingBottom: 4,
+            WebkitOverflowScrolling: "touch"
+          } as React.CSSProperties
+        }
+      >
+        {semana.length > 0 ? (
+          semana.map((d) => <DayCard key={d.dia} {...d} />)
+        ) : (
+          <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ─── Seção: Requisições do RH ─── */
+interface ReqRhMiniItem {
+  id: string;
+  status: "PENDENTE" | "VISUALIZADO" | "RESPONDIDO";
+  requisicao: {
+    id: string;
+    tipo: string;
+    titulo: string;
+    criadaEm: string;
+  };
+}
+
+function RequisicoesRhSection({ token }: { token: string }) {
+  const [items, setItems] = useState<ReqRhMiniItem[]>([]);
+  const [reqEnderecoPendente, setReqEnderecoPendente] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const carregar = useCallback(() => {
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+    Promise.all([
+      api.get<ReqRhMiniItem[]>("/requisicoes-rh/minhas", token).catch(() => []),
+      api
+        .get<{ id: string; status: string } | null>("/ponto/requerimento-endereco", token)
+        .catch(() => null)
+    ])
+      .then(([d, req]) => {
+        setItems(d ?? []);
+        setReqEnderecoPendente(req?.status === "PENDENTE");
+      })
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  useEffect(() => {
+    carregar();
+  }, [carregar]);
+
+  const pendentes =
+    items.filter((i) => i.status === "PENDENTE").length + (reqEnderecoPendente ? 1 : 0);
+  const naoRespondidos = items.filter((i) => i.status !== "RESPONDIDO");
+  const recentes = naoRespondidos.slice(0, reqEnderecoPendente ? 2 : 3);
+
+  const statusStyle = (s: string) =>
+    s === "PENDENTE"
+      ? { bg: "rgba(247,196,55,0.18)", text: "#8a6a00", label: "Novo" }
+      : s === "RESPONDIDO"
+        ? { bg: "rgba(47,125,79,0.10)", text: "var(--green, #2f7d4f)", label: "Respondido" }
+        : { bg: "rgba(26,79,122,0.10)", text: "#1a4f7a", label: "Lido" };
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 12,
+          gap: 8,
+          flexWrap: "wrap"
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <p
+            style={{
+              fontFamily: "var(--font-display)",
+              fontStyle: "italic",
+              color: "var(--burgundy-600)",
+              fontSize: 15,
+              margin: 0
+            }}
+          >
+            Requisições do RH
+          </p>
+          {pendentes > 0 && (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                padding: "2px 7px",
+                borderRadius: "var(--radius-full)",
+                background: "rgba(247,196,55,0.22)",
+                color: "#8a6a00"
+              }}
+            >
+              {pendentes} nova(s)
+            </span>
+          )}
+        </div>
+        <Link
+          to="/ponto/minhas-requisicoes"
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--burgundy-600)",
+            textDecoration: "none"
+          }}
+        >
+          Ver todas →
+        </Link>
+      </div>
+
+      {loading && <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>Carregando...</p>}
+
+      {!loading && recentes.length === 0 && !reqEnderecoPendente && (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0, fontStyle: "italic" }}>
+          {items.length > 0
+            ? "Todas as requisições foram respondidas."
+            : "Nenhuma requisição no momento."}
+        </p>
+      )}
+
+      {!loading && (recentes.length > 0 || reqEnderecoPendente) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Item especial: requerimento de endereço residencial */}
+          {reqEnderecoPendente && (
+            <Link to="/ponto/minhas-requisicoes" style={{ textDecoration: "none" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  background: "rgba(122,30,38,0.04)",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  cursor: "pointer"
+                }}
+              >
+                <span
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: "rgba(122,30,38,0.08)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--burgundy-600)",
+                    flexShrink: 0,
+                    fontSize: 16
+                  }}
+                >
+                  📍
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                      margin: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    Cadastrar Endereço Residencial
+                  </p>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
+                    Solicitado pelo RH
+                  </p>
+                </div>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "3px 8px",
+                    borderRadius: "var(--radius-full)",
+                    background: "rgba(247,196,55,0.22)",
+                    color: "#8a6a00",
+                    flexShrink: 0
+                  }}
+                >
+                  Novo
+                </span>
+              </div>
+            </Link>
+          )}
+          {recentes.map((item) => {
+            const ss = statusStyle(item.status);
+            return (
+              <div
+                key={item.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  background:
+                    item.status === "PENDENTE" ? "rgba(122,30,38,0.04)" : "var(--cream-50)",
+                  borderRadius: "var(--radius-md)",
+                  border:
+                    item.status === "PENDENTE"
+                      ? "1px solid rgba(122,30,38,0.14)"
+                      : "1px solid rgba(122,30,38,0.08)"
+                }}
+              >
+                <span
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: "rgba(122,30,38,0.08)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--burgundy-600)",
+                    flexShrink: 0
+                  }}
+                >
+                  <FileTextIcon size={16} />
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--ink-900)",
+                      margin: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {item.requisicao.titulo}
+                  </p>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
+                    {new Date(item.requisicao.criadaEm).toLocaleDateString("pt-BR")}
+                  </p>
+                </div>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    padding: "3px 8px",
+                    borderRadius: "var(--radius-full)",
+                    background: ss.bg,
+                    color: ss.text,
+                    flexShrink: 0
+                  }}
+                >
+                  {ss.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ─── Card unificado: Semana + Upload + Requisições RH ─── */
+function DashboardPainelPrincipal({
+  semana,
+  compact,
+  token
+}: {
+  semana: DiaSemana[];
+  compact?: boolean;
+  token: string;
+}) {
+  return (
+    <div
+      style={{
+        background: "#fff",
+        borderRadius: "var(--radius-lg)",
+        border: "1px solid rgba(122,30,38,0.08)",
+        padding: compact ? "14px" : undefined
+      }}
+      className={compact ? undefined : "card-flat"}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: compact ? "1fr" : "1fr 1fr",
+          gap: compact ? 16 : 20,
+          marginBottom: compact ? 16 : 20,
+          paddingBottom: compact ? 16 : 20,
+          borderBottom: "1px solid rgba(122,30,38,0.08)"
+        }}
+      >
+        <div
+          style={
+            compact
+              ? { paddingBottom: 16, borderBottom: "1px solid rgba(122,30,38,0.08)" }
+              : { paddingRight: 20, borderRight: "1px solid rgba(122,30,38,0.08)" }
+          }
+        >
+          <SemanaSection semana={semana} compact={compact} />
+        </div>
+        <div>
+          <DocumentoRhUpload compact />
+        </div>
+      </div>
+      <RequisicoesRhSection token={token} />
     </div>
   );
 }
@@ -498,64 +878,8 @@ export function DashboardPage() {
           />
         </div>
 
-        {/* Semana */}
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "14px"
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 12
-            }}
-          >
-            <p
-              style={{
-                fontFamily: "var(--font-display)",
-                fontStyle: "italic",
-                color: "var(--burgundy-600)",
-                fontSize: 15
-              }}
-            >
-              Esta Semana
-            </p>
-            <Link
-              to="/ponto/historico"
-              style={{
-                fontSize: 12,
-                color: "var(--ink-500)",
-                display: "flex",
-                alignItems: "center",
-                gap: 3
-              }}
-            >
-              Ver tudo <ArrowRightIcon size={11} />
-            </Link>
-          </div>
-          <div
-            style={
-              {
-                display: "flex",
-                gap: 8,
-                overflowX: "auto",
-                paddingBottom: 4,
-                WebkitOverflowScrolling: "touch"
-              } as React.CSSProperties
-            }
-          >
-            {semana.length > 0 ? (
-              semana.map((d) => <DayCard key={d.dia} {...d} />)
-            ) : (
-              <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
-            )}
-          </div>
-        </div>
+        {/* Painel principal: semana + upload + requisições RH */}
+        <DashboardPainelPrincipal semana={semana} compact token={token() ?? ""} />
 
         {/* Registros hoje */}
         <div
@@ -679,12 +1003,22 @@ export function DashboardPage() {
                 {new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
               </p>
             </div>
-            <Link
-              to="/ponto/relatorios"
-              style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
+            <div
+              style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}
             >
-              Ver relatório →
-            </Link>
+              <Link
+                to="/ponto/banco-horas"
+                style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
+              >
+                Banco de Horas →
+              </Link>
+              <Link
+                to="/ponto/relatorios"
+                style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
+              >
+                Ver relatório →
+              </Link>
+            </div>
           </div>
           <div
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}
@@ -854,11 +1188,11 @@ export function DashboardPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span
-              className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" ? "amber" : "gray"}`}
+              className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
               style={{ fontSize: 12, padding: "4px 10px" }}
             >
               <span
-                className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" ? "amber" : "gray"}`}
+                className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
                 style={{ width: 6, height: 6 }}
               />
               {ESTADO_LABEL[estado]}
@@ -902,11 +1236,11 @@ export function DashboardPage() {
             {fmt(now)}
           </p>
           <span
-            className={`badge badge-${estado === "TRABALHANDO" ? "green" : "gray"}`}
+            className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
             style={{ fontSize: 12 }}
           >
             <span
-              className={`dot dot-${estado === "TRABALHANDO" ? "green" : "gray"}`}
+              className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
               style={{ width: 6, height: 6 }}
             />
             {ESTADO_LABEL[estado]}
@@ -1002,48 +1336,9 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Semana + Registros hoje */}
+      {/* Painel principal + Registros hoje */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginBottom: 24 }}>
-        <div className="card-flat">
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 14
-            }}
-          >
-            <p
-              style={{
-                fontFamily: "var(--font-display)",
-                fontSize: 16,
-                fontStyle: "italic",
-                color: "var(--burgundy-600)"
-              }}
-            >
-              Esta Semana
-            </p>
-            <Link
-              to="/ponto/historico"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                fontSize: 12,
-                color: "var(--ink-500)"
-              }}
-            >
-              Ver histórico <ArrowRightIcon size={12} />
-            </Link>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            {semana.length > 0 ? (
-              semana.map((d) => <DayCard key={d.dia} {...d} />)
-            ) : (
-              <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
-            )}
-          </div>
-        </div>
+        <DashboardPainelPrincipal semana={semana} token={token() ?? ""} />
 
         <div className="card-flat">
           <p
@@ -1161,9 +1456,14 @@ export function DashboardPage() {
               {new Date().toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}
             </p>
           </div>
-          <Link to="/ponto/relatorios" className="btn btn-ghost btn-sm">
-            Ver relatório completo
-          </Link>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm">
+              Banco de Horas
+            </Link>
+            <Link to="/ponto/relatorios" className="btn btn-ghost btn-sm">
+              Ver relatório completo
+            </Link>
+          </div>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
           {[

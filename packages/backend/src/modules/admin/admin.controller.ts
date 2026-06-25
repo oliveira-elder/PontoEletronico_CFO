@@ -9,7 +9,8 @@ import {
   UseGuards,
   Query,
   Request,
-  BadRequestException
+  BadRequestException,
+  ForbiddenException
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { RolesGuard } from "../auth/roles.guard";
@@ -27,6 +28,12 @@ function extractToken(req: AuthRequest): string {
   return auth.startsWith("Bearer ") ? auth.slice(7) : auth;
 }
 
+function assertSuperAdmin(req: AuthRequest) {
+  if (!req.user?.isSuperAdmin) {
+    throw new ForbiddenException("Acesso restrito a Super Admin.");
+  }
+}
+
 @Controller("admin")
 @UseGuards(AuthGuard("jwt"), RolesGuard)
 @Roles("ponto-admin", "PONTO_ADMIN")
@@ -40,6 +47,7 @@ export class AdminController {
 
   @Get("keycloak/grupos")
   async listarGruposKeycloak(@Request() req: AuthRequest) {
+    assertSuperAdmin(req);
     const tk = extractToken(req);
     const [{ available, grupos: kcGrupos }, mapeamentos] = await Promise.all([
       this.kcAdmin.listGroups(tk),
@@ -65,9 +73,11 @@ export class AdminController {
 
   @Put("keycloak/grupos/:id/papeis")
   async atualizarPapeisGrupo(
+    @Request() req: AuthRequest,
     @Param("id") id: string,
     @Body() body: { grupoNome: string; papeis: string[] }
   ) {
+    assertSuperAdmin(req);
     return this.prisma.grupoSistema.upsert({
       where: { grupoId: id },
       create: { grupoId: id, grupoNome: body.grupoNome, papeis: body.papeis },
@@ -76,7 +86,8 @@ export class AdminController {
   }
 
   @Delete("keycloak/grupos/:id/papeis")
-  async removerPapeisGrupo(@Param("id") id: string) {
+  async removerPapeisGrupo(@Request() req: AuthRequest, @Param("id") id: string) {
+    assertSuperAdmin(req);
     await this.prisma.grupoSistema.deleteMany({ where: { grupoId: id } });
     return { ok: true };
   }
@@ -85,11 +96,13 @@ export class AdminController {
 
   @Get("keycloak/usuarios")
   async listarUsuarios(@Request() req: AuthRequest, @Query("search") search?: string) {
+    assertSuperAdmin(req);
     return this.kcAdmin.listUsers(extractToken(req), search);
   }
 
   @Get("keycloak/usuarios/:id/grupos")
   async gruposDoUsuario(@Request() req: AuthRequest, @Param("id") id: string) {
+    assertSuperAdmin(req);
     const tk = extractToken(req);
     const [grupos, mapeamentos] = await Promise.all([
       this.kcAdmin.getUserGroups(id, tk),
@@ -104,15 +117,16 @@ export class AdminController {
   }
 
   @Get("grupos-sistema")
-  listarMapeamentos() {
+  listarMapeamentos(@Request() req: AuthRequest) {
+    assertSuperAdmin(req);
     return this.prisma.grupoSistema.findMany({ orderBy: { grupoNome: "asc" } });
   }
 
   /* ─── Usuários locais (banco interno) ─── */
 
   @Get("usuarios")
-  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
-  async listarUsuariosLocais(@Query("search") search?: string) {
+  async listarUsuariosLocais(@Request() req: AuthRequest, @Query("search") search?: string) {
+    assertSuperAdmin(req);
     const where = search
       ? {
           OR: [
@@ -148,8 +162,12 @@ export class AdminController {
   }
 
   @Patch("usuarios/:id/email-real")
-  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
-  async definirEmailReal(@Param("id") id: string, @Body() body: { emailReal: string | null }) {
+  async definirEmailReal(
+    @Request() req: AuthRequest,
+    @Param("id") id: string,
+    @Body() body: { emailReal: string | null }
+  ) {
+    assertSuperAdmin(req);
     if (body.emailReal !== null) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(body.emailReal)) {

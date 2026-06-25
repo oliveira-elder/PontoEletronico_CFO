@@ -10,7 +10,10 @@ import {
   SettingsIcon,
   LogOutIcon,
   ShieldCheckIcon,
-  CheckCircleIcon
+  CheckCircleIcon,
+  SsoIcon,
+  ClipboardListIcon,
+  TerminalIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -35,7 +38,8 @@ const aprovacaoNav: NavItem[] = [
 
 /* Gestão de funcionários: apenas RH (RH_AUDITORIA) e admins/super admin */
 const gestaoRhNav: NavItem[] = [
-  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} /> }
+  { path: "/ponto/gestao", label: "Gestão", icon: <UsersIcon size={18} /> },
+  { path: "/ponto/requisicoes-rh", label: "Requisições RH", icon: <ClipboardListIcon size={18} /> }
 ];
 
 /* Auditoria: apenas para RH e admins */
@@ -44,13 +48,14 @@ const auditoriaNav: NavItem[] = [
 ];
 
 /* Itens administrativos: apenas para admins/super admin */
-const adminNav: NavItem[] = [
-  { path: "/ponto/usuarios", label: "Usuários / Grupos", icon: <UsersIcon size={18} /> }
-];
-
-/* Configurações: apenas admin */
 const adminBottomNav: NavItem[] = [
   { path: "/ponto/configuracoes", label: "Configurações", icon: <SettingsIcon size={18} /> }
+];
+
+/* Sistema: apenas super admin */
+const superAdminNav: NavItem[] = [
+  { path: "/ponto/usuarios", label: "Usuários / Grupos", icon: <SsoIcon size={18} /> },
+  { path: "/ponto/logs", label: "Logs", icon: <TerminalIcon size={18} /> }
 ];
 
 /* ─── Single nav link ─── */
@@ -79,6 +84,7 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
   const { user, hasRole, logout } = useAuth();
 
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  const isSuperAdmin = !!user?.isSuperAdmin;
   // PROVISÓRIO: isManager via campo do Funcionario enquanto responsavelUserId não está configurado
   const isManagerProvisorio = !!user?.funcionario?.isManager;
   const isGestor =
@@ -92,8 +98,8 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
   const visibleAprovacaoNav = isGestor ? aprovacaoNav : [];
   const visibleGestaoRhNav = isRH ? gestaoRhNav : [];
   const visibleAuditoriaNav = isRH ? auditoriaNav : [];
-  const visibleAdminNav = isAdmin ? adminNav : [];
   const visibleAdminBottomNav = isAdmin ? adminBottomNav : [];
+  const visibleSuperAdminNav = isSuperAdmin ? superAdminNav : [];
 
   function setExp(v: boolean) {
     setExpanded(v);
@@ -123,7 +129,6 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
     >
       {/* ── Brand area — espelha o topbar ── */}
       <div style={{ marginBottom: 8, flexShrink: 0 }}>
-        {/* Faixa branca com identidade */}
         <div
           style={{
             background: "#ffffff",
@@ -212,8 +217,7 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
         {/* Seção administração */}
         {(visibleAprovacaoNav.length > 0 ||
           visibleGestaoRhNav.length > 0 ||
-          visibleAuditoriaNav.length > 0 ||
-          visibleAdminNav.length > 0) && (
+          visibleAuditoriaNav.length > 0) && (
           <>
             {expanded && (
               <p
@@ -241,7 +245,30 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
             {visibleAuditoriaNav.map((item) => (
               <SidebarLink key={item.path} item={item} expanded={expanded} />
             ))}
-            {visibleAdminNav.map((item) => (
+          </>
+        )}
+
+        {/* Seção super admin */}
+        {visibleSuperAdminNav.length > 0 && (
+          <>
+            {expanded && (
+              <p
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: "rgba(255,180,0,0.55)",
+                  padding: "12px 12px 4px",
+                  margin: 0,
+                  whiteSpace: "nowrap"
+                }}
+              >
+                Sistema
+              </p>
+            )}
+            {!expanded && <div style={{ height: 8 }} />}
+            {visibleSuperAdminNav.map((item) => (
               <SidebarLink key={item.path} item={item} expanded={expanded} />
             ))}
           </>

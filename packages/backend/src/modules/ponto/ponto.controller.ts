@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Param,
   Body,
   Query,
   Req,
@@ -12,6 +14,7 @@ import {
 import { AuthGuard } from "@nestjs/passport";
 import { PontoService } from "./ponto.service";
 import { FeriadosService } from "./feriados.service";
+import { FeriadoConfigService } from "./feriado-config.service";
 import { CreateRegistroDto } from "./dto/create-registro.dto";
 
 @Controller("ponto")
@@ -19,8 +22,14 @@ import { CreateRegistroDto } from "./dto/create-registro.dto";
 export class PontoController {
   constructor(
     private readonly pontoService: PontoService,
-    private readonly feriadosService: FeriadosService
+    private readonly feriadosService: FeriadosService,
+    private readonly feriadoConfigService: FeriadoConfigService
   ) {}
+
+  @Get("meu-perfil")
+  getMeuPerfil(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getMeuPerfil(req.user.sub);
+  }
 
   @Get("status")
   getStatus(@Req() req: { user: { sub: string } }) {
@@ -50,6 +59,11 @@ export class PontoController {
     return this.pontoService.getRelatorio(req.user.sub, mes, ano);
   }
 
+  @Get("banco-horas")
+  getBancoHoras(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getBancoHoras(req.user.sub);
+  }
+
   @Get("solicitacoes")
   getSolicitacoes(@Req() req: { user: { sub: string } }) {
     return this.pontoService.getSolicitacoes(req.user.sub);
@@ -71,9 +85,42 @@ export class PontoController {
     return this.pontoService.criarSolicitacao(req.user.sub, body);
   }
 
+  @Patch("solicitacoes/:id/documento-retorno")
+  enviarDocumentoRetorno(
+    @Req() req: { user: { sub: string } },
+    @Param("id") id: string,
+    @Body() body: { documentoBase64: string; mimeType?: string }
+  ) {
+    return this.pontoService.enviarDocumentoRetorno(
+      req.user.sub,
+      id,
+      body.documentoBase64,
+      body.mimeType
+    );
+  }
+
+  @Patch("solicitacoes/:id/documento")
+  editarDocumento(
+    @Req() req: { user: { sub: string } },
+    @Param("id") id: string,
+    @Body() body: { documentoBase64: string; mimeType?: string }
+  ) {
+    return this.pontoService.editarDocumentoSolicitacao(
+      req.user.sub,
+      id,
+      body.documentoBase64,
+      body.mimeType
+    );
+  }
+
   @Get("registros-do-dia")
   getRegistrosDoDia(@Req() req: { user: { sub: string } }, @Query("data") data: string) {
     return this.pontoService.getRegistrosDoDia(req.user.sub, data);
+  }
+
+  @Get("feriado-hoje")
+  getFeriadoHoje(): Promise<{ bloqueado: boolean; nome?: string }> {
+    return this.feriadoConfigService.isBloqueado(new Date());
   }
 
   @Get("feriados")
@@ -82,8 +129,56 @@ export class PontoController {
     return this.feriadosService.getFeriadosDoAno(ano);
   }
 
+  @Get("ferias/saldo")
+  getSaldoFerias(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getSaldoFerias(req.user.sub);
+  }
+
+  @Get("requerimento-endereco")
+  getRequerimentoEndereco(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getRequerimentoEndereco(req.user.sub);
+  }
+
+  @Post("requerimento-endereco/responder")
+  responderRequerimentoEndereco(
+    @Req() req: { user: { sub: string } },
+    @Body()
+    body: {
+      cep?: string;
+      logradouro?: string;
+      numero?: string;
+      complemento?: string;
+      bairro?: string;
+      cidade?: string;
+      uf?: string;
+      lat?: number | null;
+      lng?: number | null;
+    }
+  ) {
+    return this.pontoService.responderRequerimentoEndereco(req.user.sub, body);
+  }
+
   @Post("minha-foto/solicitar-atualizacao")
   solicitarAtualizacaoFoto(@Req() req: { user: { sub: string } }) {
     return this.pontoService.solicitarAtualizacaoFotoPerfil(req.user.sub);
+  }
+
+  @Get("documentos-rh")
+  listarDocumentosRh(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.listarDocumentosRh(req.user.sub);
+  }
+
+  @Post("documentos-rh")
+  enviarDocumentoRh(
+    @Req() req: { user: { sub: string } },
+    @Body()
+    body: {
+      descricao: string;
+      arquivoBase64: string;
+      mimeType?: string;
+      nomeArquivo?: string;
+    }
+  ) {
+    return this.pontoService.enviarDocumentoRh(req.user.sub, body);
   }
 }
