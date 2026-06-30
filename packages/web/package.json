@@ -12,6 +12,7 @@
   "dependencies": {
     "@intranet/shared": "file:../shared",
     "@tanstack/react-query": "^5.59.0",
+    "jspdf": "^4.2.1",
     "keycloak-js": "^25.0.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -19,6 +19,7 @@ import {
   validarHorarioPermitido
 } from "../../utils/horario-brasilia";
 import { appendObservacao } from "../../utils/registro-observacoes";
+import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import {
   jornadaEsperadaMin,
   resolverJornadaHistoricoContexto
@@ -751,26 +752,40 @@ export class PontoService {
   /* ─── Relatório mensal ─── */
 
   async getRelatorio(keycloakSub: string, mes: number, ano: number) {
-    const func = await this.getFuncionario(keycloakSub);
-    const { registros } = await this.getHistorico(keycloakSub, mes, ano);
+    const [func, historico] = await Promise.all([
+      this.getFuncionario(keycloakSub),
+      this.getHistorico(keycloakSub, mes, ano)
+    ]);
 
-    const diasTrabalhados = new Set(
-      registros
-        .filter((r: { tipo: string; dataHora: Date }) => r.tipo === "ENTRADA")
-        .map((r: { tipo: string; dataHora: Date }) => r.dataHora.toDateString())
-    ).size;
+    const quadro = montarRelatorioQuadro(
+      historico.registros,
+      historico.afastamentos,
+      mes,
+      ano,
+      historico.jornada,
+      historico.feriados,
+      historico.multiplicadores.sabadoPct,
+      historico.multiplicadores.domingoPct,
+      historico.multiplicadores.feriadoPct
+    );
 
-    const jornada = await this.getJornadaEfetiva(func.id);
-    const horasTrabalhadasMinutos = this.calcHorasMinutos(registros);
-    const horasEsperadasMinutos = diasTrabalhados * jornada.jornadaDiariaMin;
-    const saldoMinutos = horasTrabalhadasMinutos - horasEsperadasMinutos;
+    const jornadaCtx = historico.jornada;
+    const horasEsperadasMinutos = quadro.dias.reduce((s, d) => {
+      if (d.statusInterno === "FALTA") return s + jornadaEsperadaMin(d.iso, jornadaCtx);
+      if ((d.statusInterno === "OK" || d.statusInterno === "PENDENTE") && !d.multiplicadorPct) {
+        return s + jornadaEsperadaMin(d.iso, jornadaCtx);
+      }
+      return s;
+    }, 0);
+
+    const saldoMinutos = quadro.saldoMinutos;
 
     return {
       mes,
       ano,
       funcionario: { id: func.id, matricula: func.matricula, cargo: func.cargo },
-      diasTrabalhados,
-      horasTrabalhadasMinutos,
+      diasTrabalhados: quadro.diasTrabalhados,
+      horasTrabalhadasMinutos: quadro.horasTrabalhadasMinutos,
       horasEsperadasMinutos,
       horasExtrasMinutos: Math.max(0, saldoMinutos),
       horasFaltaMinutos: Math.max(0, -saldoMinutos),

@@ -11,6 +11,12 @@ import {
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { gerarRelatorioPdf } from "../../utils/relatorioPdf";
+import {
+  type HistoricoApiResponse,
+  type ResumoHistorico,
+  resumoFromHistoricoApi
+} from "../../utils/historicoTransform";
 
 /* ─── Helpers ─── */
 function minToHM(min: number) {
@@ -34,17 +40,9 @@ function diasUteisMes(mes: number, ano: number): number {
 }
 
 /* ─── Types ─── */
-interface RelatorioMes {
-  mes: number;
-  ano: number;
-  diasTrabalhados: number;
-  horasTrabalhadasMinutos: number;
-  horasEsperadasMinutos: number;
-  horasExtrasMinutos: number;
-  horasFaltaMinutos: number;
-  saldoMinutos: number;
+type RelatorioMes = ResumoHistorico & {
   funcionario?: { matricula: string; cargo: string };
-}
+};
 
 const EMPTY: RelatorioMes = {
   mes: 0,
@@ -56,6 +54,11 @@ const EMPTY: RelatorioMes = {
   horasFaltaMinutos: 0,
   saldoMinutos: 0
 };
+
+async function carregarResumoMes(m: number, a: number, tk: string): Promise<RelatorioMes> {
+  const data = await api.get<HistoricoApiResponse>(`/ponto/historico?mes=${m}&ano=${a}`, tk);
+  return resumoFromHistoricoApi(data, m, a);
+}
 
 /* ─── Mini bar chart ─── */
 function BarChart({
@@ -183,6 +186,7 @@ export function RelatoriosPage() {
   const [rel, setRel] = useState<RelatorioMes>(EMPTY);
   const [trend, setTrend] = useState<RelatorioMes[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exportandoPdf, setExportandoPdf] = useState(false);
 
   useEffect(() => {
     const tk = token();
@@ -203,11 +207,9 @@ export function RelatoriosPage() {
     });
 
     Promise.all([
-      api.get<RelatorioMes>(`/ponto/relatorio?mes=${mes}&ano=${ano}`, tk),
+      carregarResumoMes(mes, ano, tk),
       ...trendMeses.map(({ m, a }) =>
-        api
-          .get<RelatorioMes>(`/ponto/relatorio?mes=${m}&ano=${a}`, tk)
-          .catch(() => ({ ...EMPTY, mes: m, ano: a }))
+        carregarResumoMes(m, a, tk).catch(() => ({ ...EMPTY, mes: m, ano: a }))
       )
     ])
       .then(([relData, ...trendData]) => {
@@ -240,6 +242,17 @@ export function RelatoriosPage() {
   const diasUteis = diasUteisMes(mes, ano);
   const pctDias = diasUteis > 0 ? (rel.diasTrabalhados / diasUteis) * 100 : 0;
 
+  function exportarPdf() {
+    setExportandoPdf(true);
+    try {
+      gerarRelatorioPdf(rel, trend, { nomeUsuario: user?.name ?? "—" });
+    } catch (e: unknown) {
+      alert("Erro ao gerar PDF: " + ((e as Error)?.message ?? "desconhecido"));
+    } finally {
+      setExportandoPdf(false);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* Cabeçalho */}
@@ -267,9 +280,14 @@ export function RelatoriosPage() {
           >
             Relatório de <em>Frequência</em>
           </h1>
-          <button className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ gap: 6 }}
+            onClick={exportarPdf}
+            disabled={exportandoPdf || loading}
+          >
             <DownloadIcon size={14} />
-            {isMobile ? "PDF" : "Exportar PDF"}
+            {exportandoPdf ? "Gerando…" : isMobile ? "PDF" : "Exportar PDF"}
           </button>
         </div>
       </div>
