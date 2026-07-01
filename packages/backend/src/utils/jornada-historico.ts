@@ -4,6 +4,8 @@ export interface JornadaHistoricoContext {
   anteriorMin: number;
   atualMin: number;
   vigenciaDesde: string | null;
+  horaEntrada?: string;
+  horaSaida?: string;
 }
 
 export interface FuncionarioJornadaInput {
@@ -11,7 +13,9 @@ export interface FuncionarioJornadaInput {
   jornadaHorasDia?: number | null;
   jornadaPeriodoDesde?: Date | null;
   jornadaPeriodoAssociadoEm?: Date | null;
-  jornadaPeriodo?: { jornadaDiariaMin: number } | null;
+  jornadaPeriodo?: { jornadaDiariaMin: number; horaEntrada?: string; horaSaida?: string } | null;
+  configuracaoHoraEntrada?: string | null;
+  configuracaoHoraSaida?: string | null;
 }
 
 /** Resolve jornada anterior (padrão) vs atual (período) e data de vigência. */
@@ -30,7 +34,33 @@ export function resolverJornadaHistoricoContexto(
     vigenciaDesde = hojeBrasiliaISO();
   }
 
-  return { anteriorMin, atualMin, vigenciaDesde };
+  const horaEntrada = func?.jornadaPeriodo?.horaEntrada ?? func?.configuracaoHoraEntrada ?? "08:00";
+  const horaSaida = func?.jornadaPeriodo?.horaSaida ?? func?.configuracaoHoraSaida ?? "17:00";
+
+  return { anteriorMin, atualMin, vigenciaDesde, horaEntrada, horaSaida };
+}
+
+/** Calcula a jornada obrigatória (min) para um feriado parcial com marco de horário.
+ *  Retorna a proporção da jornadaDiariaMin correspondente ao período não-feriado. */
+export function calcularJornadaParcialFeriado(
+  marcoHorario: string,
+  marcoLado: string | null | undefined,
+  jornada: { horaEntrada: string; horaSaida: string; jornadaDiariaMin: number }
+): number {
+  const horaParaMin = (h: string) => {
+    const [hh, mm] = h.split(":").map(Number);
+    return hh * 60 + mm;
+  };
+  const entradaMin = horaParaMin(jornada.horaEntrada);
+  const saidaMin = horaParaMin(jornada.horaSaida);
+  const marcoMin = horaParaMin(marcoHorario);
+  const totalTurno = saidaMin - entradaMin;
+  if (totalTurno <= 0) return 0;
+  const propObrigatoria =
+    marcoLado === "ANTES"
+      ? (saidaMin - marcoMin) / totalTurno // parte depois do marco é obrigatória
+      : (marcoMin - entradaMin) / totalTurno; // parte antes do marco é obrigatória
+  return Math.round(jornada.jornadaDiariaMin * Math.max(0, Math.min(1, propObrigatoria)));
 }
 
 /** Jornada diária esperada (min) para um dia civil YYYY-MM-DD. */

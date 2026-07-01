@@ -12,7 +12,8 @@ import {
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
 import {
   jornadaEsperadaMin as jornadaMinParaDia,
-  resolverJornadaHistoricoContexto
+  resolverJornadaHistoricoContexto,
+  calcularJornadaParcialFeriado
 } from "../../utils/jornada-historico";
 import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import { DocumentoService } from "../ponto/documento.service";
@@ -519,7 +520,7 @@ export class AuditoriaService {
     };
     if (filtros.tipo) where.tipo = filtros.tipo;
 
-    const [registros, func] = await Promise.all([
+    const [registros, func, cfgJornada] = await Promise.all([
       this.prisma.registroPonto.findMany({
         where,
         orderBy: { dataHora: "asc" }
@@ -531,14 +532,22 @@ export class AuditoriaService {
           jornadaHorasDia: true,
           jornadaPeriodoDesde: true,
           jornadaPeriodoAssociadoEm: true,
-          jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+          jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
         }
+      }),
+      this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: { horaEntrada: true, horaSaida: true }
       })
     ]);
 
     return {
       registros,
-      jornada: resolverJornadaHistoricoContexto(func)
+      jornada: resolverJornadaHistoricoContexto({
+        ...func,
+        configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
+        configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
+      })
     };
   }
 
@@ -1593,14 +1602,17 @@ export class AuditoriaService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
       }
     });
-    const jornadaCtx = resolverJornadaHistoricoContexto(funcJornada);
-
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
-      select: { diasUteis: true }
+      select: { diasUteis: true, horaEntrada: true, horaSaida: true }
+    });
+    const jornadaCtx = resolverJornadaHistoricoContexto({
+      ...funcJornada,
+      configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
+      configuracaoHoraSaida: cfg?.horaSaida ?? null
     });
     const diasUteisCfg: boolean[] = JSON.parse(
       cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
@@ -1640,9 +1652,14 @@ export class AuditoriaService {
 
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
-      select: { data: true, nome: true }
+      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
     });
-    const feriadoMap = new Map(feriados.map((f) => [dataBrasiliaISO(f.data), f.nome]));
+    const feriadoMap = new Map(
+      feriados.map((f) => [
+        dataBrasiliaISO(f.data),
+        { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
+      ])
+    );
 
     const cfgMult = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
@@ -1668,7 +1685,8 @@ export class AuditoriaService {
       const [year, month, day] = dataAtual.split("-").map(Number);
       const diaSemana = new Date(year, month - 1, day).getDay();
       const eDiaUtil = diasUteisCfg[diaSemana];
-      const nomeFeriado = feriadoMap.get(dataAtual);
+      const feriadoDia = feriadoMap.get(dataAtual);
+      const nomeFeriado = feriadoDia?.nome;
       const temAfastamento = afastamentos.some((a) => {
         const aInicio = dataBrasiliaISO(a.dataInicio);
         const aFim = dataBrasiliaISO(a.dataFim);
@@ -1688,14 +1706,30 @@ export class AuditoriaService {
           saldoDiaMinutos = 0;
           jornadaDia = 0;
           obs = "Afastamento";
-        } else if (nomeFeriado && regsDodia.length > 0) {
-          saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
-          jornadaDia = 0;
-          obs = `Feriado trabalhado: ${nomeFeriado} (${feriadoPct}%)`;
-        } else if (nomeFeriado) {
-          saldoDiaMinutos = 0;
-          jornadaDia = 0;
-          obs = `Feriado: ${nomeFeriado}`;
+        } else if (feriadoDia) {
+          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
+          if (feriadoDia.marcoHorario) {
+            const jornadaMandatoria = calcularJornadaParcialFeriado(
+              feriadoDia.marcoHorario,
+              feriadoDia.marcoLado,
+              {
+                horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+                horaSaida: jornadaCtx.horaSaida ?? "17:00",
+                jornadaDiariaMin: jornadaDiaMin
+              }
+            );
+            saldoDiaMinutos = horasTrabalhadasMinutos - jornadaMandatoria;
+            jornadaDia = jornadaMandatoria;
+            obs = `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
+          } else if (regsDodia.length > 0) {
+            saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
+            jornadaDia = 0;
+            obs = `Feriado trabalhado: ${feriadoDia.nome} (${feriadoPct}%)`;
+          } else {
+            saldoDiaMinutos = 0;
+            jornadaDia = 0;
+            obs = `Feriado: ${feriadoDia.nome}`;
+          }
         } else {
           const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
           saldoDiaMinutos = horasTrabalhadasMinutos - jornadaDiaMin;
@@ -1971,17 +2005,23 @@ export class AuditoriaService {
 
     const feriadosList = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
-      select: { data: true, nome: true }
+      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
     });
     const cfgMult = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
       select: {
         bancoHorasSabadoPct: true,
         bancoHorasDomingoPct: true,
-        bancoHorasFeriadoPct: true
+        bancoHorasFeriadoPct: true,
+        horaEntrada: true,
+        horaSaida: true
       }
     });
-    const jornadaCtx = resolverJornadaHistoricoContexto(func);
+    const jornadaCtx = resolverJornadaHistoricoContexto({
+      ...func,
+      configuracaoHoraEntrada: cfgMult?.horaEntrada ?? null,
+      configuracaoHoraSaida: cfgMult?.horaSaida ?? null
+    });
     const quadro = montarRelatorioQuadro(
       registros,
       afastamentos,

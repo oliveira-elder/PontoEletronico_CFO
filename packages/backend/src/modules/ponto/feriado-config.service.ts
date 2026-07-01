@@ -96,6 +96,8 @@ export class FeriadoConfigService {
     tipo?: string;
     bloqueiaRegistro?: boolean;
     observacao?: string;
+    marcoHorario?: string | null;
+    marcoLado?: string | null;
   }) {
     return this.prisma.feriadoConfig.create({
       data: {
@@ -104,14 +106,23 @@ export class FeriadoConfigService {
         tipo: body.tipo ?? "MANUAL",
         origem: "MANUAL",
         bloqueiaRegistro: body.bloqueiaRegistro ?? true,
-        observacao: body.observacao ?? null
+        observacao: body.observacao ?? null,
+        marcoHorario: body.marcoHorario ?? null,
+        marcoLado: body.marcoLado ?? null
       }
     });
   }
 
   async atualizar(
     id: string,
-    body: { nome?: string; tipo?: string; bloqueiaRegistro?: boolean; observacao?: string }
+    body: {
+      nome?: string;
+      tipo?: string;
+      bloqueiaRegistro?: boolean;
+      observacao?: string;
+      marcoHorario?: string | null;
+      marcoLado?: string | null;
+    }
   ) {
     const existe = await this.prisma.feriadoConfig.findUnique({ where: { id } });
     if (!existe) throw new NotFoundException("Feriado não encontrado");
@@ -121,7 +132,9 @@ export class FeriadoConfigService {
         ...(body.nome !== undefined && { nome: body.nome }),
         ...(body.tipo !== undefined && { tipo: body.tipo }),
         ...(body.bloqueiaRegistro !== undefined && { bloqueiaRegistro: body.bloqueiaRegistro }),
-        ...(body.observacao !== undefined && { observacao: body.observacao || null })
+        ...(body.observacao !== undefined && { observacao: body.observacao || null }),
+        ...("marcoHorario" in body && { marcoHorario: body.marcoHorario ?? null }),
+        ...("marcoLado" in body && { marcoLado: body.marcoLado ?? null })
       }
     });
   }
@@ -140,10 +153,23 @@ export class FeriadoConfigService {
     return { ok: true };
   }
 
-  async isBloqueado(data: Date): Promise<{ bloqueado: boolean; nome?: string }> {
+  async isBloqueado(
+    data: Date
+  ): Promise<{
+    bloqueado: boolean;
+    nome?: string;
+    marcoHorario?: string | null;
+    marcoLado?: string | null;
+  }> {
     const inicio = new Date(Date.UTC(data.getUTCFullYear(), data.getUTCMonth(), data.getUTCDate()));
     const f = await this.prisma.feriadoConfig.findUnique({ where: { data: inicio } });
-    if (f?.bloqueiaRegistro) return { bloqueado: true, nome: f.nome };
+    if (f?.bloqueiaRegistro)
+      return {
+        bloqueado: true,
+        nome: f.nome,
+        marcoHorario: f.marcoHorario,
+        marcoLado: f.marcoLado
+      };
     return { bloqueado: false };
   }
 }

@@ -2,7 +2,8 @@ import { dataBrasiliaISO, horarioDeDataBrasilia, hojeBrasiliaISO } from "./horar
 import {
   JornadaHistoricoContext,
   jornadaEsperadaMin,
-  resolverJornadaHistoricoContexto
+  resolverJornadaHistoricoContexto,
+  calcularJornadaParcialFeriado
 } from "./jornada-historico";
 
 export type { JornadaHistoricoContext };
@@ -21,6 +22,8 @@ export interface AfastamentoHistorico {
 export interface FeriadoHistorico {
   data: Date;
   nome: string;
+  marcoHorario?: string | null;
+  marcoLado?: string | null;
 }
 
 export interface PausaPar {
@@ -176,7 +179,12 @@ export function montarRelatorioQuadro(
     byDay.get(key)!.push(r);
   }
 
-  const feriadoMap = new Map(feriados.map((f) => [dataBrasiliaISO(f.data), f.nome]));
+  const feriadoMap = new Map(
+    feriados.map((f) => [
+      dataBrasiliaISO(f.data),
+      { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
+    ])
+  );
 
   const totalDays = new Date(ano, mes, 0).getDate();
   const dias: DiaQuadroPdf[] = [];
@@ -188,7 +196,7 @@ export function montarRelatorioQuadro(
     const fimDeSemana = dow === 0 || dow === 6;
     const isFuture = dt > hoje;
     const isHoje = iso === hojeIso;
-    const nomeFeriado = feriadoMap.get(iso);
+    const feriadoDia = feriadoMap.get(iso);
 
     if (isFuture) {
       dias.push({
@@ -249,7 +257,7 @@ export function montarRelatorioQuadro(
         continue;
       }
       // Fim de semana com registros: processa normalmente com multiplicador
-      const pct = nomeFeriado ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
+      const pct = feriadoDia ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
       const get = (tipo: string) => dayRegs.find((r) => r.tipo === tipo);
       const entradaR = get("ENTRADA");
       const iniAlmR = get("INICIO_INTERVALO");
@@ -278,7 +286,7 @@ export function montarRelatorioQuadro(
       horasMin = Math.max(0, horasMin);
       // jornadaMin = 0 (não há jornada esperada no fim de semana); saldo = horas * multiplicador
       const saldoMin = Math.round((horasMin * pct) / 100);
-      const tipoLabel = nomeFeriado ? "Feriado" : dow === 6 ? "Sábado" : "Domingo";
+      const tipoLabel = feriadoDia ? "Feriado" : dow === 6 ? "Sábado" : "Domingo";
       dias.push({
         iso,
         entrada,
@@ -299,8 +307,15 @@ export function montarRelatorioQuadro(
 
     // Dia útil sem registros
     if (dayRegs.length === 0) {
-      // Feriado sem trabalho → saldo neutro (não é falta)
-      if (nomeFeriado) {
+      // Feriado sem trabalho
+      if (feriadoDia) {
+        const jornadaMandatoria = feriadoDia.marcoHorario
+          ? calcularJornadaParcialFeriado(feriadoDia.marcoHorario, feriadoDia.marcoLado, {
+              horaEntrada: jornada.horaEntrada ?? "08:00",
+              horaSaida: jornada.horaSaida ?? "17:00",
+              jornadaDiariaMin: jornadaEsperadaMin(iso, jornada)
+            })
+          : 0;
         dias.push({
           iso,
           entrada: null,
@@ -310,10 +325,12 @@ export function montarRelatorioQuadro(
           pausas: [],
           horasMin: 0,
           horasFormatado: "—",
-          saldoMin: 0,
-          saldoFormatado: "—",
-          status: `Feriado: ${nomeFeriado}`,
-          statusInterno: "AFASTAMENTO"
+          saldoMin: -jornadaMandatoria,
+          saldoFormatado: jornadaMandatoria === 0 ? "—" : fmtSaldoMin(-jornadaMandatoria),
+          status: feriadoDia.marcoHorario
+            ? `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
+            : `Feriado: ${feriadoDia.nome}`,
+          statusInterno: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO"
         });
       } else {
         const jornadaMin = jornadaEsperadaMin(iso, jornada);
@@ -370,13 +387,27 @@ export function montarRelatorioQuadro(
 
     horasMin = Math.max(0, horasMin);
 
-    // Feriado com trabalho: jornadaMin = 0, saldo = horas * feriadoPct%
     let saldoMin: number | null;
     let multiplicadorPct: number | undefined;
     const jornadaMin = jornadaEsperadaMin(iso, jornada);
-    if (nomeFeriado) {
-      saldoMin = Math.round((horasMin * feriadoPct) / 100);
-      multiplicadorPct = feriadoPct;
+    if (feriadoDia) {
+      if (feriadoDia.marcoHorario) {
+        // Feriado parcial: proporcional simples
+        const jornadaMandatoria = calcularJornadaParcialFeriado(
+          feriadoDia.marcoHorario,
+          feriadoDia.marcoLado,
+          {
+            horaEntrada: jornada.horaEntrada ?? "08:00",
+            horaSaida: jornada.horaSaida ?? "17:00",
+            jornadaDiariaMin: jornadaMin
+          }
+        );
+        saldoMin = statusInterno === "FALTA" ? -jornadaMandatoria : horasMin - jornadaMandatoria;
+      } else {
+        // Feriado dia todo: saldo = horas * feriadoPct%
+        saldoMin = Math.round((horasMin * feriadoPct) / 100);
+        multiplicadorPct = feriadoPct;
+      }
     } else if (statusInterno === "FALTA") {
       saldoMin = -jornadaMin;
     } else {
@@ -394,8 +425,10 @@ export function montarRelatorioQuadro(
       horasFormatado: fmtMin(horasMin).replace(/^\+/, ""),
       saldoMin,
       saldoFormatado: saldoMin === null ? "—" : fmtSaldoMin(saldoMin),
-      status: nomeFeriado
-        ? `Trabalhado (Feriado: ${nomeFeriado})`
+      status: feriadoDia
+        ? feriadoDia.marcoHorario
+          ? `Trabalhado (Feriado parcial: ${feriadoDia.nome})`
+          : `Trabalhado (Feriado: ${feriadoDia.nome})`
         : statusPdfDe(statusInterno, false),
       statusInterno,
       multiplicadorPct

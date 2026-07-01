@@ -22,7 +22,8 @@ import { appendObservacao } from "../../utils/registro-observacoes";
 import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import {
   jornadaEsperadaMin,
-  resolverJornadaHistoricoContexto
+  resolverJornadaHistoricoContexto,
+  calcularJornadaParcialFeriado
 } from "../../utils/jornada-historico";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
@@ -103,10 +104,18 @@ export class PontoService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
       }
     });
-    return resolverJornadaHistoricoContexto(func);
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { horaEntrada: true, horaSaida: true }
+    });
+    return resolverJornadaHistoricoContexto({
+      ...func,
+      configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
+      configuracaoHoraSaida: cfg?.horaSaida ?? null
+    });
   }
 
   private jornadaDiariaParaDia(
@@ -426,9 +435,26 @@ export class PontoService {
     const hoje = new Date();
     const feriadoBloq = await this.feriadoConfigService.isBloqueado(hoje);
     if (feriadoBloq.bloqueado) {
-      throw new BadRequestException(
-        `Registro de ponto bloqueado: hoje é feriado (${feriadoBloq.nome ?? ""}). Entre em contato com o RH se precisar registrar.`
-      );
+      if (feriadoBloq.marcoHorario && feriadoBloq.marcoLado) {
+        const agoraHora = horarioDeDataBrasilia(hoje).substring(0, 5);
+        const noPeriodoFeriado =
+          feriadoBloq.marcoLado === "ANTES"
+            ? agoraHora < feriadoBloq.marcoHorario
+            : agoraHora >= feriadoBloq.marcoHorario;
+        if (noPeriodoFeriado) {
+          const periodo =
+            feriadoBloq.marcoLado === "ANTES"
+              ? `até ${feriadoBloq.marcoHorario}`
+              : `a partir de ${feriadoBloq.marcoHorario}`;
+          throw new BadRequestException(
+            `Registro de ponto bloqueado: feriado ${periodo} (${feriadoBloq.nome ?? ""}). Entre em contato com o RH se precisar registrar.`
+          );
+        }
+      } else {
+        throw new BadRequestException(
+          `Registro de ponto bloqueado: hoje é feriado (${feriadoBloq.nome ?? ""}). Entre em contato com o RH se precisar registrar.`
+        );
+      }
     }
 
     const status = await this.getStatusAtual(keycloakSub);
@@ -724,7 +750,7 @@ export class PontoService {
 
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
-      select: { data: true, nome: true, tipo: true }
+      select: { data: true, nome: true, tipo: true, marcoHorario: true, marcoLado: true }
     });
 
     const cfg = await this.prisma.configuracaoSistema.findUnique({
@@ -865,9 +891,14 @@ export class PontoService {
     // Todos os feriados do ciclo (inclusive os que não bloqueiam registro)
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
-      select: { data: true, nome: true }
+      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
     });
-    const feriadoMap = new Map(feriados.map((f) => [dataBrasiliaISO(f.data), f.nome]));
+    const feriadoMap = new Map(
+      feriados.map((f) => [
+        dataBrasiliaISO(f.data),
+        { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
+      ])
+    );
 
     const cfgMult = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
@@ -894,7 +925,8 @@ export class PontoService {
       const [year, month, day] = dataAtual.split("-").map(Number);
       const diaSemana = new Date(year, month - 1, day).getDay();
       const eDiaUtil = diasUteisCfg[diaSemana];
-      const nomeFeriado = feriadoMap.get(dataAtual);
+      const feriadoDia = feriadoMap.get(dataAtual);
+      const nomeFeriado = feriadoDia?.nome;
       const afastamento = afastamentos.find((a) => {
         const aInicio = dataBrasiliaISO(a.dataInicio);
         const aFim = dataBrasiliaISO(a.dataFim);
@@ -916,16 +948,33 @@ export class PontoService {
           saldoDiaMinutos = 0;
           jornadaDia = 0;
           obs = "Afastamento";
-        } else if (nomeFeriado && regsDodia.length > 0) {
-          // Feriado trabalhado: aplica multiplicador, jornadaMin = 0
-          saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
-          jornadaDia = 0;
-          obs = `Feriado trabalhado: ${nomeFeriado} (${feriadoPct}%)`;
-        } else if (nomeFeriado) {
-          // Feriado sem trabalho: neutro
-          saldoDiaMinutos = 0;
-          jornadaDia = 0;
-          obs = `Feriado: ${nomeFeriado}`;
+        } else if (feriadoDia) {
+          const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
+          if (feriadoDia.marcoHorario) {
+            // Feriado parcial: proporcional simples
+            const jornadaMandatoria = calcularJornadaParcialFeriado(
+              feriadoDia.marcoHorario,
+              feriadoDia.marcoLado,
+              {
+                horaEntrada: jornada.horaEntrada ?? "08:00",
+                horaSaida: jornada.horaSaida ?? "17:00",
+                jornadaDiariaMin: jornadaDiaMin
+              }
+            );
+            saldoDiaMinutos = horasTrabalhadasMinutos - jornadaMandatoria;
+            jornadaDia = jornadaMandatoria;
+            obs = `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
+          } else if (regsDodia.length > 0) {
+            // Feriado dia todo trabalhado: aplica multiplicador, jornadaMin = 0
+            saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
+            jornadaDia = 0;
+            obs = `Feriado trabalhado: ${feriadoDia.nome} (${feriadoPct}%)`;
+          } else {
+            // Feriado dia todo sem trabalho: neutro
+            saldoDiaMinutos = 0;
+            jornadaDia = 0;
+            obs = `Feriado: ${feriadoDia.nome}`;
+          }
         } else {
           // Dia útil normal — jornada conforme vigência do período
           const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
@@ -1037,7 +1086,20 @@ export class PontoService {
       select: { tipo: true, dataHora: true }
     });
 
-    const overtime = this.calcHorasMinutos(registros) - jornada.jornadaDiariaMin;
+    // Verifica se hoje é feriado parcial para ajustar a jornada obrigatória
+    const feriadoHoje = await this.prisma.feriadoConfig.findUnique({
+      where: { data: new Date(`${hoje}T00:00:00.000Z`) },
+      select: { marcoHorario: true, marcoLado: true }
+    });
+    const jornadaMandatoria = feriadoHoje?.marcoHorario
+      ? calcularJornadaParcialFeriado(feriadoHoje.marcoHorario, feriadoHoje.marcoLado, {
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          jornadaDiariaMin: jornada.jornadaDiariaMin
+        })
+      : jornada.jornadaDiariaMin;
+
+    const overtime = this.calcHorasMinutos(registros) - jornadaMandatoria;
     if (overtime <= limiteMin) return;
 
     const jaExiste = await this.prisma.solicitacao.findFirst({

@@ -59,6 +59,8 @@ export interface ApiAfastamento {
 export interface ApiFeriado {
   data: string;
   nome: string;
+  marcoHorario?: string | null;
+  marcoLado?: string | null;
 }
 
 export interface Multiplicadores {
@@ -71,6 +73,8 @@ export interface JornadaHistorico {
   anteriorMin: number;
   atualMin: number;
   vigenciaDesde: string | null;
+  horaEntrada?: string;
+  horaSaida?: string;
 }
 
 export interface HistoricoApiResponse {
@@ -113,6 +117,25 @@ const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
 function jornadaEsperadaMin(isoKey: string, jornada: JornadaHistorico): number {
   if (jornada.vigenciaDesde && isoKey >= jornada.vigenciaDesde) return jornada.atualMin;
   return jornada.anteriorMin;
+}
+
+function calcularJornadaParcialFeriado(
+  marcoHorario: string,
+  marcoLado: string | null | undefined,
+  jornadaDiariaMin: number,
+  horaEntrada: string,
+  horaSaida: string
+): number {
+  const entradaMin = toMin(horaEntrada);
+  const saidaMin = toMin(horaSaida);
+  const marcoMin = toMin(marcoHorario);
+  const totalTurno = saidaMin - entradaMin;
+  if (totalTurno <= 0) return 0;
+  const propObrigatoria =
+    marcoLado === "ANTES"
+      ? (saidaMin - marcoMin) / totalTurno
+      : (marcoMin - entradaMin) / totalTurno;
+  return Math.round(jornadaDiariaMin * Math.max(0, Math.min(1, propObrigatoria)));
 }
 
 function toMin(h: string): number {
@@ -196,10 +219,10 @@ export function transformarHistorico(
     byDay[key].push(r);
   }
 
-  const feriadoMap: Record<string, string> = {};
+  const feriadoMap: Record<string, ApiFeriado> = {};
   for (const f of feriados) {
     const key = dataBrasiliaKey(f.data);
-    feriadoMap[key] = f.nome;
+    feriadoMap[key] = f;
   }
 
   for (let d = 1; d <= diasNoMes; d++) {
@@ -212,7 +235,7 @@ export function transformarHistorico(
     const dataStr = `${String(d).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
     const diaSemana = NOMES_DIA[dow];
     const dayRegs = byDay[isoKey] ?? [];
-    const nomeFeriado = feriadoMap[isoKey];
+    const feriadoDia = feriadoMap[isoKey];
 
     if (isFuture && fimDeSemana) continue;
 
@@ -251,7 +274,17 @@ export function transformarHistorico(
     if (fimDeSemana && dayRegs.length === 0) continue;
 
     if (!fimDeSemana && dayRegs.length === 0) {
-      if (nomeFeriado) {
+      if (feriadoDia) {
+        const jornadaBase = jornadaEsperadaMin(isoKey, jornada);
+        const jornadaMandatoria = feriadoDia.marcoHorario
+          ? calcularJornadaParcialFeriado(
+              feriadoDia.marcoHorario,
+              feriadoDia.marcoLado,
+              jornadaBase,
+              jornada.horaEntrada ?? "08:00",
+              jornada.horaSaida ?? "17:00"
+            )
+          : 0;
         result.push({
           data: dataStr,
           diaSemana,
@@ -260,9 +293,11 @@ export function transformarHistorico(
           fimIntervalo: null,
           saida: null,
           horasMin: 0,
-          jornadaMin: 0,
-          status: "FERIADO",
-          obs: nomeFeriado
+          jornadaMin: jornadaMandatoria,
+          status: jornadaMandatoria > 0 ? "FALTA" : "FERIADO",
+          obs: feriadoDia.marcoHorario
+            ? `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
+            : feriadoDia.nome
         });
       } else {
         result.push({
@@ -319,12 +354,29 @@ export function transformarHistorico(
     horasMin = Math.max(0, horasMin);
 
     let jornadaMin = jornadaEsperadaMin(isoKey, jornada);
-    if (fimDeSemana || nomeFeriado) {
-      const pct = nomeFeriado ? mult.feriadoPct : dow === 6 ? mult.sabadoPct : mult.domingoPct;
-      jornadaMin = 0;
-      const tipoLabel = nomeFeriado ? `Feriado: ${nomeFeriado}` : dow === 6 ? "Sábado" : "Domingo";
-      if (!obs) obs = `${tipoLabel} — banco de horas: ${pct}%`;
-      jornadaMin = Math.round(horasMin * (1 - pct / 100));
+    if (fimDeSemana || feriadoDia) {
+      if (feriadoDia?.marcoHorario && !fimDeSemana) {
+        // Feriado parcial em dia útil: proporcional simples
+        jornadaMin = calcularJornadaParcialFeriado(
+          feriadoDia.marcoHorario,
+          feriadoDia.marcoLado,
+          jornadaMin,
+          jornada.horaEntrada ?? "08:00",
+          jornada.horaSaida ?? "17:00"
+        );
+        if (!obs)
+          obs = `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
+      } else {
+        // Feriado dia todo ou fim de semana: multiplicador sobre horas trabalhadas
+        const pct = feriadoDia ? mult.feriadoPct : dow === 6 ? mult.sabadoPct : mult.domingoPct;
+        const tipoLabel = feriadoDia
+          ? `Feriado: ${feriadoDia.nome}`
+          : dow === 6
+            ? "Sábado"
+            : "Domingo";
+        if (!obs) obs = `${tipoLabel} — banco de horas: ${pct}%`;
+        jornadaMin = Math.round(horasMin * (1 - pct / 100));
+      }
     }
 
     const observacoesDia = dayRegs.flatMap((r) => r.observacoes ?? []);

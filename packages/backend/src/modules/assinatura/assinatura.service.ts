@@ -425,10 +425,18 @@ export class AssinaturaService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true } }
+        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
       }
     });
-    const jornada = resolverJornadaHistoricoContexto(funcJornada);
+    const cfgJornada = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { horaEntrada: true, horaSaida: true }
+    });
+    const jornada = resolverJornadaHistoricoContexto({
+      ...funcJornada,
+      configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
+      configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
+    });
 
     const { registros, afastamentos } = await this.buscarRegistrosEAfastamentos(
       funcionarioId,
@@ -444,7 +452,7 @@ export class AssinaturaService {
     const [feriados, cfg] = await Promise.all([
       this.prisma.feriadoConfig.findMany({
         where: { data: { gte: inicio, lte: fim } },
-        select: { data: true, nome: true }
+        select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
       }),
       this.prisma.configuracaoSistema.findUnique({
         where: { id: "singleton" },

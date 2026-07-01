@@ -714,6 +714,8 @@ model FeriadoConfig {
   bloqueiaRegistro Boolean  @default(true)
   origem           String   // "API" | "MANUAL"
   observacao       String?
+  marcoHorario     String?  // "HH:MM" — ausente = dia todo
+  marcoLado        String?  // "ANTES" | "DEPOIS"
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

@@ -64,7 +64,9 @@ export class ApiServidoraService {
         tipo: true,
         bloqueiaRegistro: true,
         origem: true,
-        observacao: true
+        observacao: true,
+        marcoHorario: true,
+        marcoLado: true
       }
     });
 
@@ -80,7 +82,9 @@ export class ApiServidoraService {
         tipo: f.tipo,
         bloqueiaRegistro: f.bloqueiaRegistro,
         origem: f.origem,
-        observacao: f.observacao ?? null
+        observacao: f.observacao ?? null,
+        marcoHorario: f.marcoHorario ?? null,
+        marcoLado: f.marcoLado ?? null
       }))
     };
   }

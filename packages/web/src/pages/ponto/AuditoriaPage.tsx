@@ -3852,6 +3852,8 @@ type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTU
 interface JornadaHistorico {
   anteriorMin: number;
   atualMin: number;
+  horaEntrada?: string;
+  horaSaida?: string;
   vigenciaDesde: string | null;
 }
 
@@ -3900,6 +3902,8 @@ interface ApiAfast {
 interface ApiFeriadoH {
   data: string;
   nome: string;
+  marcoHorario?: string | null;
+  marcoLado?: string | null;
 }
 
 const TIPO_AFAST_LABEL: Record<string, string> = {
@@ -3989,10 +3993,31 @@ function buildHistorico(
     const k = dtKeyH(r.dataHora);
     (byDay[k] ??= []).push(r);
   }
-  const feriadoMap: Record<string, string> = {};
+  const feriadoMap: Record<string, ApiFeriadoH> = {};
   for (const f of feriados) {
-    feriadoMap[dtKeyH(f.data)] = f.nome;
+    feriadoMap[dtKeyH(f.data)] = f;
   }
+
+  function calcJornadaParcial(
+    marco: string,
+    lado: string | null | undefined,
+    jornadaDiariaMin: number,
+    entrada: string,
+    saida: string
+  ): number {
+    const toMin = (h: string) => {
+      const [hh, mm] = h.split(":").map(Number);
+      return hh * 60 + mm;
+    };
+    const e = toMin(entrada);
+    const s = toMin(saida);
+    const m = toMin(marco);
+    const total = s - e;
+    if (total <= 0) return 0;
+    const prop = lado === "ANTES" ? (s - m) / total : (m - e) / total;
+    return Math.round(jornadaDiariaMin * Math.max(0, Math.min(1, prop)));
+  }
+
   const result: DiaHist[] = [];
   for (let d = 1; d <= dias; d++) {
     const dt = new Date(ano, mes - 1, d);
@@ -4001,7 +4026,8 @@ function buildHistorico(
     const isFuture = dt > hoje;
     const isoKey = `${ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const dataStr = `${String(d).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
-    const nomeFeriado = feriadoMap[isoKey];
+    const feriadoDia = feriadoMap[isoKey];
+    const nomeFeriado = feriadoDia?.nome;
     if (isFuture) {
       result.push({
         data: dataStr,
@@ -4050,7 +4076,17 @@ function buildHistorico(
       continue;
     }
     if (!fimDeSemana && dayRegs.length === 0) {
-      if (nomeFeriado) {
+      if (feriadoDia) {
+        const jornadaBase = jornadaMinDia(isoKey, jornada);
+        const jornadaMandatoria = feriadoDia.marcoHorario
+          ? calcJornadaParcial(
+              feriadoDia.marcoHorario,
+              feriadoDia.marcoLado,
+              jornadaBase,
+              jornada.horaEntrada ?? "08:00",
+              jornada.horaSaida ?? "17:00"
+            )
+          : 0;
         result.push({
           data: dataStr,
           diaSemana: NOMES[dow],
@@ -4059,9 +4095,11 @@ function buildHistorico(
           fimIntervalo: null,
           saida: null,
           horasMin: 0,
-          jornadaMin: 0,
-          status: "AFASTAMENTO",
-          obs: `Feriado: ${nomeFeriado}`
+          jornadaMin: jornadaMandatoria,
+          status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
+          obs: feriadoDia.marcoHorario
+            ? `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
+            : `Feriado: ${feriadoDia.nome}`
         });
       } else {
         result.push({
@@ -4111,11 +4149,23 @@ function buildHistorico(
     horasMin = Math.max(0, horasMin);
     // Multiplicador para fins de semana e feriados
     let jornadaMin = jornadaMinDia(isoKey, jornada);
-    if (fimDeSemana || nomeFeriado) {
-      const pct = nomeFeriado ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
-      jornadaMin = Math.round(horasMin * (1 - pct / 100));
-      const tipo = nomeFeriado ? `Feriado: ${nomeFeriado}` : dow === 6 ? "Sábado" : "Domingo";
-      if (!obs) obs = `${tipo} — banco de horas: ${pct}%`;
+    if (fimDeSemana || feriadoDia) {
+      if (feriadoDia?.marcoHorario && !fimDeSemana) {
+        jornadaMin = calcJornadaParcial(
+          feriadoDia.marcoHorario,
+          feriadoDia.marcoLado,
+          jornadaMin,
+          jornada.horaEntrada ?? "08:00",
+          jornada.horaSaida ?? "17:00"
+        );
+        if (!obs)
+          obs = `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
+      } else {
+        const pct = feriadoDia ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
+        jornadaMin = Math.round(horasMin * (1 - pct / 100));
+        const tipo = feriadoDia ? `Feriado: ${feriadoDia.nome}` : dow === 6 ? "Sábado" : "Domingo";
+        if (!obs) obs = `${tipo} — banco de horas: ${pct}%`;
+      }
     }
     const pausas: { inicio: string; fim: string | null }[] = [];
     let aberta: string | null = null;

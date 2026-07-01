@@ -335,6 +335,8 @@ interface FeriadoConfig {
   bloqueiaRegistro: boolean;
   origem: string;
   observacao?: string | null;
+  marcoHorario?: string | null;
+  marcoLado?: string | null;
 }
 
 /* ─── JornadaPeriodo ─── */
@@ -1510,7 +1512,9 @@ export function ConfiguracoesPage() {
     nome: "",
     tipo: "MANUAL",
     observacao: "",
-    bloqueiaRegistro: true
+    bloqueiaRegistro: true,
+    marcoHorario: "",
+    marcoLado: "DEPOIS" as "ANTES" | "DEPOIS"
   });
   const [editandoFeriado, setEditandoFeriado] = useState<FeriadoConfig | null>(null);
 
@@ -1702,7 +1706,9 @@ export function ConfiguracoesPage() {
         nome: feriado.nome,
         tipo: feriado.tipo,
         observacao: feriado.observacao ?? "",
-        bloqueiaRegistro: feriado.bloqueiaRegistro
+        bloqueiaRegistro: feriado.bloqueiaRegistro,
+        marcoHorario: feriado.marcoHorario ?? "",
+        marcoLado: (feriado.marcoLado as "ANTES" | "DEPOIS") ?? "DEPOIS"
       });
     } else {
       setEditandoFeriado(null);
@@ -1711,7 +1717,9 @@ export function ConfiguracoesPage() {
         nome: "",
         tipo: "MANUAL",
         observacao: "",
-        bloqueiaRegistro: true
+        bloqueiaRegistro: true,
+        marcoHorario: "",
+        marcoLado: "DEPOIS"
       });
     }
     setFeriadoModal(true);
@@ -1719,6 +1727,10 @@ export function ConfiguracoesPage() {
 
   async function salvarFeriadoModal() {
     if (!feriadoForm.data || !feriadoForm.nome) return;
+    const marcoPayload = feriadoForm.marcoHorario
+      ? { marcoHorario: feriadoForm.marcoHorario, marcoLado: feriadoForm.marcoLado }
+      : { marcoHorario: null, marcoLado: null };
+
     if (editandoFeriado) {
       const atualizado = await api.patch<FeriadoConfig>(
         `/ponto/config/feriados/${editandoFeriado.id}`,
@@ -1726,7 +1738,8 @@ export function ConfiguracoesPage() {
           nome: feriadoForm.nome,
           tipo: feriadoForm.tipo,
           bloqueiaRegistro: feriadoForm.bloqueiaRegistro,
-          observacao: feriadoForm.observacao || undefined
+          observacao: feriadoForm.observacao || undefined,
+          ...marcoPayload
         }
       );
       setFeriados((prev) => prev.map((f) => (f.id === editandoFeriado.id ? atualizado : f)));
@@ -1736,7 +1749,8 @@ export function ConfiguracoesPage() {
         nome: feriadoForm.nome,
         tipo: feriadoForm.tipo,
         bloqueiaRegistro: feriadoForm.bloqueiaRegistro,
-        observacao: feriadoForm.observacao || undefined
+        observacao: feriadoForm.observacao || undefined,
+        ...marcoPayload
       });
       setFeriados((prev) => [...prev, novo].sort((a, b) => (a.data < b.data ? -1 : 1)));
       const d = new Date(`${feriadoForm.data}T00:00:00.000Z`);
@@ -1744,7 +1758,15 @@ export function ConfiguracoesPage() {
       setFeriadosMes(d.getUTCMonth());
     }
     setFeriadoModal(false);
-    setFeriadoForm({ data: "", nome: "", tipo: "MANUAL", observacao: "", bloqueiaRegistro: true });
+    setFeriadoForm({
+      data: "",
+      nome: "",
+      tipo: "MANUAL",
+      observacao: "",
+      bloqueiaRegistro: true,
+      marcoHorario: "",
+      marcoLado: "DEPOIS"
+    });
     setEditandoFeriado(null);
   }
 
@@ -6096,6 +6118,18 @@ export function ConfiguracoesPage() {
                             }}
                           >
                             {f.nome}
+                            {f.marcoHorario && (
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--ink-500)",
+                                  fontWeight: 400,
+                                  marginLeft: 6
+                                }}
+                              >
+                                ({f.marcoLado === "ANTES" ? "até" : "após"} {f.marcoHorario})
+                              </span>
+                            )}
                           </span>
                           <span
                             style={{
@@ -6330,6 +6364,166 @@ export function ConfiguracoesPage() {
                 </select>
               </div>
 
+              {/* Marco de Horário (feriado parcial) */}
+              <div
+                style={{
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "12px 14px"
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: feriadoForm.marcoHorario ? 12 : 0
+                  }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 13.5,
+                        fontWeight: 600,
+                        color: "var(--ink-700)",
+                        margin: 0
+                      }}
+                    >
+                      Feriado parcial
+                    </p>
+                    <p
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--ink-500)",
+                        margin: "2px 0 0",
+                        lineHeight: 1.4
+                      }}
+                    >
+                      Libera apenas o período antes ou após um horário
+                    </p>
+                  </div>
+                  <button
+                    onClick={() =>
+                      setFeriadoForm((f) => ({ ...f, marcoHorario: f.marcoHorario ? "" : "12:00" }))
+                    }
+                    style={{
+                      width: 44,
+                      height: 24,
+                      borderRadius: 12,
+                      border: "none",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      background: feriadoForm.marcoHorario
+                        ? "var(--brand-600, #7a1e26)"
+                        : "#9ca3af",
+                      position: "relative",
+                      transition: "background 200ms"
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 3,
+                        left: feriadoForm.marcoHorario ? 22 : 3,
+                        width: 18,
+                        height: 18,
+                        borderRadius: "50%",
+                        background: "#fff",
+                        transition: "left 200ms",
+                        display: "block"
+                      }}
+                    />
+                  </button>
+                </div>
+
+                {feriadoForm.marcoHorario && (
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                    <div style={{ flex: 1 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 4
+                        }}
+                      >
+                        Horário marco
+                      </label>
+                      <input
+                        type="time"
+                        value={feriadoForm.marcoHorario}
+                        onChange={(e) =>
+                          setFeriadoForm((f) => ({ ...f, marcoHorario: e.target.value }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "8px 10px",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: 13.5,
+                          boxSizing: "border-box" as const
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--ink-500)",
+                          display: "block",
+                          marginBottom: 4
+                        }}
+                      >
+                        Período feriado
+                      </label>
+                      <select
+                        value={feriadoForm.marcoLado}
+                        onChange={(e) =>
+                          setFeriadoForm((f) => ({
+                            ...f,
+                            marcoLado: e.target.value as "ANTES" | "DEPOIS"
+                          }))
+                        }
+                        style={{
+                          width: "100%",
+                          padding: "8px 10px",
+                          border: "1px solid rgba(122,30,38,0.14)",
+                          borderRadius: "var(--radius-md)",
+                          fontSize: 13.5,
+                          background: "#fff",
+                          boxSizing: "border-box" as const
+                        }}
+                      >
+                        <option value="DEPOIS">Após {feriadoForm.marcoHorario || "—"}</option>
+                        <option value="ANTES">Antes de {feriadoForm.marcoHorario || "—"}</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                {feriadoForm.marcoHorario && (
+                  <p
+                    style={{
+                      fontSize: 11.5,
+                      color: "var(--ink-500)",
+                      marginTop: 8,
+                      marginBottom: 0,
+                      lineHeight: 1.5
+                    }}
+                  >
+                    {feriadoForm.marcoLado === "DEPOIS"
+                      ? `Feriado a partir das ${feriadoForm.marcoHorario} — a jornada obrigatória é reduzida proporcionalmente (período da manhã conta normalmente).`
+                      : `Feriado até as ${feriadoForm.marcoHorario} — a jornada obrigatória é reduzida proporcionalmente (período da tarde conta normalmente).`}
+                  </p>
+                )}
+              </div>
+
               {/* Bloqueio de registro */}
               <div
                 style={{
@@ -6371,7 +6565,9 @@ export function ConfiguracoesPage() {
                       }}
                     >
                       {feriadoForm.bloqueiaRegistro
-                        ? "Funcionários não poderão registrar ponto neste dia."
+                        ? feriadoForm.marcoHorario
+                          ? `Bloqueio de registro ${feriadoForm.marcoLado === "ANTES" ? `antes das ${feriadoForm.marcoHorario}` : `a partir das ${feriadoForm.marcoHorario}`}.`
+                          : "Funcionários não poderão registrar ponto neste dia."
                         : "Funcionários poderão registrar ponto normalmente neste dia."}
                     </p>
                   </div>

@@ -212,6 +212,8 @@ export class ConfigController {
       tipo?: string;
       bloqueiaRegistro?: boolean;
       observacao?: string;
+      marcoHorario?: string | null;
+      marcoLado?: string | null;
     }
   ) {
     return this.feriadoConfigService.criar(body);
@@ -220,7 +222,15 @@ export class ConfigController {
   @Patch("feriados/:id")
   atualizarFeriado(
     @Param("id") id: string,
-    @Body() body: { nome?: string; tipo?: string; bloqueiaRegistro?: boolean; observacao?: string }
+    @Body()
+    body: {
+      nome?: string;
+      tipo?: string;
+      bloqueiaRegistro?: boolean;
+      observacao?: string;
+      marcoHorario?: string | null;
+      marcoLado?: string | null;
+    }
   ) {
     return this.feriadoConfigService.atualizar(id, body);
   }
