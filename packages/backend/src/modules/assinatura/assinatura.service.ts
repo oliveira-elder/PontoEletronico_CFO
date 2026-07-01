@@ -9,6 +9,7 @@ import {
 import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
+import { NotificacaoService } from "../notificacao/notificacao.service";
 import { intervaloDiaBrasilia } from "../../utils/horario-brasilia";
 import {
   montarRelatorioQuadro,
@@ -49,7 +50,8 @@ export class AssinaturaService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly auditoriaService: AuditoriaService
+    private readonly auditoriaService: AuditoriaService,
+    private readonly notificacaoService: NotificacaoService
   ) {}
 
   /* ─── Cron: 00:05 UTC do 1º de cada mês (= 21:05 BRT do último dia do mês anterior) ─── */
@@ -73,7 +75,7 @@ export class AssinaturaService {
   ): Promise<{ criadas: number; ignoradas: number }> {
     const funcionarios = await this.prisma.funcionario.findMany({
       where: { ativo: true },
-      select: { id: true }
+      select: { id: true, user: { select: { externalId: true, email: true, emailReal: true } } }
     });
 
     let criadas = 0;
@@ -114,6 +116,11 @@ export class AssinaturaService {
           }
         });
         criadas++;
+
+        // Notifica o funcionário para assinar o quadro
+        this.dispararNotificacaoAssinarQuadro(func, mes, ano).catch((e) =>
+          this.logger.error(`Falha ao notificar ASSINAR_QUADRO para funcionário ${func.id}: ${e}`)
+        );
       } catch (err) {
         this.logger.error(`Erro ao criar assinatura para funcionário ${func.id}: ${err}`);
       }
@@ -203,7 +210,7 @@ export class AssinaturaService {
         `Status atual (${assinatura.status}) não permite assinatura do funcionário`
       );
 
-    return this.prisma.assinaturaQuadro.update({
+    const atualizada = await this.prisma.assinaturaQuadro.update({
       where: { id: assinaturaId },
       data: {
         status: "PENDENTE_GESTOR",
@@ -213,8 +220,17 @@ export class AssinaturaService {
         assinadoFuncionarioUserAgent: meta.userAgent,
         assinadoFuncionarioUserId: keycloakSub
       },
-      include: { periodo: true }
+      include: {
+        periodo: { include: { funcionario: { include: { user: true, gerencia: true } } } }
+      }
     });
+
+    // Notifica o gestor da equipe do funcionário
+    this.dispararNotificacaoGestor(atualizada).catch((e) =>
+      this.logger.error(`Falha ao notificar ASSINAR_QUADRO_GESTOR: ${e}`)
+    );
+
+    return atualizada;
   }
 
   /* ─── Gestor assina ─── */
@@ -249,7 +265,7 @@ export class AssinaturaService {
       if (!pertenceEquipe) throw new ForbiddenException("Funcionário não pertence à sua equipe");
     }
 
-    return this.prisma.assinaturaQuadro.update({
+    const concluida = await this.prisma.assinaturaQuadro.update({
       where: { id: assinaturaId },
       data: {
         status: "CONCLUIDA",
@@ -260,8 +276,15 @@ export class AssinaturaService {
         assinadoGestorUserId: keycloakSub,
         assinadoGestorNome: gestorNome
       },
-      include: { periodo: true }
+      include: { periodo: { include: { funcionario: { include: { user: true } } } } }
     });
+
+    // Notifica o funcionário que o quadro foi totalmente assinado
+    this.dispararNotificacaoConcluida(concluida).catch((e) =>
+      this.logger.error(`Falha ao notificar ASSINATURA_CONCLUIDA: ${e}`)
+    );
+
+    return concluida;
   }
 
   /* ─── Assinaturas pendentes para o gestor (equipe, status PENDENTE_GESTOR) ─── */
@@ -605,6 +628,135 @@ export class AssinaturaService {
     } catch (err) {
       this.logger.error("gerarPdfQuadro falhou: " + String(err));
       throw new InternalServerErrorException("Falha ao gerar PDF: " + String(err));
+    }
+  }
+
+  /* ─── Helpers de notificação ─── */
+
+  private async dispararNotificacaoAssinarQuadro(
+    func: {
+      id: string;
+      user: { externalId: string | null; email: string; emailReal: string | null } | null;
+    },
+    mes: number,
+    ano: number
+  ) {
+    if (
+      !(await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO")) &&
+      !(await this.notificacaoService.isSistemaAtivoParaEvento("ASSINAR_QUADRO"))
+    )
+      return;
+
+    const email = func.user?.emailReal ?? func.user?.email;
+    const externalId = func.user?.externalId;
+    const mesNome = new Date(ano, mes - 1).toLocaleString("pt-BR", { month: "long" });
+    const titulo = `Assinar quadro de pontos — ${mesNome}/${ano}`;
+    const corpo = `Seu quadro de ponto de ${mesNome}/${ano} está disponível para assinatura. Acesse o sistema para assinar.`;
+
+    if (email && (await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO"))) {
+      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+    }
+    if (externalId && (await this.notificacaoService.isSistemaAtivoParaEvento("ASSINAR_QUADRO"))) {
+      await this.notificacaoService.criarNotificacaoParaUsuario(
+        externalId,
+        titulo,
+        corpo,
+        "ASSINAR_QUADRO"
+      );
+    }
+  }
+
+  private async dispararNotificacaoGestor(assinatura: {
+    periodo: {
+      mes: number;
+      ano: number;
+      funcionario: {
+        nome?: string;
+        user: { name: string } | null;
+        gerencia: { responsavelUserId: string | null } | null;
+      };
+    };
+  }) {
+    if (
+      !(await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO_GESTOR")) &&
+      !(await this.notificacaoService.isSistemaAtivoParaEvento("ASSINAR_QUADRO_GESTOR"))
+    )
+      return;
+
+    const { periodo } = assinatura;
+    const gerencia = periodo.funcionario.gerencia;
+    if (!gerencia?.responsavelUserId) return;
+
+    const gestor = await this.prisma.user.findUnique({
+      where: { id: gerencia.responsavelUserId },
+      select: { externalId: true, email: true, emailReal: true }
+    });
+    if (!gestor) return;
+
+    const funcNome = periodo.funcionario.user?.name ?? "Funcionário";
+    const mesNome = new Date(periodo.ano, periodo.mes - 1).toLocaleString("pt-BR", {
+      month: "long"
+    });
+    const titulo = `Quadro de pontos aguardando sua assinatura — ${funcNome}`;
+    const corpo = `${funcNome} assinou o quadro de ponto de ${mesNome}/${periodo.ano}. Acesse o sistema para revisar e assinar.`;
+    const emailGestor = gestor.emailReal ?? gestor.email;
+
+    if (
+      emailGestor &&
+      (await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO_GESTOR"))
+    ) {
+      await this.notificacaoService.enviarEmailSistema(emailGestor, titulo, corpo);
+    }
+    if (
+      gestor.externalId &&
+      (await this.notificacaoService.isSistemaAtivoParaEvento("ASSINAR_QUADRO_GESTOR"))
+    ) {
+      await this.notificacaoService.criarNotificacaoParaUsuario(
+        gestor.externalId,
+        titulo,
+        corpo,
+        "ASSINAR_QUADRO_GESTOR"
+      );
+    }
+  }
+
+  private async dispararNotificacaoConcluida(assinatura: {
+    periodo: {
+      mes: number;
+      ano: number;
+      funcionario: {
+        user: { externalId: string | null; email: string; emailReal: string | null } | null;
+      };
+    };
+  }) {
+    if (
+      !(await this.notificacaoService.isEmailAtivoParaEvento("ASSINATURA_CONCLUIDA")) &&
+      !(await this.notificacaoService.isSistemaAtivoParaEvento("ASSINATURA_CONCLUIDA"))
+    )
+      return;
+
+    const { periodo } = assinatura;
+    const user = periodo.funcionario.user;
+    const mesNome = new Date(periodo.ano, periodo.mes - 1).toLocaleString("pt-BR", {
+      month: "long"
+    });
+    const titulo = `Quadro de pontos assinado — ${mesNome}/${periodo.ano}`;
+    const corpo = `O gestor assinou seu quadro de ponto de ${mesNome}/${periodo.ano}. O processo de assinatura foi concluído.`;
+    const email = user?.emailReal ?? user?.email;
+
+    if (email && (await this.notificacaoService.isEmailAtivoParaEvento("ASSINATURA_CONCLUIDA"))) {
+      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+    }
+    if (
+      user?.externalId &&
+      (await this.notificacaoService.isSistemaAtivoParaEvento("ASSINATURA_CONCLUIDA"))
+    ) {
+      await this.notificacaoService.criarNotificacaoParaUsuario(
+        user.externalId,
+        titulo,
+        corpo,
+        "ASSINATURA_CONCLUIDA"
+      );
     }
   }
 }

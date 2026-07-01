@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, ForbiddenException } from "@nestjs/common";
+import { Injectable, BadRequestException, ForbiddenException, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificacaoService } from "../notificacao/notificacao.service";
 import {
   aplicarHorarioBrasilia,
   horarioDeDataBrasilia,
@@ -35,10 +36,13 @@ export interface PeriodoPontoRaw {
 
 @Injectable()
 export class AuditoriaService {
+  private readonly logger = new Logger(AuditoriaService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly documentoService: DocumentoService,
-    private readonly pontoService: PontoService
+    private readonly pontoService: PontoService,
+    private readonly notificacaoService: NotificacaoService
   ) {}
 
   private startOfDay(date: Date) {
@@ -792,7 +796,7 @@ export class AuditoriaService {
     /* Correção de ponto: aprovação do gestor já finaliza — não precisa de RH */
     if (decisao === "APROVAR" && solicitacao.tipo === "CORRECAO_PONTO") {
       await this.aplicarMudancaSolicitacao(solicitacao, keycloakSub);
-      return this.prisma.solicitacao.update({
+      const aprovada = await this.prisma.solicitacao.update({
         where: { id },
         data: {
           status: "APROVADA",
@@ -803,11 +807,18 @@ export class AuditoriaService {
           resolvidoEm: agora
         }
       });
+      this.notificarSolicitacaoFuncionario(
+        solicitacao.funcionarioId,
+        "APROVADA",
+        solicitacao.tipo,
+        observacao
+      ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_APROVADA: ${e}`));
+      return aprovada;
     }
 
     /* Demais tipos: fluxo bifásico normal (gestor → RH) */
     const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
-    return this.prisma.solicitacao.update({
+    const resolvida = await this.prisma.solicitacao.update({
       where: { id },
       data: {
         status: novoStatus,
@@ -816,6 +827,17 @@ export class AuditoriaService {
         gestorResolvidoEm: agora
       }
     });
+
+    if (novoStatus === "REJEITADA_GESTOR") {
+      this.notificarSolicitacaoFuncionario(
+        solicitacao.funcionarioId,
+        "RECUSADA",
+        solicitacao.tipo,
+        observacao
+      ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_RECUSADA: ${e}`));
+    }
+
+    return resolvida;
   }
 
   /* ─── Fluxo Bifásico: RH ─── */
@@ -907,7 +929,7 @@ export class AuditoriaService {
     const agora = new Date();
 
     if (decisao === "REJEITAR") {
-      return this.prisma.solicitacao.update({
+      const rejeitada = await this.prisma.solicitacao.update({
         where: { id },
         data: {
           status: "REJEITADA_RH",
@@ -918,6 +940,13 @@ export class AuditoriaService {
           resolvidoEm: agora
         }
       });
+      this.notificarSolicitacaoFuncionario(
+        solicitacao.funcionarioId,
+        "RECUSADA",
+        solicitacao.tipo,
+        observacao
+      ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_RECUSADA: ${e}`));
+      return rejeitada;
     }
 
     // Aprovar: aplicar a mudança conforme o tipo
@@ -932,7 +961,7 @@ export class AuditoriaService {
       });
     }
 
-    return this.prisma.solicitacao.update({
+    const aprovada = await this.prisma.solicitacao.update({
       where: { id },
       data: {
         status: "APROVADA",
@@ -943,6 +972,13 @@ export class AuditoriaService {
         resolvidoEm: agora
       }
     });
+    this.notificarSolicitacaoFuncionario(
+      solicitacao.funcionarioId,
+      "APROVADA",
+      solicitacao.tipo,
+      observacao
+    ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_APROVADA: ${e}`));
+    return aprovada;
   }
 
   async rhEnviarGuiaMedica(
@@ -2085,5 +2121,60 @@ export class AuditoriaService {
   }) {
     const resultado = await this.getRegistros({ ...filtros, limit: 500, page: 1 });
     return resultado.registros;
+  }
+
+  /* ─── Helpers de notificação ─── */
+
+  private readonly TIPO_LABEL: Record<string, string> = {
+    FERIAS: "Férias",
+    ATESTADO: "Atestado",
+    LICENCA: "Licença",
+    HORA_EXTRA: "Hora Extra",
+    CORRECAO_PONTO: "Correção de Ponto",
+    ABONO: "Abono",
+    BANCO_HORAS: "Banco de Horas"
+  };
+
+  private async notificarSolicitacaoFuncionario(
+    funcionarioId: string,
+    decisao: "APROVADA" | "RECUSADA",
+    tipo: string,
+    observacao: string
+  ) {
+    const eventoId = decisao === "APROVADA" ? "SOLICITACAO_APROVADA" : "SOLICITACAO_RECUSADA";
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.notificacaoService.isEmailAtivoParaEvento(eventoId),
+      this.notificacaoService.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { user: { select: { externalId: true, email: true, emailReal: true } } }
+    });
+    if (!func?.user) return;
+
+    const tipoLabel = this.TIPO_LABEL[tipo] ?? tipo;
+    const titulo =
+      decisao === "APROVADA"
+        ? `Solicitação de ${tipoLabel} aprovada`
+        : `Solicitação de ${tipoLabel} recusada`;
+    const corpo =
+      decisao === "APROVADA"
+        ? `Sua solicitação de ${tipoLabel} foi aprovada.${observacao ? `\n\nObservação: ${observacao}` : ""}`
+        : `Sua solicitação de ${tipoLabel} foi recusada.${observacao ? `\n\nJustificativa: ${observacao}` : ""}`;
+
+    const email = func.user.emailReal ?? func.user.email;
+    if (emailAtivo && email) {
+      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+    }
+    if (sistemaAtivo && func.user.externalId) {
+      await this.notificacaoService.criarNotificacaoParaUsuario(
+        func.user.externalId,
+        titulo,
+        corpo,
+        eventoId
+      );
+    }
   }
 }

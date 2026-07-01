@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import * as nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -375,6 +376,14 @@ export class NotificacaoService {
     return evento?.ativoEmail ?? false;
   }
 
+  /** Verifica se a notificação no sistema está ativa para um evento específico */
+  async isSistemaAtivoParaEvento(eventoId: string): Promise<boolean> {
+    const evento = await this.prisma.configuracaoNotificacao.findUnique({
+      where: { id: eventoId }
+    });
+    return evento?.ativoSistema ?? false;
+  }
+
   /** Envia e-mail de sistema para um endereço, se configurado */
   async enviarEmailSistema(to: string, subject: string, body: string): Promise<void> {
     const cfg = await this.prisma.configuracaoEmail.findUnique({ where: { id: "singleton" } });
@@ -440,5 +449,148 @@ export class NotificacaoService {
       data: { lida: true }
     });
     return { atualizadas: count };
+  }
+
+  /* ─── Crons automáticos ─── */
+
+  /* Roda no 1º de cada mês às 08:00 UTC — verifica férias obrigatórias */
+  @Cron("0 8 1 * *")
+  async verificarFeriasObrigatorio() {
+    const eventoId = "FERIAS_OBRIGATORIO";
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.isEmailAtivoParaEvento(eventoId),
+      this.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const agora = new Date();
+    const mesAtual = agora.getMonth() + 1; // 1-12
+
+    const funcionarios = await this.prisma.funcionario.findMany({
+      where: { ativo: true, dataAdmissao: { not: null } },
+      select: {
+        id: true,
+        dataAdmissao: true,
+        categoria: true,
+        user: { select: { externalId: true, email: true, emailReal: true } }
+      }
+    });
+
+    for (const func of funcionarios) {
+      if (!func.dataAdmissao || !func.user) continue;
+
+      const mesAdmissao = func.dataAdmissao.getMonth() + 1; // 1-12
+      const mesNoCiclo = ((mesAtual - mesAdmissao + 12) % 12) + 1;
+      const limiteObrigatorio = func.categoria === "ESTAGIARIO" ? 5 : 11;
+      if (mesNoCiclo < limiteObrigatorio) continue;
+
+      // Verifica se já há férias aprovadas ou solicitadas no ciclo atual
+      const anoAdmissao = func.dataAdmissao.getFullYear();
+      const anosDecorridos = agora.getFullYear() - anoAdmissao;
+      const inicioCiclo = new Date(anoAdmissao + anosDecorridos, mesAdmissao - 1, 1);
+      const fimCiclo = new Date(inicioCiclo.getFullYear() + 1, inicioCiclo.getMonth(), 0);
+
+      const jaTemFerias = await this.prisma.solicitacao.findFirst({
+        where: {
+          funcionarioId: func.id,
+          tipo: "FERIAS",
+          status: { in: ["PENDENTE", "AGUARDANDO_RH", "APROVADA"] },
+          dataInicio: { gte: inicioCiclo, lte: fimCiclo }
+        }
+      });
+      if (jaTemFerias) continue;
+
+      const titulo = "Agendar férias — período obrigatório";
+      const corpo = `Você está no período obrigatório de agendamento de férias. Solicite suas férias o quanto antes para evitar pendências.`;
+      const email = func.user.emailReal ?? func.user.email;
+
+      if (emailAtivo && email) {
+        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
+          this.logger.error(`Falha FERIAS_OBRIGATORIO email para func ${func.id}: ${e}`)
+        );
+      }
+      if (sistemaAtivo && func.user.externalId) {
+        await this.criarNotificacaoParaUsuario(func.user.externalId, titulo, corpo, eventoId).catch(
+          (e) => this.logger.error(`Falha FERIAS_OBRIGATORIO sistema para func ${func.id}: ${e}`)
+        );
+      }
+    }
+  }
+
+  /* Roda no 1º de cada mês às 08:10 UTC — alerta banco de horas próximo do vencimento */
+  @Cron("10 8 1 * *")
+  async verificarBancoHorasVencimento() {
+    const eventoId = "BANCO_HORAS_VENCIMENTO";
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.isEmailAtivoParaEvento(eventoId),
+      this.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { bancoHorasVigenciaDias: true }
+    });
+    const vigenciaDias = cfg?.bancoHorasVigenciaDias ?? 30;
+
+    const agora = new Date();
+    const limiteVencimento = new Date(agora);
+    limiteVencimento.setDate(limiteVencimento.getDate() + 7); // alerta 7 dias antes
+
+    // Busca assinaturas com saldo positivo cujo período vence em breve
+    const assinaturas = await this.prisma.assinaturaQuadro.findMany({
+      where: { bancoHorasSaldoTotalMinutos: { gt: 0 } },
+      select: {
+        bancoHorasSaldoTotalMinutos: true,
+        periodo: {
+          select: {
+            mes: true,
+            ano: true,
+            funcionario: {
+              select: {
+                id: true,
+                user: { select: { externalId: true, email: true, emailReal: true } }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const notificados = new Set<string>();
+    for (const ass of assinaturas) {
+      const funcId = ass.periodo.funcionario.id;
+      if (notificados.has(funcId)) continue;
+
+      // Data de vencimento: último dia do mês do período + vigenciaDias
+      const fimPeriodo = new Date(ass.periodo.ano, ass.periodo.mes, 0); // último dia do mês
+      const dataVencimento = new Date(fimPeriodo);
+      dataVencimento.setDate(dataVencimento.getDate() + vigenciaDias);
+
+      if (dataVencimento > limiteVencimento) continue; // vence depois da janela de alerta
+
+      const user = ass.periodo.funcionario.user;
+      if (!user) continue;
+
+      const saldoH = Math.floor(ass.bancoHorasSaldoTotalMinutos / 60);
+      const saldoM = ass.bancoHorasSaldoTotalMinutos % 60;
+      const saldoStr = `${saldoH}h${saldoM > 0 ? `${saldoM}min` : ""}`;
+      const vencStr = dataVencimento.toLocaleDateString("pt-BR");
+      const titulo = `Banco de horas — saldo de ${saldoStr} vencendo em ${vencStr}`;
+      const corpo = `Seu saldo de banco de horas (${saldoStr}) vence em ${vencStr}. Utilize o saldo antes desta data.`;
+      const email = user.emailReal ?? user.email;
+
+      if (emailAtivo && email) {
+        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
+          this.logger.error(`Falha BANCO_HORAS_VENCIMENTO email para func ${funcId}: ${e}`)
+        );
+      }
+      if (sistemaAtivo && user.externalId) {
+        await this.criarNotificacaoParaUsuario(user.externalId, titulo, corpo, eventoId).catch(
+          (e) => this.logger.error(`Falha BANCO_HORAS_VENCIMENTO sistema para func ${funcId}: ${e}`)
+        );
+      }
+      notificados.add(funcId);
+    }
   }
 }

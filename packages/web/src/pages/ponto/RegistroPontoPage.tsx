@@ -12,6 +12,7 @@ import {
 
 import { CameraModal } from "../../components/CameraModal";
 import { CameraPermissionGuide, useCameraPermission } from "../../components/CameraPermissionGuide";
+import { MapaGeolocalizacao } from "../../components/MapaGeolocalizacao";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -1388,6 +1389,11 @@ export function RegistroPontoPage() {
         >
           {/* Validações — mesmo componente em mobile e desktop */}
           <ValidacoesPanel items={validacoes} />
+
+          {/* Mapa de geolocalização — somente mobile, quando geo está ativo e câmera/guia fechados */}
+          {isMobile && checkGeo && geoloc && !cameraAberta && !guiaAberto && (
+            <MapaGeolocalizacao cfg={cfg} ativo={true} onStatusChange={(s) => setGeoStatus(s)} />
+          )}
 
           {/* Botões de ação — proporção definida pela fase atual */}
           <div style={{ display: "flex", gap: 10 }}>
