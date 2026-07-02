@@ -55,20 +55,28 @@ if [ -z "$DNS_IP" ]; then
 fi
 
 for port in 443 12010; do
-  if ss -tln 2>/dev/null | grep -q ":${port} "; then
+  if ss -tln 2>/dev/null | grep -qE "(:|\\])${port}[[:space:]]"; then
     echo "Porta $port: OK"
   else
-    echo "Porta $port: FALHA (nginx/stack parado?)"
-    FAIL=1
+    if [ "$port" = "443" ]; then
+      echo "Porta 443: indisponível (outro serviço no host ou use :12010)"
+    else
+      echo "Porta $port: FALHA (nginx/stack parado?)"
+      FAIL=1
+    fi
   fi
 done
 
-echo ""
 echo "Teste HTTPS:"
+HTTPS_OK=0
 if curl -kfsS --connect-timeout 5 -o /dev/null -w "HTTP %{http_code}\n" "https://${HOSTNAME}/"; then
   echo "OK: https://${HOSTNAME}/"
+  HTTPS_OK=1
+elif curl -kfsS --connect-timeout 5 -o /dev/null -w "HTTP %{http_code}\n" "https://${HOSTNAME}:12010/"; then
+  echo "OK: https://${HOSTNAME}:12010/ (porta 443 ocupada no host)"
+  HTTPS_OK=1
 else
-  echo "FALHA: https://${HOSTNAME}/"
+  echo "FALHA: https://${HOSTNAME}/ e https://${HOSTNAME}:12010/"
   FAIL=1
 fi
 
