@@ -22,8 +22,10 @@ export default defineConfig({
   server: {
     port: 12010,
     host: "0.0.0.0",
+    strictPort: true,
     https: behindProxy ? false : httpsConfig,
-    allowedHosts: ["ponto.cfo.local", "localhost", ".cfo.local"],
+    // Com proxy nginx, clientes podem acessar por IP (ex.: https://192.168.x.x:12010).
+    allowedHosts: behindProxy ? true : ["ponto.cfo.local", "localhost", ".cfo.local"],
     proxy: {
       "/api": {
         target: process.env.VITE_API_TARGET ?? "http://backend:3000",
@@ -36,6 +38,6 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    include: ["keycloak-js"]
+    include: ["keycloak-js", "react-is", "recharts"]
   }
 });

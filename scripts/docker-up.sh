@@ -35,6 +35,11 @@ fi
 
 PROJECT_PREFIX="pontoeletronico_cfo"
 
+# Remove lixo acumulado (backups npm, caches) antes de subir
+if [ -x "$ROOT/scripts/cleanup.sh" ]; then
+  "$ROOT/scripts/cleanup.sh" 2>/dev/null || true
+fi
+
 echo "Parando stack (se existir)..."
 "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" down --remove-orphans 2>/dev/null || true
 
@@ -51,6 +56,20 @@ fi
 
 echo "Subindo serviços..."
 "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up "${EXTRA[@]}" -d
+
+echo ""
+echo "Aguardando Vite (web) — primeira subida pode levar alguns minutos..."
+for i in $(seq 1 60); do
+  if curl -fsS -o /dev/null "http://127.0.0.1:12010/" 2>/dev/null \
+    || curl -kfsS -o /dev/null "https://127.0.0.1:12010/" 2>/dev/null; then
+    echo "Frontend respondendo na porta 12010."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "AVISO: frontend ainda não responde. Logs: docker ps -a --filter name=web --filter name=pontoeletronico"
+  fi
+  sleep 5
+done
 
 echo ""
 "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" ps

@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /**
  * Reinstala dependências quando node_modules pertence a outro usuário (ex.: root no Docker).
- * Renomeia pastas antigas (só exige escrita no diretório pai) e instala em diretório temporário.
+ * Backups vão para /tmp (não poluem o repositório).
  */
 const { execSync } = require("child_process");
 const fs = require("fs");
@@ -12,15 +12,52 @@ const path = require("path");
 const root = path.resolve(__dirname, "..");
 const stamp = Date.now();
 
-function renameIfExists(targetPath, label) {
+function removeDir(targetPath) {
   if (!fs.existsSync(targetPath)) return;
-  const backup = `${targetPath}.root.bak.${stamp}`;
-  fs.renameSync(targetPath, backup);
-  console.log(`${label} renomeado para ${path.basename(backup)}`);
+  fs.rmSync(targetPath, { recursive: true, force: true });
 }
 
-renameIfExists(path.join(root, "node_modules"), "node_modules");
-renameIfExists(
+/** Remove backups antigos no repo e em /tmp. */
+function cleanupLegacyBackups() {
+  const patterns = [/^node_modules\.bak\.\d+$/, /^node_modules\.root\.bak\.\d+$/];
+  for (const name of fs.readdirSync(root)) {
+    if (patterns.some((re) => re.test(name))) {
+      removeDir(path.join(root, name));
+      console.log(`Backup legado removido: ${name}`);
+    }
+  }
+  const mobileRoot = path.join(root, "packages", "mobile");
+  if (fs.existsSync(mobileRoot)) {
+    for (const name of fs.readdirSync(mobileRoot)) {
+      if (patterns.some((re) => re.test(name))) {
+        removeDir(path.join(mobileRoot, name));
+        console.log(`Backup legado removido: packages/mobile/${name}`);
+      }
+    }
+  }
+  for (const name of fs.readdirSync(os.tmpdir())) {
+    if (/^ponto-npm-bak-\d+$/.test(name)) {
+      removeDir(path.join(os.tmpdir(), name));
+    }
+  }
+}
+
+function relocateIfExists(targetPath, label) {
+  if (!fs.existsSync(targetPath)) return;
+  const backup = path.join(os.tmpdir(), `ponto-npm-bak-${stamp}-${path.basename(targetPath)}`);
+  try {
+    fs.renameSync(targetPath, backup);
+    console.log(`${label} movido para ${backup}`);
+  } catch {
+    removeDir(targetPath);
+    console.log(`${label} removido (rename falhou)`);
+  }
+}
+
+cleanupLegacyBackups();
+
+relocateIfExists(path.join(root, "node_modules"), "node_modules");
+relocateIfExists(
   path.join(root, "packages", "mobile", "node_modules"),
   "packages/mobile/node_modules"
 );
@@ -57,6 +94,14 @@ if (fs.existsSync(mobileModules)) {
 
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
+// Remove backup desta execução e legados
+for (const name of fs.readdirSync(os.tmpdir())) {
+  if (name.startsWith(`ponto-npm-bak-${stamp}-`) || /^ponto-npm-bak-\d+-/.test(name)) {
+    removeDir(path.join(os.tmpdir(), name));
+  }
+}
+cleanupLegacyBackups();
+
 console.log("Executando npm audit fix...");
 try {
   execSync("npm audit fix", { cwd: root, stdio: "inherit" });
@@ -68,7 +113,6 @@ console.log("\nResumo do audit:");
 try {
   execSync("npm audit", { cwd: root, stdio: "inherit" });
 } catch (err) {
-  /* npm audit usa exit 1 quando há vulnerabilidades — não é falha de instalação */
   if (err.status !== 1) throw err;
   const summary = execSync(
     "npm audit --json 2>/dev/null | node -e \"const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const m=d.metadata?.vulnerabilities||{}; console.log('Total:', m.total||0, '(moderate:', m.moderate||0, ', high:', m.high||0, ')');\"",

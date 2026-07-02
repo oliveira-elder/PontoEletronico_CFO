@@ -107,12 +107,21 @@ services:
     volumes:
       - ./:/app
       - node_modules_root:/app/node_modules
-      - web_node_modules:/app/packages/web/node_modules
     expose:
       - "12010"
     depends_on:
       backend:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "require(''http'').get(''http://127.0.0.1:12010/'',r=>process.exit(r.statusCode&&r.statusCode<500?0:1)).on(''error'',()=>process.exit(1))"'
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 600s
 
   nginx:
     image: nginx:1.27-alpine
@@ -150,4 +159,3 @@ volumes:
   postgres_data:
   uploads_fotos:
   node_modules_root:
-  web_node_modules:

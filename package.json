@@ -19,7 +19,8 @@
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "prepare": "husky || true",
-    "deps:install": "node scripts/deps-install.js"
+    "deps:install": "node scripts/deps-install.js",
+    "cleanup": "bash scripts/cleanup.sh"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,md,yml,yaml}": [

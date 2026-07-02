@@ -75,8 +75,16 @@ if curl -kfsS --connect-timeout 5 -o /dev/null -w "HTTP %{http_code}\n" "https:/
 elif curl -kfsS --connect-timeout 5 -o /dev/null -w "HTTP %{http_code}\n" "https://${HOSTNAME}:12010/"; then
   echo "OK: https://${HOSTNAME}:12010/ (porta 443 ocupada no host)"
   HTTPS_OK=1
+elif [ -n "$SERVER_IP" ] && curl -kfsS --connect-timeout 5 -o /dev/null -w "HTTP %{http_code}\n" "https://${SERVER_IP}:12010/"; then
+  echo "OK: https://${SERVER_IP}:12010/"
+  HTTPS_OK=1
 else
   echo "FALHA: https://${HOSTNAME}/ e https://${HOSTNAME}:12010/"
+  [ -n "$SERVER_IP" ] && echo "FALHA: https://${SERVER_IP}:12010/"
+  echo ""
+  echo "502 Bad Gateway? Verifique o Vite (container web):"
+  echo "  docker logs pontoeletronico_cfo-web-1 --tail 80"
+  echo "  docker compose ps"
   FAIL=1
 fi
 
