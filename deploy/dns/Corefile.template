@@ -1,0 +1,11 @@
+# Gerado por scripts/setup-central-dns.sh — não edite manualmente.
+.:53 {
+    hosts /etc/coredns/hosts {
+        fallthrough
+    }
+    forward . __UPSTREAM_DNS__ {
+        except ponto.cfo.local
+    }
+    cache 30
+    errors
+}

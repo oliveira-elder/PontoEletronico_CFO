@@ -6,7 +6,10 @@
     "node": ">=18"
   },
   "workspaces": [
-    "packages/*"
+    "packages/backend",
+    "packages/web",
+    "packages/desktop",
+    "packages/shared"
   ],
   "scripts": {
     "build": "npm run -ws build",
@@ -15,7 +18,8 @@
     "test": "npm run -ws test",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "prepare": "husky"
+    "prepare": "husky || true",
+    "deps:install": "node scripts/deps-install.js"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,json,md,yml,yaml}": [

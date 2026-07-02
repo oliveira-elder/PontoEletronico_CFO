@@ -14,12 +14,16 @@ const httpsConfig =
     ? { cert: readFileSync(certFile), key: readFileSync(keyFile) }
     : true; // fallback para cert auto-gerado pelo Vite se arquivos não existirem
 
+/* Com nginx na frente (Docker), o TLS termina no proxy e o Vite fica em HTTP. */
+const behindProxy = process.env.VITE_BEHIND_PROXY === "true";
+
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 12010,
     host: "0.0.0.0",
-    https: httpsConfig,
+    https: behindProxy ? false : httpsConfig,
+    allowedHosts: ["ponto.cfo.local", "localhost", ".cfo.local"],
     proxy: {
       "/api": {
         target: process.env.VITE_API_TARGET ?? "http://backend:3000",

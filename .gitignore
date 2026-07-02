@@ -1,10 +1,15 @@
 node_modules
+node_modules.bak.*
+node_modules.root.bak.*
 dist
 build
 coverage
 .env
 .env.*
 !.env.example
+deploy/nginx/certs/*.crt
+deploy/nginx/certs/*.key
+!deploy/nginx/certs/.gitkeep
 .DS_Store
 *.log
 packages/backend/prisma/migrations
