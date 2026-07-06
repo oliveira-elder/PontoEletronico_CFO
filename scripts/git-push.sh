@@ -1,48 +1,26 @@
 #!/usr/bin/env bash
-# Configura SSH para git push e publica commits em origin/main.
+# Publica commits em origin/main via HTTPS + Personal Access Token.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-KEY="${GITHUB_SSH_KEY:-$HOME/.ssh/id_ed25519_github}"
-PUB="${KEY}.pub"
-
-mkdir -p "$HOME/.ssh"
-chmod 700 "$HOME/.ssh"
-
-if [ ! -f "$KEY" ]; then
-  echo "Gerando chave SSH em $KEY ..."
-  ssh-keygen -t ed25519 -C "elder.oliveira@cfo.org.br" -f "$KEY" -N ""
-fi
-
-chmod 600 "$KEY"
-chmod 644 "$PUB"
-
-cat >"$HOME/.ssh/config" <<EOF
-Host github.com
-  HostName github.com
-  User git
-  IdentityFile $KEY
-  IdentitiesOnly yes
-EOF
-chmod 600 "$HOME/.ssh/config"
+REPO="oliveira-elder/PontoEletronico_CFO"
+HTTPS_URL="https://github.com/${REPO}.git"
 
 cd "$ROOT"
-git remote set-url origin git@github.com:oliveira-elder/PontoEletronico_CFO.git
 
-echo ""
-echo "=== Chave pública (adicione em https://github.com/settings/keys) ==="
-cat "$PUB"
-echo "====================================================================="
-echo ""
+GIT_SAFE=(git -c safe.directory="$ROOT")
+"${GIT_SAFE[@]}" remote set-url origin "$HTTPS_URL"
 
-if ssh -o BatchMode=yes -T git@github.com 2>&1 | grep -qi 'successfully authenticated'; then
-  echo "SSH OK — enviando commits..."
-  git push -u origin main
-  echo "Push concluído."
-else
-  echo "SSH ainda não autorizado no GitHub."
-  echo "1. Copie a chave acima"
-  echo "2. GitHub → Settings → SSH and GPG keys → New SSH key"
-  echo "3. Execute novamente: ./scripts/git-push.sh"
+TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+if [ -z "$TOKEN" ]; then
+  echo "Defina GITHUB_TOKEN (Personal Access Token com escopo repo)."
+  echo "  export GITHUB_TOKEN=ghp_..."
+  echo "  ./scripts/git-push.sh"
+  echo ""
+  echo "Crie em: https://github.com/settings/tokens"
   exit 1
 fi
+
+echo "Enviando commits para origin/main (HTTPS + token)..."
+"${GIT_SAFE[@]}" push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" HEAD:main
+echo "Push concluído."
