@@ -1,26 +1,21 @@
 #!/usr/bin/env bash
-# Publica commits em origin/main via HTTPS + Personal Access Token.
+# Publica commits da branch main em origin (HTTPS + Personal Access Token).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="oliveira-elder/PontoEletronico_CFO"
-HTTPS_URL="https://github.com/${REPO}.git"
+# shellcheck source=git-lib.sh
+source "$(cd "$(dirname "$0")" && pwd)/git-lib.sh"
 
-cd "$ROOT"
+require_github_token
 
-GIT_SAFE=(git -c safe.directory="$ROOT")
-"${GIT_SAFE[@]}" remote set-url origin "$HTTPS_URL"
+git_project remote set-url origin "$GIT_HTTPS_URL"
 
-TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-if [ -z "$TOKEN" ]; then
-  echo "Defina GITHUB_TOKEN (Personal Access Token com escopo repo)."
-  echo "  export GITHUB_TOKEN=ghp_..."
-  echo "  ./scripts/git-push.sh"
-  echo ""
-  echo "Crie em: https://github.com/settings/tokens"
+CURRENT="$(git_project rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT" != "$GIT_BRANCH" ]; then
+  echo "Erro: checkout em '${CURRENT}'. Use a branch ${GIT_BRANCH}."
   exit 1
 fi
 
-echo "Enviando commits para origin/main (HTTPS + token)..."
-"${GIT_SAFE[@]}" push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" HEAD:main
+echo "Enviando commits para origin/${GIT_BRANCH} (HTTPS + token)..."
+git_project push "$(auth_remote_url)" "HEAD:${GIT_BRANCH}"
+git_project fetch "$(auth_remote_url)" "+${GIT_BRANCH}:refs/remotes/origin/${GIT_BRANCH}"
 echo "Push concluído."
