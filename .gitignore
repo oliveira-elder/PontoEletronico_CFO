@@ -20,5 +20,10 @@ packages/backend/prisma/migrations
 packages/backend/prisma/seed.js
 packages/backend/prisma/seed.js.map
 packages/backend/prisma/seed.d.ts
+packages/backend/instance/
+packages/backend/uploads/
+packages/web/certs/*.crt
+packages/web/certs/*.key
+test-write
 packages/mobile/.expo
 packages/mobile/.expo-shared

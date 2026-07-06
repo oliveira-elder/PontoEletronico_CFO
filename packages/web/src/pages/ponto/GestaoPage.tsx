@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
 import { MapModal, MapResult } from "../../components/MapModal";
@@ -18,6 +18,7 @@ import {
   XCircleIcon,
   MapPinIcon
 } from "../../components/icons";
+import { ExtensionsApiPanel } from "../../components/ExtensionsApiPanel";
 
 /* ─── Types ─── */
 type Categoria = "ESTAGIARIO" | "CONCURSADO" | "ASSESSOR" | "GERENTE";
@@ -246,17 +247,6 @@ function CategoriaBadge({ cat }: { cat: Categoria }) {
   );
 }
 
-interface SyncStatus {
-  id: string;
-  source: string;
-  status: string;
-  created: number;
-  updated: number;
-  skipped: number;
-  errors: number;
-  createdAt: string;
-}
-
 /* ─── Botão: Solicitar Endereço para Todos ─── */
 function SolicitarEnderecoTodosBtn() {
   const [status, setStatus] = React.useState<"idle" | "loading" | "ok" | "erro">("idle");
@@ -358,22 +348,7 @@ export function GestaoPage() {
   const [editandoId, setEditandoId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [syncMsg, setSyncMsg] = useState("");
-
-  const carregarSyncStatus = useCallback(async () => {
-    if (!isAdmin) return;
-    try {
-      const data = await api.get<SyncStatus>("/admin/extensions/sync/status");
-      setSyncStatus(data);
-    } catch {
-      /* opcional */
-    }
-  }, [isAdmin]);
-
   useEffect(() => {
-    void carregarSyncStatus();
     api
       .get<JornadaPeriodo[]>("/ponto/config/jornadas")
       .then((jps) => setJornadasDisponiveis(jps ?? []))
@@ -393,31 +368,7 @@ export function GestaoPage() {
         setGerencias(gers ?? []);
       })
       .catch(() => {});
-  }, [carregarSyncStatus]);
-
-  async function sincronizarExtensions() {
-    setSyncLoading(true);
-    setSyncMsg("");
-    try {
-      const res = await api.post<{
-        total: number;
-        created: number;
-        updated: number;
-        skipped: number;
-        errors: number;
-      }>("/admin/extensions/sync", {});
-      setSyncMsg(
-        `Sync concluído: ${res.updated} atualizados, ${res.created} gerências criadas, ${res.skipped} ignorados.`
-      );
-      await carregarSyncStatus();
-      const funcs = await api.get<Funcionario[]>("/ponto/gestao/funcionarios");
-      setFuncionarios(funcs ?? []);
-    } catch {
-      setSyncMsg("Erro ao sincronizar com a API de ramais.");
-    } finally {
-      setSyncLoading(false);
-    }
-  }
+  }, []);
 
   /* Filtro */
   const lista = funcionarios.filter((f) => {
@@ -675,61 +626,18 @@ export function GestaoPage() {
         {isRhOuAdmin && <SolicitarEnderecoTodosBtn />}
       </div>
 
-      {/* ── Banner Sync Extensions (apenas admin) ── */}
-      {isAdmin && (
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid rgba(37,99,235,0.2)",
-            borderRadius: "var(--radius-md)",
-            padding: "12px 16px",
-            marginBottom: 20,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap"
+      {/* ── Banner Sync Extensions (RH e admin) ── */}
+      {isRhOuAdmin && (
+        <ExtensionsApiPanel
+          isAdmin={isAdmin}
+          isSuperAdmin={!!user?.isSuperAdmin}
+          onSyncComplete={() => {
+            void api
+              .get<Funcionario[]>("/ponto/gestao/funcionarios")
+              .then((funcs) => setFuncionarios(funcs ?? []))
+              .catch(() => {});
           }}
-        >
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, color: "#1e40af" }}>
-              API de Ramais (Extensions)
-            </p>
-            <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
-              {syncStatus
-                ? `Último sync: ${new Date(syncStatus.createdAt).toLocaleString("pt-BR")} — ${syncStatus.updated} atualizados, ${syncStatus.created} gerências criadas, ${syncStatus.errors} erros`
-                : "Nenhuma sincronização realizada ainda."}
-            </p>
-            {syncMsg && (
-              <p
-                style={{
-                  margin: "4px 0 0",
-                  fontSize: 11.5,
-                  color: syncMsg.startsWith("Erro") ? "var(--red)" : "#065f46",
-                  fontWeight: 500
-                }}
-              >
-                {syncMsg}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => void sincronizarExtensions()}
-            disabled={syncLoading}
-            style={{
-              padding: "7px 14px",
-              border: "1px solid rgba(37,99,235,0.3)",
-              borderRadius: "var(--radius-md)",
-              background: syncLoading ? "rgba(37,99,235,0.06)" : "#eff6ff",
-              color: "#1e40af",
-              cursor: syncLoading ? "not-allowed" : "pointer",
-              fontSize: 12,
-              fontWeight: 600,
-              flexShrink: 0
-            }}
-          >
-            {syncLoading ? "Sincronizando..." : "↻ Sincronizar Gerências"}
-          </button>
-        </div>
+        />
       )}
 
       {/* ── Stats ── */}

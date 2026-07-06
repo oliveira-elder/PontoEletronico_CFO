@@ -424,7 +424,7 @@ function ModalEmailReal({
 
 /* ─── Página principal ─── */
 export function GestaoUsuariosPage() {
-  const { token, user } = useAuth();
+  const { user } = useAuth();
   const [grupos, setGrupos] = useState<GrupoKC[]>([]);
   const [usuarios, setUsuarios] = useState<UsuarioKC[]>([]);
   const [usuariosLocais, setUsuariosLocais] = useState<UserLocal[]>([]);
@@ -432,65 +432,64 @@ export function GestaoUsuariosPage() {
   const [aba, setAba] = useState<"grupos" | "usuarios" | "cadastrados">("grupos");
   const [carregando, setCarregando] = useState(false);
   const [kcDisponivel, setKcDisponivel] = useState<boolean | null>(null);
+  const [apiErro, setApiErro] = useState<string | null>(null);
   const [modalGrupo, setModalGrupo] = useState<GrupoKC | null>(null);
   const [modalEmailUser, setModalEmailUser] = useState<UserLocal | null>(null);
 
-  const tk = token();
-
   const carregarGrupos = useCallback(async () => {
-    if (!tk) return;
     setCarregando(true);
+    setApiErro(null);
     try {
       const data = await api.get<{ available: boolean; grupos: GrupoKC[] }>(
-        "/admin/keycloak/grupos",
-        tk
+        "/admin/keycloak/grupos"
       );
       setKcDisponivel(data?.available ?? false);
       setGrupos(data?.grupos ?? []);
-    } catch {
+    } catch (e) {
+      setApiErro(e instanceof Error ? e.message : "Falha ao carregar grupos do SSO.");
       setKcDisponivel(false);
       setGrupos([]);
     } finally {
       setCarregando(false);
     }
-  }, [tk]);
+  }, []);
 
   const carregarUsuarios = useCallback(async () => {
-    if (!tk) return;
     setCarregando(true);
+    setApiErro(null);
     try {
       const data = await api.get<{ available: boolean; usuarios: UsuarioKC[] }>(
-        `/admin/keycloak/usuarios${busca ? `?search=${encodeURIComponent(busca)}` : ""}`,
-        tk
+        `/admin/keycloak/usuarios${busca ? `?search=${encodeURIComponent(busca)}` : ""}`
       );
       setKcDisponivel(data?.available ?? false);
       setUsuarios(data?.usuarios ?? []);
-    } catch {
+    } catch (e) {
+      setApiErro(e instanceof Error ? e.message : "Falha ao carregar usuários do SSO.");
       setKcDisponivel(false);
       setUsuarios([]);
     } finally {
       setCarregando(false);
     }
-  }, [tk, busca]);
+  }, [busca]);
 
   const carregarUsuariosLocais = useCallback(async () => {
-    if (!tk) return;
     setCarregando(true);
+    setApiErro(null);
     try {
       const data = await api.get<UserLocal[]>(
-        `/admin/usuarios${busca ? `?search=${encodeURIComponent(busca)}` : ""}`,
-        tk
+        `/admin/usuarios${busca ? `?search=${encodeURIComponent(busca)}` : ""}`
       );
       setUsuariosLocais(Array.isArray(data) ? data : []);
-    } catch {
+    } catch (e) {
+      setApiErro(e instanceof Error ? e.message : "Falha ao carregar usuários do banco.");
       setUsuariosLocais([]);
     } finally {
       setCarregando(false);
     }
-  }, [tk, busca]);
+  }, [busca]);
 
   async function salvarEmailReal(userId: string, emailReal: string | null) {
-    await api.patch(`/admin/usuarios/${userId}/email-real`, { emailReal }, tk);
+    await api.patch(`/admin/usuarios/${userId}/email-real`, { emailReal });
     setUsuariosLocais((prev) => prev.map((u) => (u.id === userId ? { ...u, emailReal } : u)));
     setModalEmailUser(null);
   }
@@ -502,11 +501,10 @@ export function GestaoUsuariosPage() {
   }, [aba, carregarGrupos, carregarUsuarios, carregarUsuariosLocais]);
 
   async function salvarPapeis(grupo: GrupoKC, papeis: string[]) {
-    await api.put(
-      "/admin/keycloak/grupos/" + grupo.id + "/papeis",
-      { grupoNome: grupo.nome, papeis },
-      tk
-    );
+    await api.put("/admin/keycloak/grupos/" + grupo.id + "/papeis", {
+      grupoNome: grupo.nome,
+      papeis
+    });
     setGrupos((prev) => prev.map((g) => (g.id === grupo.id ? { ...g, papeis } : g)));
   }
 
@@ -533,8 +531,8 @@ export function GestaoUsuariosPage() {
           Gestão de <em>Usuários</em>
         </h1>
         <p style={{ fontSize: 13, color: "var(--ink-500)", marginTop: 4 }}>
-          Grupos e usuários sincronizados do AD via Keycloak. Atribua papéis para controlar o fluxo
-          de aprovações.
+          Grupos e usuários do AD via Keycloak. O cadastro no banco interno ocorre automaticamente
+          quando cada pessoa faz login no sistema.
         </p>
       </div>
 
@@ -597,14 +595,18 @@ export function GestaoUsuariosPage() {
 
       {/* Barra de busca (usuários KC e cadastrados) */}
       {(aba === "usuarios" || aba === "cadastrados") && (
-        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
           <input
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && carregarUsuarios()}
+            onKeyDown={(e) =>
+              e.key === "Enter" &&
+              (aba === "usuarios" ? carregarUsuarios() : carregarUsuariosLocais())
+            }
             placeholder="Buscar por nome, e-mail ou usuário…"
             style={{
               flex: 1,
+              minWidth: 200,
               padding: "9px 12px",
               borderRadius: "var(--radius-md)",
               border: "1px solid rgba(122,30,38,0.18)",
@@ -623,8 +625,48 @@ export function GestaoUsuariosPage() {
         </div>
       )}
 
+      {aba === "cadastrados" && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(122,30,38,0.04)",
+            border: "1px solid rgba(122,30,38,0.12)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 16,
+            fontSize: 12.5,
+            color: "var(--ink-600)",
+            lineHeight: 1.6
+          }}
+        >
+          Usuários aparecem aqui após o <strong>primeiro login</strong> no Ponto Eletrônico (seed
+          automático via SSO). Não há importação em massa da lista do Keycloak.
+        </div>
+      )}
+
+      {/* Erro de API (ex.: 401 — token rejeitado pelo backend) */}
+      {apiErro && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(180,30,30,0.07)",
+            border: "1px solid rgba(180,30,30,0.22)",
+            borderRadius: "var(--radius-md)",
+            marginBottom: 16,
+            fontSize: 12.5,
+            color: "#8a1a1a",
+            lineHeight: 1.6
+          }}
+        >
+          <strong>Erro ao comunicar com a API:</strong> {apiErro}
+          <br />
+          {apiErro.includes("502")
+            ? "502 = backend indisponível. No servidor: ./scripts/docker-logs-backend.sh e ./scripts/docker-recreate.sh backend"
+            : "Se for 401, faça logout/login e rode: ./scripts/verify-auth-api.sh"}
+        </div>
+      )}
+
       {/* Aviso informativo — sem acesso à API admin do Keycloak */}
-      {kcDisponivel === false && (
+      {kcDisponivel === false && !apiErro && (
         <div
           style={{
             padding: "10px 14px",
@@ -642,9 +684,11 @@ export function GestaoUsuariosPage() {
         >
           <span style={{ fontSize: 16, flexShrink: 0 }}>ℹ️</span>
           <span>
-            A sincronização com a API Admin do Keycloak não está disponível. Os mapeamentos de
-            papéis salvos neste sistema continuam funcionando normalmente. Para habilitar a listagem
-            de grupos e usuários do AD, configure as credenciais de serviço do Keycloak.
+            A sincronização com a API Admin do Keycloak não está disponível. Configure no{" "}
+            <code>.env</code> do servidor:
+            <br />
+            <code>KEYCLOAK_ADMIN_USER</code> e <code>KEYCLOAK_ADMIN_PASSWORD</code> (usuário admin
+            do Keycloak). Depois recrie o backend: <code>./scripts/docker-recreate.sh backend</code>
           </span>
         </div>
       )}

@@ -1542,6 +1542,11 @@ export function ConfiguracoesPage() {
 
   /* Carrega dados da API ao montar */
   useEffect(() => {
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      if (!cancelled) setLoading(false);
+    }, 20_000);
+
     api
       .get<ConfigSolicitacoes>("/ponto/config/solicitacoes")
       .then((d) => {
@@ -1635,7 +1640,15 @@ export function ConfiguracoesPage() {
       .catch(() => {
         /* config/periodos permanecem null → tela de erro */
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+        clearTimeout(timeout);
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, []);
 
   useEffect(() => {

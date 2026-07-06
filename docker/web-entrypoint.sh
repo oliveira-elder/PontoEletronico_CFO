@@ -16,9 +16,16 @@ if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
   echo "[web] Instalação concluída."
 else
   echo "[web] Dependências já atualizadas (hash ok)."
-  # Garante peer deps do recharts (ex.: react-is) em volumes Docker antigos
-  if [ ! -d /app/node_modules/react-is ]; then
-    echo "[web] Pacote react-is ausente — reinstalando..."
+  # Garante peer deps em volumes Docker antigos (recharts, mapas, etc.)
+  NEED_INSTALL=0
+  for pkg in react-is leaflet; do
+    if [ ! -d "/app/node_modules/$pkg" ]; then
+      echo "[web] Pacote $pkg ausente."
+      NEED_INSTALL=1
+    fi
+  done
+  if [ "$NEED_INSTALL" -eq 1 ]; then
+    echo "[web] Reinstalando dependências..."
     npm install
     npm rebuild esbuild
   fi

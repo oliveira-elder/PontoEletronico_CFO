@@ -54,8 +54,14 @@ if [ "${1:-}" = "--build" ] || [ "${1:-}" = "-b" ]; then
   EXTRA=(--build)
 fi
 
-echo "Subindo serviços..."
-"${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up "${EXTRA[@]}" -d
+echo "Subindo serviços (postgres → backend → web → nginx)..."
+"${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up "${EXTRA[@]}" -d postgres
+sleep 5
+"${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up "${EXTRA[@]}" -d backend
+"$ROOT/scripts/wait-backend.sh" || {
+  echo "AVISO: backend lento — verifique: ./scripts/docker-logs-backend.sh"
+}
+"${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" up "${EXTRA[@]}" -d web nginx
 
 echo ""
 echo "Aguardando Vite (web) — primeira subida pode levar alguns minutos..."

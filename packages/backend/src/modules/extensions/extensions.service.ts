@@ -4,6 +4,7 @@ import { Cron, CronExpression } from "@nestjs/schedule";
 import https from "https";
 import { firstValueFrom } from "rxjs";
 import { PrismaService } from "../../prisma/prisma.service";
+import { ExtensionsConfigService } from "./extensions-config.service";
 
 /* ─── Tipos da nova API ─── */
 interface ApiUser {
@@ -57,25 +58,84 @@ function slugParaSigla(slug: string): string {
 @Injectable()
 export class ExtensionsService {
   private readonly logger = new Logger(ExtensionsService.name);
-  private readonly apiUrl =
-    process.env.SECTIONS_INTEGRATION_URL ??
-    "https://192.168.100.32:11010/api/sections/integration/users";
-  private readonly apiToken = process.env.SECTIONS_INTEGRATION_TOKEN ?? "";
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly http: HttpService
+    private readonly http: HttpService,
+    private readonly configService: ExtensionsConfigService
   ) {}
 
-  async fetchSections(): Promise<ApiSection[]> {
+  getConfig() {
+    return this.configService.getConfig();
+  }
+
+  saveConfig(input: { url: string; token?: string }) {
+    return this.configService.saveConfig(input);
+  }
+
+  removePanelOverride() {
+    return this.configService.removePanelOverride();
+  }
+
+  private resolveApiCredentials(override?: { url?: string; token?: string }) {
+    const effective = this.configService.getEffectiveConfig();
+    return {
+      url: override?.url?.trim() || effective.url,
+      token: override?.token !== undefined ? override.token.trim() : effective.token
+    };
+  }
+
+  async fetchSections(override?: { url?: string; token?: string }): Promise<ApiSection[]> {
+    const { url, token } = this.resolveApiCredentials(override);
     const response = await firstValueFrom(
-      this.http.get<ApiSection[]>(this.apiUrl, {
+      this.http.get<ApiSection[]>(url, {
         timeout: 15_000,
-        headers: this.apiToken ? { Authorization: `Bearer ${this.apiToken}` } : {},
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         httpsAgent: new https.Agent({ rejectUnauthorized: false })
       })
     );
     return (response as { data: ApiSection[] }).data;
+  }
+
+  async testConnection(override?: { url?: string; token?: string }): Promise<{
+    ok: boolean;
+    url: string;
+    sectionsCount?: number;
+    usersCount?: number;
+    status?: number;
+    error?: string;
+  }> {
+    const { url } = this.resolveApiCredentials(override);
+    if (!url?.trim()) {
+      return { ok: false, url: "", error: "URL da API não configurada." };
+    }
+
+    try {
+      const sections = await this.fetchSections(override);
+      const usersCount = sections.reduce((acc, s) => {
+        const vistos = new Set<string>();
+        for (const u of [...s.users, ...s.subsections.flatMap((sub) => sub.users)]) {
+          vistos.add(u.id);
+        }
+        return acc + vistos.size;
+      }, 0);
+
+      return {
+        ok: true,
+        url,
+        sectionsCount: sections.length,
+        usersCount,
+        status: 200
+      };
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { status?: number }; message?: string };
+      return {
+        ok: false,
+        url,
+        status: axiosErr.response?.status,
+        error: axiosErr.message ?? String(err)
+      };
+    }
   }
 
   @Cron(CronExpression.EVERY_HOUR)

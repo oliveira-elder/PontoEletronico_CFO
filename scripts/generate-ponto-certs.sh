@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gera certificado autoassinado para ponto.cfo.local e IP do servidor (dev/homologação).
+# Gera certificado autoassinado para ponto.cfo.local, ponto.cfo.org.br e IP do servidor.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,7 +12,7 @@ if [ -z "$IP" ]; then
 fi
 IP="${IP:-127.0.0.1}"
 
-SAN="DNS:ponto.cfo.local,DNS:localhost,DNS:*.cfo.local,IP:127.0.0.1"
+SAN="DNS:ponto.cfo.local,DNS:ponto.cfo.org.br,DNS:localhost,DNS:*.cfo.local,IP:127.0.0.1"
 if [ "$IP" != "127.0.0.1" ]; then
   SAN="$SAN,IP:$IP"
 fi

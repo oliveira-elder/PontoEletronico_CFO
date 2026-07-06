@@ -204,7 +204,7 @@ function ContaDesativadaScreen({ onLogout }: { onLogout: () => void }) {
 }
 
 export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { authenticated, contaDesativada, ensureInitialized, initError, logout } = useAuth();
+  const { authenticated, contaDesativada, ensureInitialized, initError, logout, token } = useAuth();
   const location = useLocation();
   const [checking, setChecking] = useState(!authenticated);
   const [ssoError, setSsoError] = useState(false);
@@ -235,6 +235,7 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
   if (ssoError) return <SsoCallbackError error={initError} />;
   if (contaDesativada) return <ContaDesativadaScreen onLogout={logout} />;
   if (!authenticated) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!token()) return <InitSpinner />;
 
   return <>{children}</>;
 }

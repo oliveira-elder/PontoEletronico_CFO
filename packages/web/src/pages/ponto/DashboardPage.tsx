@@ -662,25 +662,24 @@ export function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const tk = token();
-    if (!tk) {
-      setLoading(false);
-      return;
-    }
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      if (!cancelled) setLoading(false);
+    }, 20_000);
 
     const hoje = new Date();
     const mes = hoje.getMonth() + 1;
     const ano = hoje.getFullYear();
 
     Promise.all([
-      api.get<ApiStatus>("/ponto/status", tk),
-      api.get<ApiRelatorio>(`/ponto/relatorio?mes=${mes}&ano=${ano}`, tk),
+      api.get<ApiStatus>("/ponto/status"),
+      api.get<ApiRelatorio>(`/ponto/relatorio?mes=${mes}&ano=${ano}`),
       api.get<{ registros: { tipo: string; dataHora: string }[] }>(
-        `/ponto/historico?mes=${mes}&ano=${ano}`,
-        tk
+        `/ponto/historico?mes=${mes}&ano=${ano}`
       )
     ])
       .then(([statusData, relData, histData]) => {
+        if (cancelled) return;
         setStatus(statusData);
         setRelatorio(relData);
         const todos = [
@@ -692,7 +691,15 @@ export function DashboardPage() {
         setSemana(computeSemana(todos, new Date()));
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+        clearTimeout(timeout);
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, []);
 
   const hora = now.getHours();

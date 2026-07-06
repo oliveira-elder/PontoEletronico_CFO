@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Sobe o stack e valida acesso (execute após git pull ou alterações locais).
+# Em servidor com problemas de backend/502, prefira: sudo ./scripts/fix-and-up.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+if [ "$(id -u)" -eq 0 ]; then
+  exec "$ROOT/scripts/fix-and-up.sh"
+fi
 
 echo "=== Setup Ponto Eletrônico ==="
 

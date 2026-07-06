@@ -1,7 +1,6 @@
 #!/bin/sh
 set -e
 
-# Usa hash do package-lock.json para detectar mudanças de deps e reinstalar só quando necessário
 LOCK_HASH_FILE="/app/node_modules/.lock-hash"
 CURRENT_HASH=$(md5sum /app/package-lock.json 2>/dev/null | awk '{print $1}' || echo "none")
 STORED_HASH=$(cat "$LOCK_HASH_FILE" 2>/dev/null || echo "")
@@ -32,6 +31,27 @@ if [ ! -f /app/.docker-seed-done ]; then
   fi
 fi
 
+echo "[backend] Atualizando cache JWKS do Keycloak..."
+mkdir -p /app/deploy/keycloak
+JWKS_URI="${KEYCLOAK_JWKS_URI:-http://192.168.100.112:8080/realms/cfo/protocol/openid-connect/certs}"
+if curl -fsSL --max-time 25 -k "$JWKS_URI" -o /app/deploy/keycloak/jwks.json.tmp 2>/dev/null; then
+  mv /app/deploy/keycloak/jwks.json.tmp /app/deploy/keycloak/jwks.json
+  echo "[backend] JWKS atualizado."
+elif [ -f /app/deploy/keycloak/jwks.json ]; then
+  echo "[backend] JWKS remoto indisponível — usando cache local."
+else
+  echo "[backend] AVISO: sem JWKS remoto nem cache local. Rode: ./scripts/fetch-keycloak-jwks.sh"
+fi
+
+echo "[backend] Compilando API..."
+# dist fica em volume Docker (backend_dist) — evita conflito com dist root no host
+rm -rf /app/packages/backend/dist/* 2>/dev/null || true
+mkdir -p /app/packages/backend/dist
+
+if ! npm run build -w @intranet/backend; then
+  echo "[backend] AVISO: build falhou — tentando nest start --watch..."
+  exec npm run dev -w @intranet/backend
+fi
+
 echo "[backend] Iniciando API na porta ${PORT:-3000}..."
-npm run build -w @intranet/backend
 exec npm run start -w @intranet/backend

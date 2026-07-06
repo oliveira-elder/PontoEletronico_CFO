@@ -1,5 +1,38 @@
 {
-  "redirectUris": ["https://192.168.100.30:12010/*", "http://192.168.100.30:12010/*"],
-  "webOrigins": ["https://192.168.100.30:12010", "http://192.168.100.30:12010"],
-  "secret": "cDKJYtIN0179FKX4NNkCdDzn6k0lVINp"
+  "clientId": "pontoeletronico-dev",
+  "realm": "cfo",
+  "accessType": "public",
+  "standardFlowEnabled": true,
+  "pkceCodeChallengeMethod": "S256",
+  "redirectUris": [
+    "https://192.168.161.50:12010/*",
+    "https://192.168.161.50/*",
+    "https://ponto.cfo.org.br/*",
+    "https://ponto.cfo.org.br:12010/*",
+    "https://ponto.cfo.local:12010/*",
+    "https://ponto.cfo.local/*"
+  ],
+  "webOrigins": [
+    "https://192.168.161.50:12010",
+    "https://192.168.161.50",
+    "https://ponto.cfo.org.br",
+    "https://ponto.cfo.org.br:12010",
+    "https://ponto.cfo.local:12010",
+    "https://ponto.cfo.local"
+  ],
+  "postLogoutRedirectUris": [
+    "https://192.168.161.50:12010",
+    "https://192.168.161.50:12010/*",
+    "https://192.168.161.50",
+    "https://192.168.161.50/*",
+    "https://ponto.cfo.org.br",
+    "https://ponto.cfo.org.br/*",
+    "https://ponto.cfo.org.br:12010",
+    "https://ponto.cfo.org.br:12010/*",
+    "https://ponto.cfo.local:12010",
+    "https://ponto.cfo.local:12010/*",
+    "https://ponto.cfo.local",
+    "https://ponto.cfo.local/*"
+  ],
+  "secret": "usar apenas se client confidential (este app usa PKCE/public)"
 }

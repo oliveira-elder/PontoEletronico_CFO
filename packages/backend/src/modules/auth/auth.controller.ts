@@ -7,8 +7,7 @@ import { AuthService } from "./auth.service";
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  /* Sincroniza o usuário SSO na base local e retorna o perfil completo.
-     Chamado pelo frontend logo após cada login bem-sucedido. */
+  /* Seed no banco interno no login: cria/atualiza User + Funcionario e retorna o perfil. */
   @Get("me")
   @UseGuards(AuthGuard("jwt"))
   me(@Req() req: { user: AuthContext }) {

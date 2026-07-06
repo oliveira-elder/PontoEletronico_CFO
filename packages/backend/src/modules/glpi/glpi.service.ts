@@ -5,7 +5,9 @@ import axios from "axios";
 export class GlpiService {
   async buildSsoRedirect(userExternalId: string): Promise<{ url: string }> {
     const baseUrl = process.env.GLPI_BASE_URL ?? "http://localhost:8080";
-    return { url: `${baseUrl}/front/ticket.php?external_user=${encodeURIComponent(userExternalId)}` };
+    return {
+      url: `${baseUrl}/front/ticket.php?external_user=${encodeURIComponent(userExternalId)}`
+    };
   }
 
   async createTicket(payload: { title: string; content: string; requester: string }) {

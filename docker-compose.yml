@@ -33,10 +33,17 @@ services:
     environment:
       PORT: "3000"
       DATABASE_URL: postgresql://pontoeletronico:pontoeletronico@postgres:5432/pontoeletronico
-      KEYCLOAK_ISSUER: https://sso.cfo.org.br/realms/cfo
-      KEYCLOAK_JWKS_URI: https://sso.cfo.org.br/realms/cfo/protocol/openid-connect/certs
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-http://192.168.100.112:8080}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://192.168.100.112:8080/realms/cfo}
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-http://192.168.100.112:8080/realms/cfo/protocol/openid-connect/certs}
+      KEYCLOAK_JWKS_FILE: /app/deploy/keycloak/jwks.json
+      KEYCLOAK_JWKS_TLS_INSECURE: "true"
+      KEYCLOAK_VALIDATE_ISSUER: "false"
       KEYCLOAK_AUDIENCE: pontoeletronico-dev
-      KEYCLOAK_CLIENT_SECRET: cDKJYtIN0179FKX4NNkCdDzn6k0lVINp
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-pontoeletronico-dev}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:-}
+      KEYCLOAK_SERVICE_CLIENT_ID: ${KEYCLOAK_SERVICE_CLIENT_ID:-}
+      KEYCLOAK_SERVICE_CLIENT_SECRET: ${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
       JWT_SECRET: dev-secret
       GLPI_BASE_URL: http://glpi.local
       VIDEO_CONFERENCE_ENABLED: "false"
@@ -55,16 +62,17 @@ services:
       BACKUP_PG_DUMP_FORMAT: ${BACKUP_PG_DUMP_FORMAT:-plain}
       BACKUP_ARTIFACT_BASENAME: ${BACKUP_ARTIFACT_BASENAME:-backup_sst}
       # API de Ramais (nova integração — token carregado do .env da raiz)
-      SECTIONS_INTEGRATION_URL: ${SECTIONS_INTEGRATION_URL:-https://192.168.100.32:11010/api/sections/integration/users}
+      SECTIONS_INTEGRATION_URL: ${SECTIONS_INTEGRATION_URL:-https://192.168.161.50:11010/api/sections/integration/users}
       SECTIONS_INTEGRATION_TOKEN: ${SECTIONS_INTEGRATION_TOKEN:-}
-      # Credenciais opcionais da API Admin do Keycloak (lista grupos/usuários do AD).
-      # Deixe em branco para desabilitar — o sistema funciona normalmente sem elas.
-      # KEYCLOAK_ADMIN_USER: admin
-      # KEYCLOAK_ADMIN_PASSWORD: senha_aqui
+      # Credenciais da API Admin do Keycloak (lista usuários/grupos do AD para seed no banco).
+      KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER:-}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
     volumes:
       - ./:/app
       - node_modules_root:/app/node_modules
+      - backend_dist:/app/packages/backend/dist
       - uploads_fotos:/app/uploads
+      - ./deploy/keycloak:/app/deploy/keycloak:ro
     ports:
       - "12003:3000"
     depends_on:
@@ -98,9 +106,10 @@ services:
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
       VITE_BEHIND_PROXY: "true"
-      VITE_APP_BASE_URL: ${VITE_APP_BASE_URL:-https://ponto.cfo.local}
+      VITE_APP_BASE_URL: ${VITE_APP_BASE_URL:-https://ponto.cfo.org.br}
       VITE_API_TARGET: http://backend:3000
-      VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-https://sso.cfo.org.br}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:-http://192.168.100.112:8080}
+      VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-https://ponto.cfo.org.br/auth}
       VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-cfo}
       VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-pontoeletronico-dev}
       VITE_SUPER_ADMIN_USERNAMES: ${VITE_SUPER_ADMIN_USERNAMES:-elder.oliveira}
@@ -110,18 +119,7 @@ services:
     expose:
       - "12010"
     depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'node -e "require(''http'').get(''http://127.0.0.1:12010/'',r=>process.exit(r.statusCode&&r.statusCode<500?0:1)).on(''error'',()=>process.exit(1))"'
-        ]
-      interval: 15s
-      timeout: 10s
-      retries: 30
-      start_period: 600s
+      - backend
 
   nginx:
     image: nginx:1.27-alpine
@@ -129,9 +127,13 @@ services:
       - "12010:12010"
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/keycloak-locations.conf:/etc/nginx/keycloak-locations.conf:ro
       - ./deploy/nginx/certs:/etc/nginx/certs:ro
     depends_on:
-      - web
+      web:
+        condition: service_started
+      backend:
+        condition: service_healthy
     restart: unless-stopped
     command: >
       sh -c "
@@ -159,3 +161,4 @@ volumes:
   postgres_data:
   uploads_fotos:
   node_modules_root:
+  backend_dist:

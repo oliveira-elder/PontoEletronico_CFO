@@ -1,0 +1,44 @@
+{
+  "clients": {
+    "pontoeletronico-dev": {
+      "purpose": "Login SSO no navegador (SPA) — deve ser PUBLIC",
+      "accessType": "public",
+      "clientAuthentication": false,
+      "standardFlowEnabled": true,
+      "pkceCodeChallengeMethod": "S256",
+      "clientCredentialsGrant": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://192.168.161.50:12010/*",
+        "https://192.168.161.50/*",
+        "https://ponto.cfo.org.br/*",
+        "https://ponto.cfo.org.br:12010/*",
+        "https://ponto.cfo.local:12010/*",
+        "https://ponto.cfo.local/*"
+      ],
+      "webOrigins": [
+        "https://192.168.161.50:12010",
+        "https://192.168.161.50",
+        "https://ponto.cfo.org.br",
+        "https://ponto.cfo.org.br:12010",
+        "https://ponto.cfo.local:12010",
+        "https://ponto.cfo.local"
+      ]
+    },
+    "pontoeletronico-service": {
+      "purpose": "Backend — listar usuários/grupos do AD (service account)",
+      "accessType": "confidential",
+      "clientAuthentication": true,
+      "standardFlowEnabled": false,
+      "clientCredentialsGrant": true,
+      "serviceAccountsEnabled": true,
+      "serviceAccountRoles": [
+        "realm-management:view-realm",
+        "realm-management:view-users",
+        "realm-management:query-users",
+        "realm-management:query-groups",
+        "realm-management:manage-clients"
+      ]
+    }
+  }
+}

@@ -75,7 +75,8 @@ export class AuthService {
     };
   }
 
-  /* Sincroniza o usuário SSO com a base local e retorna o perfil completo. */
+  /* Sincroniza o usuário SSO com a base local no login (seed individual).
+     Cria User + Funcionario na primeira autenticação bem-sucedida. */
   async syncUser(ctx: AuthContext): Promise<UserProfile> {
     const email = ctx.email || `${ctx.username || ctx.sub.slice(0, 12)}@sso.local`;
     const name = ctx.name || ctx.username || ctx.sub.slice(0, 12);
