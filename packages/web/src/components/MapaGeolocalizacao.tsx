@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SistemaConfig } from "../hooks/usePontoRegistration";
+import { isSafariIOS, mensagemErroWatchSafari, opcoesWatchSafari } from "../utils/geolocation";
 import "leaflet/dist/leaflet.css";
 import type L from "leaflet";
 
@@ -159,6 +160,10 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
       return;
     }
 
+    const watchOpts = isSafariIOS()
+      ? opcoesWatchSafari()
+      : { enableHighAccuracy: true, maximumAge: 5_000, timeout: 20_000 };
+
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
@@ -209,12 +214,18 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
       },
       (err) => {
         setAguardando(false);
-        if (err.code === 1) setGpsErro("Permissão de localização negada.");
-        else if (err.code === 2) setGpsErro("Localização indisponível. Ative o GPS.");
-        else setGpsErro("Tempo limite ao obter localização.");
+        if (isSafariIOS()) {
+          setGpsErro(mensagemErroWatchSafari(err.code));
+        } else if (err.code === 1) {
+          setGpsErro("Permissão de localização negada.");
+        } else if (err.code === 2) {
+          setGpsErro("Localização indisponível. Ative o GPS.");
+        } else {
+          setGpsErro("Tempo limite ao obter localização.");
+        }
         onStatusChange?.("pendente");
       },
-      { enableHighAccuracy: true, maximumAge: 5_000, timeout: 20_000 }
+      watchOpts
     );
 
     return () => {

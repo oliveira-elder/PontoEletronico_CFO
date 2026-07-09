@@ -15,6 +15,12 @@ export class FeriadoConfigService {
     private readonly http: HttpService
   ) {}
 
+  async listarTodos() {
+    return this.prisma.feriadoConfig.findMany({
+      orderBy: { data: "asc" }
+    });
+  }
+
   async listarPorAno(ano: number) {
     const inicio = new Date(`${ano}-01-01T00:00:00.000Z`);
     const fim = new Date(`${ano}-12-31T23:59:59.999Z`);
@@ -153,9 +159,7 @@ export class FeriadoConfigService {
     return { ok: true };
   }
 
-  async isBloqueado(
-    data: Date
-  ): Promise<{
+  async isBloqueado(data: Date): Promise<{
     bloqueado: boolean;
     nome?: string;
     marcoHorario?: string | null;

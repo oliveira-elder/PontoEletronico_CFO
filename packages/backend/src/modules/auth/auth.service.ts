@@ -1,5 +1,6 @@
 import { Injectable, ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { isGerenciaRh, isGerenciaRhSlug } from "../../common/gerencia-rh.util";
 
 export interface AuthContext {
   sub: string;
@@ -73,6 +74,47 @@ export class AuthService {
       groups,
       isSuperAdmin
     };
+  }
+
+  /** Concede papéis derivados do cadastro local (gerência RH, gestor via API de ramais). */
+  async enrichRoles(ctx: AuthContext): Promise<AuthContext> {
+    if (ctx.isSuperAdmin) return ctx;
+
+    const user = await this.prisma.user.findUnique({
+      where: { externalId: ctx.sub },
+      select: {
+        funcionario: {
+          select: {
+            isManager: true,
+            section: true,
+            gerencia: { select: { nome: true, sigla: true } }
+          }
+        },
+        gerenciasGeridas: { select: { id: true }, take: 1 }
+      }
+    });
+
+    if (!user) return ctx;
+
+    const extraRoles = [...ctx.roles];
+
+    const gerencia = user.funcionario?.gerencia;
+    const section = user.funcionario?.section;
+    const isRh =
+      (gerencia && isGerenciaRh(gerencia)) || (section ? isGerenciaRhSlug(section) : false);
+    if (isRh && !extraRoles.includes("RH_AUDITORIA")) {
+      extraRoles.push("RH_AUDITORIA");
+    }
+
+    const isGestorRamais = user.funcionario?.isManager === true || user.gerenciasGeridas.length > 0;
+    if (isGestorRamais) {
+      if (!extraRoles.includes("GESTOR_APROVACAO")) extraRoles.push("GESTOR_APROVACAO");
+      if (!extraRoles.includes("gestor")) extraRoles.push("gestor");
+    }
+
+    if (extraRoles.length === ctx.roles.length) return ctx;
+
+    return { ...ctx, roles: Array.from(new Set(extraRoles)) };
   }
 
   /* Sincroniza o usuário SSO com a base local no login (seed individual).
@@ -174,6 +216,8 @@ export class AuthService {
         .catch(() => null);
     }
 
+    const enriched = await this.enrichRoles(ctx);
+
     return {
       id: user.id,
       sub: ctx.sub,
@@ -181,8 +225,8 @@ export class AuthService {
       name: user.name,
       email: user.email,
       emailReal: user.emailReal ?? null,
-      roles: ctx.roles,
-      groups: ctx.groups,
+      roles: enriched.roles,
+      groups: enriched.groups,
       isSuperAdmin: ctx.isSuperAdmin,
       funcionario: funcionario ?? null
     };

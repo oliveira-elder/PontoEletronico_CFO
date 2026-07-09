@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../auth/AuthContext";
+import { isSafariIOS, mensagemErroGpsSafari, obterPosicaoAtual } from "../utils/geolocation";
 import { api } from "./useApi";
 
 export type TipoRegistro =
@@ -80,21 +81,6 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-async function getCurrentPosition(): Promise<GeolocationPosition | null> {
-  if (!navigator.geolocation) return null;
-  return new Promise((resolve) =>
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve(p),
-      () => resolve(null),
-      {
-        enableHighAccuracy: true,
-        timeout: 15_000,
-        maximumAge: 0 // sempre leitura nova — evita cache de localização anterior
-      }
-    )
-  );
-}
-
 async function getPublicIP(): Promise<string> {
   try {
     const r = await fetch("https://api.ipify.org?format=json", {
@@ -149,10 +135,17 @@ export function usePontoRegistration() {
         modo === "VIAGEM";
 
       if (needGeo) {
-        const pos = await getCurrentPosition();
+        const geoResult = await obterPosicaoAtual();
+        const pos = geoResult.position;
 
         if (!pos) {
-          if (temModoRemoto) {
+          if (isSafariIOS()) {
+            if (temModoRemoto) {
+              setErro(mensagemErroGpsSafari(geoResult.errorCode, { remoto: true }));
+            } else if (modo === "MOBILE" && cfg.mobileCheckGeo) {
+              setErro(mensagemErroGpsSafari(geoResult.errorCode));
+            }
+          } else if (temModoRemoto) {
             setErro(
               "GPS não disponível. Para registrar o ponto remoto, o navegador precisa de acesso à localização.\n\n" +
                 "Como ativar:\n" +

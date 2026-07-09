@@ -3,6 +3,13 @@ import { Cron } from "@nestjs/schedule";
 import * as nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
 import { PrismaService } from "../../prisma/prisma.service";
+import { isGerenciaRh } from "../../common/gerencia-rh.util";
+
+export interface DestinatarioNotificacao {
+  externalId: string | null;
+  email: string | null;
+  emailReal?: string | null;
+}
 
 export interface EmailConfigDto {
   provedor: "LOCAWEB" | "MICROSOFT";
@@ -18,8 +25,8 @@ export interface EmailConfigDto {
 }
 
 export interface NotificacaoConfigDto {
-  ativoEmail: boolean;
-  ativoSistema: boolean;
+  ativoEmail?: boolean;
+  ativoSistema?: boolean;
 }
 
 export interface EnviarManualDto {
@@ -94,6 +101,76 @@ export const EVENTOS_NOTIFICACAO = [
       "de assinatura foi concluído.",
     destinatario: "Funcionário",
     gatilho: "Automático — ao gestor concluir a assinatura"
+  },
+  {
+    id: "SOLICITACAO_NOVA_GESTOR",
+    titulo: "Nova Solicitação — Aviso ao Gestor",
+    descricao:
+      "Notifica o gestor quando um funcionário da sua equipe abre uma nova solicitação " +
+      "(férias, atestado, licença, correção de ponto etc.).",
+    destinatario: "Gestor",
+    gatilho: "Automático — ao funcionário criar solicitação"
+  },
+  {
+    id: "SOLICITACAO_AGUARDANDO_RH",
+    titulo: "Solicitação Aguardando RH",
+    descricao:
+      "Notifica a equipe de RH quando o gestor aprova uma solicitação e ela passa " +
+      "para análise do RH.",
+    destinatario: "RH",
+    gatilho: "Automático — ao gestor encaminhar para o RH"
+  },
+  {
+    id: "RH_DOCUMENTO_ENVIADO",
+    titulo: "Documento Enviado pelo RH",
+    descricao:
+      "Notifica o funcionário quando o RH envia a guia médica ou a folha de pagamento " +
+      "de férias para assinatura.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH enviar guia ou folha de férias"
+  },
+  {
+    id: "DOCUMENTO_RETORNO_PENDENTE",
+    titulo: "Documento de Retorno Pendente",
+    descricao:
+      "Notifica o funcionário quando é necessário enviar o documento de retorno " +
+      "(atestado assinado, folha de férias assinada etc.).",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao solicitar documento de retorno"
+  },
+  {
+    id: "REGISTRO_PONTO",
+    titulo: "Registro de Ponto",
+    descricao:
+      "Notifica o gestor quando um funcionário da equipe registra entrada ou saída " +
+      "no ponto eletrônico.",
+    destinatario: "Gestor",
+    gatilho: "Automático — ao registrar entrada ou saída"
+  },
+  {
+    id: "AFASTAMENTO_REGISTRADO",
+    titulo: "Afastamento Registrado",
+    descricao:
+      "Notifica o funcionário quando um afastamento (férias, atestado, licença, abono) " +
+      "é registrado após aprovação da solicitação.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao aprovar solicitação com afastamento"
+  },
+  {
+    id: "PERIODO_FECHADO",
+    titulo: "Período de Ponto Fechado",
+    descricao: "Notifica o funcionário quando o período mensal de ponto é fechado pelo RH.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao fechar período"
+  },
+  {
+    id: "REQUISICAO_RH",
+    titulo: "Requisição do RH",
+    descricao:
+      "Notifica o funcionário quando o RH cria uma requisição dirigida a ele " +
+      "(periódico, exame médico, férias, assinatura de documentos etc.).",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH criar requisição"
   }
 ];
 
@@ -211,10 +288,21 @@ export class NotificacaoService {
     if (!EVENTOS_NOTIFICACAO.some((e) => e.id === id)) {
       throw new BadRequestException(`Evento de notificação desconhecido: ${id}`);
     }
+    if (dto.ativoEmail === undefined && dto.ativoSistema === undefined) {
+      throw new BadRequestException("Informe ao menos um canal para atualizar.");
+    }
+
+    const existente = await this.prisma.configuracaoNotificacao.findUnique({ where: { id } });
+    const ativoEmail = dto.ativoEmail ?? existente?.ativoEmail ?? false;
+    const ativoSistema = dto.ativoSistema ?? existente?.ativoSistema ?? false;
+
     await this.prisma.configuracaoNotificacao.upsert({
       where: { id },
-      create: { id, ativoEmail: dto.ativoEmail, ativoSistema: dto.ativoSistema },
-      update: { ativoEmail: dto.ativoEmail, ativoSistema: dto.ativoSistema }
+      create: { id, ativoEmail, ativoSistema },
+      update: {
+        ...(dto.ativoEmail !== undefined ? { ativoEmail: dto.ativoEmail } : {}),
+        ...(dto.ativoSistema !== undefined ? { ativoSistema: dto.ativoSistema } : {})
+      }
     });
     return { ok: true };
   }
@@ -382,6 +470,118 @@ export class NotificacaoService {
       where: { id: eventoId }
     });
     return evento?.ativoSistema ?? false;
+  }
+
+  /** Dispara e-mail e/ou notificação no sistema para uma lista de destinatários */
+  async dispararEvento(
+    eventoId: string,
+    titulo: string,
+    corpo: string,
+    destinatarios: DestinatarioNotificacao[]
+  ): Promise<void> {
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.isEmailAtivoParaEvento(eventoId),
+      this.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const unicos = new Map<string, DestinatarioNotificacao>();
+    for (const dest of destinatarios) {
+      const chave = dest.externalId ?? dest.emailReal ?? dest.email ?? "";
+      if (!chave || unicos.has(chave)) continue;
+      unicos.set(chave, dest);
+    }
+
+    for (const dest of unicos.values()) {
+      const email = dest.emailReal ?? dest.email;
+      if (emailAtivo && email) {
+        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
+          this.logger.error(`Falha ${eventoId} email para ${email}: ${e}`)
+        );
+      }
+      if (sistemaAtivo && dest.externalId) {
+        await this.criarNotificacaoParaUsuario(dest.externalId, titulo, corpo, eventoId).catch(
+          (e) => this.logger.error(`Falha ${eventoId} sistema para ${dest.externalId}: ${e}`)
+        );
+      }
+    }
+  }
+
+  async getGestorDoFuncionario(funcionarioId: string): Promise<DestinatarioNotificacao | null> {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        section: true,
+        gerencia: { select: { responsavelUserId: true } }
+      }
+    });
+    if (!func) return null;
+
+    if (func.gerencia?.responsavelUserId) {
+      const gestor = await this.prisma.user.findUnique({
+        where: { id: func.gerencia.responsavelUserId },
+        select: { externalId: true, email: true, emailReal: true }
+      });
+      if (gestor) return gestor;
+    }
+
+    // Fallback: gerente da mesma seção (hierarquia da API de ramais)
+    if (func.section) {
+      const gestorFunc = await this.prisma.funcionario.findFirst({
+        where: { section: func.section, isManager: true, ativo: true },
+        select: { user: { select: { externalId: true, email: true, emailReal: true } } },
+        orderBy: { createdAt: "asc" }
+      });
+      if (gestorFunc?.user) return gestorFunc.user;
+    }
+
+    return null;
+  }
+
+  async getFuncionarioDestinatario(funcionarioId: string): Promise<DestinatarioNotificacao | null> {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { user: { select: { externalId: true, email: true, emailReal: true } } }
+    });
+    return func?.user ?? null;
+  }
+
+  async getUsuariosRh(): Promise<DestinatarioNotificacao[]> {
+    const gerencias = await this.prisma.gerencia.findMany({
+      select: { id: true, nome: true, sigla: true }
+    });
+    const rhIds = gerencias.filter((g) => isGerenciaRh(g)).map((g) => g.id);
+    if (!rhIds.length) return [];
+
+    const funcs = await this.prisma.funcionario.findMany({
+      where: { ativo: true, gerenciaId: { in: rhIds } },
+      select: { user: { select: { externalId: true, email: true, emailReal: true } } }
+    });
+
+    return funcs
+      .map((f) => f.user)
+      .filter((u) => u != null)
+      .map((u) => ({
+        externalId: u.externalId,
+        email: u.email ?? null,
+        emailReal: u.emailReal
+      }));
+  }
+
+  async getDestinatariosFuncionarios(funcionarioIds: string[]): Promise<DestinatarioNotificacao[]> {
+    if (!funcionarioIds.length) return [];
+    const funcs = await this.prisma.funcionario.findMany({
+      where: { id: { in: funcionarioIds } },
+      select: { user: { select: { externalId: true, email: true, emailReal: true } } }
+    });
+    return funcs
+      .map((f) => f.user)
+      .filter((u) => u != null)
+      .map((u) => ({
+        externalId: u.externalId,
+        email: u.email ?? null,
+        emailReal: u.emailReal
+      }));
   }
 
   /** Envia e-mail de sistema para um endereço, se configurado */

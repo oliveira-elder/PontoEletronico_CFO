@@ -86,7 +86,7 @@ export class BackupService {
   getMonitorPollingConfig() {
     const systemKey = process.env.API_PUBLICA_SYSTEM_KEY ?? "ponto-eletronico-cfo";
     const apiBaseUrl = (
-      process.env.PUBLIC_API_BASE_URL ?? "https://192.168.100.30:12003/api"
+      process.env.PUBLIC_API_BASE_URL ?? "http://192.168.161.50:12003/api"
     ).replace(/\/$/, "");
     const agentKeyConfigured = Boolean(process.env.BACKUP_AGENT_SHARED_KEY?.trim());
     const pgDumpFormat = process.env.BACKUP_PG_DUMP_FORMAT ?? "plain";

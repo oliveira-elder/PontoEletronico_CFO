@@ -17,6 +17,9 @@ const httpsConfig =
 /* Com nginx na frente (Docker), o TLS termina no proxy e o Vite fica em HTTP. */
 const behindProxy = process.env.VITE_BEHIND_PROXY === "true";
 
+const publicBaseUrl = process.env.VITE_APP_BASE_URL?.replace(/\/$/, "") ?? "";
+const publicHost = publicBaseUrl.replace(/^https?:\/\//, "");
+
 const KEYCLOAK_UPSTREAM =
   process.env.KEYCLOAK_URL?.replace(/\/$/, "") ?? "http://192.168.100.112:8080";
 
@@ -38,6 +41,14 @@ export default defineConfig({
     strictPort: true,
     https: behindProxy ? false : httpsConfig,
     allowedHosts: behindProxy ? true : ["ponto.cfo.local", "localhost", ".cfo.local"],
+    hmr:
+      behindProxy && publicHost
+        ? {
+            protocol: "wss",
+            host: publicHost,
+            clientPort: publicHost.includes(":") ? Number(publicHost.split(":")[1]) : 443
+          }
+        : undefined,
     proxy: {
       "/api": {
         target: process.env.VITE_API_TARGET ?? "http://backend:3000",

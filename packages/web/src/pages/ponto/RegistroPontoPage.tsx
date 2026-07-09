@@ -13,6 +13,7 @@ import {
 import { CameraModal } from "../../components/CameraModal";
 import { CameraPermissionGuide, useCameraPermission } from "../../components/CameraPermissionGuide";
 import { MapaGeolocalizacao } from "../../components/MapaGeolocalizacao";
+import { SafariGeoAtivacao } from "../../components/SafariGeoAtivacao";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -1389,6 +1390,11 @@ export function RegistroPontoPage() {
         >
           {/* Validações — mesmo componente em mobile e desktop */}
           <ValidacoesPanel items={validacoes} />
+
+          {/* Pré-ativação de GPS — somente Safari iOS */}
+          {isMobile && checkGeo && geoloc && !cameraAberta && !guiaAberto && (
+            <SafariGeoAtivacao ativo={true} onPronto={() => setGeoStatus("pendente")} />
+          )}
 
           {/* Mapa de geolocalização — somente mobile, quando geo está ativo e câmera/guia fechados */}
           {isMobile && checkGeo && geoloc && !cameraAberta && !guiaAberto && (

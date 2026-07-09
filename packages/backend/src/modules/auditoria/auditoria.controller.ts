@@ -4,11 +4,13 @@ import {
   Post,
   Put,
   Patch,
+  Delete,
   Param,
   Query,
   Body,
   UseGuards,
-  Request
+  Request,
+  ForbiddenException
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
@@ -28,8 +30,13 @@ export class AuditoriaController {
   /* ─── Dashboard ─── */
 
   @Get("dashboard")
-  getDashboard() {
-    return this.auditoriaService.getDashboard();
+  getDashboard(@Query("dataInicio") dataInicio?: string, @Query("dataFim") dataFim?: string) {
+    return this.auditoriaService.getDashboard({ dataInicio, dataFim });
+  }
+
+  @Get("dashboard/registros-hora")
+  getRegistrosPorHora(@Query("data") data?: string) {
+    return this.auditoriaService.getRegistrosPorHora(data);
   }
 
   /* ─── Funcionários ─── */
@@ -40,14 +47,20 @@ export class AuditoriaController {
     @Query("gerenciaId") gerenciaId?: string,
     @Query("ativo") ativo?: string,
     @Query("mes") mes?: string,
-    @Query("ano") ano?: string
+    @Query("ano") ano?: string,
+    @Query("dataInicio") dataInicio?: string,
+    @Query("dataFim") dataFim?: string,
+    @Query("statusPonto") statusPonto?: string
   ) {
     return this.auditoriaService.getFuncionarios({
       busca,
       gerenciaId,
       ativo: ativo !== undefined ? ativo === "true" : undefined,
       mes: mes ? parseInt(mes) : undefined,
-      ano: ano ? parseInt(ano) : undefined
+      ano: ano ? parseInt(ano) : undefined,
+      dataInicio,
+      dataFim,
+      statusPonto: statusPonto === "presente" || statusPonto === "ausente" ? statusPonto : undefined
     });
   }
 
@@ -92,6 +105,18 @@ export class AuditoriaController {
   @Get("funcionarios/:id/documentos-rh")
   getDocumentosRhFuncionario(@Param("id") id: string) {
     return this.auditoriaService.getDocumentosRhFuncionario(id);
+  }
+
+  @Delete("funcionarios/:funcionarioId/documentos-rh/:documentoId")
+  excluirDocumentoRhFuncionario(
+    @Param("funcionarioId") funcionarioId: string,
+    @Param("documentoId") documentoId: string,
+    @Request() req: AuthRequest
+  ) {
+    if (!req.user?.isSuperAdmin) {
+      throw new ForbiddenException("Acesso restrito a Super Admin.");
+    }
+    return this.auditoriaService.excluirDocumentoRhFuncionario(funcionarioId, documentoId);
   }
 
   /* ─── Registros ─── */

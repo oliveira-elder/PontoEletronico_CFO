@@ -25,13 +25,33 @@ interface FeriadoPreview {
   schemaVersion: string;
   geradoEm: string;
   totalFeriados: number;
+  anosDisponiveis?: number[];
   feriados: { id: string; data: string; nome: string; tipo: string; bloqueiaRegistro: boolean }[];
 }
 
-const API_HOST = "http://192.168.100.30:12003";
-const ENDPOINT_BASE = `${API_HOST}/api/api-publica/v1`;
+interface ApiServidoraConfig {
+  apiHost: string;
+  endpointBase: string;
+  endpoints: {
+    feriados: string;
+    configuracoes: string;
+  };
+  feriadoSyncMode: "automatic";
+}
+
+const DEFAULT_API_HOST = "http://192.168.161.50:12003";
+const DEFAULT_ENDPOINT_BASE = `${DEFAULT_API_HOST}/api/api-publica/v1`;
 
 export function LogsApiServidoraTab() {
+  const [apiConfig, setApiConfig] = useState<ApiServidoraConfig>({
+    apiHost: DEFAULT_API_HOST,
+    endpointBase: DEFAULT_ENDPOINT_BASE,
+    endpoints: {
+      feriados: `${DEFAULT_ENDPOINT_BASE}/feriados`,
+      configuracoes: `${DEFAULT_ENDPOINT_BASE}/configuracoes`
+    },
+    feriadoSyncMode: "automatic"
+  });
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [loading, setLoading] = useState(false);
   const [newToken, setNewToken] = useState<{ token: string; name: string } | null>(null);
@@ -53,32 +73,32 @@ export function LogsApiServidoraTab() {
     }
   }, []);
 
+  const loadApiConfig = useCallback(async () => {
+    try {
+      const cfg = await api.get<ApiServidoraConfig>("/logs/api-servidora/config");
+      if (cfg?.endpointBase && cfg?.endpoints) {
+        setApiConfig(cfg);
+      }
+    } catch {
+      /* mantém fallback local */
+    }
+  }, []);
+
   const loadPreview = useCallback(async () => {
     setLoadingPreview(true);
     try {
-      // /ponto/config/feriados retorna array direto de feriados
-      type FeriadoRaw = {
-        id: string;
-        data: string;
-        nome: string;
-        tipo: string;
-        bloqueiaRegistro: boolean;
-        observacao?: string | null;
-      };
-      const raw = await api.get<FeriadoRaw[]>("/ponto/config/feriados");
-      const list = Array.isArray(raw) ? raw : [];
-      setPreview({
-        schemaVersion: "v1",
-        geradoEm: new Date().toISOString(),
-        totalFeriados: list.length,
-        feriados: list.map((f) => ({
-          id: f.id,
-          data: typeof f.data === "string" ? f.data.slice(0, 10) : String(f.data).slice(0, 10),
-          nome: f.nome,
-          tipo: f.tipo,
-          bloqueiaRegistro: f.bloqueiaRegistro
-        }))
-      });
+      const data = await api.get<FeriadoPreview>("/logs/api-servidora/feriados-preview");
+      if (data?.feriados) {
+        setPreview({
+          ...data,
+          feriados: data.feriados.map((f) => ({
+            ...f,
+            data: typeof f.data === "string" ? f.data.slice(0, 10) : String(f.data).slice(0, 10)
+          }))
+        });
+      } else {
+        setPreview(null);
+      }
     } catch {
       setPreview(null);
     } finally {
@@ -87,9 +107,10 @@ export function LogsApiServidoraTab() {
   }, []);
 
   useEffect(() => {
+    void loadApiConfig();
     void loadTokens();
     void loadPreview();
-  }, [loadTokens, loadPreview]);
+  }, [loadApiConfig, loadTokens, loadPreview]);
 
   async function createToken() {
     if (!form.name.trim()) return;
@@ -142,19 +163,20 @@ export function LogsApiServidoraTab() {
         <p style={{ margin: "0 0 14px", color: "#475569", fontSize: 13, lineHeight: 1.6 }}>
           Sistemas externos consultam dados deste sistema via HTTP GET autenticado por{" "}
           <strong>Bearer token</strong>. Os dados refletem automaticamente as configurações atuais
-          do sistema.
+          do sistema. Alterações manuais no calendário de feriados são publicadas automaticamente na
+          API pública.
         </p>
 
         {/* Endpoints */}
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
           <EndpointDoc
             method="GET"
-            url={`${ENDPOINT_BASE}/feriados`}
-            desc="Calendário completo de feriados (NACIONAL, DISTRITAL, FACULTATIVO, MANUAL)"
+            url={apiConfig.endpoints.feriados}
+            desc="Calendário completo de feriados de todos os anos configurados (NACIONAL, DISTRITAL, FACULTATIVO, MANUAL)"
           />
           <EndpointDoc
             method="GET"
-            url={`${ENDPOINT_BASE}/configuracoes`}
+            url={apiConfig.endpoints.configuracoes}
             desc="Configurações do sistema + calendário de feriados compilado"
           />
         </div>
@@ -176,6 +198,20 @@ export function LogsApiServidoraTab() {
                 }}
               >
                 Authorization: Bearer &lt;token&gt;
+              </code>
+            </div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontWeight: 700, color: "#64748b", minWidth: 100 }}>Servidor:</span>
+              <code
+                style={{
+                  background: "#f1f5f9",
+                  borderRadius: 4,
+                  padding: "3px 8px",
+                  color: "#4338ca",
+                  fontSize: 12
+                }}
+              >
+                {apiConfig.apiHost}
               </code>
             </div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -553,12 +589,12 @@ export function LogsApiServidoraTab() {
             overflowX: "auto"
           }}
         >
-          {`GET ${ENDPOINT_BASE}/feriados
+          {`GET ${apiConfig.endpoints.feriados}
 Authorization: Bearer <seu-token>
 
 ---
 
-GET ${ENDPOINT_BASE}/configuracoes
+GET ${apiConfig.endpoints.configuracoes}
 Authorization: Bearer <seu-token>`}
         </pre>
         <div
@@ -610,8 +646,14 @@ Authorization: Bearer <seu-token>`}
         ) : preview ? (
           <>
             <div style={{ marginBottom: 10, fontSize: 12, color: "#475569" }}>
-              <strong>{preview.totalFeriados}</strong> feriados · gerado em{" "}
-              {formatDateTimeBrasilia(preview.geradoEm)}
+              <strong>{preview.totalFeriados}</strong> feriados
+              {preview.anosDisponiveis && preview.anosDisponiveis.length > 0 && (
+                <>
+                  {" "}
+                  · anos: <strong>{preview.anosDisponiveis.join(", ")}</strong>
+                </>
+              )}{" "}
+              · gerado em {formatDateTimeBrasilia(preview.geradoEm)}
             </div>
             <div
               style={{

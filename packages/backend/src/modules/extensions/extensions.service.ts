@@ -5,6 +5,12 @@ import https from "https";
 import { firstValueFrom } from "rxjs";
 import { PrismaService } from "../../prisma/prisma.service";
 import { ExtensionsConfigService } from "./extensions-config.service";
+import {
+  GERENCIA_RH_NOME_CURTO,
+  GERENCIA_RH_SIGLA_PADRAO,
+  GERENCIA_RH_SIGLAS,
+  isGerenciaRhSlug
+} from "../../common/gerencia-rh.util";
 
 /* ─── Tipos da nova API ─── */
 interface ApiUser {
@@ -33,7 +39,7 @@ interface ApiSection {
 
 /* Converte slug kebab-case → nome de exibição capitalizado.
    Siglas conhecidas ficam em maiúsculas; demais palavras são capitalizadas. */
-const SIGLAS = new Set(["ti", "rh", "cfo", "cpd", "gerti", "tj", "tcu"]);
+const SIGLAS = new Set(["ti", "rh", "serhum", "cfo", "cpd", "gerti", "tj", "tcu"]);
 
 function slugParaNome(slug: string): string {
   return slug
@@ -172,38 +178,30 @@ export class ExtensionsService {
 
     for (const section of sections) {
       const todosUsuarios = this.coletarUsuariosSecao(section);
-      if (todosUsuarios.length === 0) continue;
+      if (todosUsuarios.length === 0 && section.managers.length === 0) continue;
 
       try {
         totalUsers += todosUsuarios.length;
 
         /* ── Upsert da Gerência ── */
-        const nomeDisplay = slugParaNome(section.name);
-        const sigla = slugParaSigla(section.name);
-
-        let gerencia = await this.prisma.gerencia.findFirst({
-          where: { OR: [{ nome: nomeDisplay }, { sigla }] }
-        });
-
-        if (!gerencia) {
-          gerencia = await this.prisma.gerencia.create({
-            data: { nome: nomeDisplay, sigla, responsavel: "", ativa: true }
-          });
-        }
+        const gerencia = await this.resolveGerenciaForSection(section);
 
         /* ── Gestor da seção ── */
         const manager = section.managers[0] ?? null;
         if (manager) {
+          const responsavelMatricula =
+            manager.staffId != null && Number.isFinite(manager.staffId)
+              ? String(manager.staffId)
+              : null;
           const userGerente = await this.resolveUser(manager.email);
-          if (userGerente) {
-            await this.prisma.gerencia.update({
-              where: { id: gerencia.id },
-              data: {
-                responsavel: manager.name,
-                responsavelUserId: userGerente.id
-              }
-            });
-          }
+          await this.prisma.gerencia.update({
+            where: { id: gerencia.id },
+            data: {
+              responsavel: manager.name,
+              responsavelMatricula,
+              ...(userGerente ? { responsavelUserId: userGerente.id } : {})
+            }
+          });
         }
 
         /* ── Usuários diretos da seção ── */
@@ -229,6 +227,25 @@ export class ExtensionsService {
             } else errors++;
           }
         }
+
+        /* ── Gestores que não aparecem em users/subsections ── */
+        const emailsSincronizados = new Set(
+          [
+            ...section.users.map((u) => u.email),
+            ...section.subsections.flatMap((s) => s.users.map((u) => u.email))
+          ].filter(Boolean)
+        );
+        for (const m of section.managers) {
+          if (emailsSincronizados.has(m.email)) continue;
+          totalUsers++;
+          const r = await this.syncUser(m, gerencia.id, section.name, null, section.managers);
+          if (r === "created") created++;
+          else if (r === "updated") updated++;
+          else if (r === "skipped") {
+            skipped++;
+            notMapped.push(m.email);
+          } else errors++;
+        }
       } catch (err) {
         this.logger.error(`Erro ao processar seção "${section.name}":`, err);
         errors++;
@@ -252,6 +269,43 @@ export class ExtensionsService {
         `${created} criados, ${updated} atualizados, ${skipped} ignorados, ${errors} erros.`
     );
     return { total: totalUsers, created, updated, skipped, errors };
+  }
+
+  /** Mapeia seções RH da API para a gerência canônica "Recursos Humanos". */
+  private async resolveGerenciaForSection(section: ApiSection) {
+    if (isGerenciaRhSlug(section.name)) {
+      const existente = await this.prisma.gerencia.findFirst({
+        where: {
+          OR: [
+            { nome: { equals: GERENCIA_RH_NOME_CURTO, mode: "insensitive" } },
+            { nome: { contains: "recursos humanos", mode: "insensitive" } },
+            { sigla: { in: [...GERENCIA_RH_SIGLAS] } }
+          ]
+        }
+      });
+      if (existente) return existente;
+
+      return this.prisma.gerencia.create({
+        data: {
+          nome: GERENCIA_RH_NOME_CURTO,
+          sigla: GERENCIA_RH_SIGLA_PADRAO,
+          responsavel: "",
+          ativa: true
+        }
+      });
+    }
+
+    const nomeDisplay = slugParaNome(section.name);
+    const sigla = slugParaSigla(section.name);
+
+    const gerencia = await this.prisma.gerencia.findFirst({
+      where: { OR: [{ nome: nomeDisplay }, { sigla }] }
+    });
+    if (gerencia) return gerencia;
+
+    return this.prisma.gerencia.create({
+      data: { nome: nomeDisplay, sigla, responsavel: "", ativa: true }
+    });
   }
 
   /** Sincroniza um único usuário da API com o banco. */
@@ -308,14 +362,19 @@ export class ExtensionsService {
       /* Atualização: apenas Gerência e Subseção têm prioridade da API.
          Se a API indica gerente, promove automaticamente para GERENTE.
          Nunca rebaixa categoria automaticamente (preserva edições manuais). */
+      const matricula = u.staffId != null ? String(u.staffId) : existente.matricula;
       await this.prisma.funcionario.update({
         where: { id: existente.id },
         data: {
+          matricula,
           gerenciaId,
           section: sectionSlug,
           subsecao: subsecaoSlug ?? null,
           isManager,
           extensionsId: u.id,
+          ramal: u.extension || null,
+          sala: u.room || null,
+          andar: u.floor || null,
           ...(isManager ? { categoria: "GERENTE" } : {})
         }
       });

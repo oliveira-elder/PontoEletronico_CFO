@@ -359,14 +359,13 @@ export function GestaoPage() {
         if (s?.hibridoMaxDiasSemana) setHibridoMaxDias(s.hibridoMaxDiasSemana);
       })
       .catch(() => {});
-    Promise.all([
-      api.get<Funcionario[]>("/ponto/gestao/funcionarios"),
-      api.get<(Gerencia & { _count: { funcionarios: number } })[]>("/ponto/gestao/gerencias")
-    ])
-      .then(([funcs, gers]) => {
-        setFuncionarios(funcs ?? []);
-        setGerencias(gers ?? []);
-      })
+    api
+      .get<Funcionario[]>("/ponto/gestao/funcionarios")
+      .then((funcs) => setFuncionarios(funcs ?? []))
+      .catch(() => {});
+    api
+      .get<(Gerencia & { _count: { funcionarios: number } })[]>("/ponto/gestao/gerencias")
+      .then((gers) => setGerencias(gers ?? []))
       .catch(() => {});
   }, []);
 
@@ -560,7 +559,10 @@ export function GestaoPage() {
     }
   }
 
-  const nomeGerencia = (id: string) => gerencias.find((g) => g.id === id)?.nome ?? "—";
+  const nomeGerencia = (
+    id: string | null | undefined,
+    gerencia?: { nome?: string | null } | null
+  ) => gerencia?.nome ?? (id ? gerencias.find((g) => g.id === id)?.nome : undefined) ?? "—";
 
   const total = funcionarios.length;
   const estagiarios = funcionarios.filter((f) => f.categoria === "ESTAGIARIO").length;
@@ -635,6 +637,10 @@ export function GestaoPage() {
             void api
               .get<Funcionario[]>("/ponto/gestao/funcionarios")
               .then((funcs) => setFuncionarios(funcs ?? []))
+              .catch(() => {});
+            void api
+              .get<(Gerencia & { _count: { funcionarios: number } })[]>("/ponto/gestao/gerencias")
+              .then((gers) => setGerencias(gers ?? []))
               .catch(() => {});
           }}
         />
@@ -910,7 +916,7 @@ export function GestaoPage() {
                     {/* Gerência / Subseção */}
                     <td style={{ padding: "12px 16px" }}>
                       <span style={{ fontSize: 13, color: "var(--ink-700)", fontWeight: 500 }}>
-                        {nomeGerencia(f.gerenciaId)}
+                        {nomeGerencia(f.gerenciaId, f.gerencia)}
                         {f.subsecao && (
                           <span style={{ color: "var(--ink-400)", fontWeight: 400 }}>
                             {" / "}

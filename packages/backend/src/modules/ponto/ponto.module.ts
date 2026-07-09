@@ -12,9 +12,11 @@ import { FeriadosService } from "./feriados.service";
 import { FeriadoConfigService } from "./feriado-config.service";
 import { ConfigSolicitacoesService } from "./config-solicitacoes.service";
 import { PrismaModule } from "../../prisma/prisma.module";
+import { ApiServidoraModule } from "../api-servidora/api-servidora.module";
+import { NotificacaoModule } from "../notificacao/notificacao.module";
 
 @Module({
-  imports: [PrismaModule, HttpModule],
+  imports: [PrismaModule, HttpModule, ApiServidoraModule, NotificacaoModule],
   controllers: [PontoController, ConfigController, GestaoController],
   providers: [
     PontoService,

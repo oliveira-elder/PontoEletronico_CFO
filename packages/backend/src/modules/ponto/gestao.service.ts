@@ -34,15 +34,21 @@ export class GestaoService {
 
   async setResponsavelGerencia(id: string, responsavelUserId: string | null) {
     let responsavelNome: string | undefined;
+    let responsavelMatricula: string | null | undefined;
     if (responsavelUserId) {
-      const user = await this.prisma.user.findUnique({ where: { id: responsavelUserId } });
+      const user = await this.prisma.user.findUnique({
+        where: { id: responsavelUserId },
+        include: { funcionario: { select: { matricula: true } } }
+      });
       if (!user) throw new NotFoundException("Usuário responsável não encontrado.");
       responsavelNome = user.name;
+      responsavelMatricula = user.funcionario?.matricula ?? null;
     }
     return this.prisma.gerencia.update({
       where: { id },
       data: {
         responsavelUserId,
+        responsavelMatricula,
         ...(responsavelNome ? { responsavel: responsavelNome } : {})
       },
       include: {

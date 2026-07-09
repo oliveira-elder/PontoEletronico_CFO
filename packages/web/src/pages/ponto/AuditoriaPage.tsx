@@ -1,4 +1,16 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend
+} from "recharts";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -20,7 +32,8 @@ import {
   Edit2Icon,
   FileTextIcon,
   DatabaseIcon,
-  InfoIcon
+  InfoIcon,
+  Trash2Icon
 } from "../../components/icons";
 import {
   FeriasDetalheBlock,
@@ -32,6 +45,14 @@ import {
 /* ═══════════════════════════════════════════════
    TIPOS
 ═══════════════════════════════════════════════ */
+
+interface RankingItem {
+  funcionarioId: string;
+  nome: string;
+  matricula: string;
+  minutos: number;
+  minutosFormatado: string;
+}
 
 interface Dashboard {
   totalFuncionarios: number;
@@ -45,6 +66,12 @@ interface Dashboard {
   periodosFechados: number;
   periodosAprovados: number;
   registrosPorDia: { data: string; entradas: number }[];
+  registrosPorTempo?: { data: string; total: number }[];
+  topAtrasados?: RankingItem[];
+  topAdiantados?: RankingItem[];
+  topBancoNegativo?: RankingItem[];
+  topBancoPositivo?: RankingItem[];
+  filtro?: { dataInicio: string; dataFim: string };
   ultimosLogs: AuditLog[];
   origens: { origem: string; total: number }[];
   usoCanal: {
@@ -74,6 +101,7 @@ interface Funcionario {
   ramal?: string | null;
   sala?: string | null;
   andar?: string | null;
+  statusPonto?: "presente" | "ausente";
   user: { name: string; email: string };
   gerencia: { nome: string; sigla: string } | null;
   totalRegistros: number;
@@ -95,6 +123,38 @@ function slugLabel(slug: string): string {
     .split("-")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
+}
+
+/** Área organizacional do profissional (subseção), com fallback amigável. */
+function areaProfissional(f: {
+  subsecao?: string | null;
+  cargo?: string | null;
+  departamento?: string | null;
+}): string {
+  if (f.subsecao) return slugLabel(f.subsecao);
+  if (f.departamento?.trim()) return f.departamento.trim();
+  const cargo = f.cargo?.trim();
+  if (cargo && cargo.toLowerCase() !== "a definir") return cargo;
+  return "—";
+}
+
+/** Status do ponto (hoje, Brasília) — usa API ou deriva de ultimoRegistro. */
+function statusPontoFuncionario(f: Funcionario): "presente" | "ausente" {
+  if (f.statusPonto === "presente" || f.statusPonto === "ausente") return f.statusPonto;
+  const u = f.ultimoRegistro;
+  if (!u?.dataHora) return "ausente";
+  const fmt = (d: Date | string) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(typeof d === "string" ? new Date(d) : d);
+  if (fmt(u.dataHora) !== fmt(new Date())) return "ausente";
+  if (u.tipo === "ENTRADA" || u.tipo === "FIM_INTERVALO" || u.tipo === "REINICIAR_EXPEDIENTE") {
+    return "presente";
+  }
+  return "ausente";
 }
 
 function infoContato(f: {
@@ -636,21 +696,45 @@ function exportCSV(rows: Record<string, unknown>[], filename: string) {
    COMPONENTES PEQUENOS
 ═══════════════════════════════════════════════ */
 
+const statValueStyle: React.CSSProperties = {
+  fontSize: 28,
+  fontWeight: 700,
+  color: "var(--ink-900)",
+  lineHeight: 1,
+  fontFamily: "var(--font-display)"
+};
+
 function StatCard({
   label,
   value,
   sub,
   color,
-  icon
+  icon,
+  onClick
 }: {
   label: string;
   value: string | number;
   sub?: string;
   color?: string;
   icon?: React.ReactNode;
+  onClick?: () => void;
 }) {
+  const clicavel = typeof onClick === "function";
   return (
     <div
+      role={clicavel ? "button" : undefined}
+      tabIndex={clicavel ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        clicavel
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       style={{
         background: "#fff",
         borderRadius: "var(--radius-lg)",
@@ -659,8 +743,26 @@ function StatCard({
         display: "flex",
         flexDirection: "column",
         gap: 4,
-        minWidth: 0
+        minWidth: 0,
+        cursor: clicavel ? "pointer" : "default",
+        transition: clicavel ? "border-color 150ms, box-shadow 150ms" : undefined
       }}
+      onMouseEnter={
+        clicavel
+          ? (e) => {
+              e.currentTarget.style.borderColor = "rgba(122,30,38,0.28)";
+              e.currentTarget.style.boxShadow = "0 2px 10px rgba(122,30,38,0.08)";
+            }
+          : undefined
+      }
+      onMouseLeave={
+        clicavel
+          ? (e) => {
+              e.currentTarget.style.borderColor = "rgba(122,30,38,0.08)";
+              e.currentTarget.style.boxShadow = "none";
+            }
+          : undefined
+      }
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
         {icon && (
@@ -678,17 +780,7 @@ function StatCard({
           {label}
         </span>
       </div>
-      <span
-        style={{
-          fontSize: 28,
-          fontWeight: 700,
-          color: color ?? "var(--ink-900)",
-          lineHeight: 1,
-          fontFamily: "var(--font-display)"
-        }}
-      >
-        {value}
-      </span>
+      <span style={{ ...statValueStyle, ...(color ? { color } : {}) }}>{value}</span>
       {sub && <span style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}>{sub}</span>}
     </div>
   );
@@ -748,7 +840,9 @@ function Badge({ label, bg, color }: { label: string; bg: string; color: string 
         color,
         fontSize: 11,
         fontWeight: 600,
-        whiteSpace: "nowrap"
+        whiteSpace: "nowrap",
+        marginLeft: 6,
+        verticalAlign: "middle"
       }}
     >
       {label}
@@ -1008,28 +1102,73 @@ function Modal({
 
 const LOGS_LIMIT = 50;
 
-function TabDashboard({ token }: { token: string }) {
+function TabDashboard({
+  token,
+  onAbrirFuncionarios
+}: {
+  token: string;
+  onAbrirFuncionarios?: (statusPonto?: "presente" | "ausente") => void;
+}) {
+  const isoBrasilia = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(d);
+  const hoje = new Date();
+  const seteAtras = new Date(hoje);
+  seteAtras.setDate(seteAtras.getDate() - 6);
+  const isoHoje = isoBrasilia(hoje);
+  const isoInicio = isoBrasilia(seteAtras);
+
+  const [dataInicio, setDataInicio] = useState(isoInicio);
+  const [dataFim, setDataFim] = useState(isoHoje);
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
+  const [modoPontualidade, setModoPontualidade] = useState<"atrasados" | "adiantados">("atrasados");
+  const [modoBanco, setModoBanco] = useState<"negativo" | "positivo">("negativo");
+  const [diaDetalhe, setDiaDetalhe] = useState<string | null>(null);
+  const [serieDetalhe, setSerieDetalhe] = useState<
+    { label: string; minuto: number; total: number }[]
+  >([]);
+  const [horaLoading, setHoraLoading] = useState(false);
+  const [horaErro, setHoraErro] = useState<string | null>(null);
+  /** Posições dos pontos em coordenadas de tela (clientX/Y) para hit-test do clique. */
+  const pontosDiaRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const chartHostRef = useRef<HTMLDivElement | null>(null);
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [logsTotal, setLogsTotal] = useState(0);
   const [logsPage, setLogsPage] = useState(1);
   const [logsLoading, setLogsLoading] = useState(false);
 
-  useEffect(() => {
-    setLoading(true);
-    api
-      .get<Dashboard>("/auditoria/dashboard", token)
-      .then(setData)
-      .catch((e) => setErro((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [token]);
+  const carregarDashboard = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setLoading(true);
+        setErro(null);
+      }
+      try {
+        const params = new URLSearchParams();
+        if (dataInicio) params.set("dataInicio", dataInicio);
+        if (dataFim) params.set("dataFim", dataFim);
+        const res = await api.get<Dashboard>(`/auditoria/dashboard?${params}`, token);
+        setData(res);
+        if (silent) setErro(null);
+      } catch (e) {
+        if (!silent) setErro((e as Error).message);
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [token, dataInicio, dataFim]
+  );
 
   const carregarLogs = useCallback(
-    async (page: number) => {
-      setLogsLoading(true);
+    async (page: number, silent = false) => {
+      if (!silent) setLogsLoading(true);
       try {
         const res = await api.get<{ total: number; logs: AuditLog[] }>(
           `/auditoria/logs?page=${page}&limit=${LOGS_LIMIT}`,
@@ -1039,26 +1178,249 @@ function TabDashboard({ token }: { token: string }) {
         setLogsTotal(res?.total ?? 0);
         setLogsPage(page);
       } finally {
-        setLogsLoading(false);
+        if (!silent) setLogsLoading(false);
       }
     },
     [token]
   );
 
   useEffect(() => {
-    carregarLogs(1);
+    void carregarDashboard(false);
+  }, [carregarDashboard]);
+
+  useEffect(() => {
+    void carregarLogs(1, false);
   }, [carregarLogs]);
 
-  if (loading) return <Loading />;
-  if (erro) return <ErroBox msg={erro} />;
+  const abrirDia = useCallback(
+    async (dia: string, silent = false) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return;
+      if (!silent) {
+        setDiaDetalhe(dia);
+        setSerieDetalhe([]);
+        setHoraErro(null);
+        setHoraLoading(true);
+      }
+
+      const agregarPorMinuto = (datas: Array<string | Date>) => {
+        const map = new Map<string, number>();
+        for (const raw of datas) {
+          const d = typeof raw === "string" ? new Date(raw) : raw;
+          if (Number.isNaN(d.getTime())) continue;
+          const label = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "America/Sao_Paulo",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          }).format(d);
+          map.set(label, (map.get(label) ?? 0) + 1);
+        }
+        return Array.from(map.entries())
+          .map(([label, total]) => {
+            const [hh, mm] = label.split(":").map(Number);
+            return { label, minuto: hh * 60 + mm, total };
+          })
+          .sort((a, b) => a.minuto - b.minuto);
+      };
+
+      try {
+        /* Preferência: endpoint dedicado (quando o backend já foi reiniciado). */
+        try {
+          const res = await api.get<{
+            data: string;
+            porMinuto?: { label: string; minuto: number; total: number }[];
+            porHora?: { hora: number; label: string; total: number }[];
+          }>(`/auditoria/dashboard/registros-hora?data=${dia}`, token);
+          if (res?.porMinuto && res.porMinuto.length > 0) {
+            setSerieDetalhe(res.porMinuto);
+            setDiaDetalhe(res.data ?? dia);
+            setHoraErro(null);
+            return;
+          }
+          if (res?.porHora) {
+            setSerieDetalhe(
+              res.porHora
+                .filter((h) => h.total > 0)
+                .map((h) => ({
+                  label: `${String(h.hora).padStart(2, "0")}:00`,
+                  minuto: h.hora * 60,
+                  total: h.total
+                }))
+            );
+            setDiaDetalhe(res.data ?? dia);
+            setHoraErro(null);
+            return;
+          }
+        } catch {
+          /* 404 ou indisponível — fallback abaixo */
+        }
+
+        /* Fallback: agrega HH:MM a partir de GET /auditoria/registros (já disponível). */
+        const horarios: Array<string | Date> = [];
+        let page = 1;
+        let total = Infinity;
+        while (horarios.length < total && page <= 20) {
+          const res = await api.get<{
+            total: number;
+            registros: Array<{ dataHora: string }>;
+          }>(`/auditoria/registros?dataInicio=${dia}&dataFim=${dia}&page=${page}&limit=500`, token);
+          total = res?.total ?? 0;
+          for (const r of res?.registros ?? []) horarios.push(r.dataHora);
+          if (!res?.registros?.length) break;
+          page += 1;
+        }
+        setSerieDetalhe(agregarPorMinuto(horarios));
+        setDiaDetalhe(dia);
+        setHoraErro(null);
+      } catch (e) {
+        if (!silent) {
+          setHoraErro((e as Error).message || "Não foi possível carregar o dia.");
+          setSerieDetalhe([]);
+        }
+      } finally {
+        if (!silent) setHoraLoading(false);
+      }
+    },
+    [token]
+  );
+
+  function voltarSerieDiaria() {
+    setDiaDetalhe(null);
+    setSerieDetalhe([]);
+    setHoraErro(null);
+    pontosDiaRef.current.clear();
+  }
+
+  /**
+   * Recharts 3: onClick NÃO traz activePayload/chartX.
+   * Compara clientX/Y com a posição na tela de cada ponto (≤ HIT_PX).
+   */
+  function onClickSerieDiaria(_state: unknown, event?: { clientX?: number; clientY?: number }) {
+    if (diaDetalhe) return;
+    const clientX = event?.clientX;
+    const clientY = event?.clientY;
+    if (typeof clientX !== "number" || typeof clientY !== "number") return;
+
+    /* Atualiza posições com getBoundingClientRect (respeita transforms do Recharts). */
+    const host = chartHostRef.current;
+    if (host) {
+      host.querySelectorAll<SVGCircleElement>("circle[data-dia]").forEach((el) => {
+        const dia = el.getAttribute("data-dia");
+        if (!dia) return;
+        const r = el.getBoundingClientRect();
+        pontosDiaRef.current.set(dia, {
+          x: r.left + r.width / 2,
+          y: r.top + r.height / 2
+        });
+      });
+    }
+
+    const HIT_PX = 28;
+    let melhorDia: string | null = null;
+    let melhorDist = HIT_PX;
+    for (const [dia, p] of pontosDiaRef.current.entries()) {
+      const dist = Math.hypot(p.x - clientX, p.y - clientY);
+      if (dist <= melhorDist) {
+        melhorDist = dist;
+        melhorDia = dia;
+      }
+    }
+    if (melhorDia) void abrirDia(melhorDia);
+  }
+
+  /* Ao mudar o filtro de datas, sai do drill-down horário */
+  useEffect(() => {
+    setDiaDetalhe(null);
+    setSerieDetalhe([]);
+    setHoraErro(null);
+    pontosDiaRef.current.clear();
+  }, [dataInicio, dataFim]);
+
+  /* Polling completo do dashboard (cards, gráficos e logs) a cada 30s */
+  useEffect(() => {
+    const POLL_MS = 30_000;
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      void carregarDashboard(true);
+      void carregarLogs(logsPage, true);
+      if (diaDetalhe) void abrirDia(diaDetalhe, true);
+    };
+    const id = window.setInterval(tick, POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [carregarDashboard, carregarLogs, logsPage, diaDetalhe, abrirDia]);
+
+  if (loading && !data) return <Loading />;
+  if (erro && !data) return <ErroBox msg={erro} />;
   if (!data) return null;
 
-  const maxEntradas = Math.max(...data.registrosPorDia.map((d) => d.entradas), 1);
-
+  const maxEntradas = Math.max(...(data.registrosPorDia ?? []).map((d) => d.entradas), 1);
   const uc = data.usoCanal;
+  /* Fallback: se a API antiga não envia registrosPorTempo, usa entradas do período */
+  const serieBase =
+    data.registrosPorTempo && data.registrosPorTempo.length > 0
+      ? data.registrosPorTempo
+      : (data.registrosPorDia ?? []).map((d) => ({ data: d.data, total: d.entradas }));
+  const serieLinha = serieBase.map((d) => ({
+    ...d,
+    label: new Date(d.data + "T12:00:00").toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "short"
+    })
+  }));
+  const rankingPont =
+    modoPontualidade === "atrasados" ? (data.topAtrasados ?? []) : (data.topAdiantados ?? []);
+  const rankingBanco =
+    modoBanco === "negativo" ? (data.topBancoNegativo ?? []) : (data.topBancoPositivo ?? []);
+  /* Ordem da API: maior primeiro. No BarChart vertical o 1º item fica no topo. */
+  const chartPont = rankingPont.map((r) => ({
+    nome: r.nome.split(" ")[0] + (r.nome.split(" ")[1] ? ` ${r.nome.split(" ")[1][0]}.` : ""),
+    nomeCompleto: r.nome,
+    minutos: r.minutos,
+    label: r.minutosFormatado
+  }));
+  const chartBanco = rankingBanco.map((r) => ({
+    nome: r.nome.split(" ")[0] + (r.nome.split(" ")[1] ? ` ${r.nome.split(" ")[1][0]}.` : ""),
+    nomeCompleto: r.nome,
+    minutos: r.minutos,
+    label: r.minutosFormatado
+  }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {/* Filtro de período */}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-lg)",
+          border: "1px solid rgba(122,30,38,0.08)",
+          padding: "14px 16px",
+          display: "flex",
+          gap: 12,
+          flexWrap: "wrap",
+          alignItems: "flex-end"
+        }}
+      >
+        <InputField label="Data início" type="date" value={dataInicio} onChange={setDataInicio} />
+        <InputField label="Data fim" type="date" value={dataFim} onChange={setDataFim} />
+        <button
+          className="btn btn-primary"
+          onClick={carregarDashboard}
+          style={{ padding: "7px 16px", fontSize: 12 }}
+        >
+          <RefreshCwIcon size={13} /> &nbsp;Atualizar
+        </button>
+        {erro && (
+          <span style={{ fontSize: 12, color: "#c8393f", alignSelf: "center" }}>{erro}</span>
+        )}
+      </div>
+
       {/* ── 8 cards em 2 linhas × 4 colunas — altura uniforme ── */}
       <div
         style={{
@@ -1074,6 +1436,7 @@ function TabDashboard({ token }: { token: string }) {
           value={data.totalFuncionarios}
           sub={`${data.funcionariosAtivos} ativos`}
           icon={<UsersIcon size={16} />}
+          onClick={() => onAbrirFuncionarios?.()}
         />
         <StatCard
           label="Trabalhando agora"
@@ -1081,6 +1444,7 @@ function TabDashboard({ token }: { token: string }) {
           sub="no expediente"
           color="#2f7d4f"
           icon={<ClockIcon size={16} />}
+          onClick={() => onAbrirFuncionarios?.("presente")}
         />
         <StatCard
           label="Em intervalo"
@@ -1132,7 +1496,6 @@ function TabDashboard({ token }: { token: string }) {
             minWidth: 0
           }}
         >
-          {/* Cabeçalho do card */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: "var(--burgundy-600)", opacity: 0.85 }}>
               <BarChart2Icon size={16} />
@@ -1149,8 +1512,6 @@ function TabDashboard({ token }: { token: string }) {
               Uso por canal
             </span>
           </div>
-
-          {/* Total */}
           <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
             <span
               style={{
@@ -1165,8 +1526,6 @@ function TabDashboard({ token }: { token: string }) {
             </span>
             <span style={{ fontSize: 11, color: "var(--ink-400)" }}>registros totais</span>
           </div>
-
-          {/* Barra de proporção */}
           <div
             style={{
               height: 8,
@@ -1177,30 +1536,16 @@ function TabDashboard({ token }: { token: string }) {
             }}
           >
             {uc.pctMobile > 0 && (
-              <div
-                style={{
-                  width: `${uc.pctMobile}%`,
-                  background: "#7c3aed",
-                  transition: "width 500ms"
-                }}
-              />
+              <div style={{ width: `${uc.pctMobile}%`, background: "#7c3aed" }} />
             )}
             {uc.pctDesktop > 0 && (
-              <div
-                style={{
-                  width: `${uc.pctDesktop}%`,
-                  background: "#2f7d4f",
-                  transition: "width 500ms"
-                }}
-              />
+              <div style={{ width: `${uc.pctDesktop}%`, background: "#2f7d4f" }} />
             )}
           </div>
-
-          {/* Legenda lado a lado */}
           <div style={{ display: "flex", gap: 10 }}>
             {[
-              { label: "Mobile", value: uc.mobile, pct: uc.pctMobile, color: "#7c3aed" },
-              { label: "Desktop", value: uc.desktop, pct: uc.pctDesktop, color: "#2f7d4f" }
+              { label: "Mobile", pct: uc.pctMobile, color: "#7c3aed" },
+              { label: "Desktop", pct: uc.pctDesktop, color: "#2f7d4f" }
             ].map((item) => (
               <div
                 key={item.label}
@@ -1215,16 +1560,13 @@ function TabDashboard({ token }: { token: string }) {
                     flexShrink: 0
                   }}
                 />
-                <span style={{ fontSize: 11, color: "var(--ink-600)", whiteSpace: "nowrap" }}>
-                  {item.label}
-                </span>
+                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>{item.label}</span>
                 <span
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
                     color: "var(--ink-900)",
-                    marginLeft: "auto",
-                    whiteSpace: "nowrap"
+                    marginLeft: "auto"
                   }}
                 >
                   {item.pct}%
@@ -1235,15 +1577,16 @@ function TabDashboard({ token }: { token: string }) {
         </div>
       </div>
 
-      {/* Gráfico + origens */}
+      {/* Gráfico + origens (existente) */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 16 }}>
-        {/* Mini gráfico de barras — entradas/dia */}
         <div
           style={{
             background: "#fff",
             borderRadius: "var(--radius-lg)",
             border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px"
+            padding: "18px 20px",
+            height: 130,
+            boxSizing: "border-box"
           }}
         >
           <p
@@ -1256,20 +1599,14 @@ function TabDashboard({ token }: { token: string }) {
               marginBottom: 16
             }}
           >
-            Entradas nos últimos 7 dias
+            Entradas no período
           </p>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              gap: 6,
-              height: 80
-            }}
-          >
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
             {data.registrosPorDia.map((d) => {
               const pct = maxEntradas > 0 ? (d.entradas / maxEntradas) * 100 : 0;
               const dt = new Date(d.data + "T12:00:00");
               const dayName = dt.toLocaleDateString("pt-BR", { weekday: "short" });
+              const eHoje = d.data === isoHoje;
               return (
                 <div
                   key={d.data}
@@ -1278,22 +1615,24 @@ function TabDashboard({ token }: { token: string }) {
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "center",
-                    gap: 4
+                    gap: 4,
+                    minWidth: 0
                   }}
                 >
-                  <span style={{ fontSize: 10, color: "var(--ink-600)", fontWeight: 600 }}>
+                  <span
+                    style={{
+                      ...statValueStyle,
+                      color: eHoje ? "var(--burgundy-600)" : "var(--ink-900)"
+                    }}
+                  >
                     {d.entradas}
                   </span>
                   <div
                     style={{
                       width: "100%",
                       height: `${Math.max(pct, 4)}%`,
-                      background:
-                        d.data === new Date().toISOString().slice(0, 10)
-                          ? "var(--burgundy-600)"
-                          : "var(--burgundy-200)",
+                      background: eHoje ? "var(--burgundy-600)" : "var(--burgundy-200)",
                       borderRadius: "3px 3px 0 0",
-                      transition: "height 300ms",
                       minHeight: 4
                     }}
                   />
@@ -1312,13 +1651,14 @@ function TabDashboard({ token }: { token: string }) {
           </div>
         </div>
 
-        {/* Origens dos registros de hoje */}
         <div
           style={{
             background: "#fff",
             borderRadius: "var(--radius-lg)",
             border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px"
+            padding: "18px 20px",
+            height: 130,
+            boxSizing: "border-box"
           }}
         >
           <p
@@ -1372,6 +1712,378 @@ function TabDashboard({ token }: { token: string }) {
         </div>
       </div>
 
+      {/* Gráfico de linha — registros por tempo (largura total, acima dos Logs) */}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-lg)",
+          border: "1px solid rgba(122,30,38,0.08)",
+          padding: "18px 20px"
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            marginBottom: 12,
+            flexWrap: "wrap"
+          }}
+        >
+          <p
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--ink-500)",
+              margin: 0
+            }}
+          >
+            {diaDetalhe
+              ? `Registros por horário — ${new Date(diaDetalhe + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "short", year: "numeric" })}`
+              : "Quantidade de registros por tempo"}
+          </p>
+          {diaDetalhe && (
+            <button
+              type="button"
+              onClick={voltarSerieDiaria}
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(122,30,38,0.20)",
+                background: "transparent",
+                color: "var(--burgundy-600)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 4
+              }}
+            >
+              <ArrowLeftIcon size={12} /> Voltar ao período
+            </button>
+          )}
+        </div>
+        {!diaDetalhe && (
+          <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "0 0 8px" }}>
+            Clique no ponto de um dia para ver a quantidade de registros por horário (HH:MM).
+          </p>
+        )}
+        {horaErro && (
+          <p style={{ fontSize: 12, color: "#b91c1c", margin: "0 0 8px" }}>{horaErro}</p>
+        )}
+        <div style={{ width: "100%", height: 280 }}>
+          {horaLoading ? (
+            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
+              Carregando…
+            </p>
+          ) : diaDetalhe ? (
+            serieDetalhe.length === 0 ? (
+              <p
+                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
+              >
+                Sem registros neste dia.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={serieDetalhe} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    interval="preserveStartEnd"
+                    minTickGap={28}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    tick={{ fontSize: 11, fill: "#6b7280" }}
+                    width={36}
+                  />
+                  <Tooltip
+                    formatter={(v: number | string) => [v as number, "Registros"]}
+                    labelFormatter={(label: string) => `Horário ${label}`}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="total"
+                    name="Registros"
+                    stroke="var(--burgundy-600)"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: "var(--burgundy-600)" }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )
+          ) : serieLinha.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
+              Sem registros no período.
+            </p>
+          ) : (
+            <div ref={chartHostRef} style={{ width: "100%", height: "100%" }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={serieLinha}
+                  margin={{ top: 16, right: 12, left: 0, bottom: 8 }}
+                  onClick={onClickSerieDiaria}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6b7280" }} />
+                  <YAxis
+                    allowDecimals={false}
+                    tick={{ fontSize: 11, fill: "#6b7280" }}
+                    width={36}
+                  />
+                  <Tooltip
+                    formatter={(v: number | string) => [v as number, "Registros"]}
+                    labelFormatter={(
+                      _l: string,
+                      payload?: Array<{ payload?: { data?: string } }>
+                    ) => {
+                      const d = payload?.[0]?.payload?.data;
+                      return d ? new Date(d + "T12:00:00").toLocaleDateString("pt-BR") : "";
+                    }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="total"
+                    name="Registros"
+                    stroke="var(--burgundy-600)"
+                    strokeWidth={2.5}
+                    isAnimationActive={false}
+                    activeDot={{
+                      r: 7,
+                      fill: "var(--burgundy-600)",
+                      stroke: "#fff",
+                      strokeWidth: 2,
+                      style: { cursor: "pointer" }
+                    }}
+                    dot={(props: {
+                      cx?: number;
+                      cy?: number;
+                      payload?: { data?: string; total?: number };
+                      index?: number;
+                    }) => {
+                      const { cx, cy, payload, index } = props;
+                      if (cx == null || cy == null || !payload?.data) {
+                        return <g key={`empty-dot-${index ?? 0}`} />;
+                      }
+                      return (
+                        <circle
+                          key={`dot-${payload.data}`}
+                          data-dia={payload.data}
+                          cx={cx}
+                          cy={cy}
+                          r={6}
+                          fill="var(--burgundy-600)"
+                          stroke="#fff"
+                          strokeWidth={2}
+                          style={{ cursor: "pointer", pointerEvents: "none" }}
+                        />
+                      );
+                    }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Top 10 pontualidade + Top 10 banco lado a lado */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "18px 20px",
+            minWidth: 0
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 12,
+              flexWrap: "wrap"
+            }}
+          >
+            <p
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)",
+                margin: 0
+              }}
+            >
+              Top 10 {modoPontualidade === "atrasados" ? "mais atrasados" : "mais adiantados"}
+            </p>
+            <button
+              type="button"
+              onClick={() =>
+                setModoPontualidade((m) => (m === "atrasados" ? "adiantados" : "atrasados"))
+              }
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(122,30,38,0.20)",
+                background: "transparent",
+                color: "var(--burgundy-600)",
+                cursor: "pointer"
+              }}
+            >
+              Ver {modoPontualidade === "atrasados" ? "adiantados" : "atrasados"}
+            </button>
+          </div>
+          <div style={{ width: "100%", height: 280 }}>
+            {chartPont.length === 0 ? (
+              <p
+                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
+              >
+                Sem dados no período.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartPont} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis type="number" tick={{ fontSize: 10, fill: "#6b7280" }} unit="m" />
+                  <YAxis
+                    type="category"
+                    dataKey="nome"
+                    width={88}
+                    tick={{ fontSize: 11, fill: "#374151" }}
+                  />
+                  <Tooltip
+                    formatter={(
+                      v: number | string,
+                      _n: string,
+                      item?: { payload?: { label?: string } }
+                    ) => [
+                      item?.payload?.label ?? `${v}m`,
+                      modoPontualidade === "atrasados" ? "Atraso médio" : "Adiantamento médio"
+                    ]}
+                    labelFormatter={(
+                      _l: string,
+                      p?: Array<{ payload?: { nomeCompleto?: string } }>
+                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
+                  />
+                  <Bar
+                    dataKey="minutos"
+                    name="Minutos"
+                    fill={modoPontualidade === "atrasados" ? "#c8393f" : "#2f7d4f"}
+                    radius={[0, 4, 4, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "18px 20px",
+            minWidth: 0
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 12,
+              flexWrap: "wrap"
+            }}
+          >
+            <p
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)",
+                margin: 0
+              }}
+            >
+              Top 10 banco {modoBanco === "negativo" ? "negativo" : "positivo"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setModoBanco((m) => (m === "negativo" ? "positivo" : "negativo"))}
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(122,30,38,0.20)",
+                background: "transparent",
+                color: "var(--burgundy-600)",
+                cursor: "pointer"
+              }}
+            >
+              Ver {modoBanco === "negativo" ? "positivos" : "negativos"}
+            </button>
+          </div>
+          <div style={{ width: "100%", height: 280 }}>
+            {chartBanco.length === 0 ? (
+              <p
+                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
+              >
+                Sem dados no período.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartBanco} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis type="number" tick={{ fontSize: 10, fill: "#6b7280" }} unit="m" />
+                  <YAxis
+                    type="category"
+                    dataKey="nome"
+                    width={88}
+                    tick={{ fontSize: 11, fill: "#374151" }}
+                  />
+                  <Tooltip
+                    formatter={(
+                      v: number | string,
+                      _n: string,
+                      item?: { payload?: { label?: string } }
+                    ) => [
+                      item?.payload?.label ?? `${v}m`,
+                      modoBanco === "negativo" ? "Déficit" : "Crédito"
+                    ]}
+                    labelFormatter={(
+                      _l: string,
+                      p?: Array<{ payload?: { nomeCompleto?: string } }>
+                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
+                  />
+                  <Bar
+                    dataKey="minutos"
+                    name="Minutos"
+                    fill={modoBanco === "negativo" ? "#c8393f" : "#2f7d4f"}
+                    radius={[0, 4, 4, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Últimos logs */}
       <div
         style={{
@@ -1403,8 +2115,11 @@ function TabDashboard({ token }: { token: string }) {
               flex: 1
             }}
           >
-            Logs de auditoria
+            Logs e Auditoria
           </p>
+          {logsLoading && (
+            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>Carregando…</span>
+          )}
           {logsTotal > 0 && (
             <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
               {logsTotal.toLocaleString("pt-BR")} registros
@@ -1517,31 +2232,52 @@ function TabDashboard({ token }: { token: string }) {
    ABA FUNCIONÁRIOS
 ═══════════════════════════════════════════════ */
 
-function TabFuncionarios({ token }: { token: string }) {
+function TabFuncionarios({
+  token,
+  initialStatusPonto = "",
+  isSuperAdmin = false
+}: {
+  token: string;
+  initialStatusPonto?: "" | "presente" | "ausente";
+  isSuperAdmin?: boolean;
+}) {
+  const hoje = new Date();
+  const primeiroDiaMes = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
+  const hojeIso = hoje.toISOString().slice(0, 10);
+
   const [lista, setLista] = useState<Funcionario[]>([]);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [busca, setBusca] = useState("");
   const [filtroAtivo, setFiltroAtivo] = useState("");
-  const [mes, setMes] = useState(String(new Date().getMonth() + 1));
-  const [ano, setAno] = useState(String(new Date().getFullYear()));
+  const [filtroStatusPonto, setFiltroStatusPonto] = useState(initialStatusPonto);
+  const [dataInicio, setDataInicio] = useState(primeiroDiaMes);
+  const [dataFim, setDataFim] = useState(hojeIso);
   const [selecionado, setSelecionado] = useState<Funcionario | null>(null);
 
   const carregar = useCallback(async () => {
     setLoading(true);
     setErro(null);
     try {
-      const params = new URLSearchParams({ mes, ano });
+      const params = new URLSearchParams();
       if (busca) params.set("busca", busca);
       if (filtroAtivo !== "") params.set("ativo", filtroAtivo);
+      if (filtroStatusPonto) params.set("statusPonto", filtroStatusPonto);
+      if (dataInicio) params.set("dataInicio", dataInicio);
+      if (dataFim) params.set("dataFim", dataFim);
       const data = await api.get<Funcionario[]>(`/auditoria/funcionarios?${params}`, token);
-      setLista(data ?? []);
+      let rows = data ?? [];
+      /* Fallback: se a API ainda não filtrar/devolver statusPonto, deriva no client. */
+      if (filtroStatusPonto) {
+        rows = rows.filter((f) => statusPontoFuncionario(f) === filtroStatusPonto);
+      }
+      setLista(rows);
     } catch (e) {
       setErro((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [token, busca, filtroAtivo, mes, ano]);
+  }, [token, busca, filtroAtivo, filtroStatusPonto, dataInicio, dataFim]);
 
   useEffect(() => {
     carregar();
@@ -1560,11 +2296,12 @@ function TabFuncionarios({ token }: { token: string }) {
         Sala: f.sala ?? "",
         Andar: f.andar ?? "",
         Status: f.ativo ? "Ativo" : "Inativo",
+        StatusPonto: statusPontoFuncionario(f) === "presente" ? "Presente" : "Ausente",
         HorasExtras: f.solicitacoesPendentes > 0 ? "0h00m" : f.periodoFormatado.horasExtras,
         HorasFalta: f.solicitacoesPendentes > 0 ? "0h00m" : f.periodoFormatado.horasFalta,
         SolicitacoesPendentes: f.solicitacoesPendentes
       })),
-      `funcionarios_${mes}_${ano}.csv`
+      `funcionarios_${dataInicio}_${dataFim}.csv`
     );
   }
 
@@ -1573,12 +2310,11 @@ function TabFuncionarios({ token }: { token: string }) {
       <DetalhesFuncionario
         funcionario={selecionado}
         token={token}
+        isSuperAdmin={isSuperAdmin}
         onBack={() => setSelecionado(null)}
       />
     );
   }
-
-  const anos = Array.from({ length: 5 }, (_, i) => String(new Date().getFullYear() - i));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1604,7 +2340,7 @@ function TabFuncionarios({ token }: { token: string }) {
           />
         </div>
         <SelectField
-          label="Status"
+          label="Cadastro"
           value={filtroAtivo}
           onChange={setFiltroAtivo}
           options={[
@@ -1614,17 +2350,17 @@ function TabFuncionarios({ token }: { token: string }) {
           ]}
         />
         <SelectField
-          label="Mês"
-          value={mes}
-          onChange={setMes}
-          options={MESES.map((m, i) => ({ value: String(i + 1), label: m }))}
+          label="Ponto"
+          value={filtroStatusPonto}
+          onChange={(v) => setFiltroStatusPonto(v === "presente" || v === "ausente" ? v : "")}
+          options={[
+            { value: "", label: "Todos" },
+            { value: "presente", label: "Presente" },
+            { value: "ausente", label: "Ausente" }
+          ]}
         />
-        <SelectField
-          label="Ano"
-          value={ano}
-          onChange={setAno}
-          options={anos.map((a) => ({ value: a, label: a }))}
-        />
+        <InputField label="Data início" type="date" value={dataInicio} onChange={setDataInicio} />
+        <InputField label="Data fim" type="date" value={dataFim} onChange={setDataFim} />
         <button
           className="btn btn-primary"
           onClick={carregar}
@@ -1666,15 +2402,22 @@ function TabFuncionarios({ token }: { token: string }) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "2fr 1fr 1fr 1fr 80px",
+            gridTemplateColumns: "2fr 1fr 110px 1fr 1fr 100px",
             padding: "10px 16px",
             background: "var(--cream-50)",
             borderBottom: "1px solid rgba(122,30,38,0.08)"
           }}
         >
-          {["Funcionário", "Cargo / Gerência", "Extras / Falta", "Sol. pend.", ""].map((c) => (
+          {[
+            "Funcionário",
+            "Cargo / Gerência",
+            "Status ponto",
+            "Extras / Falta",
+            "Sol. pend.",
+            ""
+          ].map((c) => (
             <span
-              key={c}
+              key={c || "acao"}
               style={{
                 fontSize: 10,
                 fontWeight: 700,
@@ -1701,12 +2444,13 @@ function TabFuncionarios({ token }: { token: string }) {
             const comPendentes = f.solicitacoesPendentes > 0;
             const horasExtras = comPendentes ? "0h00m" : f.periodoFormatado.horasExtras;
             const horasFalta = comPendentes ? "0h00m" : f.periodoFormatado.horasFalta;
+            const presente = statusPontoFuncionario(f) === "presente";
             return (
               <div
                 key={f.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "2fr 1fr 1fr 1fr 80px",
+                  gridTemplateColumns: "2fr 1fr 110px 1fr 1fr 100px",
                   padding: "12px 16px",
                   borderBottom: "1px solid rgba(122,30,38,0.04)",
                   alignItems: "center"
@@ -1736,12 +2480,13 @@ function TabFuncionarios({ token }: { token: string }) {
                     </p>
                   </div>
                 </div>
-                {/* Cargo / Hierarquia */}
+                {/* Área / Hierarquia */}
                 <div>
-                  <p style={{ fontSize: 12, color: "var(--ink-700)", margin: 0 }}>{f.cargo}</p>
+                  <p style={{ fontSize: 12, color: "var(--ink-700)", margin: 0 }}>
+                    {areaProfissional(f)}
+                  </p>
                   <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "1px 0 0" }}>
                     {f.gerencia?.nome ?? "—"}
-                    {f.subsecao ? ` / ${slugLabel(f.subsecao)}` : ""}
                     {f.isManager ? " · Gerente" : ""}
                   </p>
                   {infoContato(f) && (
@@ -1749,6 +2494,14 @@ function TabFuncionarios({ token }: { token: string }) {
                       {infoContato(f)}
                     </p>
                   )}
+                </div>
+                {/* Status do ponto */}
+                <div>
+                  <Badge
+                    label={presente ? "Presente" : "Ausente"}
+                    bg={presente ? "rgba(47,125,79,0.12)" : "rgba(198,127,0,0.12)"}
+                    color={presente ? "#2f7d4f" : "#c67f00"}
+                  />
                 </div>
                 {/* Extras / Falta */}
                 <div>
@@ -1797,10 +2550,12 @@ function TabFuncionarios({ token }: { token: string }) {
 function DetalhesFuncionario({
   funcionario,
   token,
+  isSuperAdmin = false,
   onBack
 }: {
   funcionario: Funcionario;
   token: string;
+  isSuperAdmin?: boolean;
   onBack: () => void;
 }) {
   const [subAba, setSubAba] = useState<
@@ -1994,9 +2749,9 @@ function DetalhesFuncionario({
             {funcionario.user.name}
           </h2>
           <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
-            {funcionario.matricula} · {funcionario.cargo}
+            {funcionario.matricula} · {areaProfissional(funcionario)}
             {funcionario.gerencia
-              ? ` · ${funcionario.gerencia.nome}${funcionario.subsecao ? ` / ${slugLabel(funcionario.subsecao)}` : ""}`
+              ? ` · ${funcionario.gerencia.sigla || funcionario.gerencia.nome}`
               : ""}
             {funcionario.isManager ? " · Gerente" : ""}
           </p>
@@ -2265,7 +3020,13 @@ function DetalhesFuncionario({
       ) : subAba === "bancoHoras" && bancoHoras ? (
         <BancoHorasDiasTabela dados={bancoHoras} />
       ) : subAba === "documentos" ? (
-        <TabelaDocumentosRh documentos={documentosRh} />
+        <TabelaDocumentosRh
+          documentos={documentosRh}
+          funcionarioId={funcionario.id}
+          token={token}
+          isSuperAdmin={isSuperAdmin}
+          onExcluido={carregarDocumentosRh}
+        />
       ) : null}
     </div>
   );
@@ -2665,39 +3426,161 @@ function DiaRow({
     year: "numeric"
   });
 
-  /* Cálculo de horas do dia */
+  /* Cálculo de horas — idêntico ao Histórico: minutos a partir de HH:MM
+     (Brasília). Trecho aberto só conta no dia corrente. */
+  const hojeIso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+  const eHoje = data === hojeIso;
+
+  const fmtHoraBR = (iso: string) =>
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date(iso));
+  const toMin = (h: string) => {
+    const [hh, mm] = h.split(":").map(Number);
+    return hh * 60 + mm;
+  };
+
   let minutos = 0;
-  let entrada: Date | null = null;
+  let entradaMin: number | null = null;
   for (const r of regs) {
-    const ts = new Date(r.dataHora);
+    const ts = toMin(fmtHoraBR(r.dataHora));
     if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-      entrada = ts;
+      entradaMin = ts;
     } else if (
       (r.tipo === "INICIO_INTERVALO" ||
         r.tipo === "INTERROMPER_EXPEDIENTE" ||
         r.tipo === "SAIDA") &&
-      entrada
+      entradaMin !== null
     ) {
-      minutos += Math.round((ts.getTime() - entrada.getTime()) / 60000);
-      entrada = null;
+      minutos += ts - entradaMin;
+      entradaMin = null;
     } else if (r.tipo === "FIM_INTERVALO") {
-      entrada = ts;
+      entradaMin = ts;
     }
   }
-  if (entrada) minutos += Math.round((Date.now() - entrada.getTime()) / 60000);
+  if (entradaMin !== null && eHoje) {
+    minutos += Math.max(0, toMin(fmtHoraBR(new Date().toISOString())) - entradaMin);
+  }
   const horasStr = `${Math.floor(minutos / 60)}h${String(minutos % 60).padStart(2, "0")}m`;
 
-  /* Status do dia */
-  const tipos = regs.map((r) => r.tipo);
-  const temSaida = tipos.includes("SAIDA");
-  const temEntrada = tipos.includes("ENTRADA");
-  const status = !temEntrada
-    ? { label: "Sem registros", cor: "#c8393f", bg: "rgba(200,57,63,0.08)", borda: "#c8393f" }
-    : temSaida
-      ? { label: "Jornada completa", cor: "#2f7d4f", bg: "rgba(47,125,79,0.08)", borda: "#2f7d4f" }
-      : { label: "Jornada aberta", cor: "#c67f00", bg: "rgba(198,127,0,0.08)", borda: "#c67f00" };
+  const regsOrdenados = [...regs].sort(
+    (a, b) => new Date(a.dataHora).getTime() - new Date(b.dataHora).getTime()
+  );
+
+  /* Status atual com base no último registro do dia.
+     Em dias anteriores sem SAÍDA: jornada não completa. */
+  const ultimoTipo = regsOrdenados.at(-1)?.tipo;
+  const temSaida = regsOrdenados.some((r) => r.tipo === "SAIDA");
+  const diaPassado = data < hojeIso;
+
+  const statusPorTipo: Record<
+    string,
+    { titulo: string; situacao?: "presente" | "ausente"; cor: string; bg: string; borda: string }
+  > = {
+    ENTRADA: {
+      titulo: "Iniciou a jornada",
+      situacao: "presente",
+      cor: "#2f7d4f",
+      bg: "rgba(47,125,79,0.08)",
+      borda: "#2f7d4f"
+    },
+    REINICIAR_EXPEDIENTE: {
+      titulo: "Reiniciou o expediente",
+      situacao: "presente",
+      cor: "#2f7d4f",
+      bg: "rgba(47,125,79,0.08)",
+      borda: "#2f7d4f"
+    },
+    FIM_INTERVALO: {
+      titulo: "Retornou do almoço",
+      situacao: "presente",
+      cor: "#2f7d4f",
+      bg: "rgba(47,125,79,0.08)",
+      borda: "#2f7d4f"
+    },
+    INICIO_INTERVALO: {
+      titulo: "Saiu para o almoço",
+      situacao: "ausente",
+      cor: "#c67f00",
+      bg: "rgba(198,127,0,0.08)",
+      borda: "#c67f00"
+    },
+    INTERROMPER_EXPEDIENTE: {
+      titulo: "Interrompeu o expediente",
+      situacao: "ausente",
+      cor: "#6b7280",
+      bg: "rgba(107,114,128,0.10)",
+      borda: "#6b7280"
+    },
+    SAIDA: {
+      titulo: "Finalizou o expediente",
+      cor: "#7a1e26",
+      bg: "rgba(122,30,38,0.08)",
+      borda: "#7a1e26"
+    }
+  };
+
+  let status: {
+    titulo: string;
+    situacao?: "presente" | "ausente";
+    cor: string;
+    bg: string;
+    borda: string;
+  };
+  if (!ultimoTipo) {
+    status = {
+      titulo: "Sem registros",
+      cor: "#c8393f",
+      bg: "rgba(200,57,63,0.08)",
+      borda: "#c8393f"
+    };
+  } else if (diaPassado && !temSaida) {
+    status = {
+      titulo: "Jornada não foi completada",
+      cor: "#c8393f",
+      bg: "rgba(200,57,63,0.08)",
+      borda: "#c8393f"
+    };
+  } else {
+    status = statusPorTipo[ultimoTipo] ?? {
+      titulo: tipoPontoLabel(ultimoTipo),
+      cor: "#c67f00",
+      bg: "rgba(198,127,0,0.08)",
+      borda: "#c67f00"
+    };
+  }
 
   const temFotos = regs.some((r) => r.fotoUrl);
+
+  const horarioComLegenda = regsOrdenados.map((r) => {
+    const hora = new Date(r.dataHora).toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    const labelCurto =
+      r.tipo === "ENTRADA"
+        ? "Entrada"
+        : r.tipo === "SAIDA"
+          ? "Saída"
+          : r.tipo === "INICIO_INTERVALO"
+            ? "Intervalo"
+            : r.tipo === "FIM_INTERVALO"
+              ? "Retorno"
+              : r.tipo === "INTERROMPER_EXPEDIENTE"
+                ? "Pausa"
+                : r.tipo === "REINICIAR_EXPEDIENTE"
+                  ? "Retomada"
+                  : tipoPontoLabel(r.tipo);
+    return { hora, label: labelCurto, cor: tipoPontoCor(r.tipo) };
+  });
 
   return (
     <div
@@ -2723,44 +3606,150 @@ function DiaRow({
           transition: "background 150ms"
         }}
       >
-        {/* Data */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p
-            style={{
-              fontSize: 13,
-              fontWeight: 700,
-              color: "var(--ink-900)",
-              margin: 0,
-              textTransform: "capitalize"
-            }}
-          >
-            {diaSemana}
-          </p>
-          <p
-            style={{
-              fontSize: 11.5,
-              color: "var(--ink-500)",
-              margin: "1px 0 0",
-              fontFamily: "var(--font-mono)"
-            }}
-          >
-            {dataCurta}
-          </p>
-        </div>
+        {/* Data + status */}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 12
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <p
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color: "var(--ink-900)",
+                margin: 0,
+                textTransform: "capitalize"
+              }}
+            >
+              {diaSemana}
+            </p>
+            <p
+              style={{
+                fontSize: 11.5,
+                color: "var(--ink-500)",
+                margin: "1px 0 0",
+                fontFamily: "var(--font-mono)"
+              }}
+            >
+              {dataCurta}
+            </p>
+          </div>
 
-        {/* Horas */}
-        {minutos > 0 && (
           <span
             style={{
-              fontSize: 15,
-              fontWeight: 800,
-              color: "var(--ink-900)",
-              fontFamily: "var(--font-mono)",
-              whiteSpace: "nowrap"
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11,
+              fontWeight: 700,
+              color: status.cor,
+              background: status.bg,
+              padding: "4px 10px",
+              borderRadius: "var(--radius-full)",
+              whiteSpace: "nowrap",
+              alignSelf: "center",
+              flexShrink: 0,
+              lineHeight: 1.2
+            }}
+            title={status.situacao ? `${status.titulo} — ${status.situacao}` : status.titulo}
+          >
+            <span>{status.titulo}</span>
+            {status.situacao && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 800,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.02em",
+                  color: status.situacao === "presente" ? "#2f7d4f" : "#c67f00",
+                  background:
+                    status.situacao === "presente"
+                      ? "rgba(47,125,79,0.14)"
+                      : "rgba(198,127,0,0.14)",
+                  padding: "2px 6px",
+                  borderRadius: "var(--radius-full)"
+                }}
+              >
+                {status.situacao}
+              </span>
+            )}
+          </span>
+        </div>
+
+        {/* Horas + horários dos registros */}
+        {regs.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "flex-end",
+              gap: 3,
+              minWidth: 0,
+              flexShrink: 1
             }}
           >
-            {horasStr}
-          </span>
+            {minutos > 0 && (
+              <span
+                style={{
+                  fontSize: 15,
+                  fontWeight: 800,
+                  color: "var(--ink-900)",
+                  fontFamily: "var(--font-mono)",
+                  whiteSpace: "nowrap",
+                  lineHeight: 1.1
+                }}
+              >
+                {horasStr}
+              </span>
+            )}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+                gap: "2px 8px",
+                maxWidth: 280
+              }}
+            >
+              {horarioComLegenda.map((item, i) => (
+                <span
+                  key={`${item.hora}-${item.label}-${i}`}
+                  style={{
+                    display: "inline-flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    lineHeight: 1.15
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      fontWeight: 700,
+                      color: "var(--ink-800)",
+                      fontFamily: "var(--font-mono)"
+                    }}
+                  >
+                    {item.hora}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 9.5,
+                      fontWeight: 600,
+                      color: item.cor,
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {item.label}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* Nº de registros */}
@@ -2794,21 +3783,6 @@ function DiaRow({
             📷 foto
           </span>
         )}
-
-        {/* Status badge */}
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            color: status.cor,
-            background: status.bg,
-            padding: "3px 10px",
-            borderRadius: "var(--radius-full)",
-            whiteSpace: "nowrap"
-          }}
-        >
-          {status.label}
-        </span>
 
         {/* Chevron */}
         <span
@@ -4130,6 +5104,11 @@ function buildHistorico(
     let horasMin = 0,
       status: StatusDia,
       obs: string | undefined;
+    /* Mesma regra de /ponto/historico (historicoTransform):
+       — entrada+saída: soma completa
+       — hoje sem saída: soma trechos fechados + aberto até agora
+       — com intervalo e sem saída: só trechos fechados (retorno aberto ignorado)
+       — só entrada em dia passado: 0h (falta) */
     if (entrada && saida) {
       horasMin = calcHorasH(dayRegs);
       status = "OK";
@@ -5584,7 +6563,44 @@ function PainelFerias({
 }
 
 /* ─── Tabela de documentos enviados ao RH (detalhe do funcionário) ─── */
-function TabelaDocumentosRh({ documentos }: { documentos: DocumentoRhEnvio[] }) {
+function TabelaDocumentosRh({
+  documentos,
+  funcionarioId,
+  token,
+  isSuperAdmin = false,
+  onExcluido
+}: {
+  documentos: DocumentoRhEnvio[];
+  funcionarioId: string;
+  token: string;
+  isSuperAdmin?: boolean;
+  onExcluido?: () => void;
+}) {
+  const [excluindoId, setExcluindoId] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function excluirDocumento(doc: DocumentoRhEnvio) {
+    const nome = doc.nomeArquivo ?? doc.descricao;
+    if (
+      !window.confirm(
+        `Excluir permanentemente o documento "${nome}"?\n\nEsta ação não pode ser desfeita.`
+      )
+    ) {
+      return;
+    }
+
+    setExcluindoId(doc.id);
+    setErro(null);
+    try {
+      await api.delete(`/auditoria/funcionarios/${funcionarioId}/documentos-rh/${doc.id}`, token);
+      onExcluido?.();
+    } catch (e) {
+      setErro((e as Error).message || "Não foi possível excluir o documento.");
+    } finally {
+      setExcluindoId(null);
+    }
+  }
+
   if (!documentos.length) {
     return (
       <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
@@ -5595,6 +6611,9 @@ function TabelaDocumentosRh({ documentos }: { documentos: DocumentoRhEnvio[] }) 
 
   return (
     <div style={{ background: "#fff", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+      {erro && (
+        <p style={{ margin: 0, padding: "10px 14px", fontSize: 12, color: "var(--red)" }}>{erro}</p>
+      )}
       <div style={{ overflowX: "auto" }}>
         <table className="table-cfo" style={{ minWidth: 520 }}>
           <thead>
@@ -5615,19 +6634,34 @@ function TabelaDocumentosRh({ documentos }: { documentos: DocumentoRhEnvio[] }) 
                     (doc.mimeType?.includes("pdf") ? "documento.pdf" : "documento")}
                 </td>
                 <td>
-                  {doc.arquivoUrl ? (
-                    <a
-                      href={doc.arquivoUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-ghost btn-sm"
-                      style={{ gap: 5 }}
-                    >
-                      <DownloadIcon size={13} /> Abrir
-                    </a>
-                  ) : (
-                    "—"
-                  )}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {doc.arquivoUrl ? (
+                      <a
+                        href={doc.arquivoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-ghost btn-sm"
+                        style={{ gap: 5 }}
+                      >
+                        <DownloadIcon size={13} /> Abrir
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                    {isSuperAdmin && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ gap: 5, color: "var(--red)" }}
+                        disabled={excluindoId === doc.id}
+                        onClick={() => excluirDocumento(doc)}
+                        title="Excluir documento (Super Admin)"
+                      >
+                        <Trash2Icon size={13} />
+                        {excluindoId === doc.id ? "Excluindo…" : "Excluir"}
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -7732,6 +8766,9 @@ const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
 export function AuditoriaPage() {
   const { user, token, hasRole } = useAuth();
   const [aba, setAba] = useState<Aba>("dashboard");
+  const [funcionariosStatusPonto, setFuncionariosStatusPonto] = useState<
+    "" | "presente" | "ausente"
+  >("");
 
   const tk = token();
   const isRH =
@@ -7743,6 +8780,11 @@ export function AuditoriaPage() {
   const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
 
   const temAcesso = isRH || hasRole("gestor") || hasRole("GESTOR_APROVACAO");
+
+  function abrirFuncionarios(statusPonto?: "presente" | "ausente") {
+    setFuncionariosStatusPonto(statusPonto ?? "");
+    setAba("funcionarios");
+  }
 
   if (!temAcesso) {
     return (
@@ -7802,7 +8844,10 @@ export function AuditoriaPage() {
         {ABAS.map((a) => (
           <button
             key={a.id}
-            onClick={() => setAba(a.id)}
+            onClick={() => {
+              if (a.id !== "funcionarios") setFuncionariosStatusPonto("");
+              setAba(a.id);
+            }}
             style={{
               padding: "8px 16px",
               borderRadius: "var(--radius-md) var(--radius-md) 0 0",
@@ -7827,8 +8872,15 @@ export function AuditoriaPage() {
       </div>
 
       {/* Conteúdo da aba */}
-      {aba === "dashboard" && <TabDashboard token={tk} />}
-      {aba === "funcionarios" && <TabFuncionarios token={tk} />}
+      {aba === "dashboard" && <TabDashboard token={tk} onAbrirFuncionarios={abrirFuncionarios} />}
+      {aba === "funcionarios" && (
+        <TabFuncionarios
+          key={`func-${funcionariosStatusPonto || "todos"}`}
+          token={tk}
+          initialStatusPonto={funcionariosStatusPonto}
+          isSuperAdmin={!!user?.isSuperAdmin}
+        />
+      )}
       {aba === "registros" && <TabRegistros token={tk} />}
       {aba === "solicitacoes" && <TabSolicitacoes token={tk} isPontoAdmin={isPontoAdmin} />}
       {aba === "afastamentos" && <TabAfastamentos token={tk} />}

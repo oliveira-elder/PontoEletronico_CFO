@@ -166,7 +166,8 @@ export function montarRelatorioQuadro(
   feriados: FeriadoHistorico[] = [],
   sabadoPct = 100,
   domingoPct = 200,
-  feriadoPct = 200
+  feriadoPct = 200,
+  inicioAtividades?: string | null
 ): RelatorioQuadroMensal {
   const hojeIso = hojeBrasiliaISO();
   const [hY, hM, hD] = hojeIso.split("-").map(Number);
@@ -212,6 +213,25 @@ export function montarRelatorioQuadro(
         saldoFormatado: "—",
         status: "—",
         statusInterno: "FUTURO"
+      });
+      continue;
+    }
+
+    /* Antes do primeiro login no sistema: não conta falta nem jornada. */
+    if (inicioAtividades && iso < inicioAtividades) {
+      dias.push({
+        iso,
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        pausas: [],
+        horasMin: 0,
+        horasFormatado: "—",
+        saldoMin: null,
+        saldoFormatado: "—",
+        status: "—",
+        statusInterno: "FOLGA"
       });
       continue;
     }

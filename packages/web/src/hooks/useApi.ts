@@ -44,6 +44,12 @@ async function req<T>(
   }
   if (!res.ok) {
     let message = `Não foi possível concluir a operação (erro ${res.status}).`;
+    if (res.status === 403) {
+      message = "Você não tem permissão para acessar este recurso.";
+    } else if (res.status === 413) {
+      message =
+        "O arquivo enviado é muito grande. Tente um documento menor ou com menor resolução.";
+    }
     try {
       const data = await res.json();
       if (typeof data?.message === "string") {

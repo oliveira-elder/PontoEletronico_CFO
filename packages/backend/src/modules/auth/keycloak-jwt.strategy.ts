@@ -99,7 +99,8 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  validate(payload: Record<string, unknown>) {
-    return this.authService.mapTokenPayload(payload);
+  async validate(payload: Record<string, unknown>) {
+    const ctx = this.authService.mapTokenPayload(payload);
+    return this.authService.enrichRoles(ctx);
   }
 }

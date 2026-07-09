@@ -1,10 +1,17 @@
-import { Injectable, BadRequestException, ForbiddenException, Logger } from "@nestjs/common";
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  NotFoundException
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
 import {
   aplicarHorarioBrasilia,
   horarioDeDataBrasilia,
+  horarioParaMinutos,
   validarHorarioPermitido,
   dataBrasiliaISO,
   hojeBrasiliaISO,
@@ -16,7 +23,6 @@ import {
   resolverJornadaHistoricoContexto,
   calcularJornadaParcialFeriado
 } from "../../utils/jornada-historico";
-import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
 
@@ -122,7 +128,8 @@ export class AuditoriaService {
     let diasTrabalhados = 0;
 
     for (const [diaIso, regs] of porDia) {
-      const capMs = diaIso === hojeIso ? undefined : intervaloDiaBrasilia(diaIso).fim.getTime();
+      /* Mesma regra do Histórico: trecho aberto só conta no dia corrente. */
+      const capMs = diaIso === hojeIso ? Date.now() : undefined;
       const minutos = this.calcHorasMinutos(regs, capMs);
       if (minutos > 0) diasTrabalhados++;
       totalMinutos += minutos;
@@ -141,10 +148,26 @@ export class AuditoriaService {
 
   /* ─── Dashboard ─── */
 
-  async getDashboard() {
-    const hoje = new Date();
-    const inicioHoje = this.startOfDay(hoje);
-    const fimHoje = this.endOfDay(hoje);
+  async getDashboard(filtros?: { dataInicio?: string; dataFim?: string }) {
+    const hojeIso = hojeBrasiliaISO();
+    const dataFim =
+      filtros?.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(filtros.dataFim) ? filtros.dataFim : hojeIso;
+    const dataInicio =
+      filtros?.dataInicio && /^\d{4}-\d{2}-\d{2}$/.test(filtros.dataInicio)
+        ? filtros.dataInicio
+        : (() => {
+            const d = new Date(`${dataFim}T12:00:00-03:00`);
+            d.setDate(d.getDate() - 6);
+            return dataBrasiliaISO(d);
+          })();
+    const inicio = dataInicio <= dataFim ? dataInicio : dataFim;
+    const fim = dataInicio <= dataFim ? dataFim : dataInicio;
+
+    const { inicio: inicioHoje, fim: fimHoje } = intervaloDiaBrasilia(hojeIso);
+    const { inicio: inicioPeriodo, fim: fimPeriodo } = {
+      inicio: intervaloDiaBrasilia(inicio).inicio,
+      fim: intervaloDiaBrasilia(fim).fim
+    };
 
     const [
       totalFuncionarios,
@@ -194,27 +217,38 @@ export class AuditoriaService {
       }
     });
 
-    /* Registros dos últimos 7 dias (agrupado por dia) */
-    const seteDiasAtras = new Date(hoje);
-    seteDiasAtras.setDate(seteDiasAtras.getDate() - 6);
-    seteDiasAtras.setHours(0, 0, 0, 0);
-
-    const registros7d = await this.prisma.registroPonto.findMany({
-      where: { dataHora: { gte: seteDiasAtras } },
-      select: { dataHora: true, tipo: true }
+    /* Série de registros por dia no intervalo filtrado */
+    const registrosPeriodo = await this.prisma.registroPonto.findMany({
+      where: { dataHora: { gte: inicioPeriodo, lte: fimPeriodo } },
+      select: { dataHora: true, tipo: true, funcionarioId: true },
+      orderBy: { dataHora: "asc" }
     });
 
-    const porDia: Record<string, number> = {};
-    for (let i = 0; i < 7; i++) {
-      const d = new Date(seteDiasAtras);
-      d.setDate(d.getDate() + i);
-      porDia[d.toISOString().slice(0, 10)] = 0;
+    const porDiaSerie: Record<string, number> = {};
+    let cursor = inicio;
+    while (cursor <= fim) {
+      porDiaSerie[cursor] = 0;
+      const [y, m, d] = cursor.split("-").map(Number);
+      const prox = new Date(y, m - 1, d);
+      prox.setDate(prox.getDate() + 1);
+      cursor = `${prox.getFullYear()}-${String(prox.getMonth() + 1).padStart(2, "0")}-${String(prox.getDate()).padStart(2, "0")}`;
     }
-    for (const r of registros7d) {
-      const key = r.dataHora.toISOString().slice(0, 10);
-      if (key in porDia && r.tipo === "ENTRADA") porDia[key]++;
+    for (const r of registrosPeriodo) {
+      const key = dataBrasiliaISO(r.dataHora);
+      if (key in porDiaSerie) porDiaSerie[key]++;
     }
-    const registrosPorDia = Object.entries(porDia).map(([data, entradas]) => ({ data, entradas }));
+    const registrosPorTempo = Object.entries(porDiaSerie).map(([data, total]) => ({
+      data,
+      total
+    }));
+
+    /* Compat: entradas nos últimos 7 dias (ou no filtro) */
+    const registrosPorDia = registrosPorTempo.map((d) => ({
+      data: d.data,
+      entradas: registrosPeriodo.filter(
+        (r) => r.tipo === "ENTRADA" && dataBrasiliaISO(r.dataHora) === d.data
+      ).length
+    }));
 
     /* Últimos 10 logs */
     const ultimosLogs = await this.prisma.auditLog.findMany({
@@ -245,6 +279,47 @@ export class AuditoriaService {
     const totalWeb = origensHistorico.find((o) => o.origem === "WEB")?.total ?? 0;
     const totalTotem = origensHistorico.find((o) => o.origem === "TOTEM")?.total ?? 0;
 
+    /* Rankings: isolados — falha não derruba o dashboard */
+    let rankings = {
+      topAtrasados: [] as {
+        funcionarioId: string;
+        nome: string;
+        matricula: string;
+        minutos: number;
+        minutosFormatado: string;
+      }[],
+      topAdiantados: [] as {
+        funcionarioId: string;
+        nome: string;
+        matricula: string;
+        minutos: number;
+        minutosFormatado: string;
+      }[],
+      topBancoNegativo: [] as {
+        funcionarioId: string;
+        nome: string;
+        matricula: string;
+        minutos: number;
+        minutosFormatado: string;
+      }[],
+      topBancoPositivo: [] as {
+        funcionarioId: string;
+        nome: string;
+        matricula: string;
+        minutos: number;
+        minutosFormatado: string;
+      }[]
+    };
+    try {
+      rankings = await this.calcularRankingsDashboard(inicio, fim, registrosPeriodo);
+    } catch (err) {
+      this.logger.warn(
+        `Rankings do dashboard falharam (${inicio}..${fim}): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
     return {
       totalFuncionarios,
       funcionariosAtivos,
@@ -258,9 +333,14 @@ export class AuditoriaService {
       periodosFechados,
       periodosAprovados,
       registrosPorDia,
+      registrosPorTempo,
+      topAtrasados: rankings.topAtrasados,
+      topAdiantados: rankings.topAdiantados,
+      topBancoNegativo: rankings.topBancoNegativo,
+      topBancoPositivo: rankings.topBancoPositivo,
+      filtro: { dataInicio: inicio, dataFim: fim },
       ultimosLogs,
       origens: toOrigem(origens),
-      /* Uso por canal — período completo */
       usoCanal: {
         totalRegistros: totalHistorico,
         mobile: totalMobile,
@@ -275,7 +355,255 @@ export class AuditoriaService {
     };
   }
 
+  /** Quantidade de registros por minuto (HH:MM) em um dia (Brasília). */
+  async getRegistrosPorHora(data?: string) {
+    const dia = data && /^\d{4}-\d{2}-\d{2}$/.test(data) ? data : hojeBrasiliaISO();
+    const { inicio, fim } = intervaloDiaBrasilia(dia);
+    const registros = await this.prisma.registroPonto.findMany({
+      where: { dataHora: { gte: inicio, lte: fim } },
+      select: { dataHora: true },
+      orderBy: { dataHora: "asc" }
+    });
+
+    const porMinutoMap = new Map<string, number>();
+    for (const r of registros) {
+      const label = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "America/Sao_Paulo",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      }).format(r.dataHora);
+      porMinutoMap.set(label, (porMinutoMap.get(label) ?? 0) + 1);
+    }
+
+    const porMinuto = Array.from(porMinutoMap.entries())
+      .map(([label, total]) => {
+        const [hh, mm] = label.split(":").map(Number);
+        return { label, minuto: hh * 60 + mm, total };
+      })
+      .sort((a, b) => a.minuto - b.minuto);
+
+    /* Também devolve por hora para compatibilidade */
+    const porHora = Array.from({ length: 24 }, (_, h) => ({
+      hora: h,
+      label: `${String(h).padStart(2, "0")}h`,
+      total: 0
+    }));
+    for (const p of porMinuto) {
+      const h = Math.floor(p.minuto / 60);
+      if (h >= 0 && h < 24) porHora[h].total += p.total;
+    }
+
+    return { data: dia, porMinuto, porHora, totalRegistros: registros.length };
+  }
+
+  /** Top 10 atraso/adiantamento e banco negativo/positivo.
+   *  Banco: mesmas regras de /ponto/banco-horas e /ponto/historico (calcularBancoHoras).
+   *  Pontualidade: 1ª ENTRADA em dias úteis do período, com tolerância e início de atividades. */
+  private async calcularRankingsDashboard(
+    dataInicio: string,
+    dataFim: string,
+    registrosPeriodo: { dataHora: Date; tipo: string; funcionarioId: string }[]
+  ) {
+    const funcionarios = await this.prisma.funcionario.findMany({
+      where: { ativo: true },
+      select: {
+        id: true,
+        matricula: true,
+        jornadaPeriodoId: true,
+        jornadaHorasDia: true,
+        jornadaPeriodoDesde: true,
+        jornadaPeriodoAssociadoEm: true,
+        jornadaPeriodo: {
+          select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true }
+        },
+        user: { select: { name: true, createdAt: true } }
+      }
+    });
+    const funcMap = new Map(funcionarios.map((f) => [f.id, f]));
+
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: {
+        horaEntrada: true,
+        horaSaida: true,
+        diasUteis: true,
+        toleranciaEntradaMin: true
+      }
+    });
+    const horaEntradaPadrao = cfg?.horaEntrada ?? "08:00";
+    const toleranciaEntrada = cfg?.toleranciaEntradaMin ?? 15;
+    const diasUteisCfg: boolean[] = JSON.parse(
+      cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
+    );
+
+    const { inicio: iniFer, fim: fimFer } = {
+      inicio: intervaloDiaBrasilia(dataInicio).inicio,
+      fim: intervaloDiaBrasilia(dataFim).fim
+    };
+    const feriados = await this.prisma.feriadoConfig.findMany({
+      where: { data: { gte: iniFer, lte: fimFer } },
+      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+    });
+    const feriadoMap = new Map(feriados.map((f) => [dataBrasiliaISO(f.data), f]));
+
+    const afastamentos = await this.prisma.afastamento.findMany({
+      where: { dataInicio: { lte: fimFer }, dataFim: { gte: iniFer } },
+      select: { funcionarioId: true, dataInicio: true, dataFim: true }
+    });
+
+    const emAfastamento = (funcionarioId: string, dia: string) =>
+      afastamentos.some((a) => {
+        if (a.funcionarioId !== funcionarioId) return false;
+        const aInicio = dataBrasiliaISO(a.dataInicio);
+        const aFim = dataBrasiliaISO(a.dataFim);
+        return dia >= aInicio && dia <= aFim;
+      });
+
+    /* Pontualidade: 1ª ENTRADA do dia vs horaEntrada esperada (dias úteis do período) */
+    type Agg = { nome: string; matricula: string; somaMin: number; dias: number };
+    const pontMap = new Map<string, Agg>();
+    const entradasPorFuncDia = new Map<string, Date>();
+    for (const r of registrosPeriodo) {
+      if (r.tipo !== "ENTRADA") continue;
+      const dia = dataBrasiliaISO(r.dataHora);
+      if (dia < dataInicio || dia > dataFim) continue;
+      const key = `${r.funcionarioId}|${dia}`;
+      const atual = entradasPorFuncDia.get(key);
+      if (!atual || r.dataHora < atual) entradasPorFuncDia.set(key, r.dataHora);
+    }
+
+    for (const [key, dataHora] of entradasPorFuncDia) {
+      const pipeIdx = key.indexOf("|");
+      const funcionarioId = key.slice(0, pipeIdx);
+      const dia = key.slice(pipeIdx + 1);
+      const f = funcMap.get(funcionarioId);
+      if (!f) continue;
+
+      const inicioAtividades = f.user.createdAt ? dataBrasiliaISO(f.user.createdAt) : null;
+      if (inicioAtividades && dia < inicioAtividades) continue;
+
+      const [y, m, d] = dia.split("-").map(Number);
+      const diaSemana = new Date(y, m - 1, d).getDay();
+      if (!diasUteisCfg[diaSemana]) continue;
+
+      const feriado = feriadoMap.get(dia);
+      if (feriado && !feriado.marcoHorario) continue;
+      if (emAfastamento(funcionarioId, dia)) continue;
+
+      const jornadaCtx = resolverJornadaHistoricoContexto({
+        ...f,
+        configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
+        configuracaoHoraSaida: cfg?.horaSaida ?? null
+      });
+      const esperadoMin = horarioParaMinutos(jornadaCtx.horaEntrada ?? horaEntradaPadrao);
+      const realMin = horarioParaMinutos(horarioDeDataBrasilia(dataHora));
+      let delta = realMin - esperadoMin;
+      if (delta > 0 && delta <= toleranciaEntrada) delta = 0;
+      if (delta < 0 && Math.abs(delta) <= toleranciaEntrada) delta = 0;
+      if (delta === 0) continue;
+
+      const agg = pontMap.get(f.id) ?? {
+        nome: f.user.name,
+        matricula: f.matricula ?? "",
+        somaMin: 0,
+        dias: 0
+      };
+      agg.somaMin += delta;
+      agg.dias += 1;
+      pontMap.set(f.id, agg);
+    }
+
+    const pontualidade = Array.from(pontMap.entries()).map(([id, a]) => ({
+      funcionarioId: id,
+      nome: a.nome,
+      matricula: a.matricula,
+      minutos: a.dias > 0 ? Math.round(a.somaMin / a.dias) : 0,
+      minutosFormatado: this.formatMinutes(a.dias > 0 ? Math.round(a.somaMin / a.dias) : 0)
+    }));
+
+    const topAtrasados = [...pontualidade]
+      .filter((p) => p.minutos > 0)
+      .sort((a, b) => b.minutos - a.minutos)
+      .slice(0, 10)
+      .map((p) => ({
+        ...p,
+        minutos: Math.abs(p.minutos),
+        minutosFormatado: this.formatMinutes(Math.abs(p.minutos))
+      }));
+
+    const topAdiantados = [...pontualidade]
+      .filter((p) => p.minutos < 0)
+      .sort((a, b) => a.minutos - b.minutos)
+      .slice(0, 10)
+      .map((p) => ({
+        ...p,
+        minutos: Math.abs(p.minutos),
+        minutosFormatado: this.formatMinutes(Math.abs(p.minutos))
+      }));
+
+    /* Banco: saldo do ciclo atual (mesma regra de /ponto/banco-horas e /ponto/historico) */
+    const bancoRows = (
+      await Promise.all(
+        funcionarios.map(async (f) => {
+          const banco = await this.pontoService.calcularBancoHorasAdmin(f.id);
+          const saldo = banco.saldoAtualMinutos;
+          if (saldo === 0) return null;
+          return {
+            funcionarioId: f.id,
+            nome: f.user.name,
+            matricula: f.matricula ?? "",
+            minutos: saldo,
+            minutosFormatado: this.formatMinutes(saldo)
+          };
+        })
+      )
+    ).filter((r): r is NonNullable<typeof r> => r !== null);
+
+    const topBancoNegativo = [...bancoRows]
+      .filter((r) => r.minutos < 0)
+      .sort((a, b) => a.minutos - b.minutos)
+      .slice(0, 10)
+      .map((r) => ({
+        ...r,
+        minutos: Math.abs(r.minutos),
+        minutosFormatado: this.formatMinutes(Math.abs(r.minutos))
+      }));
+
+    const topBancoPositivo = [...bancoRows]
+      .filter((r) => r.minutos > 0)
+      .sort((a, b) => b.minutos - a.minutos)
+      .slice(0, 10);
+
+    return { topAtrasados, topAdiantados, topBancoNegativo, topBancoPositivo };
+  }
+
   /* ─── Funcionários ─── */
+
+  /** Situação atual do ponto com base no último registro de hoje. */
+  private statusPontoDeTipo(tipo?: string | null): "presente" | "ausente" {
+    if (!tipo) return "ausente";
+    if (tipo === "ENTRADA" || tipo === "FIM_INTERVALO" || tipo === "REINICIAR_EXPEDIENTE") {
+      return "presente";
+    }
+    return "ausente";
+  }
+
+  /** Resolve o tipo vigente hoje: último do dia civil em Brasília. */
+  private ultimoTipoDoDia(
+    porDia: Map<string, { tipo: string; dataHora: Date }[]> | undefined,
+    hojeIso: string,
+    ultimoGeral?: { tipo: string; dataHora: Date } | null
+  ): string | null {
+    const regsHoje = porDia?.get(hojeIso);
+    if (regsHoje && regsHoje.length > 0) {
+      return regsHoje[regsHoje.length - 1].tipo;
+    }
+    if (ultimoGeral && dataBrasiliaISO(ultimoGeral.dataHora) === hojeIso) {
+      return ultimoGeral.tipo;
+    }
+    return null;
+  }
 
   async getFuncionarios(filtros: {
     busca?: string;
@@ -283,6 +611,9 @@ export class AuditoriaService {
     ativo?: boolean;
     mes?: number;
     ano?: number;
+    dataInicio?: string;
+    dataFim?: string;
+    statusPonto?: "presente" | "ausente";
   }) {
     const where: Record<string, unknown> = {};
     if (filtros.ativo !== undefined) where.ativo = filtros.ativo;
@@ -312,12 +643,33 @@ export class AuditoriaService {
       }
     });
 
-    const mes = filtros.mes ?? new Date().getMonth() + 1;
-    const ano = filtros.ano ?? new Date().getFullYear();
     const hojeIso = hojeBrasiliaISO();
-    const { inicio: inicioMes, fim: fimMes } = this.mesIntervaloBrasilia(mes, ano);
+    const dataInicio =
+      filtros.dataInicio && /^\d{4}-\d{2}-\d{2}$/.test(filtros.dataInicio)
+        ? filtros.dataInicio
+        : undefined;
+    const dataFim =
+      filtros.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(filtros.dataFim) ? filtros.dataFim : undefined;
 
-    /* Buscar período atual para cada funcionário */
+    let inicioPeriodo: Date;
+    let fimPeriodo: Date;
+    let mes: number;
+    let ano: number;
+
+    if (dataInicio && dataFim) {
+      inicioPeriodo = intervaloDiaBrasilia(dataInicio).inicio;
+      fimPeriodo = intervaloDiaBrasilia(dataFim).fim;
+      mes = Number(dataInicio.slice(5, 7));
+      ano = Number(dataInicio.slice(0, 4));
+    } else {
+      mes = filtros.mes ?? new Date().getMonth() + 1;
+      ano = filtros.ano ?? new Date().getFullYear();
+      const intervalo = this.mesIntervaloBrasilia(mes, ano);
+      inicioPeriodo = intervalo.inicio;
+      fimPeriodo = intervalo.fim;
+    }
+
+    /* Buscar período (mês do início do intervalo) para snapshot oficial, se houver */
     const periodos = (await this.prisma.periodoPonto.findMany({
       where: {
         mes,
@@ -327,20 +679,19 @@ export class AuditoriaService {
     })) as PeriodoPontoRaw[];
     const periodosMap = new Map<string, PeriodoPontoRaw>(periodos.map((p) => [p.funcionarioId, p]));
 
-    /* Último registro de cada funcionário */
     const ids = funcionarios.map((f) => f.id);
 
-    /* Registros do mês — cálculo em lote das horas trabalhadas */
-    const registrosMes = ids.length
+    /* Registros do intervalo — horas e extras/falta */
+    const registrosPeriodo = ids.length
       ? await this.prisma.registroPonto.findMany({
-          where: { funcionarioId: { in: ids }, dataHora: { gte: inicioMes, lte: fimMes } },
+          where: { funcionarioId: { in: ids }, dataHora: { gte: inicioPeriodo, lte: fimPeriodo } },
           orderBy: { dataHora: "asc" },
           select: { funcionarioId: true, tipo: true, dataHora: true }
         })
       : [];
 
     const registrosPorFunc = new Map<string, Map<string, { tipo: string; dataHora: Date }[]>>();
-    for (const r of registrosMes) {
+    for (const r of registrosPeriodo) {
       if (!registrosPorFunc.has(r.funcionarioId)) {
         registrosPorFunc.set(r.funcionarioId, new Map());
       }
@@ -350,6 +701,7 @@ export class AuditoriaService {
       porDia.get(dia)!.push({ tipo: r.tipo, dataHora: r.dataHora });
     }
 
+    /* Último registro geral (mantido no retorno) */
     const ultimosRegistros = await this.prisma.registroPonto.findMany({
       where: { funcionarioId: { in: ids } },
       orderBy: { dataHora: "desc" },
@@ -373,25 +725,30 @@ export class AuditoriaService {
       pendentes.map((p) => [p.funcionarioId, p._count._all] as [string, number])
     );
 
-    return funcionarios.map((f) => {
+    const resultado = funcionarios.map((f) => {
       const periodo = periodosMap.get(f.id) ?? null;
       const porDia = registrosPorFunc.get(f.id) ?? new Map();
       const resumo = this.calcResumoMensalFromRegistros(porDia, f.jornadaHorasDia, hojeIso);
 
-      const usarPeriodoOficial =
+      const intervaloEhMesCheio =
+        !dataInicio &&
+        !dataFim &&
         periodo &&
         (periodo.status === "FECHADO" || periodo.status === "APROVADO") &&
         periodo.horasTrabalhadasMinutos > 0;
 
-      const horasTrabalhadasMinutos = usarPeriodoOficial
+      const horasTrabalhadasMinutos = intervaloEhMesCheio
         ? periodo!.horasTrabalhadasMinutos
         : resumo.horasTrabalhadasMinutos;
-      const horasExtrasMinutos = usarPeriodoOficial
+      const horasExtrasMinutos = intervaloEhMesCheio
         ? periodo!.horasExtrasMinutos
         : resumo.horasExtrasMinutos;
-      const horasFaltaMinutos = usarPeriodoOficial
+      const horasFaltaMinutos = intervaloEhMesCheio
         ? periodo!.horasFaltaMinutos
         : resumo.horasFaltaMinutos;
+
+      const ultimo = ultimosMap.get(f.id) ?? null;
+      const statusPonto = this.statusPontoDeTipo(this.ultimoTipoDoDia(porDia, hojeIso, ultimo));
 
       return {
         id: f.id,
@@ -402,12 +759,19 @@ export class AuditoriaService {
         ativo: f.ativo,
         jornadaHorasDia: f.jornadaHorasDia,
         fotoPerfilUrl: f.fotoPerfilUrl,
+        subsecao: f.subsecao,
+        section: f.section,
+        isManager: f.isManager,
+        ramal: f.ramal,
+        sala: f.sala,
+        andar: f.andar,
         createdAt: f.createdAt,
         user: f.user,
         gerencia: f.gerencia,
         totalRegistros: f._count.registros,
         totalSolicitacoes: f._count.solicitacoes,
         totalAfastamentos: f._count.afastamentos,
+        statusPonto,
         periodo: periodo
           ? {
               ...periodo,
@@ -432,10 +796,13 @@ export class AuditoriaService {
           horasFalta: this.formatMinutes(horasFaltaMinutos),
           status: periodo?.status ?? "ABERTO"
         },
-        ultimoRegistro: ultimosMap.get(f.id) ?? null,
+        ultimoRegistro: ultimo,
         solicitacoesPendentes: pendentesMap.get(f.id) ?? 0
       };
     });
+
+    if (!filtros.statusPonto) return resultado;
+    return resultado.filter((f) => f.statusPonto === filtros.statusPonto);
   }
 
   async getFuncionarioDetalhe(id: string) {
@@ -825,6 +1192,9 @@ export class AuditoriaService {
         gestorUserId: user?.id,
         gestorObservacao: observacao,
         gestorResolvidoEm: agora
+      },
+      include: {
+        funcionario: { include: { user: { select: { name: true } } } }
       }
     });
 
@@ -835,6 +1205,13 @@ export class AuditoriaService {
         solicitacao.tipo,
         observacao
       ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_RECUSADA: ${e}`));
+    }
+
+    if (novoStatus === "AGUARDANDO_RH") {
+      this.notificarSolicitacaoAguardandoRh(
+        resolvida.funcionario.user?.name ?? "Funcionário",
+        solicitacao.tipo
+      ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_AGUARDANDO_RH: ${e}`));
     }
 
     return resolvida;
@@ -1004,7 +1381,7 @@ export class AuditoriaService {
     const url = await this.documentoService.salvarGuiaMedica(id, guiaMedicoBase64);
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
 
-    return this.prisma.solicitacao.update({
+    const atualizada = await this.prisma.solicitacao.update({
       where: { id },
       data: {
         guiaMedicoUrl: url,
@@ -1014,6 +1391,15 @@ export class AuditoriaService {
         rhUserId: rhUser?.id
       }
     });
+
+    this.notificarDocumentoRhEnviado(atualizada.funcionarioId, "guia médica", observacao).catch(
+      (e) => this.logger.error(`Falha ao notificar RH_DOCUMENTO_ENVIADO: ${e}`)
+    );
+    this.notificarDocumentoRetornoPendente(atualizada.funcionarioId, "atestado assinado").catch(
+      (e) => this.logger.error(`Falha ao notificar DOCUMENTO_RETORNO_PENDENTE: ${e}`)
+    );
+
+    return atualizada;
   }
 
   async rhEnviarFolhaFerias(
@@ -1037,17 +1423,30 @@ export class AuditoriaService {
 
     const url = await this.documentoService.salvarGuiaMedica(id, folhaBase64);
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    const obsFinal = observacao || "Folha de pagamento de férias enviada para assinatura.";
 
-    return this.prisma.solicitacao.update({
+    const atualizada = await this.prisma.solicitacao.update({
       where: { id },
       data: {
         guiaMedicoUrl: url,
         guiaMedicoEnviadaEm: new Date(),
-        guiaMedicoObservacao: observacao || "Folha de pagamento de férias enviada para assinatura.",
+        guiaMedicoObservacao: obsFinal,
         status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
         rhUserId: rhUser?.id
       }
     });
+
+    this.notificarDocumentoRhEnviado(
+      atualizada.funcionarioId,
+      "folha de pagamento de férias",
+      obsFinal
+    ).catch((e) => this.logger.error(`Falha ao notificar RH_DOCUMENTO_ENVIADO: ${e}`));
+    this.notificarDocumentoRetornoPendente(
+      atualizada.funcionarioId,
+      "folha de pagamento de férias assinada"
+    ).catch((e) => this.logger.error(`Falha ao notificar DOCUMENTO_RETORNO_PENDENTE: ${e}`));
+
+    return atualizada;
   }
 
   async getSaldoFeriasFuncionario(funcionarioId: string) {
@@ -1446,6 +1845,12 @@ export class AuditoriaService {
       });
     }
     /* HORA_EXTRA: aprovação registrada no status da solicitação; sem efeito adicional no banco */
+
+    if (["FERIAS", "ATESTADO", "LICENCA", "ABONO"].includes(tipo)) {
+      this.notificarAfastamentoRegistrado(funcId, tipo, ref, fim).catch((e) =>
+        this.logger.error(`Falha ao notificar AFASTAMENTO_REGISTRADO: ${e}`)
+      );
+    }
   }
 
   /* ─── Afastamentos ─── */
@@ -1565,14 +1970,28 @@ export class AuditoriaService {
   }
 
   async atualizarStatusPeriodo(id: string, status: "FECHADO" | "APROVADO", aprovadoPor: string) {
-    return this.prisma.periodoPonto.update({
+    const periodo = await this.prisma.periodoPonto.update({
       where: { id },
       data: {
         status,
         ...(status === "FECHADO" ? { fechadoEm: new Date() } : {}),
         ...(status === "APROVADO" ? { aprovadoPor } : {})
+      },
+      include: {
+        funcionario: { include: { user: { select: { name: true } } } }
       }
     });
+
+    if (status === "FECHADO") {
+      const mesNome = new Date(periodo.ano, periodo.mes - 1).toLocaleString("pt-BR", {
+        month: "long"
+      });
+      this.notificarPeriodoFechado(periodo.funcionarioId, mesNome, periodo.ano).catch((e) =>
+        this.logger.error(`Falha ao notificar PERIODO_FECHADO: ${e}`)
+      );
+    }
+
+    return periodo;
   }
 
   /* ─── Banco de Horas ─── */
@@ -1597,29 +2016,31 @@ export class AuditoriaService {
     return { cicloInicio, proximaZeragem, hojeIso };
   }
 
-  /** Soma minutos trabalhados de uma lista de registros.
-   *  @param capMs  Teto para entradas sem saída — use fim-do-dia em dias históricos. */
+  /** Soma minutos trabalhados — mesma regra do Histórico (HH:MM Brasília).
+   *  Trecho em aberto só conta se `capMs` for informado (dia corrente). */
   private calcHorasMinutos(registros: { tipo: string; dataHora: Date }[], capMs?: number): number {
     let total = 0;
-    let entradaTs: Date | null = null;
+    let entradaMin: number | null = null;
     for (const r of registros) {
+      const ts = horarioParaMinutos(horarioDeDataBrasilia(r.dataHora));
       if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-        entradaTs = r.dataHora;
+        entradaMin = ts;
       } else if (
         (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-        entradaTs
+        entradaMin !== null
       ) {
-        total += Math.round((r.dataHora.getTime() - entradaTs.getTime()) / 60000);
-        entradaTs = null;
+        total += ts - entradaMin;
+        entradaMin = null;
       } else if (r.tipo === "FIM_INTERVALO") {
-        entradaTs = r.dataHora;
-      } else if (r.tipo === "SAIDA" && entradaTs) {
-        total += Math.round((r.dataHora.getTime() - entradaTs.getTime()) / 60000);
-        entradaTs = null;
+        entradaMin = ts;
+      } else if (r.tipo === "SAIDA" && entradaMin !== null) {
+        total += ts - entradaMin;
+        entradaMin = null;
       }
     }
-    if (entradaTs) {
-      total += Math.round(((capMs ?? Date.now()) - entradaTs.getTime()) / 60000);
+    if (entradaMin !== null && capMs !== undefined) {
+      const capMin = horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)));
+      total += capMin - entradaMin;
     }
     return total;
   }
@@ -1730,7 +2151,9 @@ export class AuditoriaService {
       });
       const regsDodia = porDia.get(dataAtual) ?? [];
       const eHoje = dataAtual === hojeIso;
-      const capMs = eHoje ? undefined : new Date(`${dataAtual}T23:59:59-03:00`).getTime();
+      /* Mesma regra do Histórico: em dias passados o trecho aberto (ex. retorno
+         sem saída) NÃO conta; no dia corrente usa o horário atual como teto. */
+      const capMs = eHoje ? Date.now() : undefined;
 
       if (eDiaUtil) {
         const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
@@ -1920,6 +2343,19 @@ export class AuditoriaService {
     });
   }
 
+  async excluirDocumentoRhFuncionario(funcionarioId: string, documentoId: string) {
+    const doc = await this.prisma.documentoRhEnvio.findFirst({
+      where: { id: documentoId, funcionarioId }
+    });
+    if (!doc) {
+      throw new NotFoundException("Documento não encontrado.");
+    }
+
+    await this.documentoService.excluirDocumento(doc.arquivoUrl);
+    await this.prisma.documentoRhEnvio.delete({ where: { id: documentoId } });
+    return { ok: true };
+  }
+
   /* ─── Logs de Auditoria ─── */
 
   async getLogs(filtros: {
@@ -1984,6 +2420,7 @@ export class AuditoriaService {
 
     const inicio = new Date(ano, mes - 1, 1, 0, 0, 0);
     const fim = new Date(ano, mes, 0, 23, 59, 59);
+    const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
 
     const registros = await this.prisma.registroPonto.findMany({
       where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
@@ -2006,79 +2443,44 @@ export class AuditoriaService {
       }
     });
 
-    /* Agrupar registros por dia */
+    /* Agrupar registros por dia (para detalhe expandido) */
     const porDia = new Map<string, typeof registros>();
     for (const r of registros) {
-      const key = r.dataHora.toISOString().slice(0, 10);
+      const key = dataBrasiliaISO(r.dataHora);
       if (!porDia.has(key)) porDia.set(key, []);
       porDia.get(key)!.push(r);
     }
 
-    const diasDetalhados = Array.from(porDia.entries()).map(([data, regs]) => {
-      let minutos = 0;
-      let entrada: Date | null = null;
-      for (const r of regs) {
-        if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") entrada = r.dataHora;
-        else if (
-          (r.tipo === "INICIO_INTERVALO" ||
-            r.tipo === "INTERROMPER_EXPEDIENTE" ||
-            r.tipo === "SAIDA") &&
-          entrada
-        ) {
-          minutos += Math.round((r.dataHora.getTime() - entrada.getTime()) / 60000);
-          entrada = null;
-        } else if (r.tipo === "FIM_INTERVALO") entrada = r.dataHora;
-      }
+    /* Totais do card: mesmas regras da página Banco de Horas */
+    const { cicloInicio, hojeIso } = await this.getCicloBancoHoras();
+    const { dias: diasBanco } = await this.calcularBancoHoras(funcionarioId, cicloInicio, hojeIso);
+    const diasMesBanco = diasBanco.filter((d) => d.data.startsWith(mesPrefix));
+
+    const horasTrabalhadasMinutos = diasMesBanco.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
+    const jornadaEsperadaMin = diasMesBanco.reduce((s, d) => s + d.jornadaEsperadaMinutos, 0);
+    const horasExtrasMinutos = diasMesBanco
+      .filter((d) => d.saldoDiaMinutos > 0)
+      .reduce((s, d) => s + d.saldoDiaMinutos, 0);
+    const horasFaltaMinutos = diasMesBanco
+      .filter((d) => d.saldoDiaMinutos < 0)
+      .reduce((s, d) => s + Math.abs(d.saldoDiaMinutos), 0);
+    const saldoMinutos = diasMesBanco.reduce((s, d) => s + d.saldoDiaMinutos, 0);
+    const diasTrabalhados = diasMesBanco.filter(
+      (d) => d.horasTrabalhadasMinutos > 0 && d.observacao !== "Afastamento"
+    ).length;
+
+    const diasDetalhados = diasMesBanco.map((d) => {
+      const regs = porDia.get(d.data) ?? [];
       return {
-        data,
+        data: d.data,
         registros: regs,
-        horasTrabalhadasMinutos: minutos,
-        horasTrabalhadasFormatado: this.formatMinutes(minutos)
+        horasTrabalhadasMinutos: d.horasTrabalhadasMinutos,
+        horasTrabalhadasFormatado: this.formatMinutes(d.horasTrabalhadasMinutos),
+        jornadaEsperadaMinutos: d.jornadaEsperadaMinutos,
+        saldoDiaMinutos: d.saldoDiaMinutos,
+        observacao: d.observacao
       };
     });
-
-    const totalMinutos = diasDetalhados.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
-
-    const feriadosList = await this.prisma.feriadoConfig.findMany({
-      where: { data: { gte: inicio, lte: fim } },
-      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
-    });
-    const cfgMult = await this.prisma.configuracaoSistema.findUnique({
-      where: { id: "singleton" },
-      select: {
-        bancoHorasSabadoPct: true,
-        bancoHorasDomingoPct: true,
-        bancoHorasFeriadoPct: true,
-        horaEntrada: true,
-        horaSaida: true
-      }
-    });
-    const jornadaCtx = resolverJornadaHistoricoContexto({
-      ...func,
-      configuracaoHoraEntrada: cfgMult?.horaEntrada ?? null,
-      configuracaoHoraSaida: cfgMult?.horaSaida ?? null
-    });
-    const quadro = montarRelatorioQuadro(
-      registros,
-      afastamentos,
-      mes,
-      ano,
-      jornadaCtx,
-      feriadosList,
-      cfgMult?.bancoHorasSabadoPct ?? 100,
-      cfgMult?.bancoHorasDomingoPct ?? 200,
-      cfgMult?.bancoHorasFeriadoPct ?? 200
-    );
-
-    const diasTrabalhados = quadro.diasTrabalhados;
-    const jornadaEsperadaMin = quadro.dias.reduce((s, d) => {
-      if (d.statusInterno === "FALTA") return s + jornadaMinParaDia(d.iso, jornadaCtx);
-      if ((d.statusInterno === "OK" || d.statusInterno === "PENDENTE") && !d.multiplicadorPct) {
-        return s + jornadaMinParaDia(d.iso, jornadaCtx);
-      }
-      return s;
-    }, 0);
-    const saldo = quadro.saldoMinutos;
 
     return {
       funcionario: {
@@ -2093,16 +2495,16 @@ export class AuditoriaService {
       ano,
       diasTrabalhados,
       totalRegistros: registros.length,
-      horasTrabalhadasMinutos: totalMinutos,
-      horasTrabalhadasFormatado: this.formatMinutes(totalMinutos),
+      horasTrabalhadasMinutos,
+      horasTrabalhadasFormatado: this.formatMinutes(horasTrabalhadasMinutos),
       jornadaEsperadaMinutos: jornadaEsperadaMin,
       jornadaEsperadaFormatado: this.formatMinutes(jornadaEsperadaMin),
-      horasExtrasMinutos: Math.max(0, saldo),
-      horasExtrasFormatado: this.formatMinutes(Math.max(0, saldo)),
-      horasFaltaMinutos: Math.max(0, -saldo),
-      horasFaltaFormatado: this.formatMinutes(Math.max(0, -saldo)),
-      saldoMinutos: saldo,
-      saldoFormatado: this.formatMinutes(saldo),
+      horasExtrasMinutos,
+      horasExtrasFormatado: this.formatMinutes(horasExtrasMinutos),
+      horasFaltaMinutos,
+      horasFaltaFormatado: this.formatMinutes(horasFaltaMinutos),
+      saldoMinutos,
+      saldoFormatado: this.formatMinutes(saldoMinutos),
       diasDetalhados,
       solicitacoes,
       afastamentos
@@ -2176,5 +2578,84 @@ export class AuditoriaService {
         eventoId
       );
     }
+  }
+
+  private async notificarSolicitacaoAguardandoRh(funcNome: string, tipo: string) {
+    const destinatarios = await this.notificacaoService.getUsuariosRh();
+    if (!destinatarios.length) return;
+
+    const tipoLabel = this.TIPO_LABEL[tipo] ?? tipo;
+    const titulo = `Solicitação aguardando RH — ${funcNome}`;
+    const corpo =
+      `A solicitação de ${tipoLabel} de ${funcNome} foi aprovada pelo gestor ` +
+      "e aguarda análise do RH.\n\nAcesse o sistema para revisar.";
+
+    await this.notificacaoService.dispararEvento(
+      "SOLICITACAO_AGUARDANDO_RH",
+      titulo,
+      corpo,
+      destinatarios
+    );
+  }
+
+  private async notificarDocumentoRhEnviado(
+    funcionarioId: string,
+    documento: string,
+    observacao?: string | null
+  ) {
+    const dest = await this.notificacaoService.getFuncionarioDestinatario(funcionarioId);
+    if (!dest) return;
+
+    const titulo = `Documento recebido do RH`;
+    const corpo =
+      `O RH enviou a ${documento} para você.` +
+      (observacao ? `\n\nObservação: ${observacao}` : "") +
+      "\n\nAcesse o sistema para visualizar.";
+
+    await this.notificacaoService.dispararEvento("RH_DOCUMENTO_ENVIADO", titulo, corpo, [dest]);
+  }
+
+  private async notificarDocumentoRetornoPendente(funcionarioId: string, documento: string) {
+    const dest = await this.notificacaoService.getFuncionarioDestinatario(funcionarioId);
+    if (!dest) return;
+
+    const titulo = `Envio de documento pendente`;
+    const corpo =
+      `É necessário enviar o ${documento} no sistema.\n\n` +
+      "Acesse suas solicitações para anexar o documento de retorno.";
+
+    await this.notificacaoService.dispararEvento("DOCUMENTO_RETORNO_PENDENTE", titulo, corpo, [
+      dest
+    ]);
+  }
+
+  private async notificarAfastamentoRegistrado(
+    funcionarioId: string,
+    tipo: string,
+    inicio: Date,
+    fim: Date
+  ) {
+    const dest = await this.notificacaoService.getFuncionarioDestinatario(funcionarioId);
+    if (!dest) return;
+
+    const tipoLabel = this.TIPO_LABEL[tipo] ?? tipo;
+    const inicioStr = inicio.toLocaleDateString("pt-BR");
+    const fimStr = fim.toLocaleDateString("pt-BR");
+    const titulo = `Afastamento registrado — ${tipoLabel}`;
+    const corpo = `Foi registrado um afastamento de ${tipoLabel} no período de ${inicioStr} a ${fimStr}.`;
+
+    await this.notificacaoService.dispararEvento("AFASTAMENTO_REGISTRADO", titulo, corpo, [dest]);
+  }
+
+  private async notificarPeriodoFechado(funcionarioId: string, mesNome: string, ano: number) {
+    const dest = await this.notificacaoService.getFuncionarioDestinatario(funcionarioId);
+    if (!dest) return;
+
+    const titulo = `Período de ponto fechado — ${mesNome}/${ano}`;
+    const corpo =
+      `O período de ponto de ${mesNome}/${ano} foi fechado pelo RH.\n\n` +
+      "Acesse o sistema para consultar seu quadro.";
+
+    await this.notificacaoService.dispararEvento("PERIODO_FECHADO", titulo, corpo, [dest]);
   }
 }

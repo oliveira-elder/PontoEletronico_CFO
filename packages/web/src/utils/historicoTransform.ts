@@ -80,6 +80,22 @@ export interface JornadaHistorico {
 export interface HistoricoApiResponse {
   mes: number;
   ano: number;
+  /** Primeiro login no sistema (YYYY-MM-DD, Brasília). */
+  inicioAtividades?: string | null;
+  /** Saldo diário do banco de horas (chave YYYY-MM-DD) — mesma fonte de /ponto/banco-horas. */
+  bancoPorDia?: Record<
+    string,
+    {
+      horasTrabalhadasMinutos: number;
+      saldoDiaMinutos: number;
+      saldoAcumuladoMinutos: number;
+      jornadaEsperadaMinutos: number;
+      observacao?: string;
+      neutro: boolean;
+    }
+  >;
+  saldoMesBanco?: number;
+  saldoAcumuladoMes?: number;
   registros: ApiRegistro[];
   afastamentos: ApiAfastamento[];
   feriados?: ApiFeriado[];
@@ -205,7 +221,8 @@ export function transformarHistorico(
   ano: number,
   feriados: ApiFeriado[] = [],
   mult: Multiplicadores = { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
-  jornada: JornadaHistorico = JORNADA_PADRAO
+  jornada: JornadaHistorico = JORNADA_PADRAO,
+  inicioAtividades?: string | null
 ): DiaRegistro[] {
   const hoje = new Date();
   const diasNoMes = new Date(ano, mes, 0).getDate();
@@ -238,6 +255,24 @@ export function transformarHistorico(
     const feriadoDia = feriadoMap[isoKey];
 
     if (isFuture && fimDeSemana) continue;
+
+    /* Antes do primeiro login: não conta falta nem jornada esperada. */
+    if (inicioAtividades && isoKey < inicioAtividades) {
+      if (fimDeSemana && dayRegs.length === 0) continue;
+      result.push({
+        data: dataStr,
+        diaSemana,
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "FOLGA",
+        obs: "Anterior ao primeiro acesso"
+      });
+      continue;
+    }
 
     if (isFuture) {
       result.push({
@@ -426,7 +461,7 @@ export function calcularResumoHistorico(
     .filter((r) => r.status === "OK" || r.status === "PENDENTE")
     .reduce((s, r) => s + r.horasMin, 0);
   const horasEsperadasMinutos = dias
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO")
+    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA")
     .reduce((s, r) => s + r.jornadaMin, 0);
   const saldoMinutos = horasTrabalhadasMinutos - horasEsperadasMinutos;
 
@@ -454,7 +489,8 @@ export function resumoFromHistoricoApi(
     ano,
     data?.feriados ?? [],
     data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
-    data?.jornada ?? JORNADA_PADRAO
+    data?.jornada ?? JORNADA_PADRAO,
+    data?.inicioAtividades ?? null
   );
   return calcularResumoHistorico(dias, mes, ano);
 }

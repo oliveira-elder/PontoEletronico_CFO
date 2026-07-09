@@ -44,14 +44,18 @@ else
 fi
 
 echo "[backend] Compilando API..."
-# dist fica em volume Docker (backend_dist) — evita conflito com dist root no host
-rm -rf /app/packages/backend/dist/* 2>/dev/null || true
 mkdir -p /app/packages/backend/dist
 
-if ! npm run build -w @intranet/backend; then
-  echo "[backend] AVISO: build falhou — tentando nest start --watch..."
-  exec npm run dev -w @intranet/backend
+if npm run build -w @intranet/backend; then
+  echo "[backend] Build OK — iniciando API na porta ${PORT:-3000}..."
+  exec npm run start -w @intranet/backend
 fi
 
-echo "[backend] Iniciando API na porta ${PORT:-3000}..."
-exec npm run start -w @intranet/backend
+echo "[backend] AVISO: build falhou."
+if [ -f /app/packages/backend/dist/main.js ]; then
+  echo "[backend] Usando dist existente..."
+  exec npm run start -w @intranet/backend
+fi
+
+echo "[backend] Sem dist válido — tentando nest start --watch..."
+exec npm run dev -w @intranet/backend

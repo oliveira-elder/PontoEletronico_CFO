@@ -10,7 +10,7 @@ import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
-import { intervaloDiaBrasilia } from "../../utils/horario-brasilia";
+import { dataBrasiliaISO, intervaloDiaBrasilia } from "../../utils/horario-brasilia";
 import {
   montarRelatorioQuadro,
   resolverJornadaHistoricoContexto
@@ -448,7 +448,8 @@ export class AssinaturaService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
+        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } },
+        user: { select: { createdAt: true } }
       }
     });
     const cfgJornada = await this.prisma.configuracaoSistema.findUnique({
@@ -497,7 +498,8 @@ export class AssinaturaService {
         feriados,
         cfg?.bancoHorasSabadoPct ?? 100,
         cfg?.bancoHorasDomingoPct ?? 200,
-        cfg?.bancoHorasFeriadoPct ?? 200
+        cfg?.bancoHorasFeriadoPct ?? 200,
+        funcJornada?.user?.createdAt ? dataBrasiliaISO(funcJornada.user.createdAt) : null
       ),
       jornada
     };

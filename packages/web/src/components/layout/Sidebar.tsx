@@ -47,7 +47,7 @@ const auditoriaNav: NavItem[] = [
   { path: "/ponto/auditoria", label: "Auditoria", icon: <ShieldCheckIcon size={18} /> }
 ];
 
-/* Itens administrativos: apenas para admins/super admin */
+/* Itens administrativos: admins e RH */
 const adminBottomNav: NavItem[] = [
   { path: "/ponto/configuracoes", label: "Configurações", icon: <SettingsIcon size={18} /> }
 ];
@@ -98,7 +98,7 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
   const visibleAprovacaoNav = isGestor ? aprovacaoNav : [];
   const visibleGestaoRhNav = isRH ? gestaoRhNav : [];
   const visibleAuditoriaNav = isRH ? auditoriaNav : [];
-  const visibleAdminBottomNav = isAdmin ? adminBottomNav : [];
+  const visibleAdminBottomNav = isAdmin || isRH ? adminBottomNav : [];
   const visibleSuperAdminNav = isSuperAdmin ? superAdminNav : [];
 
   function setExp(v: boolean) {

@@ -12,7 +12,7 @@ export class GestaoController {
   /* ─── Gerências ─── */
 
   @Get("gerencias")
-  @Roles("gestor", "ponto-admin")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
   listGerencias() {
     return this.gestaoService.listGerencias();
   }

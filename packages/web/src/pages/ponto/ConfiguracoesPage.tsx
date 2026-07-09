@@ -533,6 +533,76 @@ const EVENTOS_NOTIFICACAO = [
       "de assinatura foi concluído.",
     destinatario: "Funcionário",
     gatilho: "Automático — ao gestor concluir a assinatura"
+  },
+  {
+    id: "SOLICITACAO_NOVA_GESTOR",
+    titulo: "Nova Solicitação — Aviso ao Gestor",
+    descricao:
+      "Notifica o gestor quando um funcionário da equipe abre uma nova solicitação " +
+      "(férias, atestado, licença, correção de ponto etc.).",
+    destinatario: "Gestor",
+    gatilho: "Automático — ao funcionário criar solicitação"
+  },
+  {
+    id: "SOLICITACAO_AGUARDANDO_RH",
+    titulo: "Solicitação Aguardando RH",
+    descricao:
+      "Notifica a equipe de RH quando o gestor aprova uma solicitação e ela passa " +
+      "para análise do RH.",
+    destinatario: "RH",
+    gatilho: "Automático — ao gestor encaminhar para o RH"
+  },
+  {
+    id: "RH_DOCUMENTO_ENVIADO",
+    titulo: "Documento Enviado pelo RH",
+    descricao:
+      "Notifica o funcionário quando o RH envia a guia médica ou a folha de pagamento " +
+      "de férias para assinatura.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH enviar guia ou folha de férias"
+  },
+  {
+    id: "DOCUMENTO_RETORNO_PENDENTE",
+    titulo: "Documento de Retorno Pendente",
+    descricao:
+      "Notifica o funcionário quando é necessário enviar o documento de retorno " +
+      "(atestado assinado, folha de férias assinada etc.).",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao solicitar documento de retorno"
+  },
+  {
+    id: "REGISTRO_PONTO",
+    titulo: "Registro de Ponto",
+    descricao:
+      "Notifica o gestor quando um funcionário da equipe registra entrada ou saída " +
+      "no ponto eletrônico.",
+    destinatario: "Gestor",
+    gatilho: "Automático — ao registrar entrada ou saída"
+  },
+  {
+    id: "AFASTAMENTO_REGISTRADO",
+    titulo: "Afastamento Registrado",
+    descricao:
+      "Notifica o funcionário quando um afastamento (férias, atestado, licença, abono) " +
+      "é registrado após aprovação da solicitação.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao aprovar solicitação com afastamento"
+  },
+  {
+    id: "PERIODO_FECHADO",
+    titulo: "Período de Ponto Fechado",
+    descricao: "Notifica o funcionário quando o período mensal de ponto é fechado pelo RH.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao fechar período"
+  },
+  {
+    id: "REQUISICAO_RH",
+    titulo: "Requisição do RH",
+    descricao:
+      "Notifica o funcionário quando o RH cria uma requisição dirigida a ele " +
+      "(periódico, exame médico, férias, assinatura de documentos etc.).",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH criar requisição"
   }
 ];
 
@@ -714,16 +784,9 @@ function TabNotificacoes({ isSuperAdmin }: { isSuperAdmin: boolean }) {
 
   const toggleNotif = useCallback(
     async (id: string, campo: "ativoEmail" | "ativoSistema", valor: boolean) => {
-      let anterior: NotifCfg | undefined;
-      setNotifCfgs((prev) => {
-        anterior = prev.find((c) => c.id === id);
-        return prev.map((c) => (c.id === id ? { ...c, [campo]: valor } : c));
-      });
+      setNotifCfgs((prev) => prev.map((c) => (c.id === id ? { ...c, [campo]: valor } : c)));
       try {
-        await api.put(`/notificacao/config/${id}`, {
-          ativoEmail: campo === "ativoEmail" ? valor : (anterior?.ativoEmail ?? false),
-          ativoSistema: campo === "ativoSistema" ? valor : (anterior?.ativoSistema ?? false)
-        });
+        await api.put(`/notificacao/config/${id}`, { [campo]: valor });
       } catch {
         setNotifCfgs((prev) => prev.map((c) => (c.id === id ? { ...c, [campo]: !valor } : c)));
       }
@@ -1517,6 +1580,14 @@ export function ConfiguracoesPage() {
     marcoLado: "DEPOIS" as "ANTES" | "DEPOIS"
   });
   const [editandoFeriado, setEditandoFeriado] = useState<FeriadoConfig | null>(null);
+  const [feriadoSyncMsg, setFeriadoSyncMsg] = useState<string | null>(null);
+
+  function notificarSyncFeriadosApi() {
+    setFeriadoSyncMsg(
+      "Alteração publicada automaticamente na API Servidora para sistemas conectados."
+    );
+    window.setTimeout(() => setFeriadoSyncMsg(null), 5000);
+  }
 
   // Mapa modal
   const [mapaModal, setMapaModal] = useState(false);
@@ -1701,11 +1772,13 @@ export function ConfiguracoesPage() {
   async function toggleFeriadoBloqueio(f: FeriadoConfig) {
     const updated = await api.patch<FeriadoConfig>(`/ponto/config/feriados/${f.id}/bloqueio`);
     setFeriados((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
+    notificarSyncFeriadosApi();
   }
 
   async function deletarFeriado(id: string) {
     await api.delete(`/ponto/config/feriados/${id}`);
     setFeriados((prev) => prev.filter((x) => x.id !== id));
+    notificarSyncFeriadosApi();
   }
 
   function abrirModalDia(dia: number, feriado: FeriadoConfig | null) {
@@ -1771,6 +1844,7 @@ export function ConfiguracoesPage() {
       setFeriadosMes(d.getUTCMonth());
     }
     setFeriadoModal(false);
+    notificarSyncFeriadosApi();
     setFeriadoForm({
       data: "",
       nome: "",
@@ -5834,6 +5908,26 @@ export function ConfiguracoesPage() {
             <>
               {/* Cabeçalho do calendário: navegação */}
               <Secao titulo="Calendário de Feriados" icon={<CalendarIcon size={18} />}>
+                {feriadoSyncMsg && (
+                  <div
+                    style={{
+                      marginBottom: 12,
+                      padding: "10px 14px",
+                      borderRadius: 8,
+                      background: "#dcfce7",
+                      border: "1px solid #86efac",
+                      color: "#15803d",
+                      fontSize: 13
+                    }}
+                  >
+                    {feriadoSyncMsg}
+                  </div>
+                )}
+                <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--ink-500)" }}>
+                  Alterações manuais neste calendário são enviadas automaticamente para a API
+                  Servidora com <strong>todos os feriados configurados</strong> (todos os anos),
+                  disponibilizando os dados atualizados para os demais sistemas integrados.
+                </p>
                 {/* Navegação mês/ano */}
                 <div
                   style={{

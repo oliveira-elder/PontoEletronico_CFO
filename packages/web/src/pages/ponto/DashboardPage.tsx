@@ -110,6 +110,12 @@ function computeSemana(registros: { tipo: string; dataHora: string }[], today: D
   });
 }
 
+/** Dias com registro na semana profissional atual (seg–sex). */
+function progressoSemanaProfissional(semana: DiaSemana[]) {
+  const diasTrabalhados = semana.filter((d) => d.status === "OK" || d.status === "PARCIAL").length;
+  return { diasTrabalhados, diasUteis: 5 };
+}
+
 /* ─── Config visual de estado ─── */
 const ESTADO_COR = {
   TRABALHANDO: "var(--green)",
@@ -717,7 +723,10 @@ export function DashboardPage() {
   const diasTrab = relatorio?.diasTrabalhados ?? 0;
   const saldoMes = relatorio?.saldoMinutos ?? 0;
 
-  /* Dias úteis do mês atual até hoje */
+  const { diasTrabalhados: diasTrabSemana, diasUteis: diasUteisSemana } =
+    progressoSemanaProfissional(semana);
+
+  /* Dias úteis do mês atual até hoje (para o card mensal de dias trabalhados) */
   const diasUteisMes = (() => {
     const h = new Date();
     let c = 0;
@@ -1041,7 +1050,7 @@ export function DashboardPage() {
               {
                 label: "Dias Trabalhados",
                 value: `${diasTrab}`,
-                sub: `de ${diasUteisMes} úteis`,
+                sub: `de ${diasUteisMes} úteis no mês`,
                 ok: true
               },
               {
@@ -1087,18 +1096,18 @@ export function DashboardPage() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
               <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
-                {diasTrab} de {diasUteisMes} dias úteis
+                {diasTrabSemana} de {diasUteisSemana} dias úteis
               </span>
               <span
                 style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}
               >
-                {diasUteisMes > 0 ? Math.round((diasTrab / diasUteisMes) * 100) : 0}%
+                {diasUteisSemana > 0 ? Math.round((diasTrabSemana / diasUteisSemana) * 100) : 0}%
               </span>
             </div>
             <div style={{ height: 5, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
               <div
                 style={{
-                  width: `${diasUteisMes > 0 ? (diasTrab / diasUteisMes) * 100 : 0}%`,
+                  width: `${diasUteisSemana > 0 ? (diasTrabSemana / diasUteisSemana) * 100 : 0}%`,
                   height: "100%",
                   background: "var(--burgundy-600)",
                   borderRadius: 3
@@ -1484,7 +1493,7 @@ export function DashboardPage() {
             {
               label: "Dias Trabalhados",
               value: `${diasTrab}`,
-              sub: `de ${diasUteisMes} dias`,
+              sub: `de ${diasUteisMes} úteis no mês`,
               ok: true
             },
             {
@@ -1531,16 +1540,16 @@ export function DashboardPage() {
         <div style={{ marginTop: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
             <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
-              Progresso ({diasTrab} de {diasUteisMes} dias úteis)
+              Progresso ({diasTrabSemana} de {diasUteisSemana} dias úteis)
             </span>
             <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}>
-              {diasUteisMes > 0 ? Math.round((diasTrab / diasUteisMes) * 100) : 0}%
+              {diasUteisSemana > 0 ? Math.round((diasTrabSemana / diasUteisSemana) * 100) : 0}%
             </span>
           </div>
           <div style={{ height: 6, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
             <div
               style={{
-                width: `${diasUteisMes > 0 ? (diasTrab / diasUteisMes) * 100 : 0}%`,
+                width: `${diasUteisSemana > 0 ? (diasTrabSemana / diasUteisSemana) * 100 : 0}%`,
                 height: "100%",
                 background: "var(--burgundy-600)",
                 borderRadius: 3
@@ -1569,7 +1578,7 @@ export function DashboardPage() {
           <p style={{ fontSize: 13, color: "var(--ink-700)" }}>
             {saldoMes >= 0
               ? "Ponto em dia — nenhuma pendência registrada para o período atual."
-              : `Saldo negativo de ${toHM(Math.abs(saldoMes))} — verifique seus registros no histórico.`}
+              : `Saldo negativo de ${toHM(Math.abs(saldoMes))} — verifique seu banco de horas.`}
           </p>
         </div>
         {proximaLabel && (

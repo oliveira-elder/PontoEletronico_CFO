@@ -44,6 +44,7 @@ interface DiaBanco {
 interface ApiBancoHoras {
   saldoAtualMinutos: number;
   cicloInicio: string | null;
+  inicioAtividades?: string;
   proximaZeragem: string | null;
   limiteMinutos: number;
   tipoFlexibilidade: string;
@@ -182,7 +183,9 @@ export function BancoHorasPage() {
               <p style={{ fontSize: 13 }}>
                 {dados.cicloInicio
                   ? `Ciclo desde ${fmtData(dados.cicloInicio)}`
-                  : "Ciclo desde o início dos registros"}
+                  : dados.inicioAtividades
+                    ? `Ciclo desde o primeiro acesso (${fmtData(dados.inicioAtividades)})`
+                    : "Ciclo desde o primeiro acesso"}
                 {dados.proximaZeragem
                   ? ` · próxima zeragem em ${fmtData(dados.proximaZeragem)}`
                   : " · sem data de zeragem configurada"}

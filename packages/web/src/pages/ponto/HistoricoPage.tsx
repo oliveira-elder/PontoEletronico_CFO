@@ -55,14 +55,14 @@ function fmtBH(min: number): string {
 function ModalAssinarQuadro({
   assinatura,
   totalTrabMin,
-  totalJornadaMin,
+  saldoMesBanco,
   onClose,
   onConfirm,
   loading
 }: {
   assinatura: AssinaturaQuadro;
   totalTrabMin: number;
-  totalJornadaMin: number;
+  saldoMesBanco: number;
   onClose: () => void;
   onConfirm: () => void;
   loading: boolean;
@@ -71,7 +71,7 @@ function ModalAssinarQuadro({
     "pt-BR",
     { month: "long", year: "numeric" }
   );
-  const saldoMin = totalTrabMin - totalJornadaMin;
+  const saldoMin = saldoMesBanco;
   return (
     <div
       style={{
@@ -328,14 +328,19 @@ function StatusPill({ status, obs }: { status: StatusDia; obs?: string }) {
     FOLGA: { label: "Folga", cls: "badge-gray" }
   };
   const { label, cls } = map[status];
-  const titulo = (status === "AFASTAMENTO" || status === "FERIADO") && obs ? obs : undefined;
+  const titulo =
+    (status === "AFASTAMENTO" || status === "FERIADO" || status === "FOLGA") && obs
+      ? obs
+      : undefined;
   return (
     <span className={`badge ${cls}`} title={titulo}>
       {status === "AFASTAMENTO" && obs
         ? obs
         : status === "FERIADO" && obs
           ? `Feriado: ${obs}`
-          : label}
+          : status === "FOLGA" && obs
+            ? obs
+            : label}
     </span>
   );
 }
@@ -343,15 +348,22 @@ function StatusPill({ status, obs }: { status: StatusDia; obs?: string }) {
 function SaldoCell({
   trabMin,
   jornadaMin,
-  status
+  status,
+  saldoBancoMin,
+  saldoBancoNeutro
 }: {
   trabMin: number;
   jornadaMin: number;
   status: StatusDia;
+  saldoBancoMin?: number | null;
+  saldoBancoNeutro?: boolean;
 }) {
-  if (status === "FUTURO" || status === "AFASTAMENTO")
+  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "FOLGA")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
-  if (status === "FALTA") {
+  if (saldoBancoNeutro) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  const saldo =
+    saldoBancoMin !== undefined && saldoBancoMin !== null ? saldoBancoMin : trabMin - jornadaMin;
+  if (status === "FALTA" && saldoBancoMin === undefined) {
     const h = Math.floor(jornadaMin / 60);
     const m = jornadaMin % 60;
     return (
@@ -360,7 +372,6 @@ function SaldoCell({
       </span>
     );
   }
-  const saldo = trabMin - jornadaMin;
   const h = Math.floor(Math.abs(saldo) / 60);
   const m = Math.abs(saldo) % 60;
   return (
@@ -375,6 +386,11 @@ function SaldoCell({
       {h}h{String(m).padStart(2, "0")}
     </span>
   );
+}
+
+function dataPtParaIso(data: string): string {
+  const [d, m, y] = data.split("/");
+  return `${y}-${m}-${d}`;
 }
 
 function PausaCell({ pausas }: { pausas?: Pausa[] }) {
@@ -596,11 +612,15 @@ const MESES_PT = [
 function PopupMesAno({
   mes,
   ano,
+  minMes,
+  minAno,
   onSelect,
   onClose
 }: {
   mes: number;
   ano: number;
+  minMes: number;
+  minAno: number;
   onSelect: (m: number, a: number) => void;
   onClose: () => void;
 }) {
@@ -620,7 +640,7 @@ function PopupMesAno({
 
   function navAno(d: -1 | 1) {
     const next = anoLocal + d;
-    if (next > maxAno) return;
+    if (next > maxAno || next < minAno) return;
     setAnoLocal(next);
   }
 
@@ -652,12 +672,13 @@ function PopupMesAno({
       >
         <button
           onClick={() => navAno(-1)}
+          disabled={anoLocal <= minAno}
           style={{
             background: "none",
             border: "none",
-            cursor: "pointer",
+            cursor: anoLocal <= minAno ? "default" : "pointer",
             padding: "4px 8px",
-            color: "#6B0F1A",
+            color: anoLocal <= minAno ? "#ccc" : "#6B0F1A",
             fontSize: 16,
             lineHeight: 1
           }}
@@ -695,11 +716,12 @@ function PopupMesAno({
         {MESES_PT.map((nome, i) => {
           const m = i + 1;
           const isFuture = anoLocal === maxAno && m > maxMes;
+          const isBeforeInicio = anoLocal < minAno || (anoLocal === minAno && m < minMes);
           const isSelected = m === mes && anoLocal === ano;
           return (
             <button
               key={m}
-              disabled={isFuture}
+              disabled={isFuture || isBeforeInicio}
               onClick={() => {
                 onSelect(m, anoLocal);
                 onClose();
@@ -708,11 +730,11 @@ function PopupMesAno({
                 padding: "6px 4px",
                 borderRadius: 6,
                 border: "none",
-                cursor: isFuture ? "default" : "pointer",
+                cursor: isFuture || isBeforeInicio ? "default" : "pointer",
                 fontSize: 11.5,
                 fontWeight: isSelected ? 700 : 400,
                 background: isSelected ? "var(--burgundy-700, #6B0F1A)" : "transparent",
-                color: isSelected ? "white" : isFuture ? "#ccc" : "#334155",
+                color: isSelected ? "white" : isFuture || isBeforeInicio ? "#ccc" : "#334155",
                 transition: "background 0.1s"
               }}
               onMouseEnter={(e) => {
@@ -739,6 +761,9 @@ export function HistoricoPage() {
   const isMobile = useIsMobile(768);
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
+  const [inicioAtividades, setInicioAtividades] = useState<string | null>(null);
+  const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
+  const [saldoMesBanco, setSaldoMesBanco] = useState(0);
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalObs, setModalObs] = useState<{
@@ -761,7 +786,11 @@ export function HistoricoPage() {
 
       api
         .get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`)
-        .then((data) =>
+        .then((data) => {
+          const inicio = data?.inicioAtividades ?? null;
+          setInicioAtividades(inicio);
+          setBancoPorDia(data?.bancoPorDia ?? {});
+          setSaldoMesBanco(data?.saldoMesBanco ?? 0);
           setRegistros(
             transformarHistorico(
               data?.registros ?? [],
@@ -770,12 +799,17 @@ export function HistoricoPage() {
               ano,
               data?.feriados ?? [],
               data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
-              data?.jornada ?? JORNADA_PADRAO
+              data?.jornada ?? JORNADA_PADRAO,
+              inicio
             )
-          )
-        )
+          );
+        })
         .catch(() => {
-          if (!silent) setRegistros(transformarHistorico([], [], mes, ano));
+          if (!silent) {
+            setBancoPorDia({});
+            setSaldoMesBanco(0);
+            setRegistros(transformarHistorico([], [], mes, ano));
+          }
         })
         .finally(() => setLoading(false));
     },
@@ -856,9 +890,23 @@ export function HistoricoPage() {
       nm = 1;
       na++;
     }
+    if (inicioAtividades) {
+      const [iy, im] = inicioAtividades.split("-").map(Number);
+      const minMes = im;
+      const minAno = iy;
+      if (na < minAno || (na === minAno && nm < minMes)) return;
+    }
     setMes(nm);
     setAno(na);
   }
+
+  const minMesAno = inicioAtividades
+    ? {
+        minMes: Number(inicioAtividades.split("-")[1]),
+        minAno: Number(inicioAtividades.split("-")[0])
+      }
+    : { minMes: 1, minAno: 2000 };
+  const noMesMinimo = mes === minMesAno.minMes && ano === minMesAno.minAno;
 
   const nomeMes = new Date(ano, mes - 1).toLocaleDateString("pt-BR", {
     month: "long",
@@ -871,11 +919,17 @@ export function HistoricoPage() {
   const totalOK = registros.filter((r) => r.status === "OK").length;
   const totalAfastamentos = registros.filter((r) => r.status === "AFASTAMENTO").length;
   const totalDiasUteis = registros.filter(
-    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO"
+    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA"
   ).length;
   const totalJornadaMin = registros
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO")
+    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA")
     .reduce((s, r) => s + r.jornadaMin, 0);
+
+  const fmtSaldoBanco = (min: number) => {
+    const h = Math.floor(Math.abs(min) / 60);
+    const m = Math.abs(min) % 60;
+    return `${min >= 0 ? "+" : "−"}${h}h${String(m).padStart(2, "0")}`;
+  };
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -944,7 +998,13 @@ export function HistoricoPage() {
           <button
             className="btn-icon"
             onClick={() => navMes(-1)}
-            style={{ background: "white", border: "1px solid rgba(122,30,38,0.12)", flexShrink: 0 }}
+            disabled={noMesMinimo}
+            style={{
+              background: "white",
+              border: "1px solid rgba(122,30,38,0.12)",
+              flexShrink: 0,
+              opacity: noMesMinimo ? 0.4 : 1
+            }}
           >
             <ArrowLeftIcon size={16} />
           </button>
@@ -983,6 +1043,8 @@ export function HistoricoPage() {
               <PopupMesAno
                 mes={mes}
                 ano={ano}
+                minMes={minMesAno.minMes}
+                minAno={minMesAno.minAno}
                 onSelect={(m, a) => {
                   setMes(m);
                   setAno(a);
@@ -1022,6 +1084,12 @@ export function HistoricoPage() {
                 {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
                 trabalhadas
               </span>
+              <span
+                className={saldoMesBanco >= 0 ? "badge badge-green" : "badge badge-red"}
+                title="Saldo do mês (banco de horas)"
+              >
+                Saldo: {fmtSaldoBanco(saldoMesBanco)}
+              </span>
             </div>
           )}
         </div>
@@ -1042,6 +1110,9 @@ export function HistoricoPage() {
               {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
               trabalhadas
             </span>
+            <span className={saldoMesBanco >= 0 ? "badge badge-green" : "badge badge-red"}>
+              Saldo: {fmtSaldoBanco(saldoMesBanco)}
+            </span>
           </div>
         )}
       </div>
@@ -1051,7 +1122,7 @@ export function HistoricoPage() {
         <ModalAssinarQuadro
           assinatura={assinatura}
           totalTrabMin={totalTrabMin}
-          totalJornadaMin={totalJornadaMin}
+          saldoMesBanco={saldoMesBanco}
           onClose={() => setModalAssinar(false)}
           onConfirm={confirmarAssinatura}
           loading={loadingAssinar}
@@ -1106,6 +1177,8 @@ export function HistoricoPage() {
                   const isHoje =
                     r.data ===
                     `${String(hoje.getDate()).padStart(2, "0")}/${String(hoje.getMonth() + 1).padStart(2, "0")}/${hoje.getFullYear()}`;
+                  const isoKey = dataPtParaIso(r.data);
+                  const bancoDia = bancoPorDia?.[isoKey];
                   return (
                     <tr
                       key={i}
@@ -1146,6 +1219,8 @@ export function HistoricoPage() {
                           trabMin={r.horasMin}
                           jornadaMin={r.jornadaMin}
                           status={r.status}
+                          saldoBancoMin={bancoDia?.saldoDiaMinutos}
+                          saldoBancoNeutro={bancoDia?.neutro}
                         />
                       </td>
                       <td
@@ -1209,7 +1284,12 @@ export function HistoricoPage() {
                       {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}
                     </td>
                     <td>
-                      <SaldoCell trabMin={totalTrabMin} jornadaMin={totalJornadaMin} status="OK" />
+                      <SaldoCell
+                        trabMin={totalTrabMin}
+                        jornadaMin={totalJornadaMin}
+                        status="OK"
+                        saldoBancoMin={saldoMesBanco}
+                      />
                     </td>
                     <td style={{ width: "1%", paddingLeft: 10, paddingRight: 10 }} />
                   </tr>
@@ -1230,7 +1310,7 @@ export function HistoricoPage() {
           { cls: "badge-amber", label: "Pendente (saída não registrada)" },
           { cls: "badge-red", label: "Falta" },
           { cls: "badge-blue", label: "Afastamento justificado" },
-          { cls: "badge-gray", label: "Feriado ou dia futuro" }
+          { cls: "badge-gray", label: "Feriado, folga ou dia futuro" }
         ].map((item) => (
           <span
             key={item.label}

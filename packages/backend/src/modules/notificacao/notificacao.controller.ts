@@ -31,7 +31,7 @@ function assertSuperAdmin(req: AuthRequest) {
 
 @Controller("notificacao")
 @UseGuards(AuthGuard("jwt"), RolesGuard)
-@Roles("ponto-admin", "PONTO_ADMIN")
+@Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
 export class NotificacaoController {
   constructor(private readonly svc: NotificacaoService) {}
 

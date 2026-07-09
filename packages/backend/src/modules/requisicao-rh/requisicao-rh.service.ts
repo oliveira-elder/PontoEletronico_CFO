@@ -2,16 +2,23 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
-  BadRequestException
+  BadRequestException,
+  Logger
 } from "@nestjs/common";
 import { join } from "path";
 import { mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { PrismaService } from "../../prisma/prisma.service";
+import { NotificacaoService } from "../notificacao/notificacao.service";
 
 @Injectable()
 export class RequisicaoRhService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(RequisicaoRhService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificacaoService: NotificacaoService
+  ) {}
 
   // ── Resolução keycloakSub → IDs internos ──────────────────
 
@@ -78,26 +85,33 @@ export class RequisicaoRhService {
     }
   ) {
     const criadoPorId = await this.resolveUserId(keycloakSub);
-    const { tipo, titulo, descricao, arquivoBase64, prazo, destinatarios } = body;
+    const {
+      tipo,
+      titulo,
+      descricao,
+      arquivoBase64,
+      prazo,
+      destinatarios: configDestinatarios
+    } = body;
 
     let funcionarioIds: string[] = [];
-    if (destinatarios.modo === "individual") {
-      if (destinatarios.funcionariosComDocumentos?.length) {
-        funcionarioIds = destinatarios.funcionariosComDocumentos.map((f) => f.funcionarioId);
+    if (configDestinatarios.modo === "individual") {
+      if (configDestinatarios.funcionariosComDocumentos?.length) {
+        funcionarioIds = configDestinatarios.funcionariosComDocumentos.map((f) => f.funcionarioId);
       } else {
-        funcionarioIds = destinatarios.funcionarioIds ?? [];
+        funcionarioIds = configDestinatarios.funcionarioIds ?? [];
       }
-    } else if (destinatarios.modo === "gerencia") {
-      if (!destinatarios.gerenciaId) throw new BadRequestException("gerenciaId obrigatório");
+    } else if (configDestinatarios.modo === "gerencia") {
+      if (!configDestinatarios.gerenciaId) throw new BadRequestException("gerenciaId obrigatório");
       const funcs = await this.prisma.funcionario.findMany({
-        where: { gerenciaId: destinatarios.gerenciaId, ativo: true },
+        where: { gerenciaId: configDestinatarios.gerenciaId, ativo: true },
         select: { id: true }
       });
       funcionarioIds = funcs.map((f) => f.id);
-    } else if (destinatarios.modo === "categoria") {
-      if (!destinatarios.categoria) throw new BadRequestException("categoria obrigatória");
+    } else if (configDestinatarios.modo === "categoria") {
+      if (!configDestinatarios.categoria) throw new BadRequestException("categoria obrigatória");
       const funcs = await this.prisma.funcionario.findMany({
-        where: { categoria: destinatarios.categoria as never, ativo: true },
+        where: { categoria: configDestinatarios.categoria as never, ativo: true },
         select: { id: true }
       });
       funcionarioIds = funcs.map((f) => f.id);
@@ -131,9 +145,12 @@ export class RequisicaoRhService {
     }
 
     // Salvar documentos individuais por destinatário
-    if (destinatarios.modo === "individual" && destinatarios.funcionariosComDocumentos?.length) {
+    if (
+      configDestinatarios.modo === "individual" &&
+      configDestinatarios.funcionariosComDocumentos?.length
+    ) {
       const docsMap = new Map(
-        destinatarios.funcionariosComDocumentos
+        configDestinatarios.funcionariosComDocumentos
           .filter((f) => f.arquivoBase64)
           .map((f) => [f.funcionarioId, f.arquivoBase64!])
       );
@@ -153,6 +170,20 @@ export class RequisicaoRhService {
           }
         }
       }
+    }
+
+    const destinatariosEmail =
+      await this.notificacaoService.getDestinatariosFuncionarios(funcionarioIds);
+    if (destinatariosEmail.length) {
+      const prazoStr = prazo ? new Date(prazo + "T12:00:00Z").toLocaleDateString("pt-BR") : null;
+      const corpo =
+        (descricao ? `${descricao}\n\n` : "") +
+        (prazoStr ? `Prazo: ${prazoStr}\n\n` : "") +
+        "Acesse o sistema em Minhas Requisições do RH para visualizar e responder.";
+
+      this.notificacaoService
+        .dispararEvento("REQUISICAO_RH", titulo, corpo, destinatariosEmail)
+        .catch((e) => this.logger.error(`Falha REQUISICAO_RH: ${e}`));
     }
 
     return { ...req, totalDestinatarios: funcionarioIds.length };

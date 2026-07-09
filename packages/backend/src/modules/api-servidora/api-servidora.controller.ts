@@ -62,6 +62,24 @@ export class ApiTokensController {
   }
 }
 
+@Controller("logs/api-servidora")
+@UseGuards(AuthGuard("jwt"))
+export class ApiServidoraAdminController {
+  constructor(private readonly svc: ApiServidoraService) {}
+
+  @Get("config")
+  getConfig(@Req() req: AuthRequest) {
+    assertSuperAdmin(req);
+    return this.svc.getPublicApiConfig();
+  }
+
+  @Get("feriados-preview")
+  getFeriadosPreview(@Req() req: AuthRequest) {
+    assertSuperAdmin(req);
+    return this.svc.getFeriados();
+  }
+}
+
 /* ─── Endpoints públicos (requerem ApiToken Bearer) ─── */
 @Controller("api-publica/v1")
 @UseGuards(ApiTokenGuard)

@@ -1,10 +1,107 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { randomBytes, createHash } from "crypto";
 import { PrismaService } from "../../prisma/prisma.service";
 
+export type FeriadoSyncAction = "create" | "update" | "delete" | "import" | "toggle";
+
 @Injectable()
 export class ApiServidoraService {
+  private readonly logger = new Logger(ApiServidoraService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  private getApiBaseUrl(): string {
+    return (process.env.PUBLIC_API_BASE_URL ?? "http://192.168.161.50:12003/api").replace(
+      /\/$/,
+      ""
+    );
+  }
+
+  getPublicApiConfig() {
+    const apiBaseUrl = this.getApiBaseUrl();
+    const endpointBase = `${apiBaseUrl}/api-publica/v1`;
+    const apiHost = apiBaseUrl.replace(/\/api$/, "");
+
+    return {
+      schemaVersion: "v1",
+      systemKey: process.env.API_PUBLICA_SYSTEM_KEY ?? "ponto-eletronico-cfo",
+      apiBaseUrl,
+      apiHost,
+      endpointBase,
+      feriadoSyncMode: "automatic" as const,
+      endpoints: {
+        feriados: `${endpointBase}/feriados`,
+        configuracoes: `${endpointBase}/configuracoes`
+      },
+      instructions:
+        "Alterações manuais no calendário de feriados são publicadas automaticamente na API pública com todos os anos configurados (sem filtro de ano). Sistemas externos devem consultar GET /feriados (pull) ou configurar FERIADO_SYNC_WEBHOOK_URLS para receber notificações push."
+    };
+  }
+
+  /** Publica alterações de feriados para webhooks configurados e registra log de sync. */
+  async notifyFeriadosChanged(
+    action: FeriadoSyncAction,
+    meta?: Record<string, unknown>
+  ): Promise<{ ok: boolean; webhooksNotified: number }> {
+    const payload = await this.getFeriados();
+    const event = {
+      event: "feriados.updated",
+      action,
+      ...payload,
+      meta: meta ?? null
+    };
+
+    const urls = (process.env.FERIADO_SYNC_WEBHOOK_URLS ?? "")
+      .split(",")
+      .map((u) => u.trim())
+      .filter(Boolean);
+
+    let webhooksNotified = 0;
+    for (const url of urls) {
+      try {
+        const ok = await this.postWebhook(url, event);
+        if (ok) webhooksNotified++;
+      } catch (err) {
+        this.logger.warn(`Webhook feriados falhou (${url}): ${String(err)}`);
+      }
+    }
+
+    await this.prisma.syncLog.create({
+      data: {
+        source: "feriados-api",
+        status: "success",
+        details: {
+          action,
+          totalFeriados: payload.totalFeriados,
+          anosDisponiveis: payload.anosDisponiveis,
+          webhooksNotified,
+          geradoEm: payload.geradoEm
+        }
+      }
+    });
+
+    return { ok: true, webhooksNotified };
+  }
+
+  private async postWebhook(url: string, body: Record<string, unknown>): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      const webhookKey = process.env.FERIADO_SYNC_WEBHOOK_KEY?.trim();
+      if (webhookKey) headers["x-feriado-sync-key"] = webhookKey;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      return res.ok || res.status === 202;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   async createToken(
     name: string,
@@ -70,11 +167,16 @@ export class ApiServidoraService {
       }
     });
 
+    const anosDisponiveis = [...new Set(feriados.map((f) => f.data.getUTCFullYear()))].sort(
+      (a, b) => a - b
+    );
+
     return {
       schemaVersion: "v1",
       geradoEm: new Date().toISOString(),
       source: process.env.API_PUBLICA_SYSTEM_KEY ?? "ponto-eletronico-cfo",
       totalFeriados: feriados.length,
+      anosDisponiveis,
       feriados: feriados.map((f) => ({
         id: f.id,
         data: f.data.toISOString().slice(0, 10),
