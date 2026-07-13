@@ -11,6 +11,12 @@ import {
   GERENCIA_RH_SIGLAS,
   isGerenciaRhSlug
 } from "../../common/gerencia-rh.util";
+import { hojeBrasiliaISO } from "../../utils/horario-brasilia";
+import { categoriaSemRegistroPonto } from "../../utils/categoria-jornada";
+import {
+  ensureCategoriaHistorico,
+  registrarMudancaCategoria
+} from "../../utils/categoria-historico";
 
 /* ─── Tipos da nova API ─── */
 interface ApiUser {
@@ -189,19 +195,25 @@ export class ExtensionsService {
         /* ── Gestor da seção ── */
         const manager = section.managers[0] ?? null;
         if (manager) {
-          const responsavelMatricula =
-            manager.staffId != null && Number.isFinite(manager.staffId)
-              ? String(manager.staffId)
-              : null;
-          const userGerente = await this.resolveUser(manager.email);
-          await this.prisma.gerencia.update({
-            where: { id: gerencia.id },
-            data: {
-              responsavel: manager.name,
-              responsavelMatricula,
-              ...(userGerente ? { responsavelUserId: userGerente.id } : {})
-            }
+          const substituicaoAtiva = await this.prisma.gerenteSubstituicao.findFirst({
+            where: { gerenciaId: gerencia.id, status: "ATIVA" },
+            select: { id: true }
           });
+          if (!substituicaoAtiva) {
+            const responsavelMatricula =
+              manager.staffId != null && Number.isFinite(manager.staffId)
+                ? String(manager.staffId)
+                : null;
+            const userGerente = await this.resolveUser(manager.email);
+            await this.prisma.gerencia.update({
+              where: { id: gerencia.id },
+              data: {
+                responsavel: manager.name,
+                responsavelMatricula,
+                ...(userGerente ? { responsavelUserId: userGerente.id } : {})
+              }
+            });
+          }
         }
 
         /* ── Usuários diretos da seção ── */
@@ -328,7 +340,7 @@ export class ExtensionsService {
         });
       }
 
-      const isManager = managers.some((m) => m.email === u.email);
+      const isManagerApi = managers.some((m) => m.email === u.email);
       const existente = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
 
       if (!existente) {
@@ -336,21 +348,34 @@ export class ExtensionsService {
            Se a API indica que é gerente, já categoriza como GERENTE. */
         const matricula = u.staffId != null ? String(u.staffId) : user.id.slice(0, 12);
         try {
-          await this.prisma.funcionario.create({
+          const cat = isManagerApi ? ("GERENTE" as const) : ("CONCURSADO" as const);
+          const hoje = hojeBrasiliaISO();
+          const criado = await this.prisma.funcionario.create({
             data: {
               userId: user.id,
               matricula,
               cargo: "A definir",
               ativo: true,
-              categoria: isManager ? "GERENTE" : "CONCURSADO",
+              categoria: cat,
               gerenciaId,
               extensionsId: u.id,
               section: sectionSlug,
               subsecao: subsecaoSlug ?? null,
-              isManager,
+              isManager: isManagerApi,
               ramal: u.extension || null,
               sala: u.room || null,
-              andar: u.floor || null
+              andar: u.floor || null,
+              pontoObrigatorioDesde: categoriaSemRegistroPonto(cat)
+                ? null
+                : new Date(`${hoje}T12:00:00-03:00`)
+            }
+          });
+          await this.prisma.funcionarioCategoriaHistorico.create({
+            data: {
+              funcionarioId: criado.id,
+              categoria: cat,
+              vigenciaDesde: new Date(`${hoje}T12:00:00-03:00`),
+              vigenciaAte: null
             }
           });
           return "created";
@@ -359,10 +384,44 @@ export class ExtensionsService {
         }
       }
 
+      /* Em substituição ativa, não sobrescreve isManager/categoria/ativo. */
+      const sobSubstituicao = await this.prisma.gerenteSubstituicao.findFirst({
+        where: {
+          status: "ATIVA",
+          OR: [{ titularId: existente.id }, { substitutoId: existente.id }]
+        },
+        select: { id: true }
+      });
+
       /* Atualização: apenas Gerência e Subseção têm prioridade da API.
          Se a API indica gerente, promove automaticamente para GERENTE.
          Nunca rebaixa categoria automaticamente (preserva edições manuais). */
       const matricula = u.staffId != null ? String(u.staffId) : existente.matricula;
+      const promoverGerente = !sobSubstituicao && isManagerApi && existente.categoria !== "GERENTE";
+
+      if (promoverGerente) {
+        await this.prisma.$transaction(async (tx) => {
+          await ensureCategoriaHistorico(tx, existente.id);
+          await registrarMudancaCategoria(tx, existente.id, "GERENTE");
+          await tx.funcionario.update({
+            where: { id: existente.id },
+            data: {
+              matricula,
+              gerenciaId,
+              section: sectionSlug,
+              subsecao: subsecaoSlug ?? null,
+              extensionsId: u.id,
+              ramal: u.extension || null,
+              sala: u.room || null,
+              andar: u.floor || null,
+              isManager: true,
+              categoria: "GERENTE"
+            }
+          });
+        });
+        return "updated";
+      }
+
       await this.prisma.funcionario.update({
         where: { id: existente.id },
         data: {
@@ -370,12 +429,16 @@ export class ExtensionsService {
           gerenciaId,
           section: sectionSlug,
           subsecao: subsecaoSlug ?? null,
-          isManager,
           extensionsId: u.id,
           ramal: u.extension || null,
           sala: u.room || null,
           andar: u.floor || null,
-          ...(isManager ? { categoria: "GERENTE" } : {})
+          ...(sobSubstituicao
+            ? {}
+            : {
+                isManager: isManagerApi,
+                ...(isManagerApi ? { categoria: "GERENTE" as const } : {})
+              })
         }
       });
       return "updated";

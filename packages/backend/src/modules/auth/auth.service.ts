@@ -1,6 +1,11 @@
 import { Injectable, ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh, isGerenciaRhSlug } from "../../common/gerencia-rh.util";
+import {
+  isSuperAdminIdentity,
+  mergeSuperAdminRoles,
+  superAdminUsernamesFromEnv
+} from "../../utils/super-admin";
 
 export interface AuthContext {
   sub: string;
@@ -34,22 +39,10 @@ export interface UserProfile {
   } | null;
 }
 
-const SUPER_ADMINS = (process.env.SUPER_ADMIN_USERNAMES ?? "elder.oliveira")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+const SUPER_ADMINS = superAdminUsernamesFromEnv(process.env.SUPER_ADMIN_USERNAMES);
 
 const REAL_EMAIL_DOMAIN = process.env.REAL_EMAIL_DOMAIN ?? "cfo.org.br";
 const SSO_FAKE_DOMAINS = ["sso.local", "pending.local"];
-
-const ALL_ROLES = [
-  "funcionario",
-  "gestor",
-  "ponto-admin",
-  "PONTO_ADMIN",
-  "GESTOR_APROVACAO",
-  "RH_AUDITORIA"
-];
 
 @Injectable()
 export class AuthService {
@@ -59,13 +52,16 @@ export class AuthService {
     const realmAccess = (payload.realm_access as { roles?: string[] } | undefined)?.roles ?? [];
     const groups = Array.isArray(payload.groups) ? (payload.groups as string[]) : [];
     const username = payload.preferred_username ? String(payload.preferred_username) : "";
-    const isSuperAdmin = SUPER_ADMINS.includes(username.toLowerCase());
+    const email = payload.email ? String(payload.email) : undefined;
+    const isSuperAdmin = isSuperAdminIdentity(SUPER_ADMINS, username, email);
     /* Todo usuário SSO autenticado recebe automaticamente a role "funcionario".
-       Roles extras vêm do realm_access (Keycloak) + grupos mapeados em GrupoSistema. */
-    const roles = isSuperAdmin ? ALL_ROLES : Array.from(new Set(["funcionario", ...realmAccess]));
+       Super admin recebe todos os papéis (hierarquia máxima). */
+    const roles = isSuperAdmin
+      ? mergeSuperAdminRoles(["funcionario", ...realmAccess])
+      : Array.from(new Set(["funcionario", ...realmAccess]));
     return {
       sub: String(payload.sub),
-      email: payload.email ? String(payload.email) : undefined,
+      email,
       name: payload.name
         ? String(payload.name)
         : [payload.given_name, payload.family_name].filter(Boolean).join(" ") || username,
@@ -78,16 +74,30 @@ export class AuthService {
 
   /** Concede papéis derivados do cadastro local (gerência RH, gestor via API de ramais). */
   async enrichRoles(ctx: AuthContext): Promise<AuthContext> {
-    if (ctx.isSuperAdmin) return ctx;
+    /* Super admin já tem tudo — não depende de gerência/RH no cadastro. */
+    if (ctx.isSuperAdmin) {
+      return { ...ctx, roles: mergeSuperAdminRoles(ctx.roles) };
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { externalId: ctx.sub },
       select: {
+        email: true,
+        emailReal: true,
         funcionario: {
           select: {
+            id: true,
             isManager: true,
             section: true,
-            gerencia: { select: { nome: true, sigla: true } }
+            gerencia: { select: { nome: true, sigla: true } },
+            supervisionadosEstagio: {
+              where: {
+                ativo: true,
+                categoria: { in: ["ESTAGIARIO", "MENOR_APRENDIZ"] }
+              },
+              select: { id: true },
+              take: 1
+            }
           }
         },
         gerenciasGeridas: { select: { id: true }, take: 1 }
@@ -95,6 +105,15 @@ export class AuthService {
     });
 
     if (!user) return ctx;
+
+    /* Reavalia super admin com e-mail real do cadastro (caso o token traga só e-mail mascarado). */
+    if (isSuperAdminIdentity(SUPER_ADMINS, ctx.username, ctx.email, user.email, user.emailReal)) {
+      return {
+        ...ctx,
+        isSuperAdmin: true,
+        roles: mergeSuperAdminRoles(ctx.roles)
+      };
+    }
 
     const extraRoles = [...ctx.roles];
 
@@ -106,7 +125,11 @@ export class AuthService {
       extraRoles.push("RH_AUDITORIA");
     }
 
-    const isGestorRamais = user.funcionario?.isManager === true || user.gerenciasGeridas.length > 0;
+    const isSupervisorEstagio = (user.funcionario?.supervisionadosEstagio?.length ?? 0) > 0;
+    const isGestorRamais =
+      user.funcionario?.isManager === true ||
+      user.gerenciasGeridas.length > 0 ||
+      isSupervisorEstagio;
     if (isGestorRamais) {
       if (!extraRoles.includes("GESTOR_APROVACAO")) extraRoles.push("GESTOR_APROVACAO");
       if (!extraRoles.includes("gestor")) extraRoles.push("gestor");
@@ -217,6 +240,8 @@ export class AuthService {
     }
 
     const enriched = await this.enrichRoles(ctx);
+    const isSuperAdmin = enriched.isSuperAdmin;
+    const roles = isSuperAdmin ? mergeSuperAdminRoles(enriched.roles) : enriched.roles;
 
     return {
       id: user.id,
@@ -225,9 +250,9 @@ export class AuthService {
       name: user.name,
       email: user.email,
       emailReal: user.emailReal ?? null,
-      roles: enriched.roles,
+      roles,
       groups: enriched.groups,
-      isSuperAdmin: ctx.isSuperAdmin,
+      isSuperAdmin,
       funcionario: funcionario ?? null
     };
   }

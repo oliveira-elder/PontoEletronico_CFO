@@ -21,10 +21,17 @@ import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-ob
 import {
   jornadaEsperadaMin as jornadaMinParaDia,
   resolverJornadaHistoricoContexto,
-  calcularJornadaParcialFeriado
+  calcularJornadaParcialFeriado,
+  aplicarMargemCalculoDiario
 } from "../../utils/jornada-historico";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
+import {
+  categoriaSemRegistroPonto,
+  periodosSemObrigacaoPonto,
+  MSG_SOLICITACAO_APENAS_INFORMATIVA
+} from "../../utils/categoria-jornada";
+import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 
 export interface PeriodoPontoRaw {
   id: string;
@@ -899,6 +906,8 @@ export class AuditoriaService {
       this.prisma.funcionario.findUnique({
         where: { id: funcionarioId },
         select: {
+          categoria: true,
+          pontoObrigatorioDesde: true,
           jornadaPeriodoId: true,
           jornadaHorasDia: true,
           jornadaPeriodoDesde: true,
@@ -912,8 +921,20 @@ export class AuditoriaService {
       })
     ]);
 
+    const historicoCat = await ensureCategoriaHistorico(this.prisma, funcionarioId);
+    const pontoObrigatorioDesde = func?.pontoObrigatorioDesde
+      ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+      : null;
+    const periodosSemObrigacao = periodosSemObrigacaoPonto(historicoCat, {
+      pontoObrigatorioDesde,
+      categoriaAtual: func?.categoria
+    });
+
     return {
       registros,
+      periodosSemObrigacao,
+      semRegistroPonto: categoriaSemRegistroPonto(func?.categoria),
+      pontoObrigatorioDesde,
       jornada: resolverJornadaHistoricoContexto({
         ...func,
         configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
@@ -996,9 +1017,8 @@ export class AuditoriaService {
     const includeBase = {
       user: { select: { name: true, email: true, emailReal: true } },
       gerencia: true
-    };
+    } as const;
 
-    // Super admin vê todos os funcionários ativos sem restrição
     if (isSuperAdmin) {
       return this.prisma.funcionario.findMany({
         where: { ativo: true },
@@ -1010,37 +1030,67 @@ export class AuditoriaService {
     const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
     if (!user) return [];
 
-    // Fluxo principal: gerência vinculada via responsavelUserId
+    const meuFunc = await this.prisma.funcionario.findUnique({
+      where: { userId: user.id },
+      select: { id: true, isManager: true, section: true }
+    });
+
+    const ids = new Set<string>();
+
+    if (meuFunc?.id) {
+      const supervisionados = await this.prisma.funcionario.findMany({
+        where: {
+          ativo: true,
+          supervisorEstagioId: meuFunc.id,
+          categoria: { in: ["ESTAGIARIO", "MENOR_APRENDIZ"] }
+        },
+        select: { id: true }
+      });
+      for (const f of supervisionados) ids.add(f.id);
+    }
+
     const gerencias = await this.prisma.gerencia.findMany({
       where: { responsavelUserId: user.id }
     });
+
     if (gerencias.length) {
-      return this.prisma.funcionario.findMany({
+      const daGerencia = await this.prisma.funcionario.findMany({
         where: { gerenciaId: { in: gerencias.map((g) => g.id) }, ativo: true },
-        include: includeBase
+        select: { id: true, categoria: true, supervisorEstagioId: true }
       });
-    }
-
-    // Fallback: gerente identificado pelo flag isManager na API de ramais.
-    // Usa o campo section para encontrar todos os funcionários do mesmo guarda-chuva,
-    // independente de subseção (ex.: GERTI/Desenvolvimento, GERTI/CPD → todos sob GERTI).
-    const funcGestor = await this.prisma.funcionario.findUnique({
-      where: { userId: user.id },
-      select: { isManager: true, section: true }
-    });
-
-    if (funcGestor?.isManager && funcGestor.section) {
-      return this.prisma.funcionario.findMany({
+      for (const f of daGerencia) {
+        const estágioComOutroSupervisor =
+          (f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
+          f.supervisorEstagioId &&
+          f.supervisorEstagioId !== meuFunc?.id;
+        if (!estágioComOutroSupervisor) ids.add(f.id);
+      }
+    } else if (meuFunc?.isManager && meuFunc.section) {
+      const daSecao = await this.prisma.funcionario.findMany({
         where: {
           ativo: true,
-          section: funcGestor.section,
+          section: meuFunc.section,
           NOT: { userId: user.id }
         },
-        include: includeBase
+        select: { id: true, categoria: true, supervisorEstagioId: true }
+      });
+      for (const f of daSecao) {
+        const estágioComOutroSupervisor =
+          (f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
+          f.supervisorEstagioId &&
+          f.supervisorEstagioId !== meuFunc.id;
+        if (!estágioComOutroSupervisor) ids.add(f.id);
+      }
+    }
+
+    if (ids.size > 0) {
+      return this.prisma.funcionario.findMany({
+        where: { id: { in: Array.from(ids) } },
+        include: includeBase,
+        orderBy: { createdAt: "asc" }
       });
     }
 
-    // Último recurso: papel de gestor no Keycloak sem sync da API de ramais
     if (temRoleGestor) {
       return this.prisma.funcionario.findMany({
         where: { ativo: true, NOT: { userId: user.id } },
@@ -1489,6 +1539,12 @@ export class AuditoriaService {
 
     const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
 
+    const funcCat = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true }
+    });
+    const apenasInformativo = categoriaSemRegistroPonto(funcCat?.categoria);
+
     return this.prisma.solicitacao.create({
       data: {
         funcionarioId,
@@ -1496,6 +1552,7 @@ export class AuditoriaService {
         dataReferencia: new Date(body.dataReferencia),
         descricao: body.justificativa,
         status: "AGUARDANDO_GESTOR_RH",
+        apenasInformativo,
         metadados: {
           criadoPeloRH: true,
           criadoPorNome: user?.name ?? keycloakSub,
@@ -1546,6 +1603,8 @@ export class AuditoriaService {
       horarioOriginal?: string;
     }>;
 
+    const apenasInformativo = !!sol.apenasInformativo;
+
     for (const c of correcoes) {
       if (c.acao === "CORRIGIR" && c.registroId) {
         const atual = await this.prisma.registroPonto.findUnique({
@@ -1569,7 +1628,8 @@ export class AuditoriaService {
               ajustado: true,
               ajustadoPor: keycloakSub,
               observacao: marker,
-              observacoes: observacoes as unknown as Prisma.InputJsonValue
+              observacoes: observacoes as unknown as Prisma.InputJsonValue,
+              ...(apenasInformativo ? { apenasInformativo: true } : {})
             }
           });
         }
@@ -1592,7 +1652,8 @@ export class AuditoriaService {
             ajustado: true,
             ajustadoPor: keycloakSub,
             observacao: marker,
-            observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+            observacoes: [novaObs] as unknown as Prisma.InputJsonValue,
+            apenasInformativo
           }
         });
       } else if (c.acao === "EXCLUIR" && c.registroId) {
@@ -1634,6 +1695,7 @@ export class AuditoriaService {
       dataFim: Date | null;
       descricao: string;
       metadados: unknown;
+      apenasInformativo?: boolean;
     },
     rhKeycloakSub: string
   ) {
@@ -1643,6 +1705,18 @@ export class AuditoriaService {
     const ref = solicitacao.dataInicio ?? solicitacao.dataReferencia;
     const fim = solicitacao.dataFim ?? ref;
     const obs = `Aprovado via solicitação #${solicitacao.id}`;
+
+    let apenasInformativo = !!solicitacao.apenasInformativo;
+    if (!apenasInformativo) {
+      const funcCat = await this.prisma.funcionario.findUnique({
+        where: { id: funcId },
+        select: { categoria: true }
+      });
+      apenasInformativo = categoriaSemRegistroPonto(funcCat?.categoria);
+    }
+    const obsInformativo = apenasInformativo
+      ? `${obs} — ${MSG_SOLICITACAO_APENAS_INFORMATIVA}`
+      : obs;
 
     if (tipo === "CORRECAO_PONTO") {
       const limites = await this.obterLimitesHorarioPonto();
@@ -1685,8 +1759,9 @@ export class AuditoriaService {
                   dataHora: novaDataHora,
                   ajustado: true,
                   ajustadoPor: rhKeycloakSub,
-                  observacao: obs,
-                  observacoes: observacoes as unknown as Prisma.InputJsonValue
+                  observacao: obsInformativo,
+                  observacoes: observacoes as unknown as Prisma.InputJsonValue,
+                  ...(apenasInformativo ? { apenasInformativo: true } : {})
                 }
               });
             }
@@ -1707,8 +1782,9 @@ export class AuditoriaService {
                 modoRegistro: "DESKTOP",
                 ajustado: true,
                 ajustadoPor: rhKeycloakSub,
-                observacao: obs,
-                observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+                observacao: obsInformativo,
+                observacoes: [novaObs] as unknown as Prisma.InputJsonValue,
+                apenasInformativo
               }
             });
           } else if (c.acao === "EXCLUIR" && c.registroId) {
@@ -1752,8 +1828,9 @@ export class AuditoriaService {
               dataHora: novaDataHora,
               ajustado: true,
               ajustadoPor: rhKeycloakSub,
-              observacao: obs,
-              observacoes: observacoes as unknown as Prisma.InputJsonValue
+              observacao: obsInformativo,
+              observacoes: observacoes as unknown as Prisma.InputJsonValue,
+              ...(apenasInformativo ? { apenasInformativo: true } : {})
             }
           });
         }
@@ -1774,8 +1851,9 @@ export class AuditoriaService {
             modoRegistro: "DESKTOP",
             ajustado: true,
             ajustadoPor: rhKeycloakSub,
-            observacao: obs,
-            observacoes: [novaObs] as unknown as Prisma.InputJsonValue
+            observacao: obsInformativo,
+            observacoes: [novaObs] as unknown as Prisma.InputJsonValue,
+            apenasInformativo
           }
         });
       }
@@ -1792,8 +1870,9 @@ export class AuditoriaService {
               tipo: "FERIAS",
               dataInicio: new Date(p.dataInicio),
               dataFim: new Date(p.dataFim),
-              justificativa: solicitacao.descricao || obs,
-              aprovadoPor: rhKeycloakSub
+              justificativa: solicitacao.descricao || obsInformativo,
+              aprovadoPor: rhKeycloakSub,
+              apenasInformativo
             }
           });
         }
@@ -1804,8 +1883,9 @@ export class AuditoriaService {
             tipo: "FERIAS",
             dataInicio: ref,
             dataFim: fim,
-            justificativa: solicitacao.descricao || obs,
-            aprovadoPor: rhKeycloakSub
+            justificativa: solicitacao.descricao || obsInformativo,
+            aprovadoPor: rhKeycloakSub,
+            apenasInformativo
           }
         });
       }
@@ -1816,9 +1896,10 @@ export class AuditoriaService {
           tipo: "ATESTADO",
           dataInicio: ref,
           dataFim: fim,
-          justificativa: solicitacao.descricao || obs,
+          justificativa: solicitacao.descricao || obsInformativo,
           documentoUrl: typeof meta.documentoUrl === "string" ? meta.documentoUrl : null,
-          aprovadoPor: rhKeycloakSub
+          aprovadoPor: rhKeycloakSub,
+          apenasInformativo
         }
       });
     } else if (tipo === "LICENCA") {
@@ -1828,8 +1909,9 @@ export class AuditoriaService {
           tipo: "LICENCA_MEDICA",
           dataInicio: ref,
           dataFim: fim,
-          justificativa: solicitacao.descricao || obs,
-          aprovadoPor: rhKeycloakSub
+          justificativa: solicitacao.descricao || obsInformativo,
+          aprovadoPor: rhKeycloakSub,
+          apenasInformativo
         }
       });
     } else if (tipo === "ABONO") {
@@ -1839,8 +1921,9 @@ export class AuditoriaService {
           tipo: "ABONO",
           dataInicio: ref,
           dataFim: fim,
-          justificativa: solicitacao.descricao || obs,
-          aprovadoPor: rhKeycloakSub
+          justificativa: solicitacao.descricao || obsInformativo,
+          aprovadoPor: rhKeycloakSub,
+          apenasInformativo
         }
       });
     }
@@ -2064,7 +2147,12 @@ export class AuditoriaService {
     });
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
-      select: { diasUteis: true, horaEntrada: true, horaSaida: true }
+      select: {
+        diasUteis: true,
+        horaEntrada: true,
+        horaSaida: true,
+        toleranciaCalculoMin: true
+      }
     });
     const jornadaCtx = resolverJornadaHistoricoContexto({
       ...funcJornada,
@@ -2074,6 +2162,22 @@ export class AuditoriaService {
     const diasUteisCfg: boolean[] = JSON.parse(
       cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
     );
+
+    // Preferência: tolerância do período do funcionário; senão Configuração → Períodos
+    let toleranciaCalculoMin = cfg?.toleranciaCalculoMin ?? 5;
+    if (funcJornada?.jornadaPeriodoId) {
+      const jp = await this.prisma.jornadaPeriodo.findUnique({
+        where: { id: funcJornada.jornadaPeriodoId },
+        select: { toleranciaCalculoMin: true }
+      });
+      if (jp) toleranciaCalculoMin = jp.toleranciaCalculoMin;
+    } else {
+      const padrao = await this.prisma.jornadaPeriodo.findFirst({
+        where: { ePadrao: true, ativo: true },
+        select: { toleranciaCalculoMin: true }
+      });
+      if (padrao) toleranciaCalculoMin = padrao.toleranciaCalculoMin;
+    }
 
     // Sem marco: inicia do primeiro registro do funcionário (evita iterar desde 1970)
     let cicloInicioEfetivo = cicloInicio;
@@ -2177,7 +2281,10 @@ export class AuditoriaService {
                 jornadaDiariaMin: jornadaDiaMin
               }
             );
-            saldoDiaMinutos = horasTrabalhadasMinutos - jornadaMandatoria;
+            saldoDiaMinutos = aplicarMargemCalculoDiario(
+              horasTrabalhadasMinutos - jornadaMandatoria,
+              toleranciaCalculoMin
+            );
             jornadaDia = jornadaMandatoria;
             obs = `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
           } else if (regsDodia.length > 0) {
@@ -2191,7 +2298,10 @@ export class AuditoriaService {
           }
         } else {
           const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
-          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaDiaMin;
+          saldoDiaMinutos = aplicarMargemCalculoDiario(
+            horasTrabalhadasMinutos - jornadaDiaMin,
+            toleranciaCalculoMin
+          );
           jornadaDia = jornadaDiaMin;
           obs = undefined;
         }

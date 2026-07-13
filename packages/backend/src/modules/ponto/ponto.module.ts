@@ -3,6 +3,7 @@ import { HttpModule } from "@nestjs/axios";
 import { PontoController } from "./ponto.controller";
 import { PontoService } from "./ponto.service";
 import { ConfigController } from "./config.controller";
+import { ConfigBrandingController } from "./config-branding.controller";
 import { ConfigService } from "./config.service";
 import { GestaoController } from "./gestao.controller";
 import { GestaoService } from "./gestao.service";
@@ -17,7 +18,7 @@ import { NotificacaoModule } from "../notificacao/notificacao.module";
 
 @Module({
   imports: [PrismaModule, HttpModule, ApiServidoraModule, NotificacaoModule],
-  controllers: [PontoController, ConfigController, GestaoController],
+  controllers: [PontoController, ConfigController, ConfigBrandingController, GestaoController],
   providers: [
     PontoService,
     ConfigService,

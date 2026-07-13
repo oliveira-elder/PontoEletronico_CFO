@@ -7,7 +7,8 @@ export type StatusDia =
   | "AFASTAMENTO"
   | "FERIADO"
   | "FUTURO"
-  | "FOLGA";
+  | "FOLGA"
+  | "ISENTO";
 
 export interface ObservacaoRegistro {
   data: string;
@@ -16,6 +17,9 @@ export interface ObservacaoRegistro {
   tipoRegistro?: string;
   horarioAnterior?: string | null;
   horarioNovo?: string;
+  turno?: string;
+  motivo?: string;
+  janelaAlmoco?: string;
 }
 
 export interface Pausa {
@@ -40,6 +44,13 @@ export interface DiaRegistro {
   inicioIntervaloEditado?: boolean;
   fimIntervaloEditado?: boolean;
   saidaEditada?: boolean;
+  /** Entrada em turno vespertino/noturno — intervalo não aplicável */
+  semIntervalo?: boolean;
+  turno?: string;
+  motivoSemIntervalo?: string;
+  janelaAlmoco?: string;
+  /** Origem de solicitação de assessor/gerente — só consulta, sem cálculo. */
+  apenasInformativo?: boolean;
 }
 
 export interface ApiRegistro {
@@ -47,6 +58,7 @@ export interface ApiRegistro {
   dataHora: string;
   ajustado?: boolean;
   observacoes?: ObservacaoRegistro[];
+  apenasInformativo?: boolean;
 }
 
 export interface ApiAfastamento {
@@ -54,6 +66,7 @@ export interface ApiAfastamento {
   dataInicio: string;
   dataFim: string;
   justificativa?: string | null;
+  apenasInformativo?: boolean;
 }
 
 export interface ApiFeriado {
@@ -82,6 +95,12 @@ export interface HistoricoApiResponse {
   ano: number;
   /** Primeiro login no sistema (YYYY-MM-DD, Brasília). */
   inicioAtividades?: string | null;
+  /** Data a partir da qual o ponto passa a ser obrigatório (assessor → concursado). */
+  pontoObrigatorioDesde?: string | null;
+  semRegistroPonto?: boolean;
+  categoria?: string;
+  /** Períodos (vigências) sem obrigação de ponto — assessor/gerente intercalados. */
+  periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
   /** Saldo diário do banco de horas (chave YYYY-MM-DD) — mesma fonte de /ponto/banco-horas. */
   bancoPorDia?: Record<
     string,
@@ -222,12 +241,32 @@ export function transformarHistorico(
   feriados: ApiFeriado[] = [],
   mult: Multiplicadores = { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
   jornada: JornadaHistorico = JORNADA_PADRAO,
-  inicioAtividades?: string | null
+  inicioAtividades?: string | null,
+  opts?: {
+    pontoObrigatorioDesde?: string | null;
+    semRegistroPonto?: boolean;
+    periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+  }
 ): DiaRegistro[] {
   const hoje = new Date();
   const diasNoMes = new Date(ano, mes, 0).getDate();
   const NOMES_DIA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
   const result: DiaRegistro[] = [];
+  const pontoObrigatorioDesde = opts?.pontoObrigatorioDesde ?? null;
+  const semRegistroPonto = !!opts?.semRegistroPonto;
+  const periodosSemObrigacao = opts?.periodosSemObrigacao ?? [];
+
+  const diaEmPeriodoSemObrigacao = (isoKey: string): boolean => {
+    if (periodosSemObrigacao.length > 0) {
+      return periodosSemObrigacao.some(
+        (p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim)
+      );
+    }
+    /* Fallback legado */
+    if (semRegistroPonto) return true;
+    if (pontoObrigatorioDesde && isoKey < pontoObrigatorioDesde) return true;
+    return false;
+  };
 
   const byDay: Record<string, ApiRegistro[]> = {};
   for (const r of registros) {
@@ -253,6 +292,14 @@ export function transformarHistorico(
     const diaSemana = NOMES_DIA[dow];
     const dayRegs = byDay[isoKey] ?? [];
     const feriadoDia = feriadoMap[isoKey];
+    const diaInformativo =
+      dayRegs.some((r) => r.apenasInformativo) ||
+      !!afastamentoDoDia(
+        isoKey,
+        afastamentos.filter((a) => a.apenasInformativo)
+      );
+    const afastamentosCalc = afastamentos.filter((a) => !a.apenasInformativo);
+    const dayRegsCalc = dayRegs.filter((r) => !r.apenasInformativo);
 
     if (isFuture && fimDeSemana) continue;
 
@@ -269,7 +316,40 @@ export function transformarHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "FOLGA",
-        obs: "Anterior ao primeiro acesso"
+        obs: "Anterior ao primeiro acesso",
+        apenasInformativo: diaInformativo
+      });
+      continue;
+    }
+
+    /* Sem obrigação de ponto (assessor/gerente ou período pré-concursado). */
+    const semObrigacao = diaEmPeriodoSemObrigacao(isoKey);
+    if (semObrigacao && !isFuture) {
+      const afastInfo = afastamentoDoDia(isoKey, afastamentos);
+      if (fimDeSemana && dayRegs.length === 0 && !afastInfo) continue;
+      result.push({
+        data: dataStr,
+        diaSemana,
+        entrada: dayRegs.find((r) => r.tipo === "ENTRADA")
+          ? fmtHora(dayRegs.find((r) => r.tipo === "ENTRADA")!.dataHora)
+          : null,
+        inicioIntervalo: dayRegs.find((r) => r.tipo === "INICIO_INTERVALO")
+          ? fmtHora(dayRegs.find((r) => r.tipo === "INICIO_INTERVALO")!.dataHora)
+          : null,
+        fimIntervalo: dayRegs.find((r) => r.tipo === "FIM_INTERVALO")
+          ? fmtHora(dayRegs.find((r) => r.tipo === "FIM_INTERVALO")!.dataHora)
+          : null,
+        saida: dayRegs.find((r) => r.tipo === "SAIDA")
+          ? fmtHora(dayRegs.find((r) => r.tipo === "SAIDA")!.dataHora)
+          : null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: afastInfo ? "AFASTAMENTO" : "ISENTO",
+        obs: afastInfo
+          ? `${TIPO_AFASTAMENTO_LABEL[afastInfo.tipo] ?? "Afastamento"} (informativo)`
+          : "Isento — Assessor/Gerente",
+        apenasInformativo: true,
+        observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
       });
       continue;
     }
@@ -289,7 +369,7 @@ export function transformarHistorico(
       continue;
     }
 
-    const afastamento = afastamentoDoDia(isoKey, afastamentos);
+    const afastamento = afastamentoDoDia(isoKey, afastamentosCalc);
     if (afastamento) {
       result.push({
         data: dataStr,
@@ -301,14 +381,37 @@ export function transformarHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "AFASTAMENTO",
-        obs: TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? "Afastamento justificado"
+        obs: TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? "Afastamento justificado",
+        apenasInformativo: diaInformativo
       });
       continue;
     }
 
-    if (fimDeSemana && dayRegs.length === 0) continue;
+    /* Afastamento só informativo: mostra no histórico sem efeito de cálculo. */
+    const afastamentoInfo = afastamentoDoDia(
+      isoKey,
+      afastamentos.filter((a) => a.apenasInformativo)
+    );
+    if (afastamentoInfo && dayRegsCalc.length === 0) {
+      result.push({
+        data: dataStr,
+        diaSemana,
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "AFASTAMENTO",
+        obs: `${TIPO_AFASTAMENTO_LABEL[afastamentoInfo.tipo] ?? "Afastamento"} (informativo)`,
+        apenasInformativo: true
+      });
+      continue;
+    }
 
-    if (!fimDeSemana && dayRegs.length === 0) {
+    if (fimDeSemana && dayRegsCalc.length === 0 && !diaInformativo) continue;
+
+    if (!fimDeSemana && dayRegsCalc.length === 0) {
       if (feriadoDia) {
         const jornadaBase = jornadaEsperadaMin(isoKey, jornada);
         const jornadaMandatoria = feriadoDia.marcoHorario
@@ -332,7 +435,31 @@ export function transformarHistorico(
           status: jornadaMandatoria > 0 ? "FALTA" : "FERIADO",
           obs: feriadoDia.marcoHorario
             ? `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
-            : feriadoDia.nome
+            : feriadoDia.nome,
+          apenasInformativo: diaInformativo
+        });
+      } else if (diaInformativo) {
+        result.push({
+          data: dataStr,
+          diaSemana,
+          entrada: dayRegs.find((r) => r.tipo === "ENTRADA")
+            ? fmtHora(dayRegs.find((r) => r.tipo === "ENTRADA")!.dataHora)
+            : null,
+          inicioIntervalo: dayRegs.find((r) => r.tipo === "INICIO_INTERVALO")
+            ? fmtHora(dayRegs.find((r) => r.tipo === "INICIO_INTERVALO")!.dataHora)
+            : null,
+          fimIntervalo: dayRegs.find((r) => r.tipo === "FIM_INTERVALO")
+            ? fmtHora(dayRegs.find((r) => r.tipo === "FIM_INTERVALO")!.dataHora)
+            : null,
+          saida: dayRegs.find((r) => r.tipo === "SAIDA")
+            ? fmtHora(dayRegs.find((r) => r.tipo === "SAIDA")!.dataHora)
+            : null,
+          horasMin: 0,
+          jornadaMin: 0,
+          status: "ISENTO",
+          obs: "Isento — Assessor/Gerente",
+          apenasInformativo: true,
+          observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
         });
       } else {
         result.push({
@@ -351,7 +478,8 @@ export function transformarHistorico(
       continue;
     }
 
-    const get = (tipo: string) => dayRegs.find((r) => r.tipo === tipo);
+    const get = (tipo: string) =>
+      dayRegsCalc.find((r) => r.tipo === tipo) ?? dayRegs.find((r) => r.tipo === tipo);
     const entradaR = get("ENTRADA");
     const iniAlmR = get("INICIO_INTERVALO");
     const fimAlmR = get("FIM_INTERVALO");
@@ -369,14 +497,14 @@ export function transformarHistorico(
     let obs: string | undefined;
 
     if (entrada && saida) {
-      horasMin = calcHorasMinutosDia(dayRegs);
+      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs);
       status = "OK";
     } else if (entrada && isHoje) {
       const now = hoje.getHours() * 60 + hoje.getMinutes();
-      horasMin = calcHorasMinutosDia(dayRegs, now);
+      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs, now);
       status = "PENDENTE";
     } else if (entrada && inicioIntervalo) {
-      horasMin = calcHorasMinutosDia(dayRegs);
+      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs);
       status = "PENDENTE";
     } else if (entrada) {
       horasMin = 0;
@@ -415,10 +543,11 @@ export function transformarHistorico(
     }
 
     const observacoesDia = dayRegs.flatMap((r) => r.observacoes ?? []);
+    const obsTurno = (entradaR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
 
     const pausas: Pausa[] = [];
     let pausaAberta: string | null = null;
-    for (const r of dayRegs) {
+    for (const r of dayRegsCalc.length ? dayRegsCalc : dayRegs) {
       if (r.tipo === "INTERROMPER_EXPEDIENTE") {
         pausaAberta = fmtHora(r.dataHora);
       } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
@@ -444,7 +573,12 @@ export function transformarHistorico(
       entradaEditada: !!entradaR?.ajustado,
       inicioIntervaloEditado: !!iniAlmR?.ajustado,
       fimIntervaloEditado: !!fimAlmR?.ajustado,
-      saidaEditada: !!saidaR?.ajustado
+      saidaEditada: !!saidaR?.ajustado,
+      semIntervalo: !!obsTurno,
+      turno: obsTurno?.turno,
+      motivoSemIntervalo: obsTurno?.motivo,
+      janelaAlmoco: obsTurno?.janelaAlmoco,
+      apenasInformativo: diaInformativo
     });
   }
 
@@ -457,22 +591,64 @@ export function calcularResumoHistorico(
   mes: number,
   ano: number
 ): ResumoHistorico {
-  const horasTrabalhadasMinutos = dias
+  const diasCalc = dias.filter((r) => !r.apenasInformativo);
+  const horasTrabalhadasMinutos = diasCalc
     .filter((r) => r.status === "OK" || r.status === "PENDENTE")
     .reduce((s, r) => s + r.horasMin, 0);
-  const horasEsperadasMinutos = dias
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA")
+  const horasEsperadasMinutos = diasCalc
+    .filter(
+      (r) =>
+        r.status !== "FUTURO" &&
+        r.status !== "AFASTAMENTO" &&
+        r.status !== "FOLGA" &&
+        r.status !== "ISENTO"
+    )
     .reduce((s, r) => s + r.jornadaMin, 0);
   const saldoMinutos = horasTrabalhadasMinutos - horasEsperadasMinutos;
 
   return {
     mes,
     ano,
-    diasTrabalhados: dias.filter((r) => r.status === "OK").length,
+    diasTrabalhados: diasCalc.filter((r) => r.status === "OK").length,
     horasTrabalhadasMinutos,
     horasEsperadasMinutos,
     horasExtrasMinutos: Math.max(0, saldoMinutos),
     horasFaltaMinutos: Math.max(0, -saldoMinutos),
+    saldoMinutos
+  };
+}
+
+/** Resumo a partir de bancoPorDia (já com margem de cálculo / tolerâncias do backend). */
+export function resumoFromBancoPorDia(
+  bancoPorDia: NonNullable<HistoricoApiResponse["bancoPorDia"]>,
+  mes: number,
+  ano: number,
+  saldoMesBanco?: number
+): ResumoHistorico {
+  const dias = Object.values(bancoPorDia);
+  const horasTrabalhadasMinutos = dias.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
+  const horasEsperadasMinutos = dias.reduce((s, d) => s + d.jornadaEsperadaMinutos, 0);
+  const horasExtrasMinutos = dias
+    .filter((d) => d.saldoDiaMinutos > 0)
+    .reduce((s, d) => s + d.saldoDiaMinutos, 0);
+  const horasFaltaMinutos = dias
+    .filter((d) => d.saldoDiaMinutos < 0)
+    .reduce((s, d) => s + Math.abs(d.saldoDiaMinutos), 0);
+  const saldoMinutos =
+    saldoMesBanco !== undefined && saldoMesBanco !== null
+      ? saldoMesBanco
+      : dias.reduce((s, d) => s + d.saldoDiaMinutos, 0);
+
+  return {
+    mes,
+    ano,
+    diasTrabalhados: dias.filter(
+      (d) => d.horasTrabalhadasMinutos > 0 && d.observacao !== "Afastamento"
+    ).length,
+    horasTrabalhadasMinutos,
+    horasEsperadasMinutos,
+    horasExtrasMinutos,
+    horasFaltaMinutos,
     saldoMinutos
   };
 }
@@ -482,6 +658,9 @@ export function resumoFromHistoricoApi(
   mes: number,
   ano: number
 ): ResumoHistorico {
+  if (data?.bancoPorDia && Object.keys(data.bancoPorDia).length > 0) {
+    return resumoFromBancoPorDia(data.bancoPorDia, mes, ano, data.saldoMesBanco);
+  }
   const dias = transformarHistorico(
     data?.registros ?? [],
     data?.afastamentos ?? [],
@@ -490,7 +669,12 @@ export function resumoFromHistoricoApi(
     data?.feriados ?? [],
     data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
     data?.jornada ?? JORNADA_PADRAO,
-    data?.inicioAtividades ?? null
+    data?.inicioAtividades ?? null,
+    {
+      pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
+      semRegistroPonto: !!data?.semRegistroPonto,
+      periodosSemObrigacao: data?.periodosSemObrigacao ?? []
+    }
   );
   return calcularResumoHistorico(dias, mes, ano);
 }

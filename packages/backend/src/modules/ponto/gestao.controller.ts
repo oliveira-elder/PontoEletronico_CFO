@@ -72,13 +72,13 @@ export class GestaoController {
       nome: string;
       email: string;
       matricula: string;
-      cargo: string;
+      cargo?: string;
       cpf?: string;
       categoria: string;
       gerenciaId?: string;
     }
   ) {
-    return this.gestaoService.createFuncionario(body);
+    return this.gestaoService.createFuncionario({ ...body, cargo: body.cargo ?? "" });
   }
 
   @Put("funcionarios/:id")
@@ -99,6 +99,10 @@ export class GestaoController {
       dataNascimento: string | null;
       modoHomeOffice: boolean;
       modoHibridoLocal: boolean;
+      supervisorEstagioId: string | null;
+      substitutoId: string | null;
+      substitutoDataInicio: string | null;
+      substitutoDataFim: string | null;
     }>
   ) {
     return this.gestaoService.updateFuncionario(id, body);

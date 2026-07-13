@@ -68,3 +68,17 @@ export function jornadaEsperadaMin(isoDate: string, ctx: JornadaHistoricoContext
   if (ctx.vigenciaDesde && isoDate >= ctx.vigenciaDesde) return ctx.atualMin;
   return ctx.anteriorMin;
 }
+
+/**
+ * Margem do cálculo diário (Configurações → Períodos → toleranciaCalculoMin).
+ * Se |saldo| ≤ N minutos, o dia é completo (saldo 0).
+ * Se |saldo| > N, conta o delta integral (ex.: N=5 e +6 min → +6, não +1).
+ */
+export function aplicarMargemCalculoDiario(
+  saldoMinutos: number,
+  toleranciaCalculoMin: number | null | undefined
+): number {
+  const margem = Math.max(0, Number(toleranciaCalculoMin) || 0);
+  if (margem > 0 && Math.abs(saldoMinutos) <= margem) return 0;
+  return saldoMinutos;
+}

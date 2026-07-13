@@ -16,6 +16,7 @@ const SKIP_PATHS = new Set([
   "/api/ponto/status",
   "/api/auth/me",
   "/api/ponto/config/sistema",
+  "/api/ponto/config/branding",
   "/api/logs/stream",
   "/api/logs/metrics/system"
 ]);

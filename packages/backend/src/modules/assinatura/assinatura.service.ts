@@ -672,6 +672,7 @@ export class AssinaturaService {
     periodo: {
       mes: number;
       ano: number;
+      funcionarioId: string;
       funcionario: {
         nome?: string;
         user: { name: string } | null;
@@ -686,13 +687,7 @@ export class AssinaturaService {
       return;
 
     const { periodo } = assinatura;
-    const gerencia = periodo.funcionario.gerencia;
-    if (!gerencia?.responsavelUserId) return;
-
-    const gestor = await this.prisma.user.findUnique({
-      where: { id: gerencia.responsavelUserId },
-      select: { externalId: true, email: true, emailReal: true }
-    });
+    const gestor = await this.notificacaoService.getGestorDoFuncionario(periodo.funcionarioId);
     if (!gestor) return;
 
     const funcNome = periodo.funcionario.user?.name ?? "Funcionário";

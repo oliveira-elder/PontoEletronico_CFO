@@ -1,5 +1,12 @@
 import React, { useState } from "react";
-import { CheckCircleIcon, XCircleIcon, UserIcon } from "../../components/icons";
+import {
+  CheckCircleIcon,
+  XCircleIcon,
+  UserIcon,
+  InfoIcon,
+  FileTextIcon
+} from "../../components/icons";
+import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 
 /* ─── Tipos compartilhados ─── */
 
@@ -13,6 +20,7 @@ export interface SolicitacaoResumo {
   descricao: string;
   metadados?: Record<string, unknown> | null;
   createdAt: string;
+  apenasInformativo?: boolean;
   gestorObservacao?: string | null;
   gestorResolvidoEm?: string | null;
   gestorUser?: { name: string } | null;
@@ -27,6 +35,88 @@ export interface SolicitacaoResumo {
     user: { name: string; email?: string; emailReal?: string | null };
     gerencia?: { sigla: string; nome?: string } | null;
   };
+}
+
+/** Badge-link para abrir atestado/documento anexado — visível e reutilizável. */
+export function LinkDocumentoAnexado({
+  href,
+  label = "Ver atestado anexado",
+  style
+}: {
+  href: string;
+  label?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        marginTop: 8,
+        padding: "8px 14px",
+        borderRadius: "var(--radius-md)",
+        border: "1px solid rgba(122,30,38,0.22)",
+        background: "linear-gradient(180deg, rgba(122,30,38,0.08) 0%, rgba(122,30,38,0.04) 100%)",
+        color: "var(--burgundy-600)",
+        fontSize: 13.5,
+        fontWeight: 700,
+        lineHeight: 1.3,
+        textDecoration: "none",
+        boxShadow: "0 1px 2px rgba(122,30,38,0.06)",
+        transition: "background 160ms ease, border-color 160ms ease, box-shadow 160ms ease",
+        ...style
+      }}
+      onMouseEnter={(e) => {
+        const el = e.currentTarget;
+        el.style.background =
+          "linear-gradient(180deg, rgba(122,30,38,0.14) 0%, rgba(122,30,38,0.08) 100%)";
+        el.style.borderColor = "rgba(122,30,38,0.38)";
+        el.style.boxShadow = "0 2px 6px rgba(122,30,38,0.12)";
+      }}
+      onMouseLeave={(e) => {
+        const el = e.currentTarget;
+        el.style.background =
+          "linear-gradient(180deg, rgba(122,30,38,0.08) 0%, rgba(122,30,38,0.04) 100%)";
+        el.style.borderColor = "rgba(122,30,38,0.22)";
+        el.style.boxShadow = "0 1px 2px rgba(122,30,38,0.06)";
+      }}
+    >
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 26,
+          height: 26,
+          borderRadius: "50%",
+          background: "rgba(122,30,38,0.12)",
+          flexShrink: 0
+        }}
+      >
+        <FileTextIcon size={14} />
+      </span>
+      <span>{label}</span>
+      <span
+        className="badge"
+        style={{
+          marginLeft: 2,
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: "0.02em",
+          background: "var(--burgundy-600)",
+          color: "#fff",
+          padding: "2px 7px",
+          borderRadius: "var(--radius-full)"
+        }}
+      >
+        Anexo
+      </span>
+    </a>
+  );
 }
 
 const TIPO_LABEL: Record<string, string> = {
@@ -75,6 +165,77 @@ function diffDias(inicio: string, fim: string): number {
   }
 }
 
+type CorrecaoDiaItem = {
+  acao: string;
+  tipoRegistro: string;
+  horario: string;
+  horarioOriginal?: string;
+};
+
+function labelTipoPonto(tipo: string): string {
+  return TIPO_PONTO[tipo] ?? tipo;
+}
+
+function partesCorrecoesDia(itens: CorrecaoDiaItem[]): string[] {
+  return itens.map((c) => {
+    const label = labelTipoPonto(c.tipoRegistro);
+    if (c.acao === "INCLUIR") return `incluir ${label} às ${c.horario}`;
+    if (c.acao === "EXCLUIR") return `excluir ${label}`;
+    if (c.horarioOriginal) return `${label}: ${c.horarioOriginal} → ${c.horario}`;
+    return `${label} → ${c.horario}`;
+  });
+}
+
+/** Texto em 2ª pessoa para o funcionário na página de solicitações. */
+export function textoCorrecaoPontoFuncionario(s: {
+  dataReferencia: string;
+  metadados?: Record<string, unknown> | null;
+}): string {
+  const meta = s.metadados;
+  if (!meta) return "Solicitação de correção de ponto em análise.";
+
+  const data = fmtDate(s.dataReferencia);
+
+  if (Array.isArray(meta.correcoesDia) && (meta.correcoesDia as unknown[]).length > 0) {
+    const itens = meta.correcoesDia as CorrecaoDiaItem[];
+
+    if (itens.length === 1) {
+      const c = itens[0];
+      const label = labelTipoPonto(c.tipoRegistro);
+      if (c.acao === "INCLUIR") {
+        return `Você solicitou a inclusão do registro de ${label} às ${c.horario}, referente ao dia ${data}.`;
+      }
+      if (c.acao === "EXCLUIR") {
+        return `Você solicitou a exclusão do registro de ${label}, referente ao dia ${data}.`;
+      }
+      if (c.horarioOriginal) {
+        return `Você solicitou a alteração do registro de ${label} do dia ${data}: de ${c.horarioOriginal} para ${c.horario}.`;
+      }
+      return `Você solicitou a alteração do registro de ${label} do dia ${data} para ${c.horario}.`;
+    }
+
+    return `Você solicitou correção de ponto em ${data}: ${partesCorrecoesDia(itens).join("; ")}.`;
+  }
+
+  const tipoPonto = labelTipoPonto((meta.tipoRegistro as string) ?? "") || "ponto";
+  const horarioNovo = (meta.horarioSolicitado as string) ?? (meta.horario as string) ?? "";
+
+  if ((meta.acao as string) === "INCLUIR") {
+    return horarioNovo
+      ? `Você solicitou a inclusão do registro de ${tipoPonto} às ${horarioNovo}, referente ao dia ${data}.`
+      : `Você solicitou a inclusão de registro de ${tipoPonto}, referente ao dia ${data}.`;
+  }
+
+  const horarioAntigo = meta.horarioOriginal as string | undefined;
+  if (horarioAntigo && horarioNovo) {
+    return `Você solicitou a alteração do registro de ${tipoPonto} do dia ${data}: de ${horarioAntigo} para ${horarioNovo}.`;
+  }
+  if (horarioNovo) {
+    return `Você solicitou a alteração do registro de ${tipoPonto} do dia ${data} para ${horarioNovo}.`;
+  }
+  return `Você solicitou correção de ponto referente ao dia ${data}.`;
+}
+
 export function textoResumo(s: SolicitacaoResumo): string {
   const nome = s.funcionario.user.name;
   const meta = s.metadados;
@@ -83,28 +244,15 @@ export function textoResumo(s: SolicitacaoResumo): string {
     case "CORRECAO_PONTO": {
       if (!meta) return `${nome} solicita correção de ponto.`;
 
-      // Novo formato: múltiplas correções em correcoesDia[]
       if (Array.isArray(meta.correcoesDia) && (meta.correcoesDia as unknown[]).length > 0) {
-        const itens = meta.correcoesDia as Array<{
-          acao: string;
-          tipoRegistro: string;
-          horario: string;
-          horarioOriginal?: string;
-        }>;
-        const partes = itens.map((c) => {
-          const label = TIPO_PONTO[c.tipoRegistro] ?? c.tipoRegistro;
-          if (c.acao === "INCLUIR") return `incluir ${label} às ${c.horario}`;
-          if (c.acao === "EXCLUIR") return `excluir ${label}`;
-          return `${label}: ${c.horarioOriginal ? `${c.horarioOriginal} → ` : ""}${c.horario}`;
-        });
-        return `${nome} solicita correção de ponto em ${fmtDate(s.dataReferencia)}: ${partes.join("; ")}.`;
+        const itens = meta.correcoesDia as CorrecaoDiaItem[];
+        return `${nome} solicita correção de ponto em ${fmtDate(s.dataReferencia)}: ${partesCorrecoesDia(itens).join("; ")}.`;
       }
 
-      // Formato legado: ação única
       const acao = (meta.acao as string) === "INCLUIR" ? "inclusão" : "alteração";
-      const tipoPonto =
-        TIPO_PONTO[(meta.tipoRegistro as string) ?? ""] ?? (meta.tipoRegistro as string) ?? "ponto";
-      const horarioSolicitado = (meta.horarioSolicitado as string) ?? "";
+      const tipoPonto = labelTipoPonto((meta.tipoRegistro as string) ?? "") || "ponto";
+      const horarioSolicitado =
+        (meta.horarioSolicitado as string) ?? (meta.horario as string) ?? "";
       if (meta.acao === "INCLUIR") {
         return `${nome} solicita a ${acao} de registro de ponto: ${tipoPonto}${horarioSolicitado ? ` às ${horarioSolicitado}` : ""} em ${fmtDate(s.dataReferencia)}.`;
       }
@@ -505,6 +653,27 @@ export function SolicitacaoCardRH({
                   ? "Aguardando documento do funcionário"
                   : "Aguardando RH"}
           </span>
+          {s.apenasInformativo && (
+            <span
+              title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+              aria-label={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                background: "rgba(37,99,235,0.08)",
+                color: "#1e40af",
+                borderRadius: 4,
+                padding: "2px 7px",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "help"
+              }}
+            >
+              <InfoIcon size={12} />
+              Informativo
+            </span>
+          )}
         </div>
 
         <p
@@ -579,12 +748,7 @@ export function SolicitacaoCardRH({
         )}
 
         {s.tipo === "ATESTADO" && typeof s.metadados?.documentoUrl === "string" && (
-          <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "#7c3aed" }}>
-            📎{" "}
-            <a href={s.metadados.documentoUrl as string} target="_blank" rel="noopener noreferrer">
-              Ver atestado anexado
-            </a>
-          </p>
+          <LinkDocumentoAnexado href={s.metadados.documentoUrl as string} />
         )}
 
         {s.tipo === "ATESTADO" && s.guiaMedicoUrl && (

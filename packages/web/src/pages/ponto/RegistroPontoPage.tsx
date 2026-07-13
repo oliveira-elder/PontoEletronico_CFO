@@ -52,6 +52,22 @@ interface ObservacaoRegistro {
   data: string;
   texto: string;
   tipo?: string;
+  turno?: string;
+  motivo?: string;
+  janelaAlmoco?: string;
+}
+
+function temTurnoSemIntervalo(observacoes?: ObservacaoRegistro[]): boolean {
+  return !!observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO");
+}
+
+function obsTurnoSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoRegistro | undefined {
+  return observacoes?.find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+}
+
+/** Estagiário / menor aprendiz: carga horária corrida — sem intervalo de almoço. */
+function categoriaSemIntervaloAlmoco(categoria: string | null | undefined): boolean {
+  return categoria === "ESTAGIARIO" || categoria === "MENOR_APRENDIZ";
 }
 
 /* ─── Informações visuais de cada tipo de registro ─── */
@@ -132,12 +148,16 @@ type FaseJornada =
   | "PAUSA_TARDE"
   | "ENCERRADA";
 
-function getFase(registros: { tipo: TipoRegistro }[]): FaseJornada {
+function getFase(
+  registros: { tipo: TipoRegistro; observacoes?: ObservacaoRegistro[] }[],
+  opts?: { forcarSemIntervalo?: boolean }
+): FaseJornada {
+  const forcarSemIntervalo = !!opts?.forcarSemIntervalo;
   let fase: FaseJornada = "NENHUMA";
   for (const r of registros) {
     switch (r.tipo) {
       case "ENTRADA":
-        fase = "MANHA";
+        fase = forcarSemIntervalo || temTurnoSemIntervalo(r.observacoes) ? "TARDE" : "MANHA";
         break;
       case "INICIO_INTERVALO":
         fase = "ALMOCO";
@@ -158,7 +178,42 @@ function getFase(registros: { tipo: TipoRegistro }[]): FaseJornada {
         break;
     }
   }
+  if (forcarSemIntervalo) {
+    if (fase === "MANHA") fase = "TARDE";
+    else if (fase === "PAUSA_MANHA") fase = "PAUSA_TARDE";
+    else if (fase === "ALMOCO") fase = "TARDE";
+  }
   return fase;
+}
+
+function labelFaseInfo(
+  fase: FaseJornada,
+  turno?: string | null,
+  semIntervalo?: boolean
+): { label: string; cor: string; bg: string; pulse?: boolean } {
+  const base = FASE_INFO[fase];
+  if (semIntervalo && fase === "TARDE") {
+    if (turno === "NOTURNO") return { ...base, label: "Trabalhando (turno noturno)" };
+    if (turno === "VESPERTINO") return { ...base, label: "Trabalhando (turno vespertino)" };
+    return { ...base, label: "Trabalhando" };
+  }
+  if ((fase === "TARDE" || fase === "PAUSA_TARDE") && turno && turno !== "MATUTINO") {
+    const nome = turno === "NOTURNO" ? "noturno" : "vespertino";
+    if (fase === "TARDE") {
+      return { ...base, label: `Trabalhando (turno ${nome})` };
+    }
+  }
+  return base;
+}
+
+function descFase(fase: FaseJornada, semIntervalo: boolean): string {
+  if (semIntervalo && fase === "TARDE") {
+    return "Intervalo de almoço não aplicável — encerre a jornada ou interrompa o expediente, se necessário";
+  }
+  if (semIntervalo && fase === "PAUSA_TARDE") {
+    return "Retome o expediente para continuar trabalhando";
+  }
+  return FASE_DESC[fase];
 }
 
 const FASE_INFO: Record<FaseJornada, { label: string; cor: string; bg: string; pulse?: boolean }> =
@@ -195,16 +250,31 @@ interface AcaoSlot {
   iconOnly?: boolean;
 }
 
-function getLayout(fase: FaseJornada, cfg: SistemaConfig): AcaoSlot[] {
+function getLayout(
+  fase: FaseJornada,
+  cfg: SistemaConfig,
+  opts?: { semIntervalo?: boolean }
+): AcaoSlot[] {
+  const semIntervalo = !!opts?.semIntervalo;
   switch (fase) {
     case "NENHUMA":
       return [{ tipo: "ENTRADA", width: 100 }];
     case "MANHA":
+      /* Carga corrida (estagiário/aprendiz) ou turno sem intervalo: só pausa + encerrar. */
+      if (semIntervalo) {
+        return [
+          { tipo: "SAIDA", width: 80 },
+          { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
+        ];
+      }
       return [
         { tipo: "INICIO_INTERVALO", width: 80 },
         { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
       ];
     case "PAUSA_MANHA": {
+      if (semIntervalo) {
+        return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
+      }
       const dentroJanela = horarioDentroFaixa(
         horarioBrasiliaAgora(),
         cfg.almocoPodeIniciarA ?? "11:30",
@@ -219,6 +289,13 @@ function getLayout(fase: FaseJornada, cfg: SistemaConfig): AcaoSlot[] {
       return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
     }
     case "ALMOCO":
+      /* Com semIntervalo a fase é remapeada; se restar, não oferecer fim de almoço. */
+      if (semIntervalo) {
+        return [
+          { tipo: "SAIDA", width: 80 },
+          { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
+        ];
+      }
       return [{ tipo: "FIM_INTERVALO", width: 100 }];
     case "TARDE":
       return [
@@ -258,16 +335,40 @@ export interface RegistroDia {
 /* ══════════════════════════════════════════════════════
    PROGRESSO DA JORNADA
 ══════════════════════════════════════════════════════ */
-function ProgressoJornada({ n }: { n: number }) {
-  const passos = ["Entrada", "Almoço", "Retorno", "Saída"];
+function ProgressoJornada({ n, semIntervalo }: { n: number; semIntervalo?: boolean }) {
+  const passos = semIntervalo
+    ? [
+        { label: "Entrada", key: "e" },
+        { label: "Almoço", key: "a", dispensado: true },
+        { label: "Retorno", key: "r", dispensado: true },
+        { label: "Saída", key: "s" }
+      ]
+    : [
+        { label: "Entrada", key: "e" },
+        { label: "Almoço", key: "a" },
+        { label: "Retorno", key: "r" },
+        { label: "Saída", key: "s" }
+      ];
+
+  /* Com semIntervalo: n=0 nenhum; n=1 entrada; n=2 entrada+saída (almoço/retorno dispensados). */
+  const efetivo = semIntervalo ? (n >= 2 ? 4 : n >= 1 ? 1 : 0) : n;
+
   return (
     <div style={{ display: "flex", alignItems: "center" }}>
       {passos.map((p, i) => {
-        const done = i < n;
-        const current = i === n && n < 4;
-        const cor = done ? "var(--green)" : current ? "var(--burgundy-600)" : "var(--gray-cfo)";
+        const dispensado =
+          !!(p as { dispensado?: boolean }).dispensado && semIntervalo && efetivo >= 1;
+        const done = dispensado || i < efetivo;
+        const current = !dispensado && i === efetivo && efetivo < 4;
+        const cor = dispensado
+          ? "var(--green)"
+          : done
+            ? "var(--green)"
+            : current
+              ? "var(--burgundy-600)"
+              : "var(--gray-cfo)";
         return (
-          <React.Fragment key={p}>
+          <React.Fragment key={p.key}>
             <div
               style={{
                 display: "flex",
@@ -282,19 +383,22 @@ function ProgressoJornada({ n }: { n: number }) {
                   width: 28,
                   height: 28,
                   borderRadius: "50%",
-                  background: done
-                    ? "var(--green)"
-                    : current
-                      ? "var(--burgundy-600)"
-                      : "rgba(109,110,113,0.15)",
+                  background:
+                    done || dispensado
+                      ? "var(--green)"
+                      : current
+                        ? "var(--burgundy-600)"
+                        : "rgba(109,110,113,0.15)",
                   border: `2px solid ${cor}`,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  transition: "all 300ms"
+                  transition: "all 300ms",
+                  opacity: dispensado ? 0.75 : 1
                 }}
+                title={dispensado ? "Intervalo de almoço não aplicável" : undefined}
               >
-                {done ? (
+                {done || dispensado ? (
                   <CheckCircleIcon size={14} style={{ color: "#fff" }} />
                 ) : (
                   <span
@@ -319,7 +423,7 @@ function ProgressoJornada({ n }: { n: number }) {
                   lineHeight: 1.2
                 }}
               >
-                {p}
+                {dispensado ? "N/A" : p.label}
               </span>
             </div>
             {i < passos.length - 1 && (
@@ -327,7 +431,10 @@ function ProgressoJornada({ n }: { n: number }) {
                 style={{
                   height: 2,
                   flex: 1,
-                  background: i < n ? "var(--green)" : "rgba(122,30,38,0.10)",
+                  background:
+                    i < efetivo || (dispensado && i < 3 && efetivo >= 1)
+                      ? "var(--green)"
+                      : "rgba(122,30,38,0.10)",
                   marginBottom: 18,
                   transition: "background 300ms"
                 }}
@@ -673,6 +780,7 @@ export function RegistroPontoPage() {
   const [geoloc, setGeoloc] = useState(true);
   const [geoStatus, setGeoStatus] = useState<"pendente" | "ok" | "fora">("pendente");
   const [categoriaFuncional, setCategoriaFuncional] = useState<string | null>(null);
+  const [semRegistroPontoHoje, setSemRegistroPontoHoje] = useState(false);
 
   const [cfg, setCfg] = useState<SistemaConfig | null>(null);
   const [erroCfg, setErroCfg] = useState(false);
@@ -752,6 +860,8 @@ export function RegistroPontoPage() {
           dataFim: string;
         } | null;
         categoria?: string;
+        semRegistroPonto?: boolean;
+        isentoHoje?: boolean;
         modoHomeOffice?: boolean;
         modoHibridoLocal?: boolean;
         enderecoResidencial?: { lat: number | null; lng: number | null; raioMetros: number } | null;
@@ -759,6 +869,12 @@ export function RegistroPontoPage() {
       .then((status) => {
         setAfastamentoHoje(status?.afastamentoHoje ?? null);
         if (status?.categoria) setCategoriaFuncional(status.categoria);
+        setSemRegistroPontoHoje(
+          !!status?.semRegistroPonto ||
+            !!status?.isentoHoje ||
+            status?.categoria === "ASSESSOR" ||
+            status?.categoria === "GERENTE"
+        );
         // Mescla dados de home office/híbrido no cfg para o hook usePontoRegistration
         if (status?.modoHomeOffice !== undefined || status?.modoHibridoLocal !== undefined) {
           setCfg((prev) =>
@@ -795,10 +911,22 @@ export function RegistroPontoPage() {
   }, []);
 
   /* ── Derivações ── */
-  const fase = getFase(registros);
-  const faseInfo = FASE_INFO[fase];
-  const slots = cfg ? getLayout(fase, cfg) : [];
-  const marcosFeitos = registros.filter((r) => MARCOS.includes(r.tipo)).length;
+  const forcarSemIntervalo = categoriaSemIntervaloAlmoco(categoriaFuncional);
+  const fase = getFase(registros, { forcarSemIntervalo });
+  const entradaReg = registros.find((r) => r.tipo === "ENTRADA");
+  const obsTurno = obsTurnoSemIntervalo(entradaReg?.observacoes);
+  const semIntervalo = !!obsTurno || forcarSemIntervalo;
+  const turno = obsTurno?.turno ?? null;
+  const faseInfo = labelFaseInfo(fase, turno, semIntervalo);
+  const slots = cfg ? getLayout(fase, cfg, { semIntervalo }) : [];
+  const marcosFeitos = semIntervalo
+    ? registros.some((r) => r.tipo === "SAIDA")
+      ? 2
+      : registros.some((r) => r.tipo === "ENTRADA")
+        ? 1
+        : 0
+    : registros.filter((r) => MARCOS.includes(r.tipo)).length;
+  const totalMarcos = semIntervalo ? 2 : 4;
 
   /* ── Validações panel items ── */
   const validacoes: ValidacaoItem[] = [
@@ -856,7 +984,21 @@ export function RegistroPontoPage() {
         fotoDataUrl: foto ?? fotoCapturada ?? undefined,
         latitude: resultado.latitude,
         longitude: resultado.longitude,
-        modo
+        modo,
+        /* Espelha a observação do backend para estagiário/aprendiz até o próximo reload. */
+        observacoes:
+          tipo === "ENTRADA" && categoriaSemIntervaloAlmoco(categoriaFuncional)
+            ? [
+                {
+                  data: agora.toISOString(),
+                  tipo: "TURNO_SEM_INTERVALO",
+                  texto:
+                    "Carga horária corrida — intervalo de almoço não se aplica. Use Interromper/Reiniciar Expediente para pausas.",
+                  motivo: "CATEGORIA_CARGA_CORRIDA",
+                  turno: "MATUTINO"
+                }
+              ]
+            : undefined
       };
 
       if (resultado.dentroPerimetro !== undefined) {
@@ -868,7 +1010,7 @@ export function RegistroPontoPage() {
       setPendingTipo(null);
       setConfirmado(resultado);
     },
-    [registrar, fotoCapturada, modo, cfg, checkGeo, geoloc]
+    [registrar, fotoCapturada, modo, cfg, checkGeo, geoloc, categoriaFuncional]
   );
 
   async function handleAcao(tipo: TipoRegistro) {
@@ -1133,7 +1275,7 @@ export function RegistroPontoPage() {
           marginBottom: 14
         }}
       >
-        <ProgressoJornada n={marcosFeitos} />
+        <ProgressoJornada n={marcosFeitos} semIntervalo={semIntervalo} />
 
         <div style={{ textAlign: "center", paddingTop: 10 }}>
           {fase !== "ENCERRADA" ? (
@@ -1150,7 +1292,9 @@ export function RegistroPontoPage() {
               >
                 {slots.map((s) => ACAO_INFO[s.tipo].label).join(" ou ")}
               </p>
-              <p style={{ fontSize: 11.5, color: "var(--ink-500)" }}>{FASE_DESC[fase]}</p>
+              <p style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
+                {descFase(fase, semIntervalo)}
+              </p>
             </>
           ) : (
             <>
@@ -1244,7 +1388,7 @@ export function RegistroPontoPage() {
       )}
 
       {/* ── Painel de ação ── */}
-      {categoriaFuncional === "ASSESSOR" || categoriaFuncional === "GERENTE" ? (
+      {semRegistroPontoHoje ? (
         <div
           style={{
             background: "rgba(122,30,38,0.04)",
@@ -1264,10 +1408,22 @@ export function RegistroPontoPage() {
             Registro de ponto não aplicável
           </p>
           <p style={{ fontSize: 13, color: "var(--ink-500)", lineHeight: 1.7, margin: 0 }}>
-            Funcionários na categoria{" "}
-            <strong>{categoriaFuncional === "GERENTE" ? "Gerente" : "Assessor"}</strong> não
-            utilizam o sistema de registro de ponto eletrônico. Em caso de dúvidas, entre em contato
-            com o setor de RH.
+            {categoriaFuncional === "ASSESSOR" || categoriaFuncional === "GERENTE" ? (
+              <>
+                Funcionários na categoria{" "}
+                <strong>{categoriaFuncional === "GERENTE" ? "Gerente" : "Assessor"}</strong> não
+                utilizam o sistema de registro de ponto eletrônico. Solicitações, envio ao RH e
+                demais fluxos permanecem disponíveis; após aprovação, o histórico é apenas
+                informativo e não entra em base de cálculo (mesmo após eventual mudança de
+                categoria). Em caso de dúvidas, entre em contato com o setor de RH.
+              </>
+            ) : (
+              <>
+                Hoje ainda não há obrigação de registro de ponto. Após o retorno de Assessor/Gerente
+                para categoria com ponto, a obrigação começa apenas no <strong>dia seguinte</strong>
+                .
+              </>
+            )}
           </p>
         </div>
       ) : feriadoHoje?.bloqueado ? (
@@ -1572,7 +1728,7 @@ export function RegistroPontoPage() {
               marginBottom: 14
             }}
           >
-            Registros de Hoje ({marcosFeitos}/4)
+            Registros de Hoje ({marcosFeitos}/{totalMarcos})
           </p>
           {registros.map((r, i) => {
             const info = ACAO_INFO[r.tipo];
@@ -1584,6 +1740,7 @@ export function RegistroPontoPage() {
                   ? PlayIcon
                   : null;
             const ajusteAutomatico = r.observacoes?.find((o) => o.tipo === "AJUSTE_AUTOMATICO");
+            const turnoObs = r.tipo === "ENTRADA" ? obsTurnoSemIntervalo(r.observacoes) : undefined;
             return (
               <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                 <div
@@ -1629,6 +1786,20 @@ export function RegistroPontoPage() {
                   >
                     {Icon && <Icon size={13} style={{ color: cor }} />}
                     {TIPO_LABEL[r.tipo]}
+                    {turnoObs && (
+                      <span
+                        title={
+                          turnoObs.motivo === "CATEGORIA_CARGA_CORRIDA"
+                            ? "Carga horária corrida — sem intervalo de almoço"
+                            : turnoObs.turno === "NOTURNO"
+                              ? "Turno noturno — sem intervalo"
+                              : "Turno vespertino — sem intervalo"
+                        }
+                        style={{ display: "inline-flex", lineHeight: 0 }}
+                      >
+                        <CheckCircleIcon size={13} style={{ color: "var(--green)" }} />
+                      </span>
+                    )}
                   </p>
                   <p
                     style={{
@@ -1643,17 +1814,18 @@ export function RegistroPontoPage() {
                       {r.modo === "MOBILE" ? "📱" : "🖥"}
                     </span>
                   </p>
-                  {ajusteAutomatico && (
+                  {(ajusteAutomatico || turnoObs) && (
                     <p
                       style={{
                         fontSize: 11,
-                        color: "var(--ink-500)",
                         fontStyle: "italic",
-                        marginTop: 2,
+                        color: "var(--ink-500)",
+                        marginTop: 4,
+                        lineHeight: 1.35,
                         maxWidth: 320
                       }}
                     >
-                      {ajusteAutomatico.texto}
+                      {turnoObs?.texto ?? ajusteAutomatico?.texto}
                     </p>
                   )}
                 </div>
@@ -1667,8 +1839,20 @@ export function RegistroPontoPage() {
       <div style={{ display: "flex", gap: 8, padding: "12px 4px", marginTop: 8 }}>
         <InfoIcon size={13} style={{ color: "var(--ink-500)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1.6 }}>
-          Fluxo diário: <strong>Iniciar → Almoço → Retorno → Encerrar</strong>, com pausas opcionais
-          via <strong>Interromper/Reiniciar Expediente</strong>. Inconsistências via{" "}
+          {forcarSemIntervalo ? (
+            <>
+              Estagiário e menor aprendiz seguem <strong>carga horária corrida</strong> (sem
+              intervalo de almoço no ponto). Fluxo: <strong>Iniciar → Encerrar</strong>, com pausas
+              via <strong>Interromper/Reiniciar Expediente</strong> — o tempo pausado não conta como
+              trabalhado. Inconsistências via{" "}
+            </>
+          ) : (
+            <>
+              Fluxo diário: <strong>Iniciar → Almoço → Retorno → Encerrar</strong>, com pausas
+              opcionais via <strong>Interromper/Reiniciar Expediente</strong>. Entradas após o
+              início da janela de almoço seguem jornada sem intervalo. Inconsistências via{" "}
+            </>
+          )}
           <Link to="/ponto/solicitacoes" style={{ color: "var(--burgundy-600)", fontWeight: 500 }}>
             Solicitações
           </Link>

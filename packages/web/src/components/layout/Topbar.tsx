@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { MapPinIcon, MailIcon, PhoneIcon, BellIcon } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { useInstituicaoBranding } from "../../hooks/useInstituicaoBranding";
+import { formatCidadeUf } from "../../utils/instituicao";
 import { api } from "../../hooks/useApi";
 
 /* ─── Chip (faixa 1) ─── */
@@ -566,6 +568,11 @@ function SinoBell() {
 export function Topbar() {
   const { user, logout } = useAuth();
   const isMobile = useIsMobile(768);
+  const { branding } = useInstituicaoBranding();
+  const cidadeUf = formatCidadeUf(branding);
+  const emailInstitucional = branding.emailInstitucional?.trim();
+  const telefone = branding.telefone?.trim();
+  const subtitulo = `${branding.nome} · Controle de Frequência`;
 
   /* ── Versão compacta mobile ── */
   if (isMobile) {
@@ -682,11 +689,13 @@ export function Topbar() {
           flexShrink: 0
         }}
       >
-        <TopChip icon={<MapPinIcon size={13} />}>Brasília — DF</TopChip>
-        <TopChip icon={<MailIcon size={13} />} href="mailto:ouvidoria@cfo.org.br">
-          ouvidoria@cfo.org.br
-        </TopChip>
-        <TopChip icon={<PhoneIcon size={13} />}>CFO Odonto</TopChip>
+        <TopChip icon={<MapPinIcon size={13} />}>{cidadeUf || "—"}</TopChip>
+        {emailInstitucional ? (
+          <TopChip icon={<MailIcon size={13} />} href={`mailto:${emailInstitucional}`}>
+            {emailInstitucional}
+          </TopChip>
+        ) : null}
+        {telefone ? <TopChip icon={<PhoneIcon size={13} />}>{telefone}</TopChip> : null}
 
         <div style={{ flex: 1 }} />
 
@@ -748,7 +757,7 @@ export function Topbar() {
               marginTop: 2
             }}
           >
-            Conselho Federal de Odontologia · Controle de Frequência
+            {subtitulo}
           </p>
         </div>
 

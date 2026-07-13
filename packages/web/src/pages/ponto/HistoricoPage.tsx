@@ -24,6 +24,7 @@ import {
   JORNADA_PADRAO,
   transformarHistorico
 } from "../../utils/historicoTransform";
+import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 
 /* ─── Tipos de Assinatura ─── */
 type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
@@ -325,22 +326,29 @@ function StatusPill({ status, obs }: { status: StatusDia; obs?: string }) {
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "—", cls: "badge-gray" },
-    FOLGA: { label: "Folga", cls: "badge-gray" }
+    FOLGA: { label: "Folga", cls: "badge-gray" },
+    ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
   };
   const { label, cls } = map[status];
   const titulo =
-    (status === "AFASTAMENTO" || status === "FERIADO" || status === "FOLGA") && obs
+    (status === "AFASTAMENTO" ||
+      status === "FERIADO" ||
+      status === "FOLGA" ||
+      status === "ISENTO") &&
+    obs
       ? obs
       : undefined;
   return (
     <span className={`badge ${cls}`} title={titulo}>
-      {status === "AFASTAMENTO" && obs
-        ? obs
-        : status === "FERIADO" && obs
-          ? `Feriado: ${obs}`
-          : status === "FOLGA" && obs
-            ? obs
-            : label}
+      {status === "ISENTO"
+        ? "Isento — Assessor/Gerente"
+        : status === "AFASTAMENTO" && obs
+          ? obs
+          : status === "FERIADO" && obs
+            ? `Feriado: ${obs}`
+            : status === "FOLGA" && obs
+              ? obs
+              : label}
     </span>
   );
 }
@@ -358,7 +366,7 @@ function SaldoCell({
   saldoBancoMin?: number | null;
   saldoBancoNeutro?: boolean;
 }) {
-  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "FOLGA")
+  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "FOLGA" || status === "ISENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (saldoBancoNeutro) return <span style={{ color: "var(--ink-500)" }}>—</span>;
   const saldo =
@@ -414,8 +422,24 @@ function PausaCell({ pausas }: { pausas?: Pausa[] }) {
   );
 }
 
-function HoraCell({ hora, editado }: { hora: string | null; editado?: boolean }) {
+function HoraCell({
+  hora,
+  editado,
+  turnoSemIntervalo
+}: {
+  hora: string | null;
+  editado?: boolean;
+  turnoSemIntervalo?: { turno?: string };
+}) {
   if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  const tituloTurno =
+    turnoSemIntervalo?.turno === "NOTURNO"
+      ? "Turno noturno — jornada sem intervalo"
+      : turnoSemIntervalo?.turno === "VESPERTINO"
+        ? "Turno vespertino — jornada sem intervalo"
+        : turnoSemIntervalo
+          ? "Jornada sem intervalo de almoço"
+          : undefined;
   return (
     <span
       style={{
@@ -426,6 +450,11 @@ function HoraCell({ hora, editado }: { hora: string | null; editado?: boolean })
       }}
     >
       {hora}
+      {turnoSemIntervalo && (
+        <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
+          <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
+        </span>
+      )}
       {editado && (
         <span
           title="Horário ajustado conforme solicitação"
@@ -435,6 +464,53 @@ function HoraCell({ hora, editado }: { hora: string | null; editado?: boolean })
         </span>
       )}
     </span>
+  );
+}
+
+function IntervaloNaoAplicavelCell({
+  turno,
+  motivo,
+  janelaAlmoco,
+  onClick
+}: {
+  turno?: string;
+  motivo?: string;
+  janelaAlmoco?: string;
+  onClick?: () => void;
+}) {
+  const nomeTurno =
+    turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
+  const janela = janelaAlmoco ?? "janela de almoço";
+  const title =
+    motivo === "DURANTE_JANELA"
+      ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
+      : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 7px",
+        borderRadius: "var(--radius-full)",
+        border: "1px solid rgba(47,125,79,0.35)",
+        background: "rgba(47,125,79,0.10)",
+        color: "var(--green)",
+        fontSize: 10,
+        fontWeight: 600,
+        cursor: onClick ? "pointer" : "default",
+        fontFamily: "inherit",
+        lineHeight: 1.3,
+        whiteSpace: "nowrap"
+      }}
+    >
+      <CheckCircleIcon size={11} style={{ flexShrink: 0 }} />
+      Não aplicável
+    </button>
   );
 }
 
@@ -584,7 +660,7 @@ function BotaoObservacoes({
 }
 
 function HorasCell({ min, status }: { min: number; status: StatusDia }) {
-  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO")
+  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO" || status === "ISENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   return (
     <span style={{ fontFamily: "var(--font-mono)" }}>
@@ -800,7 +876,12 @@ export function HistoricoPage() {
               data?.feriados ?? [],
               data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
               data?.jornada ?? JORNADA_PADRAO,
-              inicio
+              inicio,
+              {
+                pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
+                semRegistroPonto: !!data?.semRegistroPonto,
+                periodosSemObrigacao: data?.periodosSemObrigacao ?? []
+              }
             )
           );
         })
@@ -913,16 +994,30 @@ export function HistoricoPage() {
     year: "numeric"
   });
   const totalTrabMin = registros
-    .filter((r) => r.status === "OK" || r.status === "PENDENTE")
+    .filter((r) => !r.apenasInformativo && (r.status === "OK" || r.status === "PENDENTE"))
     .reduce((s, r) => s + r.horasMin, 0);
-  const totalFaltas = registros.filter((r) => r.status === "FALTA").length;
-  const totalOK = registros.filter((r) => r.status === "OK").length;
-  const totalAfastamentos = registros.filter((r) => r.status === "AFASTAMENTO").length;
+  const totalFaltas = registros.filter((r) => !r.apenasInformativo && r.status === "FALTA").length;
+  const totalOK = registros.filter((r) => !r.apenasInformativo && r.status === "OK").length;
+  const totalAfastamentos = registros.filter(
+    (r) => !r.apenasInformativo && r.status === "AFASTAMENTO"
+  ).length;
   const totalDiasUteis = registros.filter(
-    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA"
+    (r) =>
+      !r.apenasInformativo &&
+      r.status !== "FUTURO" &&
+      r.status !== "AFASTAMENTO" &&
+      r.status !== "FOLGA" &&
+      r.status !== "ISENTO"
   ).length;
   const totalJornadaMin = registros
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "FOLGA")
+    .filter(
+      (r) =>
+        !r.apenasInformativo &&
+        r.status !== "FUTURO" &&
+        r.status !== "AFASTAMENTO" &&
+        r.status !== "FOLGA" &&
+        r.status !== "ISENTO"
+    )
     .reduce((s, r) => s + r.jornadaMin, 0);
 
   const fmtSaldoBanco = (min: number) => {
@@ -1197,13 +1292,51 @@ export function HistoricoPage() {
                       </td>
                       <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
                       <td>
-                        <HoraCell hora={r.entrada} editado={r.entradaEditada} />
+                        <HoraCell
+                          hora={r.entrada}
+                          editado={r.entradaEditada}
+                          turnoSemIntervalo={r.semIntervalo ? { turno: r.turno } : undefined}
+                        />
                       </td>
                       <td>
-                        <HoraCell hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        {r.semIntervalo && !r.inicioIntervalo ? (
+                          <IntervaloNaoAplicavelCell
+                            turno={r.turno}
+                            motivo={r.motivoSemIntervalo}
+                            janelaAlmoco={r.janelaAlmoco}
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCell hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        )}
                       </td>
                       <td>
-                        <HoraCell hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                        {r.semIntervalo && !r.fimIntervalo ? (
+                          <IntervaloNaoAplicavelCell
+                            turno={r.turno}
+                            motivo={r.motivoSemIntervalo}
+                            janelaAlmoco={r.janelaAlmoco}
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCell hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                        )}
                       </td>
                       <td>
                         <HoraCell hora={r.saida} editado={r.saidaEditada} />
@@ -1233,6 +1366,26 @@ export function HistoricoPage() {
                       >
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                           <StatusPill status={r.status} obs={r.obs} />
+                          {r.apenasInformativo && (
+                            <span
+                              title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+                              aria-label={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: 18,
+                                height: 18,
+                                borderRadius: "50%",
+                                background: "rgba(37,99,235,0.10)",
+                                color: "#1e40af",
+                                flexShrink: 0,
+                                cursor: "help"
+                              }}
+                            >
+                              <InfoIcon size={12} />
+                            </span>
+                          )}
                           <BotaoObservacoes
                             observacoes={r.observacoes ?? []}
                             onClick={() =>

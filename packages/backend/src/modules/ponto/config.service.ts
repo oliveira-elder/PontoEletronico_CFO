@@ -19,12 +19,68 @@ export class ConfigService {
     return cfg;
   }
 
+  /** Dados institucionais públicos (rodapé/login) — sem lat/lng nem regras de ponto. */
+  async getBranding() {
+    const cfg = await this.getSistema();
+    return {
+      nome: cfg.nome,
+      cnpj: cfg.cnpj,
+      endereco: cfg.endereco,
+      numero: cfg.numero,
+      bairro: cfg.bairro,
+      cidade: cfg.cidade,
+      uf: cfg.uf,
+      cep: cfg.cep,
+      telefone: cfg.telefone,
+      emailInstitucional: cfg.emailInstitucional
+    };
+  }
+
   async updateSistema(data: Record<string, unknown>) {
-    return this.prisma.configuracaoSistema.upsert({
+    const updated = await this.prisma.configuracaoSistema.upsert({
       where: { id: "singleton" },
       create: { id: "singleton", ...data },
       update: data
     });
+
+    /* Espelha parâmetros da aba Períodos na jornada padrão, para que o cálculo
+       de histórico/banco (getJornadaEfetiva) use os mesmos valores salvos na UI. */
+    const periodoKeys = [
+      "horaEntrada",
+      "horaSaida",
+      "jornadaDiariaMin",
+      "jornadaSemanalMin",
+      "diasUteis",
+      "tipoFlexibilidade",
+      "toleranciaEntradaMin",
+      "toleranciaSaidaMin",
+      "toleranciaHoraExtraMin",
+      "toleranciaCalculoMin",
+      "almocoPodeIniciarA",
+      "almocoPodeIniciarAte",
+      "almocoMinMin",
+      "almocoMaxMin",
+      "bancoHorasLimiteMin",
+      "bancoHorasVigenciaDias",
+      "horaExtraLimiteAuto"
+    ] as const;
+    const syncData: Record<string, unknown> = {};
+    for (const key of periodoKeys) {
+      if (key in data && data[key] !== undefined) syncData[key] = data[key];
+    }
+    if (Object.keys(syncData).length > 0) {
+      const padrao = await this.prisma.jornadaPeriodo.findFirst({
+        where: { ePadrao: true, ativo: true }
+      });
+      if (padrao) {
+        await this.prisma.jornadaPeriodo.update({
+          where: { id: padrao.id },
+          data: syncData as never
+        });
+      }
+    }
+
+    return updated;
   }
 
   /* ─── ProvedorInternet ─── */

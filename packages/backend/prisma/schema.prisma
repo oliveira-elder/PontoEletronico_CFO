@@ -331,6 +331,7 @@ enum TipoFlexibilidade {
 
 enum CategoriaFuncional {
   ESTAGIARIO
+  MENOR_APRENDIZ
   CONCURSADO
   ASSESSOR
   GERENTE
@@ -413,17 +414,45 @@ model ConfiguracaoSistema {
 }
 
 model Gerencia {
-  id                   String        @id @default(cuid())
+  id                   String                @id @default(cuid())
   nome                 String
-  sigla                String        @unique
+  sigla                String                @unique
   responsavel          String?
   responsavelMatricula String?
   responsavelUserId    String? // FK → User.id (gestor responsável)
-  responsavelUser      User?         @relation("GerenciaResponsavel", fields: [responsavelUserId], references: [id], onDelete: SetNull)
+  responsavelUser      User?                 @relation("GerenciaResponsavel", fields: [responsavelUserId], references: [id], onDelete: SetNull)
   descricao            String?
-  ativa                Boolean       @default(true)
+  ativa                Boolean               @default(true)
   funcionarios         Funcionario[]
-  createdAt            DateTime      @default(now())
+  substituicoes        GerenteSubstituicao[]
+  createdAt            DateTime              @default(now())
+}
+
+/// Passagem de bastão: gerente titular ↔ substituto no período informado.
+model GerenteSubstituicao {
+  id                          String             @id @default(cuid())
+  gerenciaId                  String
+  titularId                   String
+  substitutoId                String
+  dataInicio                  DateTime           @db.Date
+  dataFim                     DateTime           @db.Date
+  categoriaAnteriorSubstituto CategoriaFuncional
+  isManagerAnteriorSubstituto Boolean            @default(false)
+  titularAtivoAnterior        Boolean            @default(true)
+  /// AGENDADA | ATIVA | ENCERRADA | CANCELADA
+  status                      String             @default("AGENDADA")
+  appliedAt                   DateTime?
+  endedAt                     DateTime?
+  createdAt                   DateTime           @default(now())
+  updatedAt                   DateTime           @updatedAt
+
+  gerencia   Gerencia    @relation(fields: [gerenciaId], references: [id], onDelete: Cascade)
+  titular    Funcionario @relation("SubstituicaoTitular", fields: [titularId], references: [id], onDelete: Cascade)
+  substituto Funcionario @relation("SubstituicaoSubstituto", fields: [substitutoId], references: [id], onDelete: Cascade)
+
+  @@index([status, dataInicio, dataFim])
+  @@index([titularId, status])
+  @@index([substitutoId, status])
 }
 
 model ProvedorInternet {
@@ -521,12 +550,19 @@ model Funcionario {
   modoHomeOffice            Boolean                    @default(false)
   modoHibridoLocal          Boolean                    @default(false)
   categoria                 CategoriaFuncional         @default(CONCURSADO)
+  /// A partir desta data o funcionário passa a ter obrigação de ponto (ex.: assessor → concursado).
+  /// Dias anteriores e efeitos de solicitações informativas não entram no cálculo.
+  pontoObrigatorioDesde     DateTime?                  @db.Date
   ativo                     Boolean                    @default(true)
   jornadaHorasDia           Int                        @default(8)
   extensionsId              String?                    @unique // id na API externa de ramais
   section                   String? // seção (slug) na API externa
   subsecao                  String? // subseção (slug), quando aplicável
   isManager                 Boolean                    @default(false) // gerente da seção
+  /// Supervisor de estágio (ESTAGIARIO / MENOR_APRENDIZ) — aprova solicitações no lugar do gerente
+  supervisorEstagioId       String?
+  supervisorEstagio         Funcionario?               @relation("SupervisorEstagio", fields: [supervisorEstagioId], references: [id], onDelete: SetNull)
+  supervisionadosEstagio    Funcionario[]              @relation("SupervisorEstagio")
   ramal                     String? // ramal telefônico
   sala                      String? // sala/room
   andar                     String? // andar/floor
@@ -547,6 +583,24 @@ model Funcionario {
   dataNascimento            DateTime?                  @db.Date
   dataAdmissao              DateTime?                  @db.Date
   createdAt                 DateTime                   @default(now())
+  substituicoesComoTitular  GerenteSubstituicao[]      @relation("SubstituicaoTitular")
+  substituicoesComoSubstituto GerenteSubstituicao[]    @relation("SubstituicaoSubstituto")
+  categoriasHistorico       FuncionarioCategoriaHistorico[]
+}
+
+/// Vigência de categoria funcional — base para isentar períodos sem obrigação de ponto
+/// (ex.: concursado → assessor → concursado: só os trechos como concursado entram no cálculo).
+model FuncionarioCategoriaHistorico {
+  id             String             @id @default(cuid())
+  funcionarioId  String
+  categoria      CategoriaFuncional
+  vigenciaDesde  DateTime           @db.Date
+  /// null = vigência atual (aberta)
+  vigenciaAte    DateTime?          @db.Date
+  funcionario    Funcionario        @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt      DateTime           @default(now())
+
+  @@index([funcionarioId, vigenciaDesde])
 }
 
 model JornadaTrabalho {
@@ -578,6 +632,8 @@ model RegistroPonto {
   observacoes     Json         @default("[]")
   ajustado        Boolean      @default(false)
   ajustadoPor     String?
+  /// Gerado por solicitação de assessor/gerente — aparece no histórico, não entra em cálculo.
+  apenasInformativo Boolean    @default(false)
   funcionario     Funcionario  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   createdAt       DateTime     @default(now())
 
@@ -636,6 +692,8 @@ model Afastamento {
   justificativa String?
   documentoUrl  String?
   aprovadoPor   String?
+  /// Gerado por solicitação de assessor/gerente — aparece no histórico, não entra em cálculo.
+  apenasInformativo Boolean     @default(false)
   funcionario   Funcionario     @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   createdAt     DateTime        @default(now())
 }
@@ -650,6 +708,8 @@ model Solicitacao {
   descricao            String
   metadados            Json? // dados específicos por tipo (vide plano)
   status               StatusSolicitacao @default(PENDENTE)
+  /// Assessor/Gerente: após aprovação, histórico é só informativo (não base de cálculo).
+  apenasInformativo    Boolean           @default(false)
   // Etapa 1 — Gestor
   gestorUserId         String? // User.id do gestor que resolveu
   gestorObservacao     String?

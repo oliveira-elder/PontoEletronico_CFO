@@ -21,7 +21,9 @@ const MESES_PT = [
 const CATEGORIA_LABEL: Record<string, string> = {
   CONCURSADO: "Concursado",
   ESTAGIARIO: "Estagiário",
-  ASSESSOR: "Assessor"
+  MENOR_APRENDIZ: "Menor Aprendiz",
+  ASSESSOR: "Assessor",
+  GERENTE: "Gerente"
 };
 
 /** Largura útil A4 com margens [25, 22, 25, 28] */

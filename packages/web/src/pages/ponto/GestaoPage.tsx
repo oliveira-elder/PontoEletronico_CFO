@@ -21,7 +21,7 @@ import {
 import { ExtensionsApiPanel } from "../../components/ExtensionsApiPanel";
 
 /* ─── Types ─── */
-type Categoria = "ESTAGIARIO" | "CONCURSADO" | "ASSESSOR" | "GERENTE";
+type Categoria = "ESTAGIARIO" | "MENOR_APRENDIZ" | "CONCURSADO" | "ASSESSOR" | "GERENTE";
 
 interface Gerencia {
   id: string;
@@ -60,6 +60,11 @@ interface Funcionario {
   jornadaPeriodo?: JornadaPeriodo | null;
   modoHomeOffice?: boolean;
   modoHibridoLocal?: boolean;
+  supervisorEstagioId?: string | null;
+  supervisorEstagio?: {
+    id: string;
+    user: { id: string; name: string; email: string };
+  } | null;
   enderecoResidencial?: EnderecoResidencial | null;
   requerimentoEndereco?: {
     id: string;
@@ -77,6 +82,18 @@ interface Funcionario {
   dataNascimento?: string | null;
   user: { id: string; name: string; email: string; emailReal: string | null };
   gerencia?: { id: string; nome: string; sigla: string } | null;
+  ehGerenteSubstituto?: boolean;
+  ehTitularEmSubstituicao?: boolean;
+  substituicao?: {
+    id: string;
+    status: string;
+    dataInicio: string;
+    dataFim: string;
+    titularId: string;
+    substitutoId: string;
+    substituto?: { id: string; user: { name: string } };
+    titular?: { id: string; user: { name: string } };
+  } | null;
 }
 
 /* Converte slug kebab-case → nome capitalizado (ex: "desenvolvimento" → "Desenvolvimento") */
@@ -147,6 +164,12 @@ const CAT: Record<Categoria, { label: string; cor: string; bg: string; icon: Rea
       bg: "rgba(30,74,122,0.08)",
       icon: GraduationCapIcon
     },
+    MENOR_APRENDIZ: {
+      label: "Menor Aprendiz",
+      cor: "#5b4a9e",
+      bg: "rgba(91,74,158,0.10)",
+      icon: UsersIcon
+    },
     CONCURSADO: {
       label: "Concursado",
       cor: "var(--green)",
@@ -173,14 +196,17 @@ const FORM_VAZIO = {
   matricula: "",
   email: "",
   cpf: "",
-  cargo: "",
   categoria: "CONCURSADO" as Categoria,
   gerenciaId: "",
   jornadaPeriodoId: "",
   subsecao: "",
   ativo: true,
   dataNascimento: "",
-  dataAdmissao: ""
+  dataAdmissao: "",
+  supervisorEstagioId: "",
+  substitutoId: "",
+  substitutoDataInicio: "",
+  substitutoDataFim: ""
 };
 
 /* ─── Stat Card ─── */
@@ -224,7 +250,7 @@ function Stat({ valor, label, cor }: { valor: number; label: string; cor: string
 
 /* ─── Badge Categoria ─── */
 function CategoriaBadge({ cat }: { cat: Categoria }) {
-  const c = CAT[cat];
+  const c = CAT[cat] ?? CAT.CONCURSADO;
   const Icon = c.icon;
   return (
     <span
@@ -383,12 +409,14 @@ export function GestaoPage() {
   });
 
   function abrirEditar(f: Funcionario) {
+    const sub = f.substituicao;
+    const isTitularSub =
+      sub && sub.titularId === f.id && (sub.status === "AGENDADA" || sub.status === "ATIVA");
     setForm({
       nome: f.user?.name ?? "",
       matricula: f.matricula ?? "",
       email: f.user?.email ?? "",
       cpf: f.cpf ?? "",
-      cargo: f.cargo ?? "",
       categoria: f.categoria ?? "CONCURSADO",
       gerenciaId: f.gerenciaId ?? "",
       jornadaPeriodoId: f.jornadaPeriodoId ?? "",
@@ -399,7 +427,11 @@ export function GestaoPage() {
         ? new Date((f as unknown as { dataAdmissao: string }).dataAdmissao)
             .toISOString()
             .slice(0, 10)
-        : ""
+        : "",
+      supervisorEstagioId: f.supervisorEstagioId ?? "",
+      substitutoId: isTitularSub ? sub.substitutoId : "",
+      substitutoDataInicio: isTitularSub ? new Date(sub.dataInicio).toISOString().slice(0, 10) : "",
+      substitutoDataFim: isTitularSub ? new Date(sub.dataFim).toISOString().slice(0, 10) : ""
     });
     setModalidade({
       modoHomeOffice: f.modoHomeOffice ?? false,
@@ -507,12 +539,77 @@ export function GestaoPage() {
   async function salvar() {
     if (!form.nome || !form.matricula || !form.gerenciaId) return;
     if (cpfBloqueio) return;
+    if (
+      (form.categoria === "ESTAGIARIO" || form.categoria === "MENOR_APRENDIZ") &&
+      !form.supervisorEstagioId
+    ) {
+      alert("Selecione o Supervisor de Estágio para Estagiário ou Menor Aprendiz.");
+      return;
+    }
+    if (form.categoria === "ESTAGIARIO" || form.categoria === "MENOR_APRENDIZ") {
+      const supervisor = funcionarios.find((f) => f.id === form.supervisorEstagioId);
+      if (
+        supervisor &&
+        (supervisor.categoria === "ESTAGIARIO" || supervisor.categoria === "MENOR_APRENDIZ")
+      ) {
+        alert(
+          "Estagiário e Menor Aprendiz não podem ser supervisor de estágio. Escolha um concursado, assessor ou gerente da mesma gerência."
+        );
+        return;
+      }
+    }
 
-    const { jornadaPeriodoId, ...restForm } = form;
-    const payload = { ...restForm, dataNascimento: form.dataNascimento || null };
+    const {
+      jornadaPeriodoId,
+      substitutoId,
+      substitutoDataInicio,
+      substitutoDataFim,
+      supervisorEstagioId,
+      ...restForm
+    } = form;
+
+    const payload: Record<string, unknown> = {
+      ...restForm,
+      dataNascimento: form.dataNascimento || null
+    };
+
+    if (form.categoria === "ESTAGIARIO" || form.categoria === "MENOR_APRENDIZ") {
+      payload.supervisorEstagioId = supervisorEstagioId || null;
+    } else {
+      payload.supervisorEstagioId = null;
+    }
+
+    if (form.categoria === "GERENTE") {
+      payload.substitutoId = substitutoId || null;
+      payload.substitutoDataInicio = substitutoId ? substitutoDataInicio || null : null;
+      payload.substitutoDataFim = substitutoId ? substitutoDataFim || null : null;
+    }
 
     if (painel === "novo") {
-      const novo = await api.post<Funcionario>("/ponto/gestao/funcionarios", payload);
+      const {
+        substitutoId: subId,
+        substitutoDataInicio: subIni,
+        substitutoDataFim: subFim,
+        supervisorEstagioId: supId,
+        ...createPayload
+      } = payload;
+      const novo = await api.post<Funcionario>("/ponto/gestao/funcionarios", createPayload);
+      const followUp: Record<string, unknown> = {};
+      if (form.categoria === "GERENTE" && subId) {
+        followUp.substitutoId = subId;
+        followUp.substitutoDataInicio = subIni;
+        followUp.substitutoDataFim = subFim;
+      }
+      if (
+        (form.categoria === "ESTAGIARIO" || form.categoria === "MENOR_APRENDIZ") &&
+        typeof supId === "string" &&
+        supId
+      ) {
+        followUp.supervisorEstagioId = supId;
+      }
+      if (Object.keys(followUp).length) {
+        await api.put(`/ponto/gestao/funcionarios/${novo.id}`, followUp);
+      }
       if (isRhOuAdmin) {
         await Promise.all([
           jornadaPeriodoId
@@ -566,6 +663,7 @@ export function GestaoPage() {
 
   const total = funcionarios.length;
   const estagiarios = funcionarios.filter((f) => f.categoria === "ESTAGIARIO").length;
+  const menoresAprendizes = funcionarios.filter((f) => f.categoria === "MENOR_APRENDIZ").length;
   const concursados = funcionarios.filter((f) => f.categoria === "CONCURSADO").length;
   const assessores = funcionarios.filter((f) => f.categoria === "ASSESSOR").length;
   const gerentes = funcionarios.filter((f) => f.categoria === "GERENTE").length;
@@ -653,6 +751,7 @@ export function GestaoPage() {
         <Stat valor={gerentes} label="Gerentes" cor="var(--burgundy-600)" />
         <Stat valor={assessores} label="Assessores" cor="#8a6a00" />
         <Stat valor={estagiarios} label="Estagiários" cor="var(--blue-ink)" />
+        <Stat valor={menoresAprendizes} label="Menores Aprendizes" cor="#5b4a9e" />
       </div>
 
       {/* ── Barra de filtros ── */}
@@ -708,6 +807,7 @@ export function GestaoPage() {
           >
             <option value="">Todas as categorias</option>
             <option value="ESTAGIARIO">Estagiário</option>
+            <option value="MENOR_APRENDIZ">Menor Aprendiz</option>
             <option value="CONCURSADO">Concursado</option>
             <option value="ASSESSOR">Assessor</option>
             <option value="GERENTE">Gerente</option>
@@ -924,7 +1024,7 @@ export function GestaoPage() {
                           </span>
                         )}
                       </span>
-                      {f.isManager && (
+                      {f.isManager && !f.ehGerenteSubstituto && (
                         <p
                           style={{
                             margin: "2px 0 0",
@@ -934,8 +1034,37 @@ export function GestaoPage() {
                           }}
                         >
                           Gerente da área
+                          {f.ehTitularEmSubstituicao ? " (em substituição)" : ""}
                         </p>
                       )}
+                      {f.ehGerenteSubstituto && (
+                        <p
+                          style={{
+                            margin: "2px 0 0",
+                            fontSize: 10.5,
+                            color: "#5b4a9e",
+                            fontWeight: 600
+                          }}
+                        >
+                          Gerente Substituto
+                          {f.substituicao?.dataInicio && f.substituicao?.dataFim
+                            ? ` · ${new Date(f.substituicao.dataInicio).toLocaleDateString("pt-BR")}–${new Date(f.substituicao.dataFim).toLocaleDateString("pt-BR")}`
+                            : ""}
+                        </p>
+                      )}
+                      {(f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
+                        f.supervisorEstagio && (
+                          <p
+                            style={{
+                              margin: "2px 0 0",
+                              fontSize: 10.5,
+                              color: "var(--blue-ink)",
+                              fontWeight: 600
+                            }}
+                          >
+                            Supervisor: {f.supervisorEstagio.user?.name ?? "—"}
+                          </p>
+                        )}
                       {infoContato(f) && (
                         <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-400)" }}>
                           {infoContato(f)}
@@ -1150,7 +1279,22 @@ export function GestaoPage() {
                     return (
                       <button
                         key={cat}
-                        onClick={() => setForm((f) => ({ ...f, categoria: cat }))}
+                        onClick={() =>
+                          setForm((f) => ({
+                            ...f,
+                            categoria: cat,
+                            ...(cat !== "GERENTE"
+                              ? {
+                                  substitutoId: "",
+                                  substitutoDataInicio: "",
+                                  substitutoDataFim: ""
+                                }
+                              : {}),
+                            ...(cat !== "ESTAGIARIO" && cat !== "MENOR_APRENDIZ"
+                              ? { supervisorEstagioId: "" }
+                              : {})
+                          }))
+                        }
                         style={{
                           padding: "8px 4px",
                           borderRadius: "var(--radius-md)",
@@ -1183,6 +1327,289 @@ export function GestaoPage() {
                 </div>
               </div>
 
+              {/* Supervisor de estágio — Estagiário / Menor Aprendiz */}
+              {(form.categoria === "ESTAGIARIO" || form.categoria === "MENOR_APRENDIZ") && (
+                <div
+                  style={{
+                    marginBottom: 20,
+                    padding: "14px 14px 6px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(30,74,122,0.22)",
+                    background: "rgba(30,74,122,0.04)"
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "var(--blue-ink)",
+                      margin: "0 0 6px"
+                    }}
+                  >
+                    Supervisor de Estágio
+                  </p>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      margin: "0 0 12px",
+                      lineHeight: 1.45
+                    }}
+                  >
+                    Qualquer pessoa da mesma gerência (incluindo o gerente) pode supervisionar —
+                    exceto estagiário e menor aprendiz. Solicitações deste{" "}
+                    {form.categoria === "ESTAGIARIO" ? "estagiário" : "menor aprendiz"} serão
+                    enviadas ao supervisor, não ao gerente da área — salvo se o gerente também for o
+                    supervisor.
+                  </p>
+                  <div style={{ marginBottom: 12 }}>
+                    <label
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 6
+                      }}
+                    >
+                      Supervisor *
+                    </label>
+                    <select
+                      value={form.supervisorEstagioId}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, supervisorEstagioId: e.target.value }))
+                      }
+                      disabled={!form.gerenciaId}
+                      style={{
+                        width: "100%",
+                        padding: "9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        background: "#fff",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-body)",
+                        outline: "none",
+                        boxSizing: "border-box"
+                      }}
+                    >
+                      <option value="">Selecione o supervisor</option>
+                      {funcionarios
+                        .filter(
+                          (f) =>
+                            f.gerenciaId === form.gerenciaId &&
+                            f.id !== editandoId &&
+                            f.ativo &&
+                            f.categoria !== "ESTAGIARIO" &&
+                            f.categoria !== "MENOR_APRENDIZ"
+                        )
+                        .map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.user?.name ?? f.matricula}
+                            {f.isManager || f.categoria === "GERENTE" ? " (Gerente)" : ""}
+                            {" — "}
+                            {CAT[f.categoria]?.label ?? f.categoria}
+                          </option>
+                        ))}
+                    </select>
+                    {!form.gerenciaId && (
+                      <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                        Selecione a gerência antes de escolher o supervisor.
+                      </p>
+                    )}
+                    {form.gerenciaId &&
+                      form.supervisorEstagioId &&
+                      (() => {
+                        const atual = funcionarios.find((f) => f.id === form.supervisorEstagioId);
+                        if (
+                          atual &&
+                          (atual.categoria === "ESTAGIARIO" || atual.categoria === "MENOR_APRENDIZ")
+                        ) {
+                          return (
+                            <p
+                              style={{
+                                fontSize: 12,
+                                color: "var(--red)",
+                                marginTop: 6,
+                                lineHeight: 1.4
+                              }}
+                            >
+                              O supervisor selecionado é estagiário ou menor aprendiz e não é
+                              permitido. Escolha outro da lista.
+                            </p>
+                          );
+                        }
+                        return null;
+                      })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Gerente substituto — somente categoria Gerente */}
+              {form.categoria === "GERENTE" && (
+                <div
+                  style={{
+                    marginBottom: 20,
+                    padding: "14px 14px 6px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(91,74,158,0.22)",
+                    background: "rgba(91,74,158,0.04)"
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "#5b4a9e",
+                      margin: "0 0 6px"
+                    }}
+                  >
+                    Gerente Substituto
+                  </p>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-500)",
+                      margin: "0 0 12px",
+                      lineHeight: 1.45
+                    }}
+                  >
+                    No período informado, o titular fica inativo e o substituto assume a gerência
+                    (mesma área) com as atribuições de gerente. Somente <strong>Concursado</strong>{" "}
+                    ou <strong>Assessor</strong> da mesma gerência podem substituir. Ao término,
+                    tudo é revertido.
+                  </p>
+
+                  <div style={{ marginBottom: 12 }}>
+                    <label
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-500)",
+                        display: "block",
+                        marginBottom: 6
+                      }}
+                    >
+                      Substituto (Concursado ou Assessor da mesma gerência)
+                    </label>
+                    <select
+                      value={form.substitutoId}
+                      onChange={(e) => setForm((f) => ({ ...f, substitutoId: e.target.value }))}
+                      disabled={!form.gerenciaId}
+                      style={{
+                        width: "100%",
+                        padding: "9px 12px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        background: "#fff",
+                        fontSize: 13.5,
+                        fontFamily: "var(--font-body)",
+                        outline: "none",
+                        boxSizing: "border-box"
+                      }}
+                    >
+                      <option value="">Nenhum (sem substituição)</option>
+                      {funcionarios
+                        .filter(
+                          (f) =>
+                            f.gerenciaId === form.gerenciaId &&
+                            f.id !== editandoId &&
+                            f.ativo &&
+                            (f.categoria === "CONCURSADO" || f.categoria === "ASSESSOR")
+                        )
+                        .map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.user?.name ?? f.matricula} — {CAT[f.categoria]?.label ?? f.categoria}
+                          </option>
+                        ))}
+                    </select>
+                    {!form.gerenciaId && (
+                      <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                        Selecione a gerência antes de escolher o substituto.
+                      </p>
+                    )}
+                  </div>
+
+                  {form.substitutoId && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div style={{ marginBottom: 12 }}>
+                        <label
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 6
+                          }}
+                        >
+                          Início *
+                        </label>
+                        <input
+                          type="date"
+                          value={form.substitutoDataInicio}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, substitutoDataInicio: e.target.value }))
+                          }
+                          style={{
+                            width: "100%",
+                            padding: "9px 12px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            background: "#fff",
+                            fontSize: 13.5,
+                            fontFamily: "var(--font-body)",
+                            outline: "none",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                      <div style={{ marginBottom: 12 }}>
+                        <label
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            letterSpacing: "0.06em",
+                            textTransform: "uppercase",
+                            color: "var(--ink-500)",
+                            display: "block",
+                            marginBottom: 6
+                          }}
+                        >
+                          Fim *
+                        </label>
+                        <input
+                          type="date"
+                          value={form.substitutoDataFim}
+                          onChange={(e) =>
+                            setForm((f) => ({ ...f, substitutoDataFim: e.target.value }))
+                          }
+                          style={{
+                            width: "100%",
+                            padding: "9px 12px",
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid rgba(122,30,38,0.14)",
+                            background: "#fff",
+                            fontSize: 13.5,
+                            fontFamily: "var(--font-body)",
+                            outline: "none",
+                            boxSizing: "border-box"
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Campos */}
               {(
                 [
@@ -1203,12 +1630,6 @@ export function GestaoPage() {
                     label: "E-mail institucional",
                     placeholder: "nome@cfo.org.br",
                     type: "email"
-                  },
-                  {
-                    key: "cargo",
-                    label: "Cargo / Função",
-                    placeholder: "Ex: Analista de RH",
-                    type: "text"
                   }
                 ] as { key: keyof typeof form; label: string; placeholder: string; type: string }[]
               ).map(({ key, label, placeholder, type }) => (

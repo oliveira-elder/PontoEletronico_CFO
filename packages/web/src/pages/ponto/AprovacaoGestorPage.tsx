@@ -9,17 +9,21 @@ import {
   RefreshCwIcon,
   UsersIcon,
   UserIcon,
-  DownloadIcon
+  DownloadIcon,
+  InfoIcon
 } from "../../components/icons";
 import {
   FeriasDetalheBlock,
+  LinkDocumentoAnexado,
   LogTimelineGestorHistorico,
   ModalDecisaoRH,
   ModalEnviarGuia,
   ModalEnviarFolhaFerias,
   SolicitacaoCardRH,
+  textoResumo,
   type SolicitacaoResumo
 } from "./solicitacaoUi";
+import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -56,6 +60,7 @@ interface Solicitacao {
   documentoRetornoUrl?: string | null;
   documentoRetornoEm?: string | null;
   createdAt: string;
+  apenasInformativo?: boolean;
   funcionario: {
     id: string;
     matricula: string | null;
@@ -92,97 +97,6 @@ function fmtDateTime(iso: string) {
     return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
   } catch {
     return iso;
-  }
-}
-
-function diffDias(inicio: string, fim: string): number {
-  try {
-    const d1 = new Date(inicio);
-    const d2 = new Date(fim);
-    return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1);
-  } catch {
-    return 1;
-  }
-}
-
-const TIPO_PONTO: Record<string, string> = {
-  ENTRADA: "Entrada",
-  INICIO_INTERVALO: "Início de Intervalo",
-  FIM_INTERVALO: "Fim de Intervalo",
-  SAIDA: "Saída",
-  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
-  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
-};
-
-function textoResumo(s: Solicitacao): string {
-  const nome = s.funcionario.user.name;
-  const meta = s.metadados;
-
-  switch (s.tipo) {
-    case "CORRECAO_PONTO": {
-      if (!meta) return `${nome} solicita correção de ponto.`;
-      const acao = (meta.acao as string) === "INCLUIR" ? "inclusão" : "alteração";
-      const tipoPonto =
-        TIPO_PONTO[(meta.tipoRegistro as string) ?? ""] ?? (meta.tipoRegistro as string);
-      if (meta.acao === "INCLUIR") {
-        return `${nome} solicita a ${acao} de registro de ponto: ${tipoPonto} às ${meta.horarioSolicitado as string} em ${fmtDate(s.dataReferencia)}.`;
-      }
-      const de = meta.horarioOriginal ? `de ${meta.horarioOriginal as string} ` : "";
-      return `${nome} solicita a ${acao} do registro de ${tipoPonto} ${de}para ${meta.horarioSolicitado as string} em ${fmtDate(s.dataReferencia)}.`;
-    }
-    case "ATESTADO": {
-      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
-      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
-      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 1;
-      const periodo =
-        meta?.horarioInicio && meta?.horarioFim
-          ? ` (${meta.horarioInicio as string}–${meta.horarioFim as string})`
-          : "";
-      if (inicio === fim) {
-        return `${nome} solicita o registro de atestado médico em ${inicio}${periodo}.`;
-      }
-      return `${nome} solicita o registro de atestado médico de ${inicio} a ${fim}${periodo} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
-    }
-    case "FERIAS": {
-      const periodos = Array.isArray(meta?.periodos)
-        ? (meta.periodos as Array<{ dataInicio: string; dataFim: string; dias: number }>)
-        : null;
-      const diasVenda = Number(meta?.diasVendidos ?? meta?.diasVenda ?? 0);
-      const diasGozo = Number(meta?.totalDiasGozo ?? 0);
-      if (periodos && periodos.length > 0) {
-        const periodosStr = periodos
-          .map(
-            (p, i) => `${i + 1}º: ${fmtDate(p.dataInicio)} a ${fmtDate(p.dataFim)} (${p.dias} dias)`
-          )
-          .join(" | ");
-        const vendaStr = diasVenda > 0 ? ` + ${diasVenda} dia(s) vendidos` : "";
-        const isAlteracao = typeof meta?.alteracaoDeId === "string" ? " [alteração]" : "";
-        return `${nome} solicita férias${isAlteracao} — ${periodosStr}${vendaStr}. Total: ${diasGozo + diasVenda} dias.`;
-      }
-      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
-      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
-      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
-      const venda = diasVenda > 0 ? `, vendendo ${diasVenda} dia${diasVenda !== 1 ? "s" : ""}` : "";
-      return `${nome} solicita férias de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""} corridos${venda}.`;
-    }
-    case "LICENCA": {
-      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
-      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
-      if (inicio === fim) return `${nome} solicita licença em ${inicio}.`;
-      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
-      return `${nome} solicita licença de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
-    }
-    case "ABONO": {
-      const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
-      const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
-      const tipoAbono =
-        (meta?.tipoAbono as string) === "FUTURO" ? "abono de dia futuro" : "abono de falta";
-      if (inicio === fim) return `${nome} solicita ${tipoAbono} em ${inicio}.`;
-      const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
-      return `${nome} solicita ${tipoAbono} de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
-    }
-    default:
-      return `${nome} abriu uma solicitação de ${TIPO_LABEL[s.tipo as keyof typeof TIPO_LABEL] ?? s.tipo}.`;
   }
 }
 
@@ -588,6 +502,27 @@ function SolicitacaoCard({
             </span>
           )}
           <StatusBadge status={s.status} />
+          {s.apenasInformativo && (
+            <span
+              title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+              aria-label={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                background: "rgba(37,99,235,0.08)",
+                color: "#1e40af",
+                borderRadius: 4,
+                padding: "2px 7px",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "help"
+              }}
+            >
+              <InfoIcon size={12} />
+              Informativo
+            </span>
+          )}
         </div>
 
         {/* ── Texto principal explicativo ── */}
@@ -644,12 +579,7 @@ function SolicitacaoCard({
         )}
 
         {s.tipo === "ATESTADO" && typeof s.metadados?.documentoUrl === "string" && (
-          <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "#7c3aed" }}>
-            📎{" "}
-            <a href={s.metadados.documentoUrl as string} target="_blank" rel="noopener noreferrer">
-              Ver atestado anexado
-            </a>
-          </p>
+          <LinkDocumentoAnexado href={s.metadados.documentoUrl as string} />
         )}
 
         {!mostrarAcoes && (s.gestorResolvidoEm || s.gestorObservacao || s.observacaoGestor) && (

@@ -25,8 +25,25 @@ import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import {
   jornadaEsperadaMin,
   resolverJornadaHistoricoContexto,
-  calcularJornadaParcialFeriado
+  calcularJornadaParcialFeriado,
+  aplicarMargemCalculoDiario
 } from "../../utils/jornada-historico";
+import {
+  classificarTurnoEntrada,
+  criarObservacaoCategoriaSemIntervalo,
+  criarObservacaoTurnoSemIntervalo,
+  observacaoTurnoSemIntervalo
+} from "../../utils/turno-entrada";
+import {
+  categoriaSemIntervaloAlmoco,
+  categoriaSemRegistroPonto,
+  diaSemObrigacaoPonto,
+  labelCategoriaSemIntervalo,
+  labelCategoriaSemRegistroPonto,
+  periodosSemObrigacaoPonto,
+  type CategoriaSemIntervaloAlmoco
+} from "../../utils/categoria-jornada";
+import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
    anexados pelo funcionário não podem mais ser editados/substituídos. */
@@ -61,6 +78,86 @@ const TIPO_PONTO_LABEL: Record<string, string> = {
   INTERROMPER_EXPEDIENTE: "Interromper expediente",
   REINICIAR_EXPEDIENTE: "Reiniciar expediente"
 };
+
+function extrairTiposCorrecaoPonto(metadados: unknown): string[] {
+  if (!metadados || typeof metadados !== "object") return [];
+  const meta = metadados as Record<string, unknown>;
+  if (Array.isArray(meta.correcoesDia)) {
+    return meta.correcoesDia
+      .map((c) => (c as { tipoRegistro?: string })?.tipoRegistro)
+      .filter((t): t is string => typeof t === "string" && t.length > 0);
+  }
+  if (typeof meta.tipoRegistro === "string" && meta.tipoRegistro) {
+    return [meta.tipoRegistro];
+  }
+  return [];
+}
+
+function periodosSobrepostos(inicioA: Date, fimA: Date, inicioB: Date, fimB: Date): boolean {
+  return inicioA <= fimB && fimA >= inicioB;
+}
+
+function fmtDataBr(iso: string | Date): string {
+  try {
+    return new Date(iso).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  } catch {
+    return String(iso);
+  }
+}
+
+type SolicitacaoCorrecaoRef = {
+  id: string;
+  status: string;
+  dataReferencia: Date;
+  dataInicio: Date | null;
+  dataFim: Date | null;
+  metadados: unknown;
+};
+
+const STATUS_BLOQUEIO_CORRECAO_PONTO = [
+  "APROVADA",
+  "REJEITADA",
+  "REJEITADA_GESTOR",
+  "REJEITADA_RH"
+] as const;
+
+function encontrarConflitoCorrecaoPonto(
+  existentes: SolicitacaoCorrecaoRef[],
+  novosTipos: Set<string>,
+  novoInicio: Date,
+  novoFim: Date,
+  alteracaoDeId: string | null
+): SolicitacaoCorrecaoRef | undefined {
+  return existentes.find((s) => {
+    if (alteracaoDeId && s.id === alteracaoDeId) return false;
+    const inicioExist = s.dataInicio ?? s.dataReferencia;
+    const fimExist = s.dataFim ?? inicioExist;
+    if (!periodosSobrepostos(novoInicio, novoFim, inicioExist, fimExist)) return false;
+    const tiposExist = extrairTiposCorrecaoPonto(s.metadados);
+    return tiposExist.some((t) => novosTipos.has(t));
+  });
+}
+
+function labelsTiposConflitoCorrecao(
+  novosTipos: Set<string>,
+  conflito: SolicitacaoCorrecaoRef
+): string {
+  return [...novosTipos]
+    .filter((t) => extrairTiposCorrecaoPonto(conflito.metadados).includes(t))
+    .map((t) => TIPO_PONTO_LABEL[t] ?? t)
+    .join(", ");
+}
+
+function descricaoRejeicaoCorrecao(status: string): string {
+  switch (status) {
+    case "REJEITADA_GESTOR":
+      return "rejeitada pelo gestor";
+    case "REJEITADA_RH":
+      return "rejeitada pelo RH";
+    default:
+      return "rejeitada";
+  }
+}
 
 /* Fase da jornada do dia, derivada da sequência de registros.
    MANHA/TARDE = trabalhando (antes/depois do almoço); PAUSA_* = expediente
@@ -274,16 +371,23 @@ export class PontoService {
 
   /* Percorre os registros do dia e deriva a fase atual da jornada,
      considerando pausas (INTERROMPER_EXPEDIENTE/REINICIAR_EXPEDIENTE)
-     dentro dos períodos da manhã (antes do almoço) e da tarde (depois). */
-  private getFaseEAcoes(registros: { tipo: string }[]): {
+     dentro dos períodos da manhã (antes do almoço) e da tarde (depois).
+     ENTRADA com observação TURNO_SEM_INTERVALO (ou categoria carga corrida)
+     pula o almoço e vai para TARDE. */
+  private getFaseEAcoes(
+    registros: { tipo: string; observacoes?: unknown }[],
+    opts?: { forcarSemIntervalo?: boolean }
+  ): {
     fase: FaseJornada;
     acoesPermitidas: string[];
   } {
+    const forcarSemIntervalo = !!opts?.forcarSemIntervalo;
     let fase: FaseJornada = "NENHUMA";
     for (const r of registros) {
       switch (r.tipo) {
         case "ENTRADA":
-          fase = "MANHA";
+          fase =
+            forcarSemIntervalo || observacaoTurnoSemIntervalo(r.observacoes) ? "TARDE" : "MANHA";
           break;
         case "INICIO_INTERVALO":
           fase = "ALMOCO";
@@ -304,14 +408,39 @@ export class PontoService {
           break;
       }
     }
-    return { fase, acoesPermitidas: ACOES_POR_FASE[fase] };
+
+    /* Estagiário / menor aprendiz: nunca ficam em fases de almoço — pausa vira PAUSA_TARDE. */
+    if (forcarSemIntervalo) {
+      if (fase === "MANHA") fase = "TARDE";
+      else if (fase === "PAUSA_MANHA") fase = "PAUSA_TARDE";
+      else if (fase === "ALMOCO") fase = "TARDE";
+    }
+
+    let acoesPermitidas = ACOES_POR_FASE[fase];
+    if (forcarSemIntervalo) {
+      acoesPermitidas = acoesPermitidas.filter(
+        (a) => a !== "INICIO_INTERVALO" && a !== "FIM_INTERVALO"
+      );
+    }
+    return { fase, acoesPermitidas };
   }
 
   /* ─── Status atual (hoje) ─── */
 
   async getStatusAtual(keycloakSub: string) {
     const func = await this.getFuncionario(keycloakSub);
-    const { inicio, fim } = intervaloDiaBrasilia(hojeBrasiliaISO());
+    const hojeIso = hojeBrasiliaISO();
+    const { inicio, fim } = intervaloDiaBrasilia(hojeIso);
+
+    const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
+    const pontoObrigatorioDesde = func.pontoObrigatorioDesde
+      ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+      : null;
+    const isentoHoje = diaSemObrigacaoPonto(hojeIso, {
+      historico: historicoCat,
+      categoriaAtual: func.categoria,
+      pontoObrigatorioDesde
+    });
 
     const registros = await this.prisma.registroPonto.findMany({
       where: {
@@ -328,7 +457,7 @@ export class PontoService {
 
     const horasTrabalhadasMinutos = this.calcHorasMinutos(registros);
 
-    const afastamento = await this.getAfastamentoDoDia(func.id, hojeBrasiliaISO());
+    const afastamento = await this.getAfastamentoDoDia(func.id, hojeIso);
     const afastamentoHoje = afastamento
       ? {
           tipo: afastamento.tipo,
@@ -338,11 +467,18 @@ export class PontoService {
         }
       : null;
 
-    const { fase, acoesPermitidas: acoesPorFase } = this.getFaseEAcoes(registros);
-    const acoesPermitidas = afastamentoHoje ? [] : acoesPorFase;
-    const estado = afastamentoHoje ? "FORA" : ESTADO_POR_FASE[fase];
+    const semIntervaloCategoria = categoriaSemIntervaloAlmoco(func.categoria);
+    const { fase, acoesPermitidas: acoesPorFase } = this.getFaseEAcoes(registros, {
+      forcarSemIntervalo: semIntervaloCategoria
+    });
+    const acoesPermitidas = afastamentoHoje || isentoHoje ? [] : acoesPorFase;
+    const estado = afastamentoHoje || isentoHoje ? "FORA" : ESTADO_POR_FASE[fase];
 
     const jornada = await this.getJornadaEfetiva(func.id);
+
+    const entradaHoje = registros.find((r) => r.tipo === "ENTRADA");
+    const obsTurno = entradaHoje ? observacaoTurnoSemIntervalo(entradaHoje.observacoes) : undefined;
+    const semIntervalo = !!obsTurno || semIntervaloCategoria;
 
     return {
       estado,
@@ -355,8 +491,14 @@ export class PontoService {
       acoesPermitidas,
       afastamentoHoje,
       categoria: func.categoria,
+      semRegistroPonto: isentoHoje || categoriaSemRegistroPonto(func.categoria),
+      isentoHoje,
       modoHomeOffice: func.modoHomeOffice,
       modoHibridoLocal: func.modoHibridoLocal,
+      semIntervalo,
+      turno: obsTurno?.turno ?? (entradaHoje ? "MATUTINO" : null),
+      motivoSemIntervalo:
+        obsTurno?.motivo ?? (semIntervaloCategoria ? "CATEGORIA_CARGA_CORRIDA" : null),
       enderecoResidencial: func.enderecoResidencial
         ? {
             lat: func.enderecoResidencial.lat,
@@ -380,6 +522,7 @@ export class PontoService {
     const candidatos = await this.prisma.afastamento.findMany({
       where: {
         funcionarioId,
+        apenasInformativo: false,
         dataInicio: { lte: diaSeguinte },
         dataFim: { gte: diaAnterior }
       },
@@ -434,11 +577,29 @@ export class PontoService {
 
   async baterPonto(keycloakSub: string, dto: CreateRegistroDto) {
     const func = await this.getFuncionario(keycloakSub);
+    const hojeIso = hojeBrasiliaISO();
 
-    const categoriasNaoPermitidas = ["ASSESSOR", "GERENTE"] as const;
-    if (categoriasNaoPermitidas.includes(func.categoria as never)) {
+    if (categoriaSemRegistroPonto(func.categoria)) {
       throw new BadRequestException(
-        `Funcionários na categoria ${func.categoria === "ASSESSOR" ? "Assessor" : "Gerente"} não registram ponto eletrônico.`
+        `Funcionários na categoria ${labelCategoriaSemRegistroPonto(func.categoria)} não registram ponto eletrônico.`
+      );
+    }
+
+    const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
+    const pontoObrigatorioDesde = func.pontoObrigatorioDesde
+      ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+      : null;
+    if (
+      diaSemObrigacaoPonto(hojeIso, {
+        historico: historicoCat,
+        categoriaAtual: func.categoria,
+        pontoObrigatorioDesde
+      })
+    ) {
+      throw new BadRequestException(
+        "Hoje ainda não há obrigação de registro de ponto. " +
+          "Após retorno de Assessor/Gerente para categoria com ponto, " +
+          "a obrigação começa apenas no dia seguinte."
       );
     }
 
@@ -474,6 +635,18 @@ export class PontoService {
     if (status.afastamentoHoje) {
       throw new BadRequestException(
         `Você está em ${status.afastamentoHoje.label} hoje. Não é possível registrar ponto.`
+      );
+    }
+
+    /* Estagiário / menor aprendiz: carga horária corrida — sem início/fim de almoço. */
+    if (
+      (dto.tipo === "INICIO_INTERVALO" || dto.tipo === "FIM_INTERVALO") &&
+      categoriaSemIntervaloAlmoco(func.categoria)
+    ) {
+      const label = labelCategoriaSemIntervalo(func.categoria);
+      throw new BadRequestException(
+        `${label} realiza carga horária corrida e não registra intervalo de almoço. ` +
+          `Use Interromper/Reiniciar Expediente para pausas.`
       );
     }
 
@@ -678,6 +851,44 @@ export class PontoService {
       });
     }
 
+    /* Entrada sem intervalo de almoço:
+       - Estagiário / menor aprendiz (carga horária corrida), ou
+       - Turno vespertino/noturno (durante ou após a janela de almoço).
+       Anota observação na própria ENTRADA — sem criar registros de intervalo. */
+    let observacoesEntrada: Prisma.InputJsonValue | undefined;
+    if (dto.tipo === "ENTRADA") {
+      if (categoriaSemIntervaloAlmoco(func.categoria)) {
+        const jornada = await this.getJornadaEfetiva(func.id);
+        const horaAgora = horarioDeDataBrasilia(agora);
+        const classificacao = classificarTurnoEntrada(
+          horaAgora,
+          jornada.almocoPodeIniciarA,
+          jornada.almocoPodeIniciarAte
+        );
+        observacoesEntrada = appendObservacao(
+          [],
+          criarObservacaoCategoriaSemIntervalo(
+            func.categoria as CategoriaSemIntervaloAlmoco,
+            classificacao.turno
+          )
+        ) as unknown as Prisma.InputJsonValue;
+      } else {
+        const jornada = await this.getJornadaEfetiva(func.id);
+        const horaAgora = horarioDeDataBrasilia(agora);
+        const classificacao = classificarTurnoEntrada(
+          horaAgora,
+          jornada.almocoPodeIniciarA,
+          jornada.almocoPodeIniciarAte
+        );
+        if (classificacao.semIntervalo) {
+          observacoesEntrada = appendObservacao(
+            [],
+            criarObservacaoTurnoSemIntervalo(classificacao)
+          ) as unknown as Prisma.InputJsonValue;
+        }
+      }
+    }
+
     const registro = await this.prisma.registroPonto.create({
       data: {
         funcionarioId: func.id,
@@ -689,7 +900,8 @@ export class PontoService {
         longitude: dto.longitude,
         dentroPerimetro,
         observacao: dto.observacao,
-        fotoUrl: fotoUrl ?? null
+        fotoUrl: fotoUrl ?? null,
+        ...(observacoesEntrada ? { observacoes: observacoesEntrada } : {})
       }
     });
 
@@ -753,7 +965,8 @@ export class PontoService {
         dataHora: true,
         ajustado: true,
         observacao: true,
-        observacoes: true
+        observacoes: true,
+        apenasInformativo: true
       }
     });
 
@@ -772,7 +985,13 @@ export class PontoService {
         dataFim: { gte: inicioBuffer }
       },
       orderBy: { dataInicio: "asc" },
-      select: { tipo: true, dataInicio: true, dataFim: true, justificativa: true }
+      select: {
+        tipo: true,
+        dataInicio: true,
+        dataFim: true,
+        justificativa: true,
+        apenasInformativo: true
+      }
     });
 
     const feriados = await this.prisma.feriadoConfig.findMany({
@@ -813,10 +1032,25 @@ export class PontoService {
     const saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
     const saldoAcumuladoMes = bancoMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
 
+    const pontoObrigatorioDesde = func.pontoObrigatorioDesde
+      ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+      : null;
+
+    const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
+    const periodosSemObrigacao = periodosSemObrigacaoPonto(historicoCat, {
+      pontoObrigatorioDesde,
+      categoriaAtual: func.categoria
+    });
+
     return {
       mes,
       ano,
       inicioAtividades,
+      pontoObrigatorioDesde,
+      semRegistroPonto: categoriaSemRegistroPonto(func.categoria),
+      categoria: func.categoria,
+      periodosSemObrigacao,
+      categoriaHistorico: historicoCat,
       funcionario: { id: func.id, matricula: func.matricula, cargo: func.cargo },
       bancoPorDia,
       saldoMesBanco,
@@ -838,9 +1072,12 @@ export class PontoService {
   async getRelatorio(keycloakSub: string, mes: number, ano: number) {
     const historico = await this.getHistorico(keycloakSub, mes, ano);
 
+    const registrosCalc = historico.registros.filter((r) => !r.apenasInformativo);
+    const afastamentosCalc = historico.afastamentos.filter((a) => !a.apenasInformativo);
+
     const quadro = montarRelatorioQuadro(
-      historico.registros,
-      historico.afastamentos,
+      registrosCalc,
+      afastamentosCalc,
       mes,
       ano,
       historico.jornada,
@@ -909,6 +1146,20 @@ export class PontoService {
    *  úteis (seg–sex conforme diasUteis) e contabilizando feriados e afastamentos
    *  como saldo neutro (0), e faltas como saldo negativo. */
   private async calcularBancoHoras(funcionarioId: string, inicioAtividades?: string) {
+    const funcMeta = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true, pontoObrigatorioDesde: true }
+    });
+    const pontoObrigatorioDesde = funcMeta?.pontoObrigatorioDesde
+      ? dataBrasiliaISO(funcMeta.pontoObrigatorioDesde)
+      : null;
+    const historicoCat = await ensureCategoriaHistorico(this.prisma, funcionarioId);
+    const optsObrigacao = {
+      historico: historicoCat,
+      categoriaAtual: funcMeta?.categoria,
+      pontoObrigatorioDesde
+    };
+
     const jornada = await this.getJornadaEfetiva(funcionarioId);
     const jornadaCtx = await this.getJornadaHistoricoContexto(funcionarioId);
 
@@ -947,13 +1198,20 @@ export class PontoService {
     if (cicloInicioEfetivo < inicioLogin) {
       cicloInicioEfetivo = inicioLogin;
     }
+    /* Não antecipa o ciclo para pontoObrigatorioDesde: períodos intercalados
+       (concursado → assessor → concursado) precisam iterar o meio e zerar só nele. */
 
     const { inicio } = intervaloDiaBrasilia(cicloInicioEfetivo);
     const { fim } = intervaloDiaBrasilia(hojeIso);
 
     // Todos os registros do ciclo, agrupados por dia civil (Brasília)
+    // Ignora registros apenas informativos (solicitações de assessor/gerente).
     const registros = await this.prisma.registroPonto.findMany({
-      where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
+      where: {
+        funcionarioId,
+        apenasInformativo: false,
+        dataHora: { gte: inicio, lte: fim }
+      },
       orderBy: { dataHora: "asc" },
       select: { tipo: true, dataHora: true }
     });
@@ -965,9 +1223,14 @@ export class PontoService {
       porDia.get(key)!.push(r);
     }
 
-    // Afastamentos aprovados que interceptam o ciclo
+    // Afastamentos aprovados que interceptam o ciclo (exceto informativos)
     const afastamentos = await this.prisma.afastamento.findMany({
-      where: { funcionarioId, dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+      where: {
+        funcionarioId,
+        apenasInformativo: false,
+        dataInicio: { lte: fim },
+        dataFim: { gte: inicio }
+      },
       select: { dataInicio: true, dataFim: true }
     });
 
@@ -1029,6 +1292,25 @@ export class PontoService {
         continue;
       }
 
+      /* Período como assessor/gerente (ou pré-obrigação): neutro — não falta nem crédito.
+         Preserva saldos dos períodos como concursado antes/depois. */
+      if (diaSemObrigacaoPonto(dataAtual, optsObrigacao)) {
+        if (eDiaUtil || regsDodia.length > 0) {
+          dias.push({
+            data: dataAtual,
+            horasTrabalhadasMinutos: 0,
+            jornadaEsperadaMinutos: 0,
+            saldoDiaMinutos: 0,
+            saldoAcumuladoMinutos: saldoAcumulado,
+            observacao: "Isento — Assessor/Gerente"
+          });
+        }
+        const prox = new Date(year, month - 1, day);
+        prox.setDate(prox.getDate() + 1);
+        dataAtual = `${prox.getFullYear()}-${String(prox.getMonth() + 1).padStart(2, "0")}-${String(prox.getDate()).padStart(2, "0")}`;
+        continue;
+      }
+
       if (eDiaUtil) {
         // Dia útil normal
         const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
@@ -1054,7 +1336,10 @@ export class PontoService {
                 jornadaDiariaMin: jornadaDiaMin
               }
             );
-            saldoDiaMinutos = horasTrabalhadasMinutos - jornadaMandatoria;
+            saldoDiaMinutos = aplicarMargemCalculoDiario(
+              horasTrabalhadasMinutos - jornadaMandatoria,
+              jornada.toleranciaCalculoMin
+            );
             jornadaDia = jornadaMandatoria;
             obs = `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
           } else if (regsDodia.length > 0) {
@@ -1071,7 +1356,10 @@ export class PontoService {
         } else {
           // Dia útil normal — jornada conforme vigência do período
           const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
-          saldoDiaMinutos = horasTrabalhadasMinutos - jornadaDiaMin;
+          saldoDiaMinutos = aplicarMargemCalculoDiario(
+            horasTrabalhadasMinutos - jornadaDiaMin,
+            jornada.toleranciaCalculoMin
+          );
           jornadaDia = jornadaDiaMin;
           obs = undefined;
         }
@@ -1193,7 +1481,10 @@ export class PontoService {
         })
       : jornada.jornadaDiariaMin;
 
-    const overtime = this.calcHorasMinutos(registros) - jornadaMandatoria;
+    const overtimeRaw = this.calcHorasMinutos(registros) - jornadaMandatoria;
+    const overtime = aplicarMargemCalculoDiario(overtimeRaw, jornada.toleranciaCalculoMin);
+    // Permanência residual dentro da tolerância de HE também não dispara solicitação
+    if (overtime <= (jornada.toleranciaHoraExtraMin ?? 0)) return;
     if (overtime <= limiteMin) return;
 
     const jaExiste = await this.prisma.solicitacao.findFirst({
@@ -1241,7 +1532,14 @@ export class PontoService {
 
     const aprovadas = await this.prisma.solicitacao.findMany({
       where: { funcionarioId: func.id, status: "APROVADA" },
-      select: { id: true, tipo: true, dataReferencia: true, dataInicio: true, dataFim: true }
+      select: {
+        id: true,
+        tipo: true,
+        dataReferencia: true,
+        dataInicio: true,
+        dataFim: true,
+        metadados: true
+      }
     });
 
     // Se for uma alteração, valida que a solicitação original existe e pertence ao funcionário
@@ -1254,18 +1552,80 @@ export class PontoService {
       }
     }
 
-    const conflito = aprovadas.find((s) => {
-      // Pula o conflito com a solicitação que está sendo substituída
-      if (alteracaoDeId && s.id === alteracaoDeId) return false;
-      const inicioExist = s.dataInicio ?? s.dataReferencia;
-      const fimExist = s.dataFim ?? inicioExist;
-      return novoInicio <= fimExist && novoFim >= inicioExist;
-    });
+    if (body.tipo === "CORRECAO_PONTO") {
+      const novosTipos = new Set(extrairTiposCorrecaoPonto(body.metadados));
+      if (
+        categoriaSemIntervaloAlmoco(func.categoria) &&
+        (novosTipos.has("INICIO_INTERVALO") || novosTipos.has("FIM_INTERVALO"))
+      ) {
+        const label = labelCategoriaSemIntervalo(func.categoria);
+        throw new BadRequestException(
+          `${label} realiza carga horária corrida e não pode solicitar correção de intervalo de almoço.`
+        );
+      }
+      if (novosTipos.size > 0) {
+        const correcoesExistentes = await this.prisma.solicitacao.findMany({
+          where: {
+            funcionarioId: func.id,
+            tipo: "CORRECAO_PONTO",
+            status: { in: [...STATUS_BLOQUEIO_CORRECAO_PONTO] }
+          },
+          select: {
+            id: true,
+            status: true,
+            dataReferencia: true,
+            dataInicio: true,
+            dataFim: true,
+            metadados: true
+          }
+        });
 
-    if (conflito) {
-      throw new BadRequestException(
-        `Já existe uma solicitação de ${TIPO_SOLICITACAO_LABEL[conflito.tipo] ?? conflito.tipo} aprovada cobrindo este período. Não é possível abrir uma nova solicitação para o(s) mesmo(s) dia(s).`
-      );
+        const conflitoAprovada = encontrarConflitoCorrecaoPonto(
+          correcoesExistentes.filter((s) => s.status === "APROVADA"),
+          novosTipos,
+          novoInicio,
+          novoFim,
+          alteracaoDeId
+        );
+        const conflitoRejeitada = encontrarConflitoCorrecaoPonto(
+          correcoesExistentes.filter((s) => s.status !== "APROVADA"),
+          novosTipos,
+          novoInicio,
+          novoFim,
+          alteracaoDeId
+        );
+        const conflitoCorrecao = conflitoAprovada ?? conflitoRejeitada;
+
+        if (conflitoCorrecao) {
+          const labels = labelsTiposConflitoCorrecao(novosTipos, conflitoCorrecao);
+          const dataRef = fmtDataBr(body.dataReferencia);
+
+          if (conflitoCorrecao.status === "APROVADA") {
+            throw new BadRequestException(
+              `Já existe uma solicitação de correção de ponto aprovada para ${labels} no dia ${dataRef}. ` +
+                "Não é possível abrir uma nova solicitação para o(s) mesmo(s) registro(s) de ponto."
+            );
+          }
+
+          throw new BadRequestException(
+            `Já existe uma solicitação de correção de ponto ${descricaoRejeicaoCorrecao(conflitoCorrecao.status)} para ${labels} no dia ${dataRef}. ` +
+              "Não é possível abrir uma nova solicitação para o(s) mesmo(s) registro(s) de ponto."
+          );
+        }
+      }
+    } else {
+      const conflito = aprovadas.find((s) => {
+        if (alteracaoDeId && s.id === alteracaoDeId) return false;
+        const inicioExist = s.dataInicio ?? s.dataReferencia;
+        const fimExist = s.dataFim ?? inicioExist;
+        return periodosSobrepostos(novoInicio, novoFim, inicioExist, fimExist);
+      });
+
+      if (conflito) {
+        throw new BadRequestException(
+          `Já existe uma solicitação de ${TIPO_SOLICITACAO_LABEL[conflito.tipo] ?? conflito.tipo} aprovada cobrindo este período. Não é possível abrir uma nova solicitação para o(s) mesmo(s) dia(s).`
+        );
+      }
     }
 
     let metadados = body.metadados ?? null;
@@ -1359,6 +1719,7 @@ export class PontoService {
         dataInicio: body.dataInicio ? new Date(body.dataInicio) : null,
         dataFim: body.dataFim ? new Date(body.dataFim) : null,
         descricao: body.descricao,
+        apenasInformativo: categoriaSemRegistroPonto(func.categoria),
         metadados: metadados ? JSON.parse(JSON.stringify(metadados)) : undefined
       },
       include: { funcionario: { include: { user: { select: { name: true } } } } }

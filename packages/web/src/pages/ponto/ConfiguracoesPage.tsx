@@ -18,6 +18,7 @@ import {
 } from "../../components/icons";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
+import { invalidateInstituicaoBranding } from "../../hooks/useInstituicaoBranding";
 
 /* ─── Tipos ─── */
 interface Provedor {
@@ -603,6 +604,15 @@ const EVENTOS_NOTIFICACAO = [
       "(periódico, exame médico, férias, assinatura de documentos etc.).",
     destinatario: "Funcionário",
     gatilho: "Automático — ao RH criar requisição"
+  },
+  {
+    id: "PAPEL_CRITICO_DESATIVADO",
+    titulo: "Supervisor ou Gerente Substituto Desativado",
+    descricao:
+      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/menor aprendiz) " +
+      "ou um Gerente Substituto em exercício é desativado, para providenciar substituição imediata.",
+    destinatario: "RH",
+    gatilho: "Automático — ao desativar funcionário com papel crítico ativo"
   }
 ];
 
@@ -2007,6 +2017,7 @@ export function ConfiguracoesPage() {
       await api.put("/ponto/config/solicitacoes", configSol);
     }
 
+    invalidateInstituicaoBranding();
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   }

@@ -1,9 +1,23 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { PlusIcon, CheckCircleIcon, CalendarIcon, RefreshCwIcon } from "../../components/icons";
+import {
+  PlusIcon,
+  CheckCircleIcon,
+  CalendarIcon,
+  RefreshCwIcon,
+  InfoIcon
+} from "../../components/icons";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { FeriasDetalheBlock } from "./solicitacaoUi";
+import {
+  FeriasDetalheBlock,
+  LinkDocumentoAnexado,
+  textoCorrecaoPontoFuncionario
+} from "./solicitacaoUi";
+import {
+  categoriaSemRegistroPonto,
+  MSG_SOLICITACAO_APENAS_INFORMATIVA
+} from "../../utils/categoriaPonto";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -36,6 +50,7 @@ interface Solicitacao {
   descricao: string;
   metadados: Record<string, unknown> | null;
   status: StatusSolicitacao;
+  apenasInformativo?: boolean;
   observacaoGestor?: string;
   gestorObservacao?: string;
   rhObservacao?: string;
@@ -95,15 +110,6 @@ const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
   HORA_EXTRA: "⏱️"
 };
 
-const TIPO_PONTO_LABEL: Record<string, string> = {
-  ENTRADA: "Entrada",
-  INICIO_INTERVALO: "Início de Intervalo",
-  FIM_INTERVALO: "Fim de Intervalo",
-  SAIDA: "Saída",
-  INTERROMPER_EXPEDIENTE: "Interromper Expediente",
-  REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
-};
-
 /* Status que encerram a análise — a partir daqui, documentos anexados pelo
    funcionário não podem mais ser editados/substituídos. */
 const STATUS_FINALIZADOS: StatusSolicitacao[] = [
@@ -147,29 +153,6 @@ function diffDias(inicio: string, fim: string): number {
   const d1 = new Date(inicio);
   const d2 = new Date(fim);
   return Math.max(0, Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1);
-}
-
-function textoCorrecaoPonto(s: Solicitacao): string {
-  const meta = s.metadados;
-  if (!meta) return "Solicitação de correção de ponto em análise.";
-
-  const data = fmtDate(s.dataReferencia);
-  const tipoPonto =
-    TIPO_PONTO_LABEL[(meta.tipoRegistro as string) ?? ""] ??
-    (meta.tipoRegistro as string) ??
-    "registro";
-  const horarioNovo = meta.horarioSolicitado as string;
-
-  if ((meta.acao as string) === "INCLUIR") {
-    return `Você pediu para incluir um registro de ${tipoPonto} às ${horarioNovo}, referente ao dia ${data}.`;
-  }
-
-  const horarioAntigo = meta.horarioOriginal as string | undefined;
-  if (horarioAntigo) {
-    return `Você pediu para alterar o registro de ${tipoPonto} do dia ${data}: de ${horarioAntigo} para ${horarioNovo}.`;
-  }
-
-  return `Você pediu para corrigir o registro de ${tipoPonto} do dia ${data} para ${horarioNovo}.`;
 }
 
 function mensagemStatusCorrecaoPonto(status: StatusSolicitacao): string {
@@ -302,12 +285,14 @@ function horarioDentroFaixa(horario: string, min: string, max: string): boolean 
 }
 
 /* Tipos de registro exibidos no formulário de correção */
-const TIPOS_CORRECAO = [
+const TIPOS_CORRECAO_TODOS = [
   { tipo: "ENTRADA", label: "Entrada", emoji: "🟢" },
   { tipo: "INICIO_INTERVALO", label: "Início Intervalo", emoji: "🟡" },
   { tipo: "FIM_INTERVALO", label: "Fim Intervalo", emoji: "🔵" },
   { tipo: "SAIDA", label: "Saída", emoji: "🔴" }
 ] as const;
+
+const TIPOS_INTERVALO_ALMOCO = new Set(["INICIO_INTERVALO", "FIM_INTERVALO"]);
 
 function FormCorrecaoPonto({
   onSubmit,
@@ -322,6 +307,7 @@ function FormCorrecaoPonto({
   const [descricao, setDescricao] = useState("");
   const [horarioMin, setHorarioMin] = useState("06:00");
   const [horarioMax, setHorarioMax] = useState("23:59");
+  const [semIntervaloAlmoco, setSemIntervaloAlmoco] = useState(false);
 
   /* Horários desejados para cada tipo — "" = sem alteração */
   const [horarios, setHorarios] = useState<Record<string, string>>({
@@ -331,12 +317,23 @@ function FormCorrecaoPonto({
     SAIDA: ""
   });
 
+  const tiposCorrecao = semIntervaloAlmoco
+    ? TIPOS_CORRECAO_TODOS.filter((t) => !TIPOS_INTERVALO_ALMOCO.has(t.tipo))
+    : TIPOS_CORRECAO_TODOS;
+
   useEffect(() => {
     api
       .get<{ pontoHorarioMinimo?: string; pontoHorarioMaximo?: string }>("/ponto/config/sistema")
       .then((cfg) => {
         if (cfg?.pontoHorarioMinimo) setHorarioMin(cfg.pontoHorarioMinimo);
         if (cfg?.pontoHorarioMaximo) setHorarioMax(cfg.pontoHorarioMaximo);
+      })
+      .catch(() => {});
+    api
+      .get<{ categoria?: string }>("/ponto/status")
+      .then((status) => {
+        const cat = status?.categoria;
+        setSemIntervaloAlmoco(cat === "ESTAGIARIO" || cat === "MENOR_APRENDIZ");
       })
       .catch(() => {});
   }, []);
@@ -364,7 +361,7 @@ function FormCorrecaoPonto({
 
   /* Valida todos os horários preenchidos */
   const erros: Record<string, string> = {};
-  for (const { tipo } of TIPOS_CORRECAO) {
+  for (const { tipo } of tiposCorrecao) {
     const h = horarios[tipo];
     if (h && !horarioDentroFaixa(h, horarioMin, horarioMax)) {
       erros[tipo] = `Fora da faixa ${horarioMin}–${horarioMax}`;
@@ -372,20 +369,22 @@ function FormCorrecaoPonto({
   }
 
   /* Constrói a lista de correções apenas dos campos alterados */
-  const correcoesDia = TIPOS_CORRECAO.map(({ tipo }) => {
-    const novoHorario = horarios[tipo];
-    if (!novoHorario) return null;
-    const reg = regDoTipo(tipo);
-    const atual = reg ? fmtTime(reg.dataHora) : null;
-    if (novoHorario === atual) return null; // sem mudança
-    return {
-      acao: reg ? "CORRIGIR" : "INCLUIR",
-      tipoRegistro: tipo,
-      horario: novoHorario,
-      registroId: reg?.id,
-      horarioOriginal: atual ?? undefined
-    };
-  }).filter(Boolean);
+  const correcoesDia = tiposCorrecao
+    .map(({ tipo }) => {
+      const novoHorario = horarios[tipo];
+      if (!novoHorario) return null;
+      const reg = regDoTipo(tipo);
+      const atual = reg ? fmtTime(reg.dataHora) : null;
+      if (novoHorario === atual) return null; // sem mudança
+      return {
+        acao: reg ? "CORRIGIR" : "INCLUIR",
+        tipoRegistro: tipo,
+        horario: novoHorario,
+        registroId: reg?.id,
+        horarioOriginal: atual ?? undefined
+      };
+    })
+    .filter(Boolean);
 
   const temAlteracao = correcoesDia.length > 0;
   const temErro = Object.keys(erros).length > 0;
@@ -449,6 +448,20 @@ function FormCorrecaoPonto({
             )}
           </p>
 
+          {semIntervaloAlmoco && (
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                margin: "0 0 10px",
+                lineHeight: 1.45
+              }}
+            >
+              Carga horária corrida: correção de intervalo de almoço não se aplica. Use Entrada e
+              Saída (pausas via Interromper/Reiniciar no registro do dia).
+            </p>
+          )}
+
           {/* Cabeçalho */}
           <div
             style={{
@@ -470,7 +483,7 @@ function FormCorrecaoPonto({
             </span>
           </div>
 
-          {TIPOS_CORRECAO.map(({ tipo, label, emoji }) => {
+          {tiposCorrecao.map(({ tipo, label, emoji }) => {
             const reg = regDoTipo(tipo);
             const atual = reg ? fmtTime(reg.dataHora) : null;
             const novo = horarios[tipo];
@@ -559,7 +572,8 @@ function FormCorrecaoPonto({
           )}
           {temAlteracao && (
             <p style={{ fontSize: 12, color: "#1e40af", margin: "8px 0 0", fontWeight: 500 }}>
-              {correcoesDia.length} alteração{correcoesDia.length !== 1 ? "ões" : ""} detectada
+              {correcoesDia.length} {correcoesDia.length !== 1 ? "alterações" : "alteração"}{" "}
+              detectada
               {correcoesDia.length !== 1 ? "s" : ""} — será enviada como uma única solicitação ao
               gestor.
             </p>
@@ -2856,14 +2870,11 @@ function DocumentoAnexadoSection({
   return (
     <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <a
+        <LinkDocumentoAnexado
           href={documentoUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 12, color: "#7c3aed" }}
-        >
-          📎 Ver documento anexado
-        </a>
+          label="Ver documento anexado"
+          style={{ marginTop: 0 }}
+        />
         {editavel && (
           <>
             <input
@@ -3008,8 +3019,38 @@ function SolicitacaoCard({
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 20 }}>{TIPO_EMOJI[tipo] ?? "📋"}</span>
           <div>
-            <p style={{ fontSize: 14, fontWeight: 600, color: "var(--ink-900)", margin: 0 }}>
+            <p
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: "var(--ink-900)",
+                margin: 0,
+                display: "flex",
+                alignItems: "center",
+                gap: 6
+              }}
+            >
               {TIPO_LABEL[tipo] ?? tipo}
+              {s.apenasInformativo && (
+                <span
+                  title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+                  aria-label={MSG_SOLICITACAO_APENAS_INFORMATIVA}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 18,
+                    height: 18,
+                    borderRadius: "50%",
+                    background: "rgba(37,99,235,0.10)",
+                    color: "#1e40af",
+                    flexShrink: 0,
+                    cursor: "help"
+                  }}
+                >
+                  <InfoIcon size={12} />
+                </span>
+              )}
             </p>
             <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "2px 0 0" }}>
               {subInfo ?? `Ref: ${fmtDate(s.dataReferencia)}`}{" "}
@@ -3019,6 +3060,27 @@ function SolicitacaoCard({
         </div>
         <StatusBadge status={s.status} />
       </div>
+
+      {s.apenasInformativo && (
+        <p
+          style={{
+            fontSize: 11.5,
+            color: "#1e40af",
+            lineHeight: 1.45,
+            margin: "0 0 10px",
+            padding: "8px 10px",
+            background: "rgba(37,99,235,0.06)",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid rgba(37,99,235,0.18)",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6
+          }}
+        >
+          <InfoIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>{MSG_SOLICITACAO_APENAS_INFORMATIVA}</span>
+        </p>
+      )}
 
       {isCorrecaoPonto ? (
         <>
@@ -3031,7 +3093,7 @@ function SolicitacaoCard({
               fontWeight: 500
             }}
           >
-            {textoCorrecaoPonto(s)}
+            {textoCorrecaoPontoFuncionario(s)}
           </p>
           {statusInfo && (
             <p
@@ -3156,6 +3218,7 @@ export function SolicitacoesPage() {
   const [loading, setLoading] = useState(true);
   const [modalAberto, setModalAberto] = useState(false);
   const [alterandoFerias, setAlterandoFerias] = useState<Solicitacao | null>(null);
+  const [semRegistroPonto, setSemRegistroPonto] = useState(false);
   type FiltroView = StatusSolicitacao | "TODAS" | "FERIAS_TODAS";
   const [filtro, setFiltro] = useState<FiltroView>("TODAS");
   const [pagina, setPagina] = useState(1);
@@ -3177,6 +3240,17 @@ export function SolicitacoesPage() {
   useEffect(() => {
     carregar();
   }, [carregar]);
+
+  useEffect(() => {
+    api
+      .get<{ categoria?: string; semRegistroPonto?: boolean }>("/ponto/status")
+      .then((status) => {
+        setSemRegistroPonto(
+          !!status?.semRegistroPonto || categoriaSemRegistroPonto(status?.categoria)
+        );
+      })
+      .catch(() => {});
+  }, []);
 
   function mudarFiltro(v: FiltroView) {
     setFiltro(v);
@@ -3205,6 +3279,8 @@ export function SolicitacoesPage() {
     { v: "REJEITADA_GESTOR", l: "Rej. Gestor" },
     { v: "REJEITADA_RH", l: "Rej. RH" }
   ];
+
+  const mostrarAvisoInformativo = semRegistroPonto || solicitacoes.some((s) => s.apenasInformativo);
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
@@ -3262,6 +3338,33 @@ export function SolicitacoesPage() {
           </div>
         </div>
       </div>
+
+      {mostrarAvisoInformativo && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            marginBottom: 16,
+            padding: "12px 14px",
+            background: "rgba(37,99,235,0.06)",
+            border: "1px solid rgba(37,99,235,0.20)",
+            borderRadius: "var(--radius-md)",
+            color: "#1e40af",
+            fontSize: 12.5,
+            lineHeight: 1.55
+          }}
+        >
+          <InfoIcon size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <strong style={{ display: "block", marginBottom: 2 }}>
+              Solicitações apenas informativas
+            </strong>
+            {MSG_SOLICITACAO_APENAS_INFORMATIVA} Após todas as aprovações, o registro permanece no
+            histórico somente para consulta.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         {filtros.map(({ v, l }) => {

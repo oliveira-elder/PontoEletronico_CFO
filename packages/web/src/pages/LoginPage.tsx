@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { InstitutionFooter } from "../components/InstitutionFooter";
+import { useInstituicaoBranding } from "../hooks/useInstituicaoBranding";
+import { formatCidadeUf } from "../utils/instituicao";
 
 /* ─── Relógio ao vivo ─── */
 function LiveClock() {
@@ -149,8 +152,13 @@ export function LoginPage() {
   // Os handlers chamam keycloak.login() que constrói a URL e redireciona.
   const { login, loginToBaterPonto, devLogin } = useAuth();
   const navigate = useNavigate();
+  const { branding } = useInstituicaoBranding();
   const loading = false;
   const isDev = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN === "true";
+  const cidadeUf = formatCidadeUf(branding);
+  const faixaInstitucional = cidadeUf
+    ? `${branding.nome} \u00a0·\u00a0 ${cidadeUf}`
+    : branding.nome;
 
   return (
     <div
@@ -185,7 +193,7 @@ export function LoginPage() {
               gap: 5
             }}
           >
-            Conselho Federal de Odontologia &nbsp;·&nbsp; Brasília — DF
+            {faixaInstitucional}
           </span>
           <div style={{ flex: 1 }} />
           <span
@@ -463,20 +471,8 @@ export function LoginPage() {
             </div>
           )}
 
-          {/* Rodapé */}
-          <p
-            style={{
-              fontSize: 11,
-              color: "var(--ink-500)",
-              textAlign: "center",
-              marginTop: 20,
-              lineHeight: 1.6
-            }}
-          >
-            © {new Date().getFullYear()} Conselho Federal de Odontologia — CNPJ 33.368.957/0001-00
-            <br />
-            Setor de Autarquias Sul, Quadra 1, Bloco J, Brasília-DF
-          </p>
+          {/* Rodapé institucional (Configurações → Instituição) */}
+          <InstitutionFooter />
         </div>
       </div>
     </div>

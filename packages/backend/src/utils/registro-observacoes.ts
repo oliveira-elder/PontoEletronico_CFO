@@ -1,11 +1,15 @@
 export interface ObservacaoRegistro {
   data: string;
   texto: string;
-  tipo?: "AJUSTE_HORARIO" | "INCLUSAO_PONTO" | "AJUSTE_AUTOMATICO";
+  tipo?: "AJUSTE_HORARIO" | "INCLUSAO_PONTO" | "AJUSTE_AUTOMATICO" | "TURNO_SEM_INTERVALO";
   solicitacaoId?: string;
   tipoRegistro?: string;
   horarioAnterior?: string | null;
   horarioNovo?: string;
+  /** Presente em TURNO_SEM_INTERVALO */
+  turno?: "MATUTINO" | "VESPERTINO" | "NOTURNO";
+  motivo?: "DURANTE_JANELA" | "APOS_JANELA" | "CATEGORIA_CARGA_CORRIDA";
+  janelaAlmoco?: string;
 }
 
 export const TIPO_PONTO_LABEL: Record<string, string> = {

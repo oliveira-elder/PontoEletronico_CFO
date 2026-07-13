@@ -171,6 +171,15 @@ export const EVENTOS_NOTIFICACAO = [
       "(periódico, exame médico, férias, assinatura de documentos etc.).",
     destinatario: "Funcionário",
     gatilho: "Automático — ao RH criar requisição"
+  },
+  {
+    id: "PAPEL_CRITICO_DESATIVADO",
+    titulo: "Supervisor ou Gerente Substituto Desativado",
+    descricao:
+      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/menor aprendiz) " +
+      "ou um Gerente Substituto em exercício é desativado, para providenciar substituição imediata.",
+    destinatario: "RH",
+    gatilho: "Automático — ao desativar funcionário com papel crítico ativo"
   }
 ];
 
@@ -264,7 +273,12 @@ export class NotificacaoService {
 
     if (faltando.length > 0) {
       await this.prisma.configuracaoNotificacao.createMany({
-        data: faltando.map((id) => ({ id, ativoEmail: false, ativoSistema: false })),
+        data: faltando.map((id) => ({
+          id,
+          // Alerta crítico ao RH: habilitado por padrão
+          ativoEmail: id === "PAPEL_CRITICO_DESATIVADO",
+          ativoSistema: id === "PAPEL_CRITICO_DESATIVADO"
+        })),
         skipDuplicates: true
       });
     }
@@ -512,10 +526,23 @@ export class NotificacaoService {
       where: { id: funcionarioId },
       select: {
         section: true,
+        categoria: true,
+        supervisorEstagioId: true,
+        supervisorEstagio: {
+          select: {
+            ativo: true,
+            user: { select: { externalId: true, email: true, emailReal: true } }
+          }
+        },
         gerencia: { select: { responsavelUserId: true } }
       }
     });
     if (!func) return null;
+
+    const isEstagio = func.categoria === "ESTAGIARIO" || func.categoria === "MENOR_APRENDIZ";
+    if (isEstagio && func.supervisorEstagio?.user && func.supervisorEstagio.ativo !== false) {
+      return func.supervisorEstagio.user;
+    }
 
     if (func.gerencia?.responsavelUserId) {
       const gestor = await this.prisma.user.findUnique({
@@ -566,6 +593,104 @@ export class NotificacaoService {
         email: u.email ?? null,
         emailReal: u.emailReal
       }));
+  }
+
+  /**
+   * Quando um Supervisor de Estágio ou Gerente Substituto em exercício é desativado,
+   * alerta todo o RH para substituição imediata.
+   */
+  async notificarRhPapelCriticoDesativado(funcionarioId: string): Promise<void> {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        id: true,
+        matricula: true,
+        categoria: true,
+        user: { select: { name: true, email: true, emailReal: true } },
+        gerencia: { select: { nome: true, sigla: true } }
+      }
+    });
+    if (!func) return;
+
+    const supervisionados = await this.prisma.funcionario.findMany({
+      where: {
+        supervisorEstagioId: funcionarioId,
+        categoria: { in: ["ESTAGIARIO", "MENOR_APRENDIZ"] }
+      },
+      select: {
+        categoria: true,
+        user: { select: { name: true } },
+        gerencia: { select: { nome: true, sigla: true } }
+      }
+    });
+
+    const substituicaoAtiva = await this.prisma.gerenteSubstituicao.findFirst({
+      where: { substitutoId: funcionarioId, status: "ATIVA" },
+      select: {
+        dataInicio: true,
+        dataFim: true,
+        gerencia: { select: { nome: true, sigla: true } },
+        titular: { select: { user: { select: { name: true } }, matricula: true } }
+      }
+    });
+
+    if (!supervisionados.length && !substituicaoAtiva) return;
+
+    const nome = func.user?.name ?? "Funcionário";
+    const matr = func.matricula ? ` (matrícula ${func.matricula})` : "";
+    const gerenciaLabel = func.gerencia
+      ? `${func.gerencia.sigla || func.gerencia.nome}`
+      : "sem gerência";
+
+    const partes: string[] = [
+      `${nome}${matr}, da gerência ${gerenciaLabel}, foi desativado(a) no sistema e ocupava papel(is) crítico(s) que exigem substituição imediata:`
+    ];
+
+    if (supervisionados.length) {
+      const lista = supervisionados
+        .map((s) => {
+          const cat = s.categoria === "MENOR_APRENDIZ" ? "Menor Aprendiz" : "Estagiário";
+          return `• ${s.user?.name ?? "—"} (${cat}${s.gerencia ? ` — ${s.gerencia.sigla || s.gerencia.nome}` : ""})`;
+        })
+        .join("\n");
+      partes.push(
+        `\nSupervisor de Estágio — ${supervisionados.length} supervisionado(s) sem supervisor ativo:\n${lista}`
+      );
+    }
+
+    if (substituicaoAtiva) {
+      const titularNome = substituicaoAtiva.titular.user?.name ?? "titular";
+      const g = substituicaoAtiva.gerencia.sigla || substituicaoAtiva.gerencia.nome || "gerência";
+      const ini = new Date(substituicaoAtiva.dataInicio).toLocaleDateString("pt-BR");
+      const fim = new Date(substituicaoAtiva.dataFim).toLocaleDateString("pt-BR");
+      partes.push(
+        `\nGerente Substituto em exercício na ${g} (titular: ${titularNome}; período ${ini}–${fim}). ` +
+          `A gerência ficou sem substituto ativo — reatribuir ou encerrar a substituição.`
+      );
+    }
+
+    partes.push(
+      "\n\nAcesse Gestão de Funcionários para designar novo supervisor e/ou gerente substituto."
+    );
+
+    const titulo = `Ação urgente RH — ${nome} desativado com papel crítico`;
+    const corpo = partes.join("");
+
+    // Garante linha de config (habilitada por padrão na primeira criação)
+    await this.getNotificacaoConfigs();
+
+    const rh = await this.getUsuariosRh();
+    if (!rh.length) {
+      this.logger.warn(
+        `PAPEL_CRITICO_DESATIVADO: ${nome} desativado, mas nenhum destinatário RH encontrado.`
+      );
+      return;
+    }
+
+    await this.dispararEvento("PAPEL_CRITICO_DESATIVADO", titulo, corpo, rh);
+    this.logger.log(
+      `PAPEL_CRITICO_DESATIVADO enviado ao RH (${rh.length}) — funcionarioId=${funcionarioId}`
+    );
   }
 
   async getDestinatariosFuncionarios(funcionarioIds: string[]): Promise<DestinatarioNotificacao[]> {

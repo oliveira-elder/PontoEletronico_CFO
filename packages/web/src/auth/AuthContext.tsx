@@ -2,6 +2,12 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import keycloak from "./keycloak";
 import { setAccessTokenProvider } from "./accessToken";
 import { api } from "../hooks/useApi";
+import {
+  elevateSuperAdminProfile,
+  isSuperAdminIdentity,
+  mergeSuperAdminRoles,
+  SUPER_ADMIN_ALL_ROLES
+} from "../utils/superAdmin";
 
 /* ─── JWT dev assinado com HS256 ────────────────────────────────────────────
    Usa a mesma JWT_SECRET=dev-secret do backend (keycloak-jwt.strategy.ts).
@@ -156,19 +162,7 @@ interface KcToken {
   groups?: string[];
 }
 
-const SUPER_ADMIN_USERNAMES = (import.meta.env.VITE_SUPER_ADMIN_USERNAMES ?? "elder.oliveira")
-  .split(",")
-  .map((s: string) => s.trim().toLowerCase())
-  .filter(Boolean);
-
-const SUPER_ADMIN_ROLES = [
-  "ponto-admin",
-  "PONTO_ADMIN",
-  "gestor",
-  "GESTOR_APROVACAO",
-  "RH_AUDITORIA",
-  "funcionario"
-];
+const SUPER_ADMIN_ROLES = [...SUPER_ADMIN_ALL_ROLES];
 
 function parseUser(): AuthUser | null {
   const p = keycloak.tokenParsed as KcToken | undefined;
@@ -176,11 +170,11 @@ function parseUser(): AuthUser | null {
   const username = p.preferred_username ?? "";
   const fullName = p.name || [p.given_name, p.family_name].filter(Boolean).join(" ") || username;
   const baseRoles = p.realm_access?.roles ?? [];
-  const isSuperAdmin = SUPER_ADMIN_USERNAMES.includes(username.toLowerCase());
+  const isSuperAdmin = isSuperAdminIdentity(username, p.email);
   const roles = isSuperAdmin
-    ? [...new Set([...baseRoles, ...SUPER_ADMIN_ROLES])]
+    ? mergeSuperAdminRoles(baseRoles)
     : [...new Set(["funcionario", ...baseRoles])];
-  return {
+  return elevateSuperAdminProfile({
     id: p.sub ?? "",
     name: fullName,
     email: p.email ?? "",
@@ -190,7 +184,7 @@ function parseUser(): AuthUser | null {
     groups: p.groups ?? [],
     isSuperAdmin,
     funcionario: null
-  };
+  });
 }
 
 function urlHasAuthCallback(): boolean {
@@ -343,7 +337,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       api
         .get<AuthUser>("/auth/me")
         .then((profile) => {
-          if (!cancelled && profile) setUser(profile);
+          if (!cancelled && profile) setUser(elevateSuperAdminProfile(profile));
         })
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : "";
@@ -426,10 +420,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   function hasRole(role: string): boolean {
+    /* Super admin: hierarquia máxima — possui todos os papéis. */
+    if (user?.isSuperAdmin) return true;
     return user?.roles.includes(role) ?? false;
   }
 
   function hasGroup(group: string): boolean {
+    if (user?.isSuperAdmin) return true;
     const groups = user?.groups ?? [];
     return groups.some((g) => g === group || g === `/${group}` || g.endsWith(`/${group}`));
   }
@@ -447,7 +444,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function refreshProfile() {
     try {
       const profile = await api.get<AuthUser>("/auth/me");
-      if (profile) setUser(profile);
+      if (profile) setUser(elevateSuperAdminProfile(profile));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "";
       if (msg === "CONTA_DESATIVADA") setContaDesativada(true);
@@ -464,7 +461,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: "dev@cfo.org.br",
       emailReal: "dev@cfo.org.br",
       username: "dev",
-      roles: ["funcionario", "gestor", "ponto-admin"],
+      roles: [...SUPER_ADMIN_ROLES],
       groups: ["funcionario", "gestor", "ponto-admin"],
       isSuperAdmin: true,
       funcionario: {

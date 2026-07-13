@@ -4821,7 +4821,15 @@ function TabAfastamentos({ token }: { token: string }) {
    ABA HISTÓRICO DO FUNCIONÁRIO — tipos e helpers
 ═══════════════════════════════════════════════ */
 
-type StatusDia = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FERIADO" | "FUTURO" | "FOLGA";
+type StatusDia =
+  | "OK"
+  | "FALTA"
+  | "PENDENTE"
+  | "AFASTAMENTO"
+  | "FERIADO"
+  | "FUTURO"
+  | "FOLGA"
+  | "ISENTO";
 
 interface JornadaHistorico {
   anteriorMin: number;
@@ -4854,11 +4862,22 @@ interface DiaHist {
   jornadaMin: number;
   status: StatusDia;
   obs?: string;
-  observacoes?: { data: string; texto: string }[];
+  observacoes?: {
+    data: string;
+    texto: string;
+    tipo?: string;
+    turno?: string;
+    motivo?: string;
+    janelaAlmoco?: string;
+  }[];
   entradaEditada?: boolean;
   inicioIntervaloEditado?: boolean;
   fimIntervaloEditado?: boolean;
   saidaEditada?: boolean;
+  semIntervalo?: boolean;
+  turno?: string;
+  motivoSemIntervalo?: string;
+  janelaAlmoco?: string;
 }
 
 interface ApiRegHist {
@@ -4866,7 +4885,14 @@ interface ApiRegHist {
   tipo: string;
   dataHora: string;
   ajustado?: boolean;
-  observacoes?: { data: string; texto: string }[];
+  observacoes?: {
+    data: string;
+    texto: string;
+    tipo?: string;
+    turno?: string;
+    motivo?: string;
+    janelaAlmoco?: string;
+  }[];
 }
 interface ApiAfast {
   tipo: string;
@@ -4957,7 +4983,8 @@ function buildHistorico(
   sabadoPct = 100,
   domingoPct = 200,
   feriadoPct = 200,
-  jornada: JornadaHistorico = JORNADA_PADRAO_AUD
+  jornada: JornadaHistorico = JORNADA_PADRAO_AUD,
+  periodosSemObrigacao: Array<{ inicio: string; fim: string | null }> = []
 ): DiaHist[] {
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
@@ -4971,6 +4998,9 @@ function buildHistorico(
   for (const f of feriados) {
     feriadoMap[dtKeyH(f.data)] = f;
   }
+
+  const diaIsento = (isoKey: string) =>
+    periodosSemObrigacao.some((p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim));
 
   function calcJornadaParcial(
     marco: string,
@@ -5016,6 +5046,28 @@ function buildHistorico(
       });
       continue;
     }
+
+    if (diaIsento(isoKey)) {
+      const dayRegsIsento = byDay[isoKey] ?? [];
+      const getI = (tipo: string) => dayRegsIsento.find((r) => r.tipo === tipo);
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: getI("ENTRADA") ? fmtHoraH(getI("ENTRADA")!.dataHora) : null,
+        inicioIntervalo: getI("INICIO_INTERVALO")
+          ? fmtHoraH(getI("INICIO_INTERVALO")!.dataHora)
+          : null,
+        fimIntervalo: getI("FIM_INTERVALO") ? fmtHoraH(getI("FIM_INTERVALO")!.dataHora) : null,
+        saida: getI("SAIDA") ? fmtHoraH(getI("SAIDA")!.dataHora) : null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "ISENTO",
+        obs: "Isento — Assessor/Gerente",
+        observacoes: dayRegsIsento.flatMap((r) => r.observacoes ?? [])
+      });
+      continue;
+    }
+
     const af = afastDoDia(isoKey, afasts);
     if (af) {
       result.push({
@@ -5158,6 +5210,7 @@ function buildHistorico(
     }
     if (aberta) pausas.push({ inicio: aberta, fim: null });
     const observacoes = dayRegs.flatMap((r) => r.observacoes ?? []);
+    const obsTurno = (eR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
     result.push({
       data: dataStr,
       diaSemana: NOMES[dow],
@@ -5174,7 +5227,11 @@ function buildHistorico(
       entradaEditada: !!eR?.ajustado,
       inicioIntervaloEditado: !!iiR?.ajustado,
       fimIntervaloEditado: !!fiR?.ajustado,
-      saidaEditada: !!sR?.ajustado
+      saidaEditada: !!sR?.ajustado,
+      semIntervalo: !!obsTurno,
+      turno: obsTurno?.turno,
+      motivoSemIntervalo: obsTurno?.motivo,
+      janelaAlmoco: obsTurno?.janelaAlmoco
     });
   }
   return result;
@@ -5189,18 +5246,39 @@ function StatusPillH({ status, obs }: { status: StatusDia; obs?: string }) {
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "Folga", cls: "badge-gray" },
-    FOLGA: { label: "Folga", cls: "badge-gray" }
+    FOLGA: { label: "Folga", cls: "badge-gray" },
+    ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-gray" };
   const titulo = obs ?? undefined;
   return (
     <span className={`badge ${cls}`} title={titulo}>
-      {status === "AFASTAMENTO" && obs ? obs : label}
+      {status === "ISENTO"
+        ? "Isento — Assessor/Gerente"
+        : status === "AFASTAMENTO" && obs
+          ? obs
+          : label}
     </span>
   );
 }
-function HoraCellH({ hora, editado }: { hora: string | null; editado?: boolean }) {
+function HoraCellH({
+  hora,
+  editado,
+  turnoSemIntervalo
+}: {
+  hora: string | null;
+  editado?: boolean;
+  turnoSemIntervalo?: { turno?: string };
+}) {
   if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
+  const tituloTurno =
+    turnoSemIntervalo?.turno === "NOTURNO"
+      ? "Turno noturno — jornada sem intervalo"
+      : turnoSemIntervalo?.turno === "VESPERTINO"
+        ? "Turno vespertino — jornada sem intervalo"
+        : turnoSemIntervalo
+          ? "Jornada sem intervalo de almoço"
+          : undefined;
   return (
     <span
       style={{
@@ -5211,12 +5289,64 @@ function HoraCellH({ hora, editado }: { hora: string | null; editado?: boolean }
       }}
     >
       {hora}
+      {turnoSemIntervalo && (
+        <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
+          <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
+        </span>
+      )}
       {editado && <Edit2Icon size={11} style={{ color: "#1e40af", opacity: 0.85 }} />}
     </span>
   );
 }
+
+function IntervaloNaoAplicavelCellH({
+  turno,
+  motivo,
+  janelaAlmoco,
+  onClick
+}: {
+  turno?: string;
+  motivo?: string;
+  janelaAlmoco?: string;
+  onClick?: () => void;
+}) {
+  const nomeTurno =
+    turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
+  const janela = janelaAlmoco ?? "janela de almoço";
+  const title =
+    motivo === "DURANTE_JANELA"
+      ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
+      : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 7px",
+        borderRadius: "var(--radius-full)",
+        border: "1px solid rgba(47,125,79,0.35)",
+        background: "rgba(47,125,79,0.10)",
+        color: "var(--green)",
+        fontSize: 10,
+        fontWeight: 600,
+        cursor: onClick ? "pointer" : "default",
+        fontFamily: "inherit",
+        lineHeight: 1.3,
+        whiteSpace: "nowrap"
+      }}
+    >
+      <CheckCircleIcon size={11} style={{ flexShrink: 0 }} />
+      Não aplicável
+    </button>
+  );
+}
 function HorasCellH({ min, status }: { min: number; status: StatusDia }) {
-  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO")
+  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO" || status === "ISENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   return (
     <span style={{ fontFamily: "var(--font-mono)" }}>
@@ -5233,7 +5363,7 @@ function SaldoCellH({
   jornadaMin: number;
   status: StatusDia;
 }) {
-  if (status === "FUTURO" || status === "AFASTAMENTO")
+  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "ISENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (status === "FALTA") {
     const h = Math.floor(jornadaMin / 60);
@@ -5822,10 +5952,11 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
     setFeedbackEnviada(false);
     try {
       const [regsRaw, afastsRaw, assinData, feriadosRaw, cfgRaw] = await Promise.all([
-        api.get<{ registros: ApiRegHist[]; jornada?: JornadaHistorico }>(
-          `/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`,
-          token
-        ),
+        api.get<{
+          registros: ApiRegHist[];
+          jornada?: JornadaHistorico;
+          periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+        }>(`/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`, token),
         api.get<{ afastamentos: ApiAfast[] }>(
           `/auditoria/afastamentos?funcionarioId=${funcionarioId}&limit=200`,
           token
@@ -5853,6 +5984,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       ]);
       const regs = regsRaw?.registros ?? [];
       const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
+      const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
       const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
         ? feriadosRaw
@@ -5873,7 +6005,18 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       setRawPorDia(byDay);
 
       setDias(
-        buildHistorico(regs, afasts, mes, ano, feriados, sabadoPct, domingoPct, feriadoPct, jornada)
+        buildHistorico(
+          regs,
+          afasts,
+          mes,
+          ano,
+          feriados,
+          sabadoPct,
+          domingoPct,
+          feriadoPct,
+          jornada,
+          periodosSemObrigacao
+        )
       );
 
       // Bloqueia edição se o período estiver concluído (assinado pelos dois)
@@ -5920,9 +6063,11 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
   const totalOK = dias.filter((r) => r.status === "OK").length;
   const totalFaltas = dias.filter((r) => r.status === "FALTA").length;
   const totalAfasts = dias.filter((r) => r.status === "AFASTAMENTO").length;
-  const totalUteis = dias.filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO").length;
+  const totalUteis = dias.filter(
+    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "ISENTO"
+  ).length;
   const totalJornadaMin = dias
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO")
+    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "ISENTO")
     .reduce((s, r) => s + r.jornadaMin, 0);
   const mesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
 
@@ -6125,7 +6270,10 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                     return `${a}-${m}-${d}`;
                   })();
                   const podeEditar =
-                    !periodoLocked && r.status !== "FUTURO" && r.status !== "AFASTAMENTO";
+                    !periodoLocked &&
+                    r.status !== "FUTURO" &&
+                    r.status !== "AFASTAMENTO" &&
+                    r.status !== "ISENTO";
                   return (
                     <tr
                       key={i}
@@ -6144,13 +6292,51 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                       </td>
                       <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
                       <td>
-                        <HoraCellH hora={r.entrada} editado={r.entradaEditada} />
+                        <HoraCellH
+                          hora={r.entrada}
+                          editado={r.entradaEditada}
+                          turnoSemIntervalo={r.semIntervalo ? { turno: r.turno } : undefined}
+                        />
                       </td>
                       <td>
-                        <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        {r.semIntervalo && !r.inicioIntervalo ? (
+                          <IntervaloNaoAplicavelCellH
+                            turno={r.turno}
+                            motivo={r.motivoSemIntervalo}
+                            janelaAlmoco={r.janelaAlmoco}
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        )}
                       </td>
                       <td>
-                        <HoraCellH hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                        {r.semIntervalo && !r.fimIntervalo ? (
+                          <IntervaloNaoAplicavelCellH
+                            turno={r.turno}
+                            motivo={r.motivoSemIntervalo}
+                            janelaAlmoco={r.janelaAlmoco}
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCellH hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                        )}
                       </td>
                       <td>
                         <HoraCellH hora={r.saida} editado={r.saidaEditada} />
