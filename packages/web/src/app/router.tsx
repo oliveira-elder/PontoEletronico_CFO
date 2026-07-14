@@ -20,6 +20,7 @@ import { RequisicaoRhAdminPage } from "../pages/ponto/RequisicaoRhAdminPage";
 import { MinhasRequisicoesRhPage } from "../pages/ponto/MinhasRequisicoesRhPage";
 import { LogsPage } from "../pages/ponto/LogsPage";
 import { NotificacoesPage } from "../pages/ponto/NotificacoesPage";
+import { SistemaSuperAdminPage } from "../pages/ponto/SistemaSuperAdminPage";
 
 export const router = createBrowserRouter([
   /* Página de login — pública */
@@ -47,6 +48,7 @@ export const router = createBrowserRouter([
       { path: "gestao", element: <GestaoPage /> },
       { path: "gerencias", element: <GerenciasPage /> },
       { path: "usuarios", element: <GestaoUsuariosPage /> },
+      { path: "sistema", element: <SistemaSuperAdminPage /> },
       { path: "configuracoes", element: <ConfiguracoesPage /> },
       { path: "auditoria", element: <AuditoriaPage /> },
       { path: "aprovacoes", element: <AprovacaoGestorPage /> },

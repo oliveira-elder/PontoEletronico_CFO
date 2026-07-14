@@ -22,6 +22,7 @@ import { BackupModule } from "./modules/backup/backup.module";
 import { ApiServidoraModule } from "./modules/api-servidora/api-servidora.module";
 import { AssinaturaModule } from "./modules/assinatura/assinatura.module";
 import { NotificacaoModule } from "./modules/notificacao/notificacao.module";
+import { SistemaModule } from "./modules/sistema/sistema.module";
 
 @Module({
   imports: [
@@ -45,7 +46,8 @@ import { NotificacaoModule } from "./modules/notificacao/notificacao.module";
     BackupModule,
     ApiServidoraModule,
     AssinaturaModule,
-    NotificacaoModule
+    NotificacaoModule,
+    SistemaModule
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor }]
 })

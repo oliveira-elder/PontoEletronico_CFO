@@ -48,3 +48,7 @@ export function isGerenciaRh(gerencia: GerenciaRef | null | undefined): boolean 
     nome.includes("gerencia de recursos humanos")
   );
 }
+
+export function findGerenciaRh<T extends GerenciaRef>(gerencias: T[]): T | undefined {
+  return gerencias.find((g) => isGerenciaRh(g));
+}

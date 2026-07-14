@@ -24,6 +24,10 @@ model User {
   funcionario        Funcionario?
   gerenciasGeridas   Gerencia[]     @relation("GerenciaResponsavel")
   requisicoesCriadas RequisicaoRh[] @relation("RequisicaoRhCriador")
+  superAdminConcessao SuperAdminConcessao?
+  superAdminConcessoesFeitas SuperAdminConcessao[] @relation("SuperAdminConcessaoPor")
+  superAdminRevogacoes       SuperAdminConcessao[] @relation("SuperAdminRevogadoPor")
+  sistemaStartsSolicitados   SistemaStartSolicitacao[] @relation("SistemaStartSolicitante")
   createdAt          DateTime       @default(now())
 }
 
@@ -409,8 +413,59 @@ model ConfiguracaoSistema {
   bancoHorasFeriadoPct   Int               @default(200) // 200% = 1h→2h (hora em dobro)
   // Hora extra — limite (em minutos) acima da jornada que dispara solicitação automática
   horaExtraLimiteAuto    Int               @default(120)
+  /// 1º dia do mês de go-live (Start do sistema). Null = ainda em fase de teste.
+  dataInicioProducao     DateTime?         @db.Date
   updatedAt              DateTime          @updatedAt
   createdAt              DateTime          @default(now())
+}
+
+/// Super admin concedido pela UI (além da lista SUPER_ADMIN_USERNAMES no env).
+model SuperAdminConcessao {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  concedidoPorUserId String
+  concedidoPor     User      @relation("SuperAdminConcessaoPor", fields: [concedidoPorUserId], references: [id])
+  ativo            Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  revogadoAt       DateTime?
+  revogadoPorUserId String?
+  revogadoPor      User?     @relation("SuperAdminRevogadoPor", fields: [revogadoPorUserId], references: [id], onDelete: SetNull)
+}
+
+enum StatusSistemaStart {
+  AGUARDANDO_GERTI
+  AGUARDANDO_RH
+  REJEITADA_GERTI
+  REJEITADA_RH
+  EXECUTADO
+  CANCELADA
+}
+
+/// Solicitação de Start / go-live do sistema (mês de produção).
+model SistemaStartSolicitacao {
+  id                 String             @id @default(cuid())
+  mesReferencia      String // YYYY-MM
+  status             StatusSistemaStart @default(AGUARDANDO_GERTI)
+  solicitadoPorUserId String
+  solicitadoPor      User               @relation("SistemaStartSolicitante", fields: [solicitadoPorUserId], references: [id])
+  observacaoSolicitante String?
+  aprovadoGertiPorUserId String?
+  aprovadoGertiEm    DateTime?
+  observacaoGerti    String?
+  aprovadoRhPorUserId String?
+  aprovadoRhEm       DateTime?
+  observacaoRh       String?
+  rejeitadoPorUserId String?
+  rejeitadoEm        DateTime?
+  observacaoRejeicao String?
+  executadoEm        DateTime?
+  marcoId            String? // BancoHorasMarco.id criado na execução
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
 }
 
 model Gerencia {
@@ -689,6 +744,10 @@ model Afastamento {
   tipo          TipoAfastamento
   dataInicio    DateTime
   dataFim       DateTime
+  /// HH:MM — presente junto com horarioFim = atestado/afastamento parcial (não dia inteiro)
+  horarioInicio String?
+  /// HH:MM — presente junto com horarioInicio = afastamento parcial
+  horarioFim    String?
   justificativa String?
   documentoUrl  String?
   aprovadoPor   String?

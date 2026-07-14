@@ -13,7 +13,8 @@ import {
   CheckCircleIcon,
   SsoIcon,
   ClipboardListIcon,
-  TerminalIcon
+  TerminalIcon,
+  CrownIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -55,6 +56,7 @@ const adminBottomNav: NavItem[] = [
 /* Sistema: apenas super admin */
 const superAdminNav: NavItem[] = [
   { path: "/ponto/usuarios", label: "Usuários / Grupos", icon: <SsoIcon size={18} /> },
+  { path: "/ponto/sistema", label: "Start / Super Admin", icon: <CrownIcon size={18} /> },
   { path: "/ponto/logs", label: "Logs", icon: <TerminalIcon size={18} /> }
 ];
 

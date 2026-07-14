@@ -1,5 +1,7 @@
 /* Transformação e resumo do histórico — mesma lógica da página /ponto/historico */
 
+import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "./calcHorasTrabalhadas";
+
 export type StatusDia =
   | "OK"
   | "FALTA"
@@ -49,6 +51,21 @@ export interface DiaRegistro {
   turno?: string;
   motivoSemIntervalo?: string;
   janelaAlmoco?: string;
+  /** Atestado com horário parcial (matutino/vespertino) */
+  atestadoParcial?: boolean;
+  atestadoParcialHorario?: string;
+  /** Saída dispensada (atestado vespertino) */
+  saidaNaoAplicavel?: boolean;
+  /**
+   * Almoço registrado com duração &lt; almocoMinMin da jornada:
+   * horário exibido permanece; o cálculo usa início + mínimo configurado.
+   */
+  almocoCurto?: {
+    inicio: string;
+    fimRegistrado: string;
+    fimReferencia: string;
+    minimoMin: number;
+  };
   /** Origem de solicitação de assessor/gerente — só consulta, sem cálculo. */
   apenasInformativo?: boolean;
 }
@@ -67,6 +84,8 @@ export interface ApiAfastamento {
   dataFim: string;
   justificativa?: string | null;
   apenasInformativo?: boolean;
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
 }
 
 export interface ApiFeriado {
@@ -88,6 +107,11 @@ export interface JornadaHistorico {
   vigenciaDesde: string | null;
   horaEntrada?: string;
   horaSaida?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  toleranciaCalculoMin?: number;
+  horaExtraLimiteAuto?: number;
 }
 
 export interface HistoricoApiResponse {
@@ -95,6 +119,10 @@ export interface HistoricoApiResponse {
   ano: number;
   /** Primeiro login no sistema (YYYY-MM-DD, Brasília). */
   inicioAtividades?: string | null;
+  /** Go-live do sistema (YYYY-MM-DD). Null = fase de teste. */
+  dataInicioProducao?: string | null;
+  /** True quando Super Admin consulta mês anterior ao go-live. */
+  periodoTeste?: boolean;
   /** Data a partir da qual o ponto passa a ser obrigatório (assessor → concursado). */
   pontoObrigatorioDesde?: string | null;
   semRegistroPonto?: boolean;
@@ -136,7 +164,14 @@ export interface ResumoHistorico {
 export const JORNADA_PADRAO: JornadaHistorico = {
   anteriorMin: 480,
   atualMin: 480,
-  vigenciaDesde: null
+  vigenciaDesde: null,
+  horaEntrada: "08:00",
+  horaSaida: "17:00",
+  almocoMinMin: 60,
+  almocoPodeIniciarA: "11:30",
+  almocoPodeIniciarAte: "13:00",
+  toleranciaCalculoMin: 5,
+  horaExtraLimiteAuto: 120
 };
 
 const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
@@ -173,9 +208,280 @@ function calcularJornadaParcialFeriado(
   return Math.round(jornadaDiariaMin * Math.max(0, Math.min(1, propObrigatoria)));
 }
 
+function isAfastamentoParcial(a: {
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
+}): boolean {
+  return !!(a.horarioInicio && a.horarioFim);
+}
+
+function calcularJornadaComAtestadoParcial(
+  horarioInicio: string,
+  horarioFim: string,
+  jornadaDiariaMin: number,
+  horaEntrada: string,
+  horaSaida: string,
+  opts?: {
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
+): number {
+  const cobertos = minutosLiquidosCobertosAtestado(horarioInicio, horarioFim, {
+    horaEntrada,
+    horaSaida,
+    almocoMinMin: opts?.almocoMinMin,
+    almocoPodeIniciarA: opts?.almocoPodeIniciarA
+  });
+  return Math.max(0, jornadaDiariaMin - cobertos);
+}
+
+function aplicarMargemCalculo(
+  saldoMinutos: number,
+  toleranciaCalculoMin: number | null | undefined
+): number {
+  const margem = Math.max(0, Number(toleranciaCalculoMin) || 0);
+  if (margem > 0 && Math.abs(saldoMinutos) <= margem) return 0;
+  return saldoMinutos;
+}
+
+function calcularSaldoAtestadoParcialPorExpediente(opts: {
+  horarioInicioAtestado: string;
+  horarioFimAtestado: string;
+  horaEntrada: string;
+  horaSaida: string;
+  fimTrabalhoMin: number | null;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+  toleranciaCalculoMin?: number | null;
+  horaExtraLimiteMin?: number | null;
+}): number {
+  const marcoMin = marcoExpedienteAtestadoParcial({
+    horarioInicioAtestado: opts.horarioInicioAtestado,
+    horarioFimAtestado: opts.horarioFimAtestado,
+    horaEntrada: opts.horaEntrada,
+    horaSaida: opts.horaSaida,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+  if (opts.fimTrabalhoMin == null) return 0;
+  let delta = opts.fimTrabalhoMin - marcoMin;
+  const limiteHe = Math.max(0, opts.horaExtraLimiteMin ?? 120);
+  if (delta > 0) delta = Math.min(delta, limiteHe);
+  return aplicarMargemCalculo(delta, opts.toleranciaCalculoMin);
+}
+
+function marcoExpedienteAtestadoParcial(opts: {
+  horarioInicioAtestado: string;
+  horarioFimAtestado: string;
+  horaEntrada: string;
+  horaSaida: string;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+}): number {
+  const matutino = atestadoParcialEhMatutino(opts.horarioInicioAtestado, opts.horarioFimAtestado, {
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+  const entr = toMin(opts.horaEntrada);
+  const sai = toMin(opts.horaSaida);
+  const almoco = Math.max(0, opts.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = toMin(opts.almocoPodeIniciarA ?? "12:00");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  return matutino ? toMin(opts.horaSaida) : Math.min(toMin(opts.horarioInicioAtestado), lunchStart);
+}
+
+function filtrarRegsForaAtestadoParcial(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioInicio: string,
+  horarioFim: string
+): Array<{ tipo: string; minuto: number }> {
+  const hi = toMin(horarioInicio);
+  const hf = toMin(horarioFim);
+  if (hf <= hi) return registros;
+  return registros.filter((r) => r.minuto < hi || r.minuto > hf);
+}
+
+function prepararRegsCalculoAtestadoParcial(opts: {
+  registros: Array<{ tipo: string; minuto: number }>;
+  horarioInicio: string;
+  horarioFim: string;
+  horaEntrada: string;
+  horaSaida: string;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarAte?: string;
+  fecharVespertinoNoMarco?: boolean;
+}): {
+  registros: Array<{ tipo: string; minuto: number }>;
+  marcoMin: number;
+  fimTrabalhoMin: number | null;
+  semAlmoco: boolean;
+} {
+  const fora = filtrarRegsForaAtestadoParcial(opts.registros, opts.horarioInicio, opts.horarioFim);
+  const optsDisp = {
+    horarioInicio: opts.horarioInicio,
+    horarioFim: opts.horarioFim,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+  };
+  const semAlmoco = dispensarAlmocoPorAtestadoParcial(true, fora, optsDisp);
+  let registros = semAlmoco ? normalizarRegsAtestadoSemAlmoco(fora) : fora;
+  const marcoMin = marcoExpedienteAtestadoParcial({
+    horarioInicioAtestado: opts.horarioInicio,
+    horarioFimAtestado: opts.horarioFim,
+    horaEntrada: opts.horaEntrada,
+    horaSaida: opts.horaSaida,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+  let fimTrabalhoMin = fimTrabalhoMinutosDoDia(registros);
+  const matutino = atestadoParcialEhMatutino(opts.horarioInicio, opts.horarioFim, optsDisp);
+  if (
+    opts.fecharVespertinoNoMarco &&
+    !matutino &&
+    fimTrabalhoMin == null &&
+    registros.some((r) => r.tipo === "ENTRADA")
+  ) {
+    registros = [...registros, { tipo: "SAIDA", minuto: marcoMin }];
+    fimTrabalhoMin = marcoMin;
+  }
+  return { registros, marcoMin, fimTrabalhoMin, semAlmoco };
+}
+
+function fimTrabalhoMinutosDoDia(
+  registros: Array<{ tipo: string; minuto: number }>
+): number | null {
+  const saida = [...registros].reverse().find((r) => r.tipo === "SAIDA");
+  if (saida) return saida.minuto;
+  const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
+  if (!temFim) {
+    const ini = [...registros].reverse().find((r) => r.tipo === "INICIO_INTERVALO");
+    if (ini) return ini.minuto;
+  }
+  const fimAlm = [...registros].reverse().find((r) => r.tipo === "FIM_INTERVALO");
+  if (fimAlm) return fimAlm.minuto;
+  return null;
+}
+
+/** Minutos líquidos de expediente cobertos pelo atestado (exclui 1h de almoço). */
+function minutosLiquidosCobertosAtestado(
+  horarioInicio: string,
+  horarioFim: string,
+  jornada: {
+    horaEntrada: string;
+    horaSaida: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+  }
+): number {
+  const entr = toMin(jornada.horaEntrada);
+  const sai = toMin(jornada.horaSaida);
+  const hi = toMin(horarioInicio);
+  const hf = toMin(horarioFim);
+  if (sai <= entr || hf <= hi) return 0;
+
+  const almoco = Math.max(0, jornada.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = toMin(jornada.almocoPodeIniciarA ?? "11:30");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  const lunchEnd = lunchStart + almoco;
+
+  const overlap = (a0: number, a1: number, b0: number, b1: number) =>
+    Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+
+  return overlap(hi, hf, entr, lunchStart) + overlap(hi, hf, lunchEnd, sai);
+}
+
+function atestadoParcialEhMatutino(
+  horarioInicio: string,
+  horarioFim: string,
+  opts?: {
+    almocoPodeIniciarA?: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarAte?: string;
+  }
+): boolean {
+  void horarioInicio;
+  void opts?.almocoPodeIniciarAte;
+  const inicioAlmoco = toMin(opts?.almocoPodeIniciarA ?? "12:00");
+  const duracao = Math.max(0, opts?.almocoMinMin ?? 60);
+  return toMin(horarioFim) <= inicioAlmoco + duracao;
+}
+
+function dispensarAlmocoPorAtestadoParcial(
+  afastamentoParcial: boolean,
+  registros: Array<{ tipo: string }>,
+  opts?: {
+    horarioInicio?: string | null;
+    horarioFim?: string | null;
+    almocoPodeIniciarA?: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarAte?: string;
+  }
+): boolean {
+  if (!afastamentoParcial) return false;
+  if (
+    opts?.horarioInicio &&
+    opts?.horarioFim &&
+    atestadoParcialEhMatutino(opts.horarioInicio, opts.horarioFim, opts)
+  ) {
+    return true;
+  }
+  return !registros.some((r) => r.tipo === "INICIO_INTERVALO");
+}
+
+function normalizarRegsAtestadoSemAlmoco<T extends { tipo: string }>(registros: T[]): T[] {
+  const temSaida = registros.some((r) => r.tipo === "SAIDA");
+  if (temSaida) {
+    return registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+  }
+  const temInicio = registros.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
+  if (temInicio && !temFim) {
+    return registros
+      .map((r) => (r.tipo === "INICIO_INTERVALO" ? { ...r, tipo: "SAIDA" } : r))
+      .filter((r) => r.tipo !== "FIM_INTERVALO");
+  }
+  return registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+}
+
+function atestadoParcialDispensaSaida(
+  horarioInicio: string,
+  horarioFim: string,
+  opts?: {
+    almocoPodeIniciarA?: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarAte?: string;
+  }
+): boolean {
+  if (atestadoParcialEhMatutino(horarioInicio, horarioFim, opts)) {
+    return false;
+  }
+  return true;
+}
+
+function labelAtestadoParcial(hi: string, hf: string): string {
+  return `Atestado médico parcial (${hi}–${hf})`;
+}
+
 function toMin(h: string): number {
   const [hh, mm] = h.split(":").map(Number);
   return hh * 60 + mm;
+}
+
+function fmtMinDia(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function fmtHora(iso: string): string {
@@ -196,30 +502,26 @@ function dataBrasiliaKey(iso: string): string {
   }).format(new Date(iso));
 }
 
-function calcHorasMinutosDia(dayRegs: ApiRegistro[], agoraMin?: number): number {
-  let total = 0;
-  let entradaMin: number | null = null;
-  for (const r of dayRegs) {
-    const ts = toMin(fmtHora(r.dataHora));
-    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-      entradaMin = ts;
-    } else if (
-      (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-      entradaMin !== null
-    ) {
-      total += ts - entradaMin;
-      entradaMin = null;
-    } else if (r.tipo === "FIM_INTERVALO") {
-      entradaMin = ts;
-    } else if (r.tipo === "SAIDA" && entradaMin !== null) {
-      total += ts - entradaMin;
-      entradaMin = null;
+function calcHorasMinutosDia(
+  dayRegs: ApiRegistro[],
+  agoraMin?: number,
+  opts?: {
+    exigirIntervalo?: boolean;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
+): number {
+  return calcHorasTrabalhadasMinutos(
+    dayRegs.map((r) => ({ tipo: r.tipo, minuto: toMin(fmtHora(r.dataHora)) })),
+    {
+      agoraMin,
+      exigirIntervalo: opts?.exigirIntervalo,
+      almocoMinMin: opts?.almocoMinMin,
+      almocoPodeIniciarA: opts?.almocoPodeIniciarA,
+      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte
     }
-  }
-  if (entradaMin !== null && agoraMin !== undefined) {
-    total += agoraMin - entradaMin;
-  }
-  return total;
+  );
 }
 
 function afastamentoDoDia(
@@ -246,6 +548,8 @@ export function transformarHistorico(
     pontoObrigatorioDesde?: string | null;
     semRegistroPonto?: boolean;
     periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+    /** false para estagiário / menor aprendiz */
+    exigirIntervalo?: boolean;
   }
 ): DiaRegistro[] {
   const hoje = new Date();
@@ -255,6 +559,7 @@ export function transformarHistorico(
   const pontoObrigatorioDesde = opts?.pontoObrigatorioDesde ?? null;
   const semRegistroPonto = !!opts?.semRegistroPonto;
   const periodosSemObrigacao = opts?.periodosSemObrigacao ?? [];
+  const exigirIntervaloGlobal = opts?.exigirIntervalo !== false;
 
   const diaEmPeriodoSemObrigacao = (isoKey: string): boolean => {
     if (periodosSemObrigacao.length > 0) {
@@ -370,7 +675,7 @@ export function transformarHistorico(
     }
 
     const afastamento = afastamentoDoDia(isoKey, afastamentosCalc);
-    if (afastamento) {
+    if (afastamento && !isAfastamentoParcial(afastamento)) {
       result.push({
         data: dataStr,
         diaSemana,
@@ -386,6 +691,7 @@ export function transformarHistorico(
       });
       continue;
     }
+    const atestadoParcial = afastamento && isAfastamentoParcial(afastamento) ? afastamento : null;
 
     /* Afastamento só informativo: mostra no histórico sem efeito de cálculo. */
     const afastamentoInfo = afastamentoDoDia(
@@ -461,6 +767,50 @@ export function transformarHistorico(
           apenasInformativo: true,
           observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
         });
+      } else if (atestadoParcial) {
+        const jornadaBase = jornadaEsperadaMin(isoKey, jornada);
+        const jornadaMandatoria = calcularJornadaComAtestadoParcial(
+          atestadoParcial.horarioInicio!,
+          atestadoParcial.horarioFim!,
+          jornadaBase,
+          jornada.horaEntrada ?? "08:00",
+          jornada.horaSaida ?? "17:00",
+          {
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          }
+        );
+        const label = labelAtestadoParcial(
+          atestadoParcial.horarioInicio!,
+          atestadoParcial.horarioFim!
+        );
+        result.push({
+          data: dataStr,
+          diaSemana,
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: jornadaMandatoria,
+          status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
+          obs: label,
+          atestadoParcial: true,
+          atestadoParcialHorario: `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`,
+          semIntervalo: true,
+          motivoSemIntervalo: "ATESTADO_PARCIAL",
+          saidaNaoAplicavel: atestadoParcialDispensaSaida(
+            atestadoParcial.horarioInicio!,
+            atestadoParcial.horarioFim!,
+            {
+              almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+              almocoMinMin: jornada.almocoMinMin ?? 60,
+              almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+            }
+          ),
+          apenasInformativo: diaInformativo
+        });
       } else {
         result.push({
           data: dataStr,
@@ -478,33 +828,133 @@ export function transformarHistorico(
       continue;
     }
 
-    const get = (tipo: string) =>
+    const isHoje = dt.toDateString() === hoje.toDateString();
+    const optsAlmocoAtestado = {
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    };
+
+    const prepAtestado = atestadoParcial
+      ? prepararRegsCalculoAtestadoParcial({
+          registros: dayRegsCalc.map((r) => ({
+            tipo: r.tipo,
+            minuto: toMin(fmtHora(r.dataHora))
+          })),
+          horarioInicio: atestadoParcial.horarioInicio!,
+          horarioFim: atestadoParcial.horarioFim!,
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          ...optsAlmocoAtestado,
+          fecharVespertinoNoMarco: !isHoje
+        })
+      : null;
+
+    const semAlmocoAtestado =
+      !!prepAtestado?.semAlmoco ||
+      dispensarAlmocoPorAtestadoParcial(!!atestadoParcial, dayRegsCalc, {
+        horarioInicio: atestadoParcial?.horarioInicio,
+        horarioFim: atestadoParcial?.horarioFim,
+        ...optsAlmocoAtestado
+      });
+    const dayRegsHoras =
+      semAlmocoAtestado ||
+      !!dayRegsCalc.find((r) => (r.observacoes ?? []).some((o) => o.tipo === "TURNO_SEM_INTERVALO"))
+        ? normalizarRegsAtestadoSemAlmoco(
+            atestadoParcial
+              ? dayRegsCalc.filter((r) => {
+                  const m = toMin(fmtHora(r.dataHora));
+                  const hi = toMin(atestadoParcial.horarioInicio!);
+                  const hf = toMin(atestadoParcial.horarioFim!);
+                  return m < hi || m > hf;
+                })
+              : dayRegsCalc
+          )
+        : atestadoParcial
+          ? dayRegsCalc.filter((r) => {
+              const m = toMin(fmtHora(r.dataHora));
+              const hi = toMin(atestadoParcial.horarioInicio!);
+              const hf = toMin(atestadoParcial.horarioFim!);
+              return m < hi || m > hf;
+            })
+          : dayRegsCalc;
+
+    const getOrig = (tipo: string) =>
       dayRegsCalc.find((r) => r.tipo === tipo) ?? dayRegs.find((r) => r.tipo === tipo);
-    const entradaR = get("ENTRADA");
-    const iniAlmR = get("INICIO_INTERVALO");
-    const fimAlmR = get("FIM_INTERVALO");
-    const saidaR = get("SAIDA");
+    /* Exibição: sempre o registro real (nunca ocultar batida existente). */
+    const getDisplay = (tipo: string) => dayRegs.find((r) => r.tipo === tipo);
+    const entradaR = getOrig("ENTRADA") ?? getDisplay("ENTRADA");
+    const iniAlmR = getDisplay("INICIO_INTERVALO");
+    const fimAlmR = getDisplay("FIM_INTERVALO");
+    /* Saída exibida = real (nunca a sintetizada do marco). */
+    const saidaR = getDisplay("SAIDA");
 
     const entrada = entradaR ? fmtHora(entradaR.dataHora) : null;
     const inicioIntervalo = iniAlmR ? fmtHora(iniAlmR.dataHora) : null;
     const fimIntervalo = fimAlmR ? fmtHora(fimAlmR.dataHora) : null;
     const saida = saidaR ? fmtHora(saidaR.dataHora) : null;
-
-    const isHoje = dt.toDateString() === hoje.toDateString();
+    const saidaParaStatus = saida;
 
     let horasMin = 0;
     let status: StatusDia;
     let obs: string | undefined;
 
-    if (entrada && saida) {
-      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs);
+    const obsTurnoEarly = (entradaR?.observacoes ?? []).find(
+      (o) => o.tipo === "TURNO_SEM_INTERVALO"
+    );
+    const calcOpts = {
+      exigirIntervalo: exigirIntervaloGlobal && !obsTurnoEarly && !semAlmocoAtestado,
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    };
+
+    // Atestado parcial (matutino ou vespertino): bloqueia colunas de intervalo
+    const bloquearIntervalo = !!atestadoParcial || !!obsTurnoEarly || semAlmocoAtestado;
+    const dispensaSaida =
+      !!atestadoParcial &&
+      atestadoParcialDispensaSaida(
+        atestadoParcial.horarioInicio!,
+        atestadoParcial.horarioFim!,
+        optsAlmocoAtestado
+      );
+
+    if (prepAtestado) {
+      horasMin = calcHorasTrabalhadasMinutos(prepAtestado.registros, {
+        ...calcOpts,
+        agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
+      });
+      if (!entrada) {
+        status = "PENDENTE";
+      } else if (dispensaSaida) {
+        status = isHoje ? "PENDENTE" : "OK";
+      } else if (saida) {
+        status = "OK";
+      } else if (isHoje) {
+        status = "PENDENTE";
+      } else {
+        status = "FALTA";
+      }
+      if (!obs) {
+        obs = labelAtestadoParcial(atestadoParcial!.horarioInicio!, atestadoParcial!.horarioFim!);
+      }
+    } else if (entrada && (saida || saidaParaStatus)) {
+      horasMin = calcHorasMinutosDia(
+        dayRegsHoras.length ? dayRegsHoras : dayRegs,
+        undefined,
+        calcOpts
+      );
       status = "OK";
     } else if (entrada && isHoje) {
       const now = hoje.getHours() * 60 + hoje.getMinutes();
-      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs, now);
+      horasMin = calcHorasMinutosDia(dayRegsHoras.length ? dayRegsHoras : dayRegs, now, calcOpts);
       status = "PENDENTE";
     } else if (entrada && inicioIntervalo) {
-      horasMin = calcHorasMinutosDia(dayRegsCalc.length ? dayRegsCalc : dayRegs);
+      horasMin = calcHorasMinutosDia(
+        dayRegsHoras.length ? dayRegsHoras : dayRegs,
+        undefined,
+        calcOpts
+      );
       status = "PENDENTE";
     } else if (entrada) {
       horasMin = 0;
@@ -517,7 +967,40 @@ export function transformarHistorico(
     horasMin = Math.max(0, horasMin);
 
     let jornadaMin = jornadaEsperadaMin(isoKey, jornada);
-    if (fimDeSemana || feriadoDia) {
+    if (atestadoParcial && prepAtestado && !fimDeSemana) {
+      const jornadaRef = calcularJornadaComAtestadoParcial(
+        atestadoParcial.horarioInicio!,
+        atestadoParcial.horarioFim!,
+        jornadaMin,
+        jornada.horaEntrada ?? "08:00",
+        jornada.horaSaida ?? "17:00",
+        {
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        }
+      );
+      if (status === "FALTA" && horasMin === 0) {
+        jornadaMin = jornadaRef;
+      } else {
+        const saldoExpediente = calcularSaldoAtestadoParcialPorExpediente({
+          horarioInicioAtestado: atestadoParcial.horarioInicio!,
+          horarioFimAtestado: atestadoParcial.horarioFim!,
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          fimTrabalhoMin: prepAtestado.fimTrabalhoMin,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 5,
+          horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
+        });
+        /* SaldoCell usa horas − jornada: alinha para refletir saldo por expediente */
+        jornadaMin = Math.max(0, horasMin - saldoExpediente);
+      }
+      if (!obs) {
+        obs = labelAtestadoParcial(atestadoParcial.horarioInicio!, atestadoParcial.horarioFim!);
+      }
+    } else if (fimDeSemana || feriadoDia) {
       if (feriadoDia?.marcoHorario && !fimDeSemana) {
         // Feriado parcial em dia útil: proporcional simples
         jornadaMin = calcularJornadaParcialFeriado(
@@ -543,7 +1026,7 @@ export function transformarHistorico(
     }
 
     const observacoesDia = dayRegs.flatMap((r) => r.observacoes ?? []);
-    const obsTurno = (entradaR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+    const obsTurno = obsTurnoEarly;
 
     const pausas: Pausa[] = [];
     let pausaAberta: string | null = null;
@@ -557,10 +1040,24 @@ export function transformarHistorico(
     }
     if (pausaAberta) pausas.push({ inicio: pausaAberta, fim: null });
 
+    const almocoCurtoDetect = !bloquearIntervalo
+      ? analisarAlmocoCurto(
+          dayRegsCalc.map((r) => ({
+            tipo: r.tipo,
+            minuto: toMin(fmtHora(r.dataHora))
+          })),
+          {
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            exigirIntervalo: exigirIntervaloGlobal && !semAlmocoAtestado
+          }
+        )
+      : null;
+
     result.push({
       data: dataStr,
       diaSemana,
       entrada,
+      /* Nunca apagar batida existente: só deixa null se realmente não houver registro. */
       inicioIntervalo,
       fimIntervalo,
       saida,
@@ -574,10 +1071,23 @@ export function transformarHistorico(
       inicioIntervaloEditado: !!iniAlmR?.ajustado,
       fimIntervaloEditado: !!fimAlmR?.ajustado,
       saidaEditada: !!saidaR?.ajustado,
-      semIntervalo: !!obsTurno,
-      turno: obsTurno?.turno,
-      motivoSemIntervalo: obsTurno?.motivo,
+      semIntervalo: bloquearIntervalo,
+      turno: obsTurno?.turno ?? (atestadoParcial ? "ATESTADO_PARCIAL" : undefined),
+      motivoSemIntervalo: atestadoParcial ? "ATESTADO_PARCIAL" : obsTurno?.motivo,
       janelaAlmoco: obsTurno?.janelaAlmoco,
+      atestadoParcial: !!atestadoParcial,
+      atestadoParcialHorario: atestadoParcial
+        ? `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`
+        : undefined,
+      saidaNaoAplicavel: dispensaSaida && !saida,
+      almocoCurto: almocoCurtoDetect
+        ? {
+            inicio: fmtMinDia(almocoCurtoDetect.inicioMin),
+            fimRegistrado: fmtMinDia(almocoCurtoDetect.fimRegistradoMin),
+            fimReferencia: fmtMinDia(almocoCurtoDetect.fimReferenciaMin),
+            minimoMin: almocoCurtoDetect.minimoMin
+          }
+        : undefined,
       apenasInformativo: diaInformativo
     });
   }

@@ -10,7 +10,8 @@ import {
   UsersIcon,
   UserIcon,
   DownloadIcon,
-  InfoIcon
+  InfoIcon,
+  Edit2Icon
 } from "../../components/icons";
 import {
   FeriasDetalheBlock,
@@ -24,6 +25,7 @@ import {
   type SolicitacaoResumo
 } from "./solicitacaoUi";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
+import { StartSistemaAprovacaoCard } from "./StartSistemaAprovacaoCard";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -175,10 +177,13 @@ function TipoBadge({ tipo }: { tipo: string }) {
   );
 }
 
-function StatusBadge({ status }: { status: StatusSolicitacao }) {
+function StatusBadge({ status, tipo }: { status: StatusSolicitacao; tipo?: string }) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
     PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
-    AGUARDANDO_RH: { label: "Aprovado pelo Gestor", cls: "badge-blue" },
+    AGUARDANDO_RH: {
+      label: tipo === "ATESTADO" ? "Ciência do Gestor" : "Aprovado pelo Gestor",
+      cls: "badge-blue"
+    },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: {
       label: "Aguardando Doc. Funcionário",
       cls: "badge-amber"
@@ -215,11 +220,24 @@ function ModalDecisao({
   const [obs, setObs] = useState("");
 
   const isAprovar = decisao === "APROVAR";
-  const corAcao = isAprovar ? "#16a34a" : "#dc2626";
-  const corAcaoClaro = isAprovar ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.06)";
-  const corBorda = isAprovar ? "rgba(22,163,74,0.25)" : "rgba(220,38,38,0.25)";
-  const emoji = isAprovar ? "✅" : "❌";
-  const titulo = isAprovar ? "Confirmar Aprovação" : "Confirmar Rejeição";
+  const isCienciaAtestado = isAprovar && solicitacao.tipo === "ATESTADO";
+  const corAcao = isCienciaAtestado ? "#6B0F1A" : isAprovar ? "#16a34a" : "#dc2626";
+  const corAcaoClaro = isCienciaAtestado
+    ? "rgba(107,15,26,0.07)"
+    : isAprovar
+      ? "rgba(22,163,74,0.08)"
+      : "rgba(220,38,38,0.06)";
+  const corBorda = isCienciaAtestado
+    ? "rgba(107,15,26,0.22)"
+    : isAprovar
+      ? "rgba(22,163,74,0.25)"
+      : "rgba(220,38,38,0.25)";
+  const emoji = isCienciaAtestado ? "✍️" : isAprovar ? "✅" : "❌";
+  const titulo = isCienciaAtestado
+    ? "Ter Ciência — Assinatura Digital"
+    : isAprovar
+      ? "Confirmar Aprovação"
+      : "Confirmar Rejeição";
 
   return (
     <div
@@ -317,6 +335,11 @@ function ModalDecisao({
                 Justificativa: "{solicitacao.descricao}"
               </p>
             )}
+            {isCienciaAtestado && typeof solicitacao.metadados?.documentoUrl === "string" && (
+              <div style={{ marginTop: 10 }}>
+                <LinkDocumentoAnexado href={solicitacao.metadados.documentoUrl as string} />
+              </div>
+            )}
           </div>
 
           {/* Pergunta de confirmação */}
@@ -329,21 +352,39 @@ function ModalDecisao({
               textAlign: "center"
             }}
           >
-            {isAprovar
-              ? "Você confirma a aprovação desta solicitação?"
-              : "Você confirma a rejeição desta solicitação?"}
+            {isCienciaAtestado
+              ? "Confirma ciência deste atestado com assinatura digital?"
+              : isAprovar
+                ? "Você confirma a aprovação desta solicitação?"
+                : "Você confirma a rejeição desta solicitação?"}
           </p>
-          {isAprovar && (
+          {isCienciaAtestado ? (
             <p
               style={{
                 margin: "-8px 0 0",
-                fontSize: 12,
-                color: "var(--ink-500)",
-                textAlign: "center"
+                fontSize: 12.5,
+                color: "var(--ink-600)",
+                textAlign: "center",
+                lineHeight: 1.55
               }}
             >
-              Após aprovação, a solicitação será encaminhada ao RH para análise final.
+              Ao confirmar, sua assinatura digital será aplicada no canto inferior esquerdo do
+              atestado (imagem será convertida em PDF, se necessário) e o documento será encaminhado
+              ao RH.
             </p>
+          ) : (
+            isAprovar && (
+              <p
+                style={{
+                  margin: "-8px 0 0",
+                  fontSize: 12,
+                  color: "var(--ink-500)",
+                  textAlign: "center"
+                }}
+              >
+                Após aprovação, a solicitação será encaminhada ao RH para análise final.
+              </p>
+            )
           )}
 
           {/* Observação */}
@@ -425,6 +466,10 @@ function ModalDecisao({
             >
               {loading ? (
                 <>⏳ Processando...</>
+              ) : isCienciaAtestado ? (
+                <>
+                  <Edit2Icon size={14} /> Confirmar ciência e assinar
+                </>
               ) : isAprovar ? (
                 <>✅ Sim, aprovar</>
               ) : (
@@ -501,7 +546,7 @@ function SolicitacaoCard({
               {s.funcionario.gerencia.nome}
             </span>
           )}
-          <StatusBadge status={s.status} />
+          <StatusBadge status={s.status} tipo={s.tipo} />
           {s.apenasInformativo && (
             <span
               title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
@@ -599,14 +644,22 @@ function SolicitacaoCard({
               padding: "7px 14px",
               border: "none",
               borderRadius: "var(--radius-md)",
-              background: "#16a34a",
+              background: s.tipo === "ATESTADO" ? "#6B0F1A" : "#16a34a",
               color: "#fff",
               cursor: "pointer",
               fontSize: 12,
               fontWeight: 600
             }}
           >
-            <CheckCircleIcon size={14} /> Aprovar
+            {s.tipo === "ATESTADO" ? (
+              <>
+                <Edit2Icon size={14} /> Ter Ciência
+              </>
+            ) : (
+              <>
+                <CheckCircleIcon size={14} /> Aprovar
+              </>
+            )}
           </button>
           <button
             onClick={() => onDecidir(s, "REJEITAR")}
@@ -884,15 +937,18 @@ export function AprovacaoGestorPage() {
         decisao: modalDecisao,
         observacao
       });
+      const tipoSol = modalSol.tipo;
       setModalSol(null);
       setFeedbackMsg(
         modalDecisao === "APROVAR"
-          ? "Solicitação aprovada e encaminhada ao RH."
+          ? tipoSol === "ATESTADO"
+            ? "Ciência registrada com assinatura digital. Atestado encaminhado ao RH."
+            : "Solicitação aprovada e encaminhada ao RH."
           : "Solicitação rejeitada."
       );
       await Promise.all([carregar(), carregarStats()]);
-    } catch {
-      setFeedbackMsg("Erro ao processar decisão. Tente novamente.");
+    } catch (e) {
+      setFeedbackMsg((e as Error).message || "Erro ao processar decisão. Tente novamente.");
     } finally {
       setModalLoading(false);
     }
@@ -1044,7 +1100,8 @@ export function AprovacaoGestorPage() {
 
   if (!temAcesso) {
     return (
-      <div style={{ padding: 32, maxWidth: 480 }}>
+      <div style={{ padding: 32, maxWidth: 640 }}>
+        <StartSistemaAprovacaoCard />
         <div
           style={{
             background: "#fff3cd",
@@ -1528,6 +1585,8 @@ export function AprovacaoGestorPage() {
           {feedbackMsg}
         </div>
       )}
+
+      <StartSistemaAprovacaoCard />
 
       {/* ── Abas ── */}
       {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (

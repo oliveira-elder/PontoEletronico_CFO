@@ -3,8 +3,16 @@ import {
   JornadaHistoricoContext,
   jornadaEsperadaMin,
   resolverJornadaHistoricoContexto,
-  calcularJornadaParcialFeriado
+  calcularJornadaParcialFeriado,
+  calcularJornadaComAtestadoParcial,
+  calcularSaldoAtestadoParcialPorExpediente,
+  prepararRegsCalculoAtestadoParcial,
+  isAfastamentoParcial,
+  dispensarAlmocoPorAtestadoParcial
 } from "./jornada-historico";
+import { calcHorasTrabalhadasMinutos } from "./calc-horas-trabalhadas";
+import { observacaoTurnoSemIntervalo } from "./turno-entrada";
+import { horarioParaMinutos } from "./horario-brasilia";
 
 export type { JornadaHistoricoContext };
 export { resolverJornadaHistoricoContexto };
@@ -12,11 +20,15 @@ export { resolverJornadaHistoricoContexto };
 export interface RegistroHistorico {
   tipo: string;
   dataHora: Date;
+  observacoes?: unknown;
 }
 
 export interface AfastamentoHistorico {
   dataInicio: Date;
   dataFim: Date;
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
+  tipo?: string;
 }
 
 export interface FeriadoHistorico {
@@ -80,31 +92,38 @@ function agoraMinBrasilia(): number {
   return horaParaMin(horarioDeDataBrasilia(new Date()));
 }
 
-/** Mesma regra de HistoricoPage.calcHorasMinutosDia / PontoService.calcHorasMinutos. */
-function calcHorasMinutosDia(regs: RegistroHistorico[], agoraMin?: number): number {
-  let total = 0;
-  let entradaMin: number | null = null;
-  for (const r of regs) {
-    const ts = horaParaMin(horarioDeDataBrasilia(r.dataHora));
-    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-      entradaMin = ts;
-    } else if (
-      (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-      entradaMin !== null
-    ) {
-      total += ts - entradaMin;
-      entradaMin = null;
-    } else if (r.tipo === "FIM_INTERVALO") {
-      entradaMin = ts;
-    } else if (r.tipo === "SAIDA" && entradaMin !== null) {
-      total += ts - entradaMin;
-      entradaMin = null;
+/** Mesma regra de HistoricoPage / PontoService — com almoço mínimo obrigatório. */
+function calcHorasMinutosDia(
+  regs: RegistroHistorico[],
+  agoraMin?: number,
+  jornada?: JornadaHistoricoContext,
+  forcarSemIntervalo?: boolean
+): number {
+  const entrada = regs.find((r) => r.tipo === "ENTRADA");
+  return calcHorasTrabalhadasMinutos(
+    regs.map((r) => ({
+      tipo: r.tipo,
+      minuto: horaParaMin(horarioDeDataBrasilia(r.dataHora))
+    })),
+    {
+      agoraMin,
+      exigirIntervalo: !forcarSemIntervalo && !observacaoTurnoSemIntervalo(entrada?.observacoes),
+      almocoMinMin: jornada?.almocoMinMin ?? 60,
+      almocoPodeIniciarA: jornada?.almocoPodeIniciarA ?? "11:30",
+      almocoPodeIniciarAte: jornada?.almocoPodeIniciarAte ?? "13:00"
     }
-  }
-  if (entradaMin !== null && agoraMin !== undefined) {
-    total += agoraMin - entradaMin;
-  }
-  return total;
+  );
+}
+
+function afastamentoDoDia(
+  isoKey: string,
+  afastamentos: AfastamentoHistorico[]
+): AfastamentoHistorico | undefined {
+  return afastamentos.find((a) => {
+    const inicio = dataBrasiliaISO(a.dataInicio);
+    const fim = dataBrasiliaISO(a.dataFim);
+    return isoKey >= inicio && isoKey <= fim;
+  });
 }
 
 function extrairPausas(regs: RegistroHistorico[]): PausaPar[] {
@@ -120,17 +139,6 @@ function extrairPausas(regs: RegistroHistorico[]): PausaPar[] {
   }
   if (pausaAberta) pausas.push({ inicio: pausaAberta, fim: null });
   return pausas;
-}
-
-function afastamentoDoDia(
-  isoKey: string,
-  afastamentos: AfastamentoHistorico[]
-): AfastamentoHistorico | undefined {
-  return afastamentos.find((a) => {
-    const inicio = dataBrasiliaISO(a.dataInicio);
-    const fim = dataBrasiliaISO(a.dataFim);
-    return isoKey >= inicio && isoKey <= fim;
-  });
 }
 
 function statusPdfDe(status: StatusDiaQuadro, semRegistros: boolean): string {
@@ -167,8 +175,10 @@ export function montarRelatorioQuadro(
   sabadoPct = 100,
   domingoPct = 200,
   feriadoPct = 200,
-  inicioAtividades?: string | null
+  inicioAtividades?: string | null,
+  opts?: { forcarSemIntervalo?: boolean }
 ): RelatorioQuadroMensal {
+  const forcarSemIntervalo = !!opts?.forcarSemIntervalo;
   const hojeIso = hojeBrasiliaISO();
   const [hY, hM, hD] = hojeIso.split("-").map(Number);
   const hoje = new Date(hY, hM - 1, hD);
@@ -237,7 +247,7 @@ export function montarRelatorioQuadro(
     }
 
     const afastamento = afastamentoDoDia(iso, afastamentos);
-    if (afastamento) {
+    if (afastamento && !isAfastamentoParcial(afastamento)) {
       dias.push({
         iso,
         entrada: null,
@@ -256,6 +266,15 @@ export function montarRelatorioQuadro(
     }
 
     const dayRegs = byDay.get(iso) ?? [];
+    const parcial = afastamento && isAfastamentoParcial(afastamento) ? afastamento : null;
+    const semAlmocoParcial = dispensarAlmocoPorAtestadoParcial(!!parcial, dayRegs, {
+      horarioInicio: parcial?.horarioInicio,
+      horarioFim: parcial?.horarioFim,
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    });
+    const forcarSemIntervaloDia = forcarSemIntervalo || semAlmocoParcial;
 
     // Fim de semana: só aparece se tiver registros; caso contrário é Folga
     if (fimDeSemana) {
@@ -291,16 +310,16 @@ export function montarRelatorioQuadro(
       let horasMin = 0;
       let statusInterno: StatusDiaQuadro;
       if (entrada && saida) {
-        horasMin = calcHorasMinutosDia(dayRegs);
+        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
         statusInterno = "OK";
       } else if (entrada && isHoje) {
-        horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia());
+        horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia(), jornada, forcarSemIntervaloDia);
         statusInterno = "PENDENTE";
       } else if (entrada && inicioIntervalo) {
-        horasMin = calcHorasMinutosDia(dayRegs);
+        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
         statusInterno = "PENDENTE";
       } else {
-        horasMin = calcHorasMinutosDia(dayRegs);
+        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
         statusInterno = "PENDENTE";
       }
       horasMin = Math.max(0, horasMin);
@@ -352,6 +371,33 @@ export function montarRelatorioQuadro(
             : `Feriado: ${feriadoDia.nome}`,
           statusInterno: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO"
         });
+      } else if (parcial) {
+        const jornadaMin = calcularJornadaComAtestadoParcial(
+          parcial.horarioInicio!,
+          parcial.horarioFim!,
+          {
+            horaEntrada: jornada.horaEntrada ?? "08:00",
+            horaSaida: jornada.horaSaida ?? "17:00",
+            jornadaDiariaMin: jornadaEsperadaMin(iso, jornada),
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          }
+        );
+        dias.push({
+          iso,
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          pausas: [],
+          horasMin: 0,
+          horasFormatado: "0h00m",
+          saldoMin: -jornadaMin,
+          saldoFormatado: jornadaMin === 0 ? "—" : fmtSaldoMin(-jornadaMin),
+          status: `Atestado parcial ${parcial.horarioInicio}–${parcial.horarioFim}`,
+          statusInterno: jornadaMin > 0 ? "FALTA" : "AFASTAMENTO"
+        });
       } else {
         const jornadaMin = jornadaEsperadaMin(iso, jornada);
         dias.push({
@@ -389,19 +435,19 @@ export function montarRelatorioQuadro(
     let statusInterno: StatusDiaQuadro;
 
     if (entrada && saida) {
-      horasMin = calcHorasMinutosDia(dayRegs);
+      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
       statusInterno = "OK";
     } else if (entrada && isHoje) {
-      horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia());
+      horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia(), jornada, forcarSemIntervaloDia);
       statusInterno = "PENDENTE";
     } else if (entrada && inicioIntervalo) {
-      horasMin = calcHorasMinutosDia(dayRegs);
+      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
       statusInterno = "PENDENTE";
     } else if (entrada) {
       horasMin = 0;
       statusInterno = "FALTA";
     } else {
-      horasMin = calcHorasMinutosDia(dayRegs);
+      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
       statusInterno = "PENDENTE";
     }
 
@@ -409,7 +455,17 @@ export function montarRelatorioQuadro(
 
     let saldoMin: number | null;
     let multiplicadorPct: number | undefined;
-    const jornadaMin = jornadaEsperadaMin(iso, jornada);
+    const jornadaBase = jornadaEsperadaMin(iso, jornada);
+    const jornadaMin = parcial
+      ? calcularJornadaComAtestadoParcial(parcial.horarioInicio!, parcial.horarioFim!, {
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          jornadaDiariaMin: jornadaBase,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        })
+      : jornadaBase;
     if (feriadoDia) {
       if (feriadoDia.marcoHorario) {
         // Feriado parcial: proporcional simples
@@ -419,7 +475,7 @@ export function montarRelatorioQuadro(
           {
             horaEntrada: jornada.horaEntrada ?? "08:00",
             horaSaida: jornada.horaSaida ?? "17:00",
-            jornadaDiariaMin: jornadaMin
+            jornadaDiariaMin: jornadaBase
           }
         );
         saldoMin = statusInterno === "FALTA" ? -jornadaMandatoria : horasMin - jornadaMandatoria;
@@ -428,6 +484,40 @@ export function montarRelatorioQuadro(
         saldoMin = Math.round((horasMin * feriadoPct) / 100);
         multiplicadorPct = feriadoPct;
       }
+    } else if (parcial) {
+      const regsMin = dayRegs.map((r) => ({
+        tipo: r.tipo,
+        minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora).substring(0, 5))
+      }));
+      const prep = prepararRegsCalculoAtestadoParcial({
+        registros: regsMin,
+        horarioInicio: parcial.horarioInicio!,
+        horarioFim: parcial.horarioFim!,
+        horaEntrada: jornada.horaEntrada ?? "08:00",
+        horaSaida: jornada.horaSaida ?? "17:00",
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+        fecharVespertinoNoMarco: iso < hojeBrasiliaISO()
+      });
+      horasMin = calcHorasTrabalhadasMinutos(prep.registros, {
+        exigirIntervalo: !prep.semAlmoco,
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      });
+      saldoMin = calcularSaldoAtestadoParcialPorExpediente({
+        horarioInicioAtestado: parcial.horarioInicio!,
+        horarioFimAtestado: parcial.horarioFim!,
+        horaEntrada: jornada.horaEntrada ?? "08:00",
+        horaSaida: jornada.horaSaida ?? "17:00",
+        fimTrabalhoMin: prep.fimTrabalhoMin,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        toleranciaCalculoMin:
+          (jornada as { toleranciaCalculoMin?: number }).toleranciaCalculoMin ?? 5,
+        horaExtraLimiteMin: 120
+      });
     } else if (statusInterno === "FALTA") {
       saldoMin = -jornadaMin;
     } else {
@@ -445,11 +535,13 @@ export function montarRelatorioQuadro(
       horasFormatado: fmtMin(horasMin).replace(/^\+/, ""),
       saldoMin,
       saldoFormatado: saldoMin === null ? "—" : fmtSaldoMin(saldoMin),
-      status: feriadoDia
-        ? feriadoDia.marcoHorario
-          ? `Trabalhado (Feriado parcial: ${feriadoDia.nome})`
-          : `Trabalhado (Feriado: ${feriadoDia.nome})`
-        : statusPdfDe(statusInterno, false),
+      status: parcial
+        ? `Atestado parcial ${parcial.horarioInicio}–${parcial.horarioFim}`
+        : feriadoDia
+          ? feriadoDia.marcoHorario
+            ? `Trabalhado (Feriado parcial: ${feriadoDia.nome})`
+            : `Trabalhado (Feriado: ${feriadoDia.nome})`
+          : statusPdfDe(statusInterno, false),
       statusInterno,
       multiplicadorPct
     });

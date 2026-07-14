@@ -6,6 +6,11 @@ export interface JornadaHistoricoContext {
   vigenciaDesde: string | null;
   horaEntrada?: string;
   horaSaida?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  toleranciaCalculoMin?: number;
+  horaExtraLimiteAuto?: number;
 }
 
 export interface FuncionarioJornadaInput {
@@ -13,9 +18,23 @@ export interface FuncionarioJornadaInput {
   jornadaHorasDia?: number | null;
   jornadaPeriodoDesde?: Date | null;
   jornadaPeriodoAssociadoEm?: Date | null;
-  jornadaPeriodo?: { jornadaDiariaMin: number; horaEntrada?: string; horaSaida?: string } | null;
+  jornadaPeriodo?: {
+    jornadaDiariaMin: number;
+    horaEntrada?: string;
+    horaSaida?: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+    toleranciaCalculoMin?: number;
+    horaExtraLimiteAuto?: number;
+  } | null;
   configuracaoHoraEntrada?: string | null;
   configuracaoHoraSaida?: string | null;
+  configuracaoAlmocoMinMin?: number | null;
+  configuracaoAlmocoPodeIniciarA?: string | null;
+  configuracaoAlmocoPodeIniciarAte?: string | null;
+  configuracaoToleranciaCalculoMin?: number | null;
+  configuracaoHoraExtraLimiteAuto?: number | null;
 }
 
 /** Resolve jornada anterior (padrão) vs atual (período) e data de vigência. */
@@ -36,8 +55,33 @@ export function resolverJornadaHistoricoContexto(
 
   const horaEntrada = func?.jornadaPeriodo?.horaEntrada ?? func?.configuracaoHoraEntrada ?? "08:00";
   const horaSaida = func?.jornadaPeriodo?.horaSaida ?? func?.configuracaoHoraSaida ?? "17:00";
+  const almocoMinMin = func?.jornadaPeriodo?.almocoMinMin ?? func?.configuracaoAlmocoMinMin ?? 60;
+  const almocoPodeIniciarA =
+    func?.jornadaPeriodo?.almocoPodeIniciarA ?? func?.configuracaoAlmocoPodeIniciarA ?? "11:30";
+  const almocoPodeIniciarAte =
+    func?.jornadaPeriodo?.almocoPodeIniciarAte ?? func?.configuracaoAlmocoPodeIniciarAte ?? "13:00";
+  const toleranciaCalculoMin =
+    func?.jornadaPeriodo?.toleranciaCalculoMin ?? func?.configuracaoToleranciaCalculoMin ?? 5;
+  const horaExtraLimiteAuto =
+    func?.jornadaPeriodo?.horaExtraLimiteAuto ?? func?.configuracaoHoraExtraLimiteAuto ?? 120;
 
-  return { anteriorMin, atualMin, vigenciaDesde, horaEntrada, horaSaida };
+  return {
+    anteriorMin,
+    atualMin,
+    vigenciaDesde,
+    horaEntrada,
+    horaSaida,
+    almocoMinMin,
+    almocoPodeIniciarA,
+    almocoPodeIniciarAte,
+    toleranciaCalculoMin,
+    horaExtraLimiteAuto
+  };
+}
+
+function horaParaMin(h: string): number {
+  const [hh, mm] = h.split(":").map(Number);
+  return (hh || 0) * 60 + (mm || 0);
 }
 
 /** Calcula a jornada obrigatória (min) para um feriado parcial com marco de horário.
@@ -47,10 +91,6 @@ export function calcularJornadaParcialFeriado(
   marcoLado: string | null | undefined,
   jornada: { horaEntrada: string; horaSaida: string; jornadaDiariaMin: number }
 ): number {
-  const horaParaMin = (h: string) => {
-    const [hh, mm] = h.split(":").map(Number);
-    return hh * 60 + mm;
-  };
   const entradaMin = horaParaMin(jornada.horaEntrada);
   const saidaMin = horaParaMin(jornada.horaSaida);
   const marcoMin = horaParaMin(marcoHorario);
@@ -61,6 +101,344 @@ export function calcularJornadaParcialFeriado(
       ? (saidaMin - marcoMin) / totalTurno // parte depois do marco é obrigatória
       : (marcoMin - entradaMin) / totalTurno; // parte antes do marco é obrigatória
   return Math.round(jornada.jornadaDiariaMin * Math.max(0, Math.min(1, propObrigatoria)));
+}
+
+/** Afastamento parcial: possui início e fim de horário no dia. */
+export function isAfastamentoParcial(a: {
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
+}): boolean {
+  return !!(a.horarioInicio && a.horarioFim);
+}
+
+/**
+ * Minutos líquidos de expediente cobertos pelo atestado parcial
+ * (exclui a 1h de almoço canônica dentro do turno).
+ */
+export function minutosLiquidosCobertosAtestado(
+  horarioInicio: string,
+  horarioFim: string,
+  jornada: {
+    horaEntrada: string;
+    horaSaida: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+  }
+): number {
+  const entr = horaParaMin(jornada.horaEntrada);
+  const sai = horaParaMin(jornada.horaSaida);
+  const hi = horaParaMin(horarioInicio);
+  const hf = horaParaMin(horarioFim);
+  if (sai <= entr || hf <= hi) return 0;
+
+  const almoco = Math.max(0, jornada.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = horaParaMin(jornada.almocoPodeIniciarA ?? "11:30");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  const lunchEnd = lunchStart + almoco;
+
+  const overlap = (a0: number, a1: number, b0: number, b1: number) =>
+    Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+
+  // Expediente líquido = manhã + tarde (almoço fora da carga)
+  return overlap(hi, hf, entr, lunchStart) + overlap(hi, hf, lunchEnd, sai);
+}
+
+/**
+ * Descarta batidas cujo horário cai na janela do atestado parcial
+ * (não geram hora trabalhada nem HE).
+ */
+export function filtrarRegistrosForaAtestadoParcial<T extends { minuto: number }>(
+  registros: T[],
+  horarioInicio: string,
+  horarioFim: string
+): T[] {
+  const hi = horaParaMin(horarioInicio);
+  const hf = horaParaMin(horarioFim);
+  if (hf <= hi) return registros;
+  return registros.filter((r) => r.minuto < hi || r.minuto > hf);
+}
+
+/** Marco de expediente do atestado parcial (matutino = saída; vespertino = início/almoço). */
+export function marcoExpedienteAtestadoParcial(opts: {
+  horarioInicioAtestado: string;
+  horarioFimAtestado: string;
+  horaEntrada: string;
+  horaSaida: string;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+}): number {
+  const matutino = atestadoParcialEhMatutino(opts.horarioInicioAtestado, opts.horarioFimAtestado, {
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+  const entr = horaParaMin(opts.horaEntrada);
+  const sai = horaParaMin(opts.horaSaida);
+  const almoco = Math.max(0, opts.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = horaParaMin(opts.almocoPodeIniciarA ?? "12:00");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  return matutino
+    ? horaParaMin(opts.horaSaida)
+    : Math.min(horaParaMin(opts.horarioInicioAtestado), lunchStart);
+}
+
+/**
+ * Prepara registros para cálculo em dia de atestado parcial:
+ * — ignora batidas na janela do atestado;
+ * — aplica regra de almoço / órfão INICIO→SAIDA;
+ * — no vespertino sem fechamento, fecha no marco (cumprimento neutro do período).
+ */
+export function prepararRegsCalculoAtestadoParcial(opts: {
+  registros: Array<{ tipo: string; minuto: number }>;
+  horarioInicio: string;
+  horarioFim: string;
+  horaEntrada: string;
+  horaSaida: string;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarAte?: string;
+  /** Dia já encerrado: se vespertino sem fechamento, assume saída no marco. */
+  fecharVespertinoNoMarco?: boolean;
+}): {
+  registros: Array<{ tipo: string; minuto: number }>;
+  marcoMin: number;
+  fimTrabalhoMin: number | null;
+  semAlmoco: boolean;
+} {
+  const fora = filtrarRegistrosForaAtestadoParcial(
+    opts.registros,
+    opts.horarioInicio,
+    opts.horarioFim
+  );
+  const optsDisp = {
+    horarioInicio: opts.horarioInicio,
+    horarioFim: opts.horarioFim,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+  };
+  const semAlmoco = dispensarAlmocoPorAtestadoParcial(true, fora, optsDisp);
+  let registros = semAlmoco ? normalizarRegsAtestadoSemAlmoco(fora) : fora;
+  const marcoMin = marcoExpedienteAtestadoParcial({
+    horarioInicioAtestado: opts.horarioInicio,
+    horarioFimAtestado: opts.horarioFim,
+    horaEntrada: opts.horaEntrada,
+    horaSaida: opts.horaSaida,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+  let fimTrabalhoMin = fimTrabalhoMinutosDoDia(registros);
+  const matutino = atestadoParcialEhMatutino(opts.horarioInicio, opts.horarioFim, optsDisp);
+  if (
+    opts.fecharVespertinoNoMarco &&
+    !matutino &&
+    fimTrabalhoMin == null &&
+    registros.some((r) => r.tipo === "ENTRADA")
+  ) {
+    registros = [...registros, { tipo: "SAIDA", minuto: marcoMin }];
+    fimTrabalhoMin = marcoMin;
+  }
+  return { registros, marcoMin, fimTrabalhoMin, semAlmoco };
+}
+
+/**
+ * Saldo em dia de atestado parcial, ancorado no expediente configurado:
+ * — dentro do período (com tolerância): saldo 0 (sem crédito/débito artificial);
+ * — saiu antes do marco: negativo só na diferença;
+ * — ficou após o fim do expediente: HE só até `horaExtraLimiteMin` (padrão 2h).
+ *
+ * Matutino: marco = horaSaida.
+ * Vespertino: marco = início do atestado, limitado ao início do almoço canônico
+ * (não exige permanecer no intervalo).
+ *
+ * Importante: `fimTrabalhoMin` deve considerar só batidas fora da janela do atestado
+ * (ver `prepararRegsCalculoAtestadoParcial` / `filtrarRegistrosForaAtestadoParcial`).
+ */
+export function calcularSaldoAtestadoParcialPorExpediente(opts: {
+  horarioInicioAtestado: string;
+  horarioFimAtestado: string;
+  horaEntrada: string;
+  horaSaida: string;
+  /** Minuto do dia (0–1439) em que encerrou o trabalho; null = sem fechamento. */
+  fimTrabalhoMin: number | null;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+  toleranciaCalculoMin?: number | null;
+  /** Teto de hora extra após o marco (min). Padrão 120. */
+  horaExtraLimiteMin?: number | null;
+}): number {
+  const marcoMin = marcoExpedienteAtestadoParcial({
+    horarioInicioAtestado: opts.horarioInicioAtestado,
+    horarioFimAtestado: opts.horarioFimAtestado,
+    horaEntrada: opts.horaEntrada,
+    horaSaida: opts.horaSaida,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoMinMin: opts.almocoMinMin
+  });
+
+  if (opts.fimTrabalhoMin == null) {
+    /* Sem saída/fechamento: não gera HE; o dia vira falta/pendente pelo fluxo de horas. */
+    return 0;
+  }
+
+  let delta = opts.fimTrabalhoMin - marcoMin;
+  const limiteHe = Math.max(0, opts.horaExtraLimiteMin ?? 120);
+  if (delta > 0) delta = Math.min(delta, limiteHe);
+
+  return aplicarMargemCalculoDiario(delta, opts.toleranciaCalculoMin);
+}
+
+/** Último minuto de trabalho no dia (SAÍDA, ou INÍCIO de intervalo órfão tratado como fim). */
+export function fimTrabalhoMinutosDoDia(
+  registros: Array<{ tipo: string; minuto: number }>
+): number | null {
+  const saida = [...registros].reverse().find((r) => r.tipo === "SAIDA");
+  if (saida) return saida.minuto;
+  const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
+  if (!temFim) {
+    const ini = [...registros].reverse().find((r) => r.tipo === "INICIO_INTERVALO");
+    if (ini) return ini.minuto;
+  }
+  const fimAlm = [...registros].reverse().find((r) => r.tipo === "FIM_INTERVALO");
+  if (fimAlm) return fimAlm.minuto;
+  return null;
+}
+
+/**
+ * Jornada obrigatória restante com atestado parcial:
+ * carga horária configurada − minutos líquidos do período de atestado.
+ */
+export function calcularJornadaComAtestadoParcial(
+  horarioInicio: string,
+  horarioFim: string,
+  jornada: {
+    horaEntrada: string;
+    horaSaida: string;
+    jornadaDiariaMin: number;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
+): number {
+  const cobertos = minutosLiquidosCobertosAtestado(horarioInicio, horarioFim, {
+    horaEntrada: jornada.horaEntrada,
+    horaSaida: jornada.horaSaida,
+    almocoMinMin: jornada.almocoMinMin,
+    almocoPodeIniciarA: jornada.almocoPodeIniciarA
+  });
+  return Math.max(0, jornada.jornadaDiariaMin - cobertos);
+}
+
+/**
+ * Atestado cobre sobretudo a manhã: termina até o fim do almoço canônico
+ * (início da janela + duração mínima), não até o limite máximo da janela
+ * (que em alguns períodos vai até 15:00).
+ */
+export function atestadoParcialEhMatutino(
+  horarioInicio: string,
+  horarioFim: string,
+  almocoPodeIniciarAteOrOpts:
+    | string
+    | {
+        almocoPodeIniciarA?: string;
+        almocoMinMin?: number;
+        almocoPodeIniciarAte?: string;
+      } = "13:00"
+): boolean {
+  void horarioInicio;
+  if (typeof almocoPodeIniciarAteOrOpts === "string") {
+    // Compat: se só passa o fim da janela, usa meio-dia + 1h como teto do matutino
+    const ate = horaParaMin(almocoPodeIniciarAteOrOpts);
+    const tetoMatutino = Math.min(ate, 13 * 60);
+    return horaParaMin(horarioFim) <= tetoMatutino;
+  }
+  const inicioAlmoco = horaParaMin(almocoPodeIniciarAteOrOpts.almocoPodeIniciarA ?? "12:00");
+  const duracao = Math.max(0, almocoPodeIniciarAteOrOpts.almocoMinMin ?? 60);
+  const teto = inicioAlmoco + duracao;
+  return horaParaMin(horarioFim) <= teto;
+}
+
+/**
+ * Em atestado de um período apenas, se o funcionário não registrou almoço,
+ * não se aplica a dedução mínima de 1h.
+ * Atestado matutino: retorno à tarde segue regra do turno vespertino (sem intervalo).
+ */
+export function dispensarAlmocoPorAtestadoParcial(
+  afastamentoParcial: boolean,
+  registros: Array<{ tipo: string }>,
+  opts?: {
+    horarioInicio?: string | null;
+    horarioFim?: string | null;
+    almocoPodeIniciarA?: string;
+    almocoMinMin?: number;
+    almocoPodeIniciarAte?: string;
+  }
+): boolean {
+  if (!afastamentoParcial) return false;
+  if (
+    opts?.horarioInicio &&
+    opts?.horarioFim &&
+    atestadoParcialEhMatutino(opts.horarioInicio, opts.horarioFim, {
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoMinMin: opts.almocoMinMin,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+    })
+  ) {
+    // Retorno após atestado matutino = fluxo vespertino (intervalo não aplicável)
+    return true;
+  }
+  return !registros.some((r) => r.tipo === "INICIO_INTERVALO");
+}
+
+/**
+ * Com atestado parcial sem exigência de almoço, um INICIO_INTERVALO órfão
+ * (sem FIM) costuma ser saída registrada pelo tipo errado — trata como SAIDA.
+ */
+export function normalizarRegsAtestadoSemAlmoco<T extends { tipo: string }>(registros: T[]): T[] {
+  const temSaida = registros.some((r) => r.tipo === "SAIDA");
+  if (temSaida) {
+    return registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+  }
+  const temInicio = registros.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
+  if (temInicio && !temFim) {
+    return registros
+      .map((r) => (r.tipo === "INICIO_INTERVALO" ? { ...r, tipo: "SAIDA" } : r))
+      .filter((r) => r.tipo !== "FIM_INTERVALO");
+  }
+  return registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+}
+
+/**
+ * Atestado vespertino (ou que cobre a tarde): saída do expediente não se aplica.
+ * Atestado só matutino: funcionário volta à tarde — saída permanece obrigatória.
+ */
+export function atestadoParcialDispensaSaida(
+  horarioInicio: string,
+  horarioFim: string,
+  almocoPodeIniciarAte = "13:00"
+): boolean {
+  if (atestadoParcialEhMatutino(horarioInicio, horarioFim, almocoPodeIniciarAte)) {
+    return false;
+  }
+  return true;
+}
+
+/** Horário atual está dentro do período do afastamento parcial? */
+export function horarioNoPeriodoAfastamento(
+  horarioHHMM: string,
+  horarioInicio: string,
+  horarioFim: string
+): boolean {
+  const agora = horaParaMin(horarioHHMM);
+  return agora >= horaParaMin(horarioInicio) && agora <= horaParaMin(horarioFim);
 }
 
 /** Jornada diária esperada (min) para um dia civil YYYY-MM-DD. */

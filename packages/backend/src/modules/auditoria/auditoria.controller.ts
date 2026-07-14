@@ -15,10 +15,40 @@ import {
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
-import { AuditoriaService } from "./auditoria.service";
+import { AuditoriaService, GestorCienciaMeta } from "./auditoria.service";
 
 interface AuthRequest {
   user: { sub: string; name?: string; email?: string; roles: string[]; isSuperAdmin?: boolean };
+  headers: Record<string, string | string[] | undefined>;
+  connection?: { remoteAddress?: string };
+  socket?: { remoteAddress?: string };
+}
+
+function normalizeIp(ip: string | undefined | null): string | null {
+  if (!ip) return null;
+  return ip.trim().replace(/^::ffff:/i, "") || null;
+}
+
+/** Extrai IP real / gateway / UA — mesmo padrão da assinatura do quadro de ponto */
+function getCienciaMeta(req: AuthRequest): GestorCienciaMeta {
+  const xffRaw = req.headers["x-forwarded-for"];
+  const xffStr = Array.isArray(xffRaw) ? xffRaw[0] : xffRaw;
+  const xff =
+    xffStr
+      ?.split(",")
+      .map((p) => normalizeIp(p))
+      .filter((p): p is string => !!p) ?? [];
+  const peer = normalizeIp(req.socket?.remoteAddress ?? req.connection?.remoteAddress);
+  const ipReal = xff[0] ?? peer ?? "desconhecido";
+  const ipGateway = xff.length > 1 ? xff[xff.length - 1] : peer;
+  const uaRaw = req.headers["user-agent"];
+  const ua = Array.isArray(uaRaw) ? uaRaw[0] : uaRaw;
+  return {
+    ipReal,
+    ipGateway:
+      ipGateway && ipGateway !== ipReal ? ipGateway : peer && peer !== ipReal ? peer : ipGateway,
+    userAgent: ua?.slice(0, 256) ?? null
+  };
 }
 
 @Controller("auditoria")
@@ -71,20 +101,26 @@ export class AuditoriaController {
 
   @Get("funcionarios/:id/registros")
   getRegistrosFuncionario(
+    @Request() req: AuthRequest,
     @Param("id") id: string,
     @Query("mes") mes?: string,
     @Query("ano") ano?: string,
     @Query("tipo") tipo?: string
   ) {
-    return this.auditoriaService.getRegistrosFuncionario(id, {
-      mes: mes ? parseInt(mes) : undefined,
-      ano: ano ? parseInt(ano) : undefined,
-      tipo
-    });
+    return this.auditoriaService.getRegistrosFuncionario(
+      id,
+      {
+        mes: mes ? parseInt(mes) : undefined,
+        ano: ano ? parseInt(ano) : undefined,
+        tipo
+      },
+      !!req.user?.isSuperAdmin
+    );
   }
 
   @Get("funcionarios/:id/relatorio")
   getRelatorioMensal(
+    @Request() req: AuthRequest,
     @Param("id") id: string,
     @Query("mes") mes?: string,
     @Query("ano") ano?: string
@@ -93,7 +129,8 @@ export class AuditoriaController {
     return this.auditoriaService.getRelatorioMensal(
       id,
       mes ? parseInt(mes) : agora.getMonth() + 1,
-      ano ? parseInt(ano) : agora.getFullYear()
+      ano ? parseInt(ano) : agora.getFullYear(),
+      !!req.user?.isSuperAdmin
     );
   }
 
@@ -315,7 +352,8 @@ export class AuditoriaController {
       body.decisao,
       body.observacao,
       req.user.sub,
-      !!req.user.isSuperAdmin
+      !!req.user.isSuperAdmin,
+      getCienciaMeta(req)
     );
   }
 
@@ -392,6 +430,14 @@ export class AuditoriaController {
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   getSaldoFerias(@Param("id") id: string) {
     return this.auditoriaService.getSaldoFeriasFuncionario(id);
+  }
+
+  /* ─── Recálculo histórico (almoço mínimo) ─── */
+
+  @Post("recalcular-historico-almoco")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  recalcularHistoricoAlmoco() {
+    return this.auditoriaService.recalcularHistoricoAlmocoTodos();
   }
 
   /* ─── Correção de ponto pelo RH ─── */

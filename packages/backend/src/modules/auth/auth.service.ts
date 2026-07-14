@@ -82,8 +82,10 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { externalId: ctx.sub },
       select: {
+        id: true,
         email: true,
         emailReal: true,
+        superAdminConcessao: { select: { id: true, ativo: true } },
         funcionario: {
           select: {
             id: true,
@@ -106,8 +108,11 @@ export class AuthService {
 
     if (!user) return ctx;
 
-    /* Reavalia super admin com e-mail real do cadastro (caso o token traga só e-mail mascarado). */
-    if (isSuperAdminIdentity(SUPER_ADMINS, ctx.username, ctx.email, user.email, user.emailReal)) {
+    /* Reavalia super admin: env OU concessão ativa no banco. */
+    if (
+      isSuperAdminIdentity(SUPER_ADMINS, ctx.username, ctx.email, user.email, user.emailReal) ||
+      user.superAdminConcessao?.ativo === true
+    ) {
       return {
         ...ctx,
         isSuperAdmin: true,

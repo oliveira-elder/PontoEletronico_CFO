@@ -432,12 +432,18 @@ export function LogTimelineGestorHistorico({
             style={{
               margin: 0,
               fontSize: 11.5,
-              color: gestorRejeitou ? "#dc2626" : "#16a34a",
+              color: gestorRejeitou ? "#dc2626" : s.tipo === "ATESTADO" ? "#6B0F1A" : "#16a34a",
               lineHeight: 1.45
             }}
           >
-            {gestorRejeitou ? "❌" : "✅"} <strong>Gestor {gestorNome}</strong>{" "}
-            {gestorRejeitou ? "rejeitou" : "aprovou"} em {fmtDateTime(gestorData)}
+            {gestorRejeitou ? "❌" : s.tipo === "ATESTADO" ? "✍️" : "✅"}{" "}
+            <strong>Gestor {gestorNome}</strong>{" "}
+            {gestorRejeitou
+              ? "rejeitou"
+              : s.tipo === "ATESTADO"
+                ? "deu ciência (assinatura digital)"
+                : "aprovou"}{" "}
+            em {fmtDateTime(gestorData)}
             {gestorObs ? (
               <span
                 style={{
@@ -537,7 +543,9 @@ export function LogTimelineGestor({ s }: { s: SolicitacaoResumo }) {
         </p>
         {s.gestorResolvidoEm && (
           <p style={{ margin: 0, fontSize: 11.5, color: "#2563eb", lineHeight: 1.45 }}>
-            ✅ <strong>Gestor {gestorNome}</strong> aprovou em {fmtDateTime(s.gestorResolvidoEm)}
+            {s.tipo === "ATESTADO" ? "✍️" : "✅"} <strong>Gestor {gestorNome}</strong>{" "}
+            {s.tipo === "ATESTADO" ? "deu ciência (assinatura digital)" : "aprovou"} em{" "}
+            {fmtDateTime(s.gestorResolvidoEm)}
             {s.gestorObservacao ? (
               <span
                 style={{

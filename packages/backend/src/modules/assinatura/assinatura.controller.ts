@@ -10,7 +10,8 @@ import {
   UseGuards,
   ParseIntPipe,
   DefaultValuePipe,
-  ForbiddenException
+  ForbiddenException,
+  BadRequestException
 } from "@nestjs/common";
 import { Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
@@ -184,6 +185,17 @@ export class AssinaturaAuditoriaController {
       page: page ? parseInt(page) : 1,
       limit: limit ? parseInt(limit) : 50
     });
+  }
+
+  /* RH — verificar / buscar por código de assinatura digital */
+
+  @Get("assinaturas/verificar")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  verificarCodigoAssinatura(@Query("codigo") codigo?: string) {
+    if (!codigo?.trim()) {
+      throw new BadRequestException("Parâmetro codigo é obrigatório.");
+    }
+    return this.assinaturaService.buscarPorCodigoAssinatura(codigo);
   }
 
   /* RH — disparo manual de geração de assinaturas */

@@ -17,22 +17,18 @@ else
 fi
 
 COMPOSE_FILES=(-f docker-compose.yml)
-if [ "${PONTO_PUBLISH_HTTPS_PORTS:-auto}" != "false" ]; then
-  PORT_443_FREE=1
-  if ss -tln 2>/dev/null | grep -qE '(:|\])443\s'; then
-    PORT_443_FREE=0
-  fi
-  if [ "$PORT_443_FREE" -eq 1 ] || [ "${PONTO_PUBLISH_HTTPS_PORTS:-}" = "true" ]; then
-    COMPOSE_FILES+=(-f docker/compose.https-ports.yml)
-    echo "Porta 443 livre: publicando 80/443 + 12010 (https://ponto.cfo.local/)"
-  else
-    echo "AVISO: porta 443 já em uso neste servidor."
-    echo "  Subindo só na 12010 → https://ponto.cfo.local:12010/"
-    echo "  Para ver o que usa 443: ss -tlnp | grep ':443'"
-    echo "  Depois de liberar 443: PONTO_PUBLISH_HTTPS_PORTS=true ./scripts/docker-up.sh"
-  fi
+# 80/443 já estão em docker-compose.yml (nginx). O overlay https-ports
+# só se usa se algum ambiente antigo remover essas portas do arquivo base.
+if [ "${PONTO_USE_HTTPS_OVERLAY:-false}" = "true" ]; then
+  COMPOSE_FILES+=(-f docker/compose.https-ports.yml)
+  echo "Overlay HTTPS explícito: docker/compose.https-ports.yml"
 fi
 
+# Aviso se 443 já estiver ocupada no host (outro processo)
+if ss -tln 2>/dev/null | grep -qE '(:|\.)443\s'; then
+  echo "AVISO: porta 443 já em uso neste servidor — o bind do nginx pode falhar."
+  echo "  Verifique: ss -tlnp | grep ':443'"
+fi
 PROJECT_PREFIX="pontoeletronico_cfo"
 
 # Remove lixo acumulado (backups npm, caches) antes de subir

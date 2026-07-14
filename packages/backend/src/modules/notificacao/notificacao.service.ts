@@ -4,6 +4,25 @@ import * as nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
 import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh } from "../../common/gerencia-rh.util";
+import {
+  dataBrasiliaISO,
+  hojeBrasiliaISO,
+  intervaloDiaBrasilia
+} from "../../utils/horario-brasilia";
+import {
+  categoriaSemIntervaloAlmoco,
+  categoriaSemRegistroPonto,
+  diaSemObrigacaoPonto
+} from "../../utils/categoria-jornada";
+import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { cicloPontoIncompleto, faltantesCicloPonto } from "../../utils/calc-horas-trabalhadas";
+import { observacaoTurnoSemIntervalo } from "../../utils/turno-entrada";
+import {
+  isAfastamentoParcial,
+  atestadoParcialDispensaSaida,
+  dispensarAlmocoPorAtestadoParcial
+} from "../../utils/jornada-historico";
+import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 
 export interface DestinatarioNotificacao {
   externalId: string | null;
@@ -180,8 +199,79 @@ export const EVENTOS_NOTIFICACAO = [
       "ou um Gerente Substituto em exercício é desativado, para providenciar substituição imediata.",
     destinatario: "RH",
     gatilho: "Automático — ao desativar funcionário com papel crítico ativo"
+  },
+  {
+    id: "REGISTRO_PONTO_INCOMPLETO",
+    titulo: "Registro de Ponto Incompleto — Solicitar Correção",
+    descricao:
+      "Notifica o funcionário na virada do dia (00:01) quando faltou algum registro de ponto " +
+      "no dia anterior (entrada, intervalo de almoço ou saída). Solicita abertura de correção de ponto.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — diário às 00:01 (Brasília)"
+  },
+  {
+    id: "SUPER_ADMIN_CONCEDIDO",
+    titulo: "Super Administrador Concedido",
+    descricao:
+      "Notifica o gerente da GERTI, o responsável de RH e o usuário afetado quando " +
+      "um Super Administrador concede a permissão a outro usuário da GERTI.",
+    destinatario: "Gerente GERTI, Responsável RH e usuário",
+    gatilho: "Automático — ao conceder Super Admin"
+  },
+  {
+    id: "SUPER_ADMIN_REVOGADO",
+    titulo: "Super Administrador Revogado",
+    descricao:
+      "Notifica o gerente da GERTI, o responsável de RH e o usuário afetado quando " +
+      "uma concessão de Super Administrador é revogada.",
+    destinatario: "Gerente GERTI, Responsável RH e usuário",
+    gatilho: "Automático — ao revogar Super Admin"
+  },
+  {
+    id: "SISTEMA_START_SOLICITADO",
+    titulo: "Start do Sistema — Aguardando GERTI",
+    descricao:
+      "Notifica o responsável da GERTI quando um Super Administrador solicita o Start " +
+      "(go-live) do sistema para um mês de referência.",
+    destinatario: "Gerente GERTI",
+    gatilho: "Automático — ao solicitar Start"
+  },
+  {
+    id: "SISTEMA_START_AGUARDANDO_RH",
+    titulo: "Start do Sistema — Aguardando RH",
+    descricao:
+      "Notifica o responsável da gerência de RH quando a GERTI aprova a solicitação de Start.",
+    destinatario: "Responsável RH",
+    gatilho: "Automático — ao GERTI aprovar Start"
+  },
+  {
+    id: "SISTEMA_START_APROVADO",
+    titulo: "Start do Sistema Executado",
+    descricao:
+      "Notifica as partes envolvidas quando o Start é aprovado pelo RH e o go-live é executado " +
+      "(marco de banco de horas e início de produção).",
+    destinatario: "Solicitante, GERTI e RH",
+    gatilho: "Automático — ao RH aprovar e executar Start"
+  },
+  {
+    id: "SISTEMA_START_REJEITADO",
+    titulo: "Start do Sistema Rejeitado",
+    descricao: "Notifica as partes envolvidas quando a solicitação de Start é rejeitada.",
+    destinatario: "Solicitante, GERTI e RH",
+    gatilho: "Automático — ao rejeitar Start"
   }
 ];
+
+/** Eventos que devem nascer (e permanecer default) com e-mail + sistema ativos. */
+export const EVENTOS_NOTIFICACAO_CRITICOS = new Set([
+  "PAPEL_CRITICO_DESATIVADO",
+  "SUPER_ADMIN_CONCEDIDO",
+  "SUPER_ADMIN_REVOGADO",
+  "SISTEMA_START_SOLICITADO",
+  "SISTEMA_START_AGUARDANDO_RH",
+  "SISTEMA_START_APROVADO",
+  "SISTEMA_START_REJEITADO"
+]);
 
 @Injectable()
 export class NotificacaoService {
@@ -275,13 +365,15 @@ export class NotificacaoService {
       await this.prisma.configuracaoNotificacao.createMany({
         data: faltando.map((id) => ({
           id,
-          // Alerta crítico ao RH: habilitado por padrão
-          ativoEmail: id === "PAPEL_CRITICO_DESATIVADO",
-          ativoSistema: id === "PAPEL_CRITICO_DESATIVADO"
+          ativoEmail: EVENTOS_NOTIFICACAO_CRITICOS.has(id),
+          ativoSistema: EVENTOS_NOTIFICACAO_CRITICOS.has(id)
         })),
         skipDuplicates: true
       });
     }
+
+    /* Corrige eventos críticos criados antes com ambos os canais desligados. */
+    await this.garantirEventosCriticos();
 
     const todos = await this.prisma.configuracaoNotificacao.findMany({
       where: { id: { in: ids } }
@@ -472,6 +564,7 @@ export class NotificacaoService {
   async isEmailAtivoParaEvento(eventoId: string): Promise<boolean> {
     const cfg = await this.prisma.configuracaoEmail.findUnique({ where: { id: "singleton" } });
     if (!cfg?.ativo) return false;
+    await this.ensureEventoRow(eventoId);
     const evento = await this.prisma.configuracaoNotificacao.findUnique({
       where: { id: eventoId }
     });
@@ -480,10 +573,58 @@ export class NotificacaoService {
 
   /** Verifica se a notificação no sistema está ativa para um evento específico */
   async isSistemaAtivoParaEvento(eventoId: string): Promise<boolean> {
+    await this.ensureEventoRow(eventoId);
     const evento = await this.prisma.configuracaoNotificacao.findUnique({
       where: { id: eventoId }
     });
     return evento?.ativoSistema ?? false;
+  }
+
+  /**
+   * Garante linha do evento no banco. Eventos críticos mantêm e-mail + sistema ativos
+   * (reativa canal individualmente se estiver desligado por seed antigo).
+   */
+  async ensureEventoRow(eventoId: string): Promise<void> {
+    const existente = await this.prisma.configuracaoNotificacao.findUnique({
+      where: { id: eventoId }
+    });
+    if (!existente) {
+      const critico = EVENTOS_NOTIFICACAO_CRITICOS.has(eventoId);
+      await this.prisma.configuracaoNotificacao.create({
+        data: { id: eventoId, ativoEmail: critico, ativoSistema: critico }
+      });
+      return;
+    }
+    if (!EVENTOS_NOTIFICACAO_CRITICOS.has(eventoId)) return;
+
+    const data: { ativoEmail?: boolean; ativoSistema?: boolean } = {};
+    if (!existente.ativoEmail) data.ativoEmail = true;
+    if (!existente.ativoSistema) data.ativoSistema = true;
+    if (Object.keys(data).length > 0) {
+      await this.prisma.configuracaoNotificacao.update({
+        where: { id: eventoId },
+        data
+      });
+    }
+  }
+
+  /** E-mail entregável: preferir emailReal; ignorar máscaras SSO. */
+  private emailEntregavel(dest: DestinatarioNotificacao): string | null {
+    const candidatos = [dest.emailReal, dest.email]
+      .map((e) => (e ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    const fake = ["sso.local", "pending.local"];
+    for (const e of candidatos) {
+      const domain = e.includes("@") ? e.split("@")[1] : "";
+      if (domain && !fake.includes(domain)) return e;
+    }
+    return null;
+  }
+
+  async garantirEventosCriticos(): Promise<void> {
+    for (const id of EVENTOS_NOTIFICACAO_CRITICOS) {
+      await this.ensureEventoRow(id);
+    }
   }
 
   /** Dispara e-mail e/ou notificação no sistema para uma lista de destinatários */
@@ -493,11 +634,18 @@ export class NotificacaoService {
     corpo: string,
     destinatarios: DestinatarioNotificacao[]
   ): Promise<void> {
+    await this.ensureEventoRow(eventoId);
+
     const [emailAtivo, sistemaAtivo] = await Promise.all([
       this.isEmailAtivoParaEvento(eventoId),
       this.isSistemaAtivoParaEvento(eventoId)
     ]);
-    if (!emailAtivo && !sistemaAtivo) return;
+    if (!emailAtivo && !sistemaAtivo) {
+      this.logger.warn(
+        `Evento ${eventoId}: canais inativos (email=${emailAtivo}, sistema=${sistemaAtivo}).`
+      );
+      return;
+    }
 
     const unicos = new Map<string, DestinatarioNotificacao>();
     for (const dest of destinatarios) {
@@ -506,18 +654,46 @@ export class NotificacaoService {
       unicos.set(chave, dest);
     }
 
+    if (unicos.size === 0) {
+      this.logger.warn(`Evento ${eventoId}: nenhum destinatário válido (lista vazia).`);
+      return;
+    }
+
+    this.logger.log(
+      `Evento ${eventoId}: enviando para ${unicos.size} destinatário(s) (email=${emailAtivo}, sistema=${sistemaAtivo}).`
+    );
+
+    let emailsEnviados = 0;
     for (const dest of unicos.values()) {
-      const email = dest.emailReal ?? dest.email;
-      if (emailAtivo && email) {
-        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
-          this.logger.error(`Falha ${eventoId} email para ${email}: ${e}`)
-        );
+      const email = this.emailEntregavel(dest);
+      if (emailAtivo) {
+        if (email) {
+          await this.enviarEmailSistema(email, titulo, corpo)
+            .then(() => {
+              emailsEnviados++;
+            })
+            .catch((e) => this.logger.error(`Falha ${eventoId} email para ${email}: ${e}`));
+        } else {
+          this.logger.warn(
+            `Evento ${eventoId}: sem e-mail entregável (externalId=${dest.externalId ?? "n/a"}, email=${dest.email ?? "n/a"}, emailReal=${dest.emailReal ?? "n/a"}).`
+          );
+        }
       }
       if (sistemaAtivo && dest.externalId) {
         await this.criarNotificacaoParaUsuario(dest.externalId, titulo, corpo, eventoId).catch(
           (e) => this.logger.error(`Falha ${eventoId} sistema para ${dest.externalId}: ${e}`)
         );
+      } else if (sistemaAtivo && !dest.externalId) {
+        this.logger.warn(
+          `Evento ${eventoId}: destinatário sem externalId (e-mail=${email ?? "n/a"}) — skip sistema.`
+        );
       }
+    }
+
+    if (emailAtivo && emailsEnviados === 0) {
+      this.logger.warn(
+        `Evento ${eventoId}: canal e-mail ativo, mas nenhum e-mail foi enviado (SMTP/destinatários).`
+      );
     }
   }
 
@@ -712,7 +888,14 @@ export class NotificacaoService {
   /** Envia e-mail de sistema para um endereço, se configurado */
   async enviarEmailSistema(to: string, subject: string, body: string): Promise<void> {
     const cfg = await this.prisma.configuracaoEmail.findUnique({ where: { id: "singleton" } });
-    if (!cfg?.ativo || !cfg.senha) return;
+    if (!cfg?.ativo) {
+      this.logger.warn(`enviarEmailSistema: SMTP inativo — não enviou para ${to}.`);
+      return;
+    }
+    if (!cfg.senha) {
+      this.logger.warn(`enviarEmailSistema: senha SMTP ausente — não enviou para ${to}.`);
+      return;
+    }
 
     try {
       const transporter = this.buildTransporter(cfg as EmailConfigDto);
@@ -722,8 +905,10 @@ export class NotificacaoService {
         subject,
         html: body.replace(/\n/g, "<br>")
       });
+      this.logger.log(`E-mail enviado para ${to}: ${subject}`);
     } catch (err) {
       this.logger.error(`Falha ao enviar e-mail de sistema para ${to}: ${String(err)}`);
+      throw err;
     }
   }
 
@@ -917,5 +1102,171 @@ export class NotificacaoService {
       }
       notificados.add(funcId);
     }
+  }
+
+  /**
+   * Virada do dia (00:01 Brasília): notifica funcionários com registros
+   * incompletos ou ausentes no dia útil anterior, pedindo correção de ponto.
+   */
+  @Cron("1 0 * * *", { timeZone: "America/Sao_Paulo" })
+  async cronRegistroPontoIncompleto() {
+    const eventoId = "REGISTRO_PONTO_INCOMPLETO";
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.isEmailAtivoParaEvento(eventoId),
+      this.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const hojeIso = hojeBrasiliaISO();
+    const [y, m, d] = hojeIso.split("-").map(Number);
+    const ontem = new Date(y, m - 1, d);
+    ontem.setDate(ontem.getDate() - 1);
+    const ontemIso = `${ontem.getFullYear()}-${String(ontem.getMonth() + 1).padStart(2, "0")}-${String(ontem.getDate()).padStart(2, "0")}`;
+    const dow = ontem.getDay();
+
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { diasUteis: true }
+    });
+    const diasUteis: boolean[] = JSON.parse(
+      cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
+    );
+    if (!diasUteis[dow]) {
+      this.logger.log(`Cron REGISTRO_PONTO_INCOMPLETO: ${ontemIso} não é dia útil — ignorado.`);
+      return;
+    }
+
+    const feriado = await this.prisma.feriadoConfig.findFirst({
+      where: { data: new Date(`${ontemIso}T00:00:00.000Z`) },
+      select: { id: true, marcoHorario: true }
+    });
+    /* Feriado integral (sem marco): não exige ponto. */
+    if (feriado && !feriado.marcoHorario) {
+      this.logger.log(`Cron REGISTRO_PONTO_INCOMPLETO: ${ontemIso} é feriado — ignorado.`);
+      return;
+    }
+
+    const { inicio, fim } = intervaloDiaBrasilia(ontemIso);
+
+    const funcionarios = await this.prisma.funcionario.findMany({
+      where: { ativo: true },
+      select: {
+        id: true,
+        categoria: true,
+        pontoObrigatorioDesde: true,
+        user: { select: { externalId: true, email: true, emailReal: true, name: true } }
+      }
+    });
+
+    const LABEL_FALTANTE: Record<string, string> = {
+      ENTRADA: "entrada",
+      INICIO_INTERVALO: "início do intervalo de almoço",
+      FIM_INTERVALO: "fim do intervalo de almoço",
+      SAIDA: "saída"
+    };
+
+    const dataFmt = ontem.toLocaleDateString("pt-BR");
+    let enviados = 0;
+
+    for (const func of funcionarios) {
+      if (categoriaSemRegistroPonto(func.categoria)) continue;
+
+      const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
+      const pontoObrigatorioDesde = func.pontoObrigatorioDesde
+        ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+        : null;
+      if (
+        diaSemObrigacaoPonto(ontemIso, {
+          historico: historicoCat,
+          categoriaAtual: func.categoria,
+          pontoObrigatorioDesde
+        })
+      ) {
+        continue;
+      }
+
+      const afastamentosRaw = await this.prisma.afastamento.findMany({
+        where: {
+          funcionarioId: func.id,
+          apenasInformativo: false,
+          dataInicio: { lte: fim },
+          dataFim: { gte: inicio }
+        },
+        select: {
+          id: true,
+          tipo: true,
+          dataInicio: true,
+          dataFim: true,
+          horarioInicio: true,
+          horarioFim: true
+        }
+      });
+      const sols = await this.prisma.solicitacao.findMany({
+        where: {
+          funcionarioId: func.id,
+          tipo: "ATESTADO",
+          status: "APROVADA",
+          OR: [
+            { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+            { dataReferencia: { gte: inicio, lte: fim } }
+          ]
+        },
+        select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
+      });
+      const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, sols);
+      const afastamentoDia = afastamentos.find((a) => {
+        const aIni = dataBrasiliaISO(a.dataInicio);
+        const aFim = dataBrasiliaISO(a.dataFim);
+        return ontemIso >= aIni && ontemIso <= aFim;
+      });
+      /* Afastamento dia inteiro: não exige ponto. */
+      if (afastamentoDia && !isAfastamentoParcial(afastamentoDia)) continue;
+
+      const registros = await this.prisma.registroPonto.findMany({
+        where: {
+          funcionarioId: func.id,
+          apenasInformativo: false,
+          dataHora: { gte: inicio, lte: fim }
+        },
+        orderBy: { dataHora: "asc" },
+        select: { tipo: true, observacoes: true }
+      });
+
+      const entrada = registros.find((r) => r.tipo === "ENTRADA");
+      const parcial = afastamentoDia && isAfastamentoParcial(afastamentoDia);
+      const exigirIntervalo =
+        !categoriaSemIntervaloAlmoco(func.categoria) &&
+        !observacaoTurnoSemIntervalo(entrada?.observacoes) &&
+        !dispensarAlmocoPorAtestadoParcial(!!parcial, registros, {
+          horarioInicio: afastamentoDia?.horarioInicio,
+          horarioFim: afastamentoDia?.horarioFim,
+          almocoPodeIniciarAte: "13:00"
+        });
+      const exigirSaida =
+        !parcial ||
+        !atestadoParcialDispensaSaida(afastamentoDia!.horarioInicio!, afastamentoDia!.horarioFim!);
+
+      if (!cicloPontoIncompleto(registros, { exigirIntervalo, exigirSaida })) continue;
+
+      const faltantes = faltantesCicloPonto(registros, { exigirIntervalo, exigirSaida });
+      const listaFaltantes = faltantes.map((f) => LABEL_FALTANTE[f] ?? f).join(", ");
+      const titulo = `Ponto incompleto em ${dataFmt} — solicite correção`;
+      const corpo =
+        `Identificamos registros de ponto incompletos ou ausentes em ${dataFmt} ` +
+        `(faltando: ${listaFaltantes || "ciclo completo"}). ` +
+        `Por favor, abra uma solicitação de correção de ponto no sistema para regularizar o dia.`;
+
+      const dest = {
+        externalId: func.user.externalId,
+        email: func.user.email,
+        emailReal: func.user.emailReal
+      };
+      await this.dispararEvento(eventoId, titulo, corpo, [dest]);
+      enviados++;
+    }
+
+    this.logger.log(
+      `Cron REGISTRO_PONTO_INCOMPLETO (${ontemIso}): ${enviados} notificações disparadas.`
+    );
   }
 }

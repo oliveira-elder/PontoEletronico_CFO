@@ -1,5 +1,8 @@
 # Publica 80 e 443 no host (https://ponto.cfo.local/ sem porta na URL).
-# Use junto com docker-compose.yml quando 443 estiver livre:
+# NOTA: desde jul/2026 essas portas também estão em docker-compose.yml.
+# Este overlay só é necessário se o arquivo base NÃO publicar 80/443
+# (PONTO_USE_HTTPS_OVERLAY=true ./scripts/docker-up.sh).
+#
 #   docker compose -f docker-compose.yml -f docker/compose.https-ports.yml up -d
 
 services:

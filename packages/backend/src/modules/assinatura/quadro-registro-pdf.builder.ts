@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { createHash } from "crypto";
 import type { RelatorioQuadroMensal } from "../../utils/historico-quadro";
+import { computeQuadroSignatoryHash, groupCodigoAssinatura } from "../../utils/assinatura-codigo";
 
 const MESES_PT = [
   "Janeiro",
@@ -155,27 +155,8 @@ function shortUserAgent(ua: string | null | undefined): string {
   return os ? `${browser} • ${os}` : browser;
 }
 
-/**
- * Hash SHA-256 individual por signatário.
- * Cobre: matrícula, período, horário e IP do ato de assinar.
- */
-function computeSignatoryHash(
-  matricula: string,
-  periodo: string,
-  assinadoEm: Date | null,
-  ip: string | null
-): string {
-  const canonical = [matricula, periodo, assinadoEm?.toISOString() ?? "", ip ?? ""].join("|");
-  return createHash("sha256").update(canonical).digest("hex").toUpperCase();
-}
-
-/** Agrupa o hash em blocos de 4 caracteres para leitura/conferência */
-function groupCode(hex: string, chars = 32): string {
-  return hex
-    .slice(0, chars)
-    .replace(/(.{4})/g, "$1 ")
-    .trim();
-}
+const computeSignatoryHash = computeQuadroSignatoryHash;
+const groupCode = groupCodigoAssinatura;
 
 /* ─── Blocos do documento ─── */
 

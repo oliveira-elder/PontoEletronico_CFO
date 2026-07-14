@@ -43,20 +43,20 @@ export class PontoController {
 
   @Get("historico")
   getHistorico(
-    @Req() req: { user: { sub: string } },
+    @Req() req: { user: { sub: string; isSuperAdmin?: boolean } },
     @Query("mes", new DefaultValuePipe(new Date().getMonth() + 1), ParseIntPipe) mes: number,
     @Query("ano", new DefaultValuePipe(new Date().getFullYear()), ParseIntPipe) ano: number
   ) {
-    return this.pontoService.getHistorico(req.user.sub, mes, ano);
+    return this.pontoService.getHistorico(req.user.sub, mes, ano, !!req.user.isSuperAdmin);
   }
 
   @Get("relatorio")
   getRelatorio(
-    @Req() req: { user: { sub: string } },
+    @Req() req: { user: { sub: string; isSuperAdmin?: boolean } },
     @Query("mes", new DefaultValuePipe(new Date().getMonth() + 1), ParseIntPipe) mes: number,
     @Query("ano", new DefaultValuePipe(new Date().getFullYear()), ParseIntPipe) ano: number
   ) {
-    return this.pontoService.getRelatorio(req.user.sub, mes, ano);
+    return this.pontoService.getRelatorio(req.user.sub, mes, ano, !!req.user.isSuperAdmin);
   }
 
   @Get("banco-horas")

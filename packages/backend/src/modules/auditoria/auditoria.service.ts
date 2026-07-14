@@ -18,20 +18,39 @@ import {
   intervaloDiaBrasilia
 } from "../../utils/horario-brasilia";
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
+import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
 import {
   jornadaEsperadaMin as jornadaMinParaDia,
   resolverJornadaHistoricoContexto,
   calcularJornadaParcialFeriado,
+  calcularJornadaComAtestadoParcial,
+  calcularSaldoAtestadoParcialPorExpediente,
+  prepararRegsCalculoAtestadoParcial,
+  isAfastamentoParcial,
+  dispensarAlmocoPorAtestadoParcial,
+  normalizarRegsAtestadoSemAlmoco,
   aplicarMargemCalculoDiario
 } from "../../utils/jornada-historico";
+import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
 import {
   categoriaSemRegistroPonto,
+  categoriaSemIntervaloAlmoco,
   periodosSemObrigacaoPonto,
   MSG_SOLICITACAO_APENAS_INFORMATIVA
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
+import { observacaoTurnoSemIntervalo } from "../../utils/turno-entrada";
+import { codigoCienciaGestorExibido } from "../../utils/assinatura-codigo";
+
+/** Metadados de autenticidade da ciência/assinatura do gestor no atestado */
+export interface GestorCienciaMeta {
+  ipReal: string;
+  ipGateway: string | null;
+  userAgent: string | null;
+}
 
 export interface PeriodoPontoRaw {
   id: string;
@@ -286,36 +305,32 @@ export class AuditoriaService {
     const totalWeb = origensHistorico.find((o) => o.origem === "WEB")?.total ?? 0;
     const totalTotem = origensHistorico.find((o) => o.origem === "TOTEM")?.total ?? 0;
 
+    /* Série: atestados por mês (últimos 12 meses até dataFim) */
+    const atestadosPorMes = await this.calcularAtestadosPorMes(fim);
+
     /* Rankings: isolados — falha não derruba o dashboard */
+    type RankingMinutos = {
+      funcionarioId: string;
+      nome: string;
+      matricula: string;
+      minutos: number;
+      minutosFormatado: string;
+    };
+    type RankingQuantidade = {
+      funcionarioId: string;
+      nome: string;
+      matricula: string;
+      quantidade: number;
+    };
     let rankings = {
-      topAtrasados: [] as {
-        funcionarioId: string;
-        nome: string;
-        matricula: string;
-        minutos: number;
-        minutosFormatado: string;
-      }[],
-      topAdiantados: [] as {
-        funcionarioId: string;
-        nome: string;
-        matricula: string;
-        minutos: number;
-        minutosFormatado: string;
-      }[],
-      topBancoNegativo: [] as {
-        funcionarioId: string;
-        nome: string;
-        matricula: string;
-        minutos: number;
-        minutosFormatado: string;
-      }[],
-      topBancoPositivo: [] as {
-        funcionarioId: string;
-        nome: string;
-        matricula: string;
-        minutos: number;
-        minutosFormatado: string;
-      }[]
+      topAtrasados: [] as RankingMinutos[],
+      topAdiantados: [] as RankingMinutos[],
+      topBancoNegativo: [] as RankingMinutos[],
+      topBancoPositivo: [] as RankingMinutos[],
+      topMaisAtestados: [] as RankingQuantidade[],
+      topMenosAtestados: [] as RankingQuantidade[],
+      topMaisAbonos: [] as RankingQuantidade[],
+      topMenosAbonos: [] as RankingQuantidade[]
     };
     try {
       rankings = await this.calcularRankingsDashboard(inicio, fim, registrosPeriodo);
@@ -345,6 +360,11 @@ export class AuditoriaService {
       topAdiantados: rankings.topAdiantados,
       topBancoNegativo: rankings.topBancoNegativo,
       topBancoPositivo: rankings.topBancoPositivo,
+      topMaisAtestados: rankings.topMaisAtestados,
+      topMenosAtestados: rankings.topMenosAtestados,
+      topMaisAbonos: rankings.topMaisAbonos,
+      topMenosAbonos: rankings.topMenosAbonos,
+      atestadosPorMes,
       filtro: { dataInicio: inicio, dataFim: fim },
       ultimosLogs,
       origens: toOrigem(origens),
@@ -404,6 +424,43 @@ export class AuditoriaService {
     return { data: dia, porMinuto, porHora, totalRegistros: registros.length };
   }
 
+  /** Últimos 12 meses de solicitações ATESTADO (por createdAt, fuso Brasília). */
+  private async calcularAtestadosPorMes(dataFim: string) {
+    const [yFim, mFim] = dataFim.split("-").map(Number);
+    const meses: { mes: string; label: string; total: number }[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(yFim, mFim - 1 - i, 1);
+      const y = d.getFullYear();
+      const m = d.getMonth() + 1;
+      const mes = `${y}-${String(m).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });
+      meses.push({ mes, label: label.replace(".", ""), total: 0 });
+    }
+
+    const primeiro = meses[0].mes;
+    const inicioSerie = intervaloDiaBrasilia(`${primeiro}-01`).inicio;
+    const fimSerie = intervaloDiaBrasilia(dataFim).fim;
+
+    const solicitacoes = await this.prisma.solicitacao.findMany({
+      where: {
+        tipo: "ATESTADO",
+        status: { not: "CANCELADA" },
+        createdAt: { gte: inicioSerie, lte: fimSerie }
+      },
+      select: { createdAt: true }
+    });
+
+    const contagem = new Map<string, number>();
+    for (const s of solicitacoes) {
+      const key = dataBrasiliaISO(s.createdAt).slice(0, 7);
+      contagem.set(key, (contagem.get(key) ?? 0) + 1);
+    }
+    for (const item of meses) {
+      item.total = contagem.get(item.mes) ?? 0;
+    }
+    return meses;
+  }
+
   /** Top 10 atraso/adiantamento e banco negativo/positivo.
    *  Banco: mesmas regras de /ponto/banco-horas e /ponto/historico (calcularBancoHoras).
    *  Pontualidade: 1ª ENTRADA em dias úteis do período, com tolerância e início de atividades. */
@@ -456,12 +513,19 @@ export class AuditoriaService {
 
     const afastamentos = await this.prisma.afastamento.findMany({
       where: { dataInicio: { lte: fimFer }, dataFim: { gte: iniFer } },
-      select: { funcionarioId: true, dataInicio: true, dataFim: true }
+      select: {
+        funcionarioId: true,
+        dataInicio: true,
+        dataFim: true,
+        horarioInicio: true,
+        horarioFim: true
+      }
     });
 
     const emAfastamento = (funcionarioId: string, dia: string) =>
       afastamentos.some((a) => {
         if (a.funcionarioId !== funcionarioId) return false;
+        if (isAfastamentoParcial(a)) return false; // parcial não zera o dia
         const aInicio = dataBrasiliaISO(a.dataInicio);
         const aFim = dataBrasiliaISO(a.dataFim);
         return dia >= aInicio && dia <= aFim;
@@ -582,7 +646,54 @@ export class AuditoriaService {
       .sort((a, b) => b.minutos - a.minutos)
       .slice(0, 10);
 
-    return { topAtrasados, topAdiantados, topBancoNegativo, topBancoPositivo };
+    /* Atestados / Abonos: contagem de solicitações submetidas no período */
+    const solicitacoesPeriodo = await this.prisma.solicitacao.findMany({
+      where: {
+        tipo: { in: ["ATESTADO", "ABONO"] },
+        status: { not: "CANCELADA" },
+        createdAt: { gte: iniFer, lte: fimFer },
+        funcionarioId: { in: funcionarios.map((f) => f.id) }
+      },
+      select: { funcionarioId: true, tipo: true }
+    });
+
+    const contarPorTipo = (tipo: "ATESTADO" | "ABONO") => {
+      const contagem = new Map<string, number>();
+      for (const s of solicitacoesPeriodo) {
+        if (s.tipo !== tipo) continue;
+        contagem.set(s.funcionarioId, (contagem.get(s.funcionarioId) ?? 0) + 1);
+      }
+      const rows = Array.from(contagem.entries())
+        .map(([funcionarioId, quantidade]) => {
+          const f = funcMap.get(funcionarioId);
+          if (!f || quantidade <= 0) return null;
+          return {
+            funcionarioId,
+            nome: f.user.name,
+            matricula: f.matricula ?? "",
+            quantidade
+          };
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+
+      const topMais = [...rows].sort((a, b) => b.quantidade - a.quantidade).slice(0, 10);
+      const topMenos = [...rows].sort((a, b) => a.quantidade - b.quantidade).slice(0, 10);
+      return { topMais, topMenos };
+    };
+
+    const atestados = contarPorTipo("ATESTADO");
+    const abonos = contarPorTipo("ABONO");
+
+    return {
+      topAtrasados,
+      topAdiantados,
+      topBancoNegativo,
+      topBancoPositivo,
+      topMaisAtestados: atestados.topMais,
+      topMenosAtestados: atestados.topMenos,
+      topMaisAbonos: abonos.topMais,
+      topMenosAbonos: abonos.topMenos
+    };
   }
 
   /* ─── Funcionários ─── */
@@ -885,10 +996,19 @@ export class AuditoriaService {
 
   async getRegistrosFuncionario(
     funcionarioId: string,
-    filtros: { mes?: number; ano?: number; tipo?: string }
+    filtros: { mes?: number; ano?: number; tipo?: string },
+    isSuperAdmin = false
   ) {
     const mes = filtros.mes ?? new Date().getMonth() + 1;
     const ano = filtros.ano ?? new Date().getFullYear();
+    const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
+    const dataInicioProducao = await getDataInicioProducao(this.prisma);
+    assertMesAposGoLive({
+      mesAnoPrefixo: mesPrefix,
+      dataInicioProducao,
+      isSuperAdmin,
+      contexto: "Auditoria"
+    });
     const inicio = new Date(ano, mes - 1, 1, 0, 0, 0);
     const fim = new Date(ano, mes, 0, 23, 59, 59);
 
@@ -912,12 +1032,31 @@ export class AuditoriaService {
           jornadaHorasDia: true,
           jornadaPeriodoDesde: true,
           jornadaPeriodoAssociadoEm: true,
-          jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
+          jornadaPeriodo: {
+            select: {
+              jornadaDiariaMin: true,
+              horaEntrada: true,
+              horaSaida: true,
+              almocoMinMin: true,
+              almocoPodeIniciarA: true,
+              almocoPodeIniciarAte: true,
+              toleranciaCalculoMin: true,
+              horaExtraLimiteAuto: true
+            }
+          }
         }
       }),
       this.prisma.configuracaoSistema.findUnique({
         where: { id: "singleton" },
-        select: { horaEntrada: true, horaSaida: true }
+        select: {
+          horaEntrada: true,
+          horaSaida: true,
+          almocoMinMin: true,
+          almocoPodeIniciarA: true,
+          almocoPodeIniciarAte: true,
+          toleranciaCalculoMin: true,
+          horaExtraLimiteAuto: true
+        }
       })
     ]);
 
@@ -932,13 +1071,19 @@ export class AuditoriaService {
 
     return {
       registros,
+      categoria: func?.categoria ?? null,
       periodosSemObrigacao,
       semRegistroPonto: categoriaSemRegistroPonto(func?.categoria),
       pontoObrigatorioDesde,
       jornada: resolverJornadaHistoricoContexto({
         ...func,
         configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
-        configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
+        configuracaoHoraSaida: cfgJornada?.horaSaida ?? null,
+        configuracaoAlmocoMinMin: cfgJornada?.almocoMinMin ?? null,
+        configuracaoAlmocoPodeIniciarA: cfgJornada?.almocoPodeIniciarA ?? null,
+        configuracaoAlmocoPodeIniciarAte: cfgJornada?.almocoPodeIniciarAte ?? null,
+        configuracaoToleranciaCalculoMin: cfgJornada?.toleranciaCalculoMin ?? null,
+        configuracaoHoraExtraLimiteAuto: cfgJornada?.horaExtraLimiteAuto ?? null
       })
     };
   }
@@ -1189,7 +1334,8 @@ export class AuditoriaService {
     decisao: "APROVAR" | "REJEITAR",
     observacao: string,
     keycloakSub: string,
-    isSuperAdmin = false
+    isSuperAdmin = false,
+    cienciaMeta?: GestorCienciaMeta
   ) {
     const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
     if (solicitacao.status !== "PENDENTE") {
@@ -1233,6 +1379,60 @@ export class AuditoriaService {
       return aprovada;
     }
 
+    /* Atestado médico: ciência do gestor com assinatura digital no documento → RH */
+    let metadadosUpdate: Record<string, unknown> | undefined;
+    if (decisao === "APROVAR" && solicitacao.tipo === "ATESTADO") {
+      const meta =
+        solicitacao.metadados && typeof solicitacao.metadados === "object"
+          ? ({ ...(solicitacao.metadados as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+      const documentoUrl = typeof meta.documentoUrl === "string" ? meta.documentoUrl : null;
+      if (!documentoUrl) {
+        throw new BadRequestException(
+          "O atestado médico precisa ter o documento anexado para o gestor dar ciência."
+        );
+      }
+      if (!cienciaMeta?.ipReal) {
+        throw new BadRequestException(
+          "Metadados de assinatura digital são obrigatórios para ciência do atestado."
+        );
+      }
+
+      const gestorNome = user?.name ?? "Gestor";
+      const documentoAssinadoUrl = await this.documentoService.assinarAtestadoCienciaGestor({
+        documentoUrl,
+        funcionarioId: solicitacao.funcionarioId,
+        solicitacaoId: solicitacao.id,
+        assinatura: {
+          gestorNome,
+          assinadoEm: agora,
+          ipReal: cienciaMeta.ipReal,
+          ipGateway: cienciaMeta.ipGateway,
+          userAgent: cienciaMeta.userAgent
+        }
+      });
+
+      metadadosUpdate = {
+        ...meta,
+        documentoOriginalUrl: meta.documentoOriginalUrl ?? documentoUrl,
+        documentoUrl: documentoAssinadoUrl,
+        cienciaGestor: {
+          em: agora.toISOString(),
+          gestorUserId: user?.id ?? null,
+          gestorNome,
+          ipReal: cienciaMeta.ipReal,
+          ipGateway: cienciaMeta.ipGateway ?? null,
+          userAgent: cienciaMeta.userAgent ?? null,
+          codigoHash: codigoCienciaGestorExibido(
+            gestorNome,
+            agora,
+            cienciaMeta.ipReal,
+            cienciaMeta.userAgent
+          )
+        }
+      };
+    }
+
     /* Demais tipos: fluxo bifásico normal (gestor → RH) */
     const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
     const resolvida = await this.prisma.solicitacao.update({
@@ -1241,7 +1441,8 @@ export class AuditoriaService {
         status: novoStatus,
         gestorUserId: user?.id,
         gestorObservacao: observacao,
-        gestorResolvidoEm: agora
+        gestorResolvidoEm: agora,
+        ...(metadadosUpdate ? { metadados: metadadosUpdate as Prisma.InputJsonValue } : {})
       },
       include: {
         funcionario: { include: { user: { select: { name: true } } } }
@@ -1890,12 +2091,22 @@ export class AuditoriaService {
         });
       }
     } else if (tipo === "ATESTADO") {
+      const horarioInicio =
+        typeof meta.horarioInicio === "string" && meta.horarioInicio.trim()
+          ? meta.horarioInicio.trim()
+          : null;
+      const horarioFim =
+        typeof meta.horarioFim === "string" && meta.horarioFim.trim()
+          ? meta.horarioFim.trim()
+          : null;
       await this.prisma.afastamento.create({
         data: {
           funcionarioId: funcId,
           tipo: "ATESTADO",
           dataInicio: ref,
           dataFim: fim,
+          horarioInicio,
+          horarioFim,
           justificativa: solicitacao.descricao || obsInformativo,
           documentoUrl: typeof meta.documentoUrl === "string" ? meta.documentoUrl : null,
           aprovadoPor: rhKeycloakSub,
@@ -1969,7 +2180,7 @@ export class AuditoriaService {
       };
     }
 
-    const [total, afastamentos] = await Promise.all([
+    const [total, afastamentosRaw] = await Promise.all([
       this.prisma.afastamento.count({ where }),
       this.prisma.afastamento.findMany({
         where,
@@ -1990,6 +2201,36 @@ export class AuditoriaService {
         }
       })
     ]);
+
+    let afastamentos = afastamentosRaw;
+    if (filtros.funcionarioId) {
+      const sols = await this.prisma.solicitacao.findMany({
+        where: {
+          funcionarioId: filtros.funcionarioId,
+          tipo: "ATESTADO",
+          status: "APROVADA"
+        },
+        select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
+      });
+      afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, sols);
+      for (let i = 0; i < afastamentos.length; i++) {
+        const a = afastamentos[i];
+        const raw = afastamentosRaw[i];
+        if (
+          a.tipo === "ATESTADO" &&
+          a.horarioInicio &&
+          a.horarioFim &&
+          (!raw.horarioInicio || !raw.horarioFim)
+        ) {
+          await this.prisma.afastamento
+            .update({
+              where: { id: a.id },
+              data: { horarioInicio: a.horarioInicio, horarioFim: a.horarioFim }
+            })
+            .catch(() => {});
+        }
+      }
+    }
 
     return { total, page, limit, afastamentos };
   }
@@ -2099,33 +2340,36 @@ export class AuditoriaService {
     return { cicloInicio, proximaZeragem, hojeIso };
   }
 
-  /** Soma minutos trabalhados — mesma regra do Histórico (HH:MM Brasília).
+  /** Soma minutos trabalhados — mesma regra do Histórico (HH:MM Brasília + almoço mínimo).
    *  Trecho em aberto só conta se `capMs` for informado (dia corrente). */
-  private calcHorasMinutos(registros: { tipo: string; dataHora: Date }[], capMs?: number): number {
-    let total = 0;
-    let entradaMin: number | null = null;
-    for (const r of registros) {
-      const ts = horarioParaMinutos(horarioDeDataBrasilia(r.dataHora));
-      if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-        entradaMin = ts;
-      } else if (
-        (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-        entradaMin !== null
-      ) {
-        total += ts - entradaMin;
-        entradaMin = null;
-      } else if (r.tipo === "FIM_INTERVALO") {
-        entradaMin = ts;
-      } else if (r.tipo === "SAIDA" && entradaMin !== null) {
-        total += ts - entradaMin;
-        entradaMin = null;
+  private calcHorasMinutos(
+    registros: { tipo: string; dataHora: Date; observacoes?: unknown }[],
+    capMs?: number,
+    opts?: {
+      exigirIntervalo?: boolean;
+      almocoMinMin?: number;
+      almocoPodeIniciarA?: string;
+      almocoPodeIniciarAte?: string;
+    }
+  ): number {
+    const entrada = registros.find((r) => r.tipo === "ENTRADA");
+    return calcHorasTrabalhadasMinutos(
+      registros.map((r) => ({
+        tipo: r.tipo,
+        minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora))
+      })),
+      {
+        agoraMin:
+          capMs !== undefined
+            ? horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)))
+            : undefined,
+        exigirIntervalo:
+          opts?.exigirIntervalo ?? !observacaoTurnoSemIntervalo(entrada?.observacoes),
+        almocoMinMin: opts?.almocoMinMin ?? 60,
+        almocoPodeIniciarA: opts?.almocoPodeIniciarA ?? "11:30",
+        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00"
       }
-    }
-    if (entradaMin !== null && capMs !== undefined) {
-      const capMin = horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)));
-      total += capMin - entradaMin;
-    }
-    return total;
+    );
   }
 
   /** Saldo do banco de horas no ciclo atual, iterando todos os dias úteis
@@ -2138,26 +2382,48 @@ export class AuditoriaService {
     const funcJornada = await this.prisma.funcionario.findUnique({
       where: { id: funcionarioId },
       select: {
+        categoria: true,
         jornadaPeriodoId: true,
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
+        jornadaPeriodo: {
+          select: {
+            jornadaDiariaMin: true,
+            horaEntrada: true,
+            horaSaida: true,
+            almocoMinMin: true,
+            almocoPodeIniciarA: true,
+            almocoPodeIniciarAte: true,
+            toleranciaCalculoMin: true,
+            horaExtraLimiteAuto: true
+          }
+        }
       }
     });
+    const semIntervaloCategoria = categoriaSemIntervaloAlmoco(funcJornada?.categoria);
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
       select: {
         diasUteis: true,
         horaEntrada: true,
         horaSaida: true,
-        toleranciaCalculoMin: true
+        toleranciaCalculoMin: true,
+        almocoMinMin: true,
+        almocoPodeIniciarA: true,
+        almocoPodeIniciarAte: true,
+        horaExtraLimiteAuto: true
       }
     });
     const jornadaCtx = resolverJornadaHistoricoContexto({
       ...funcJornada,
       configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
-      configuracaoHoraSaida: cfg?.horaSaida ?? null
+      configuracaoHoraSaida: cfg?.horaSaida ?? null,
+      configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
+      configuracaoAlmocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? null,
+      configuracaoAlmocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? null,
+      configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
+      configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
     });
     const diasUteisCfg: boolean[] = JSON.parse(
       cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
@@ -2196,20 +2462,40 @@ export class AuditoriaService {
     const registros = await this.prisma.registroPonto.findMany({
       where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
       orderBy: { dataHora: "asc" },
-      select: { tipo: true, dataHora: true }
+      select: { tipo: true, dataHora: true, observacoes: true }
     });
 
-    const porDia = new Map<string, { tipo: string; dataHora: Date }[]>();
+    const porDia = new Map<string, { tipo: string; dataHora: Date; observacoes?: unknown }[]>();
     for (const r of registros) {
       const key = dataBrasiliaISO(r.dataHora);
       if (!porDia.has(key)) porDia.set(key, []);
       porDia.get(key)!.push(r);
     }
 
-    const afastamentos = await this.prisma.afastamento.findMany({
+    const afastamentosRaw = await this.prisma.afastamento.findMany({
       where: { funcionarioId, dataInicio: { lte: fim }, dataFim: { gte: inicio } },
-      select: { dataInicio: true, dataFim: true }
+      select: {
+        id: true,
+        tipo: true,
+        dataInicio: true,
+        dataFim: true,
+        horarioInicio: true,
+        horarioFim: true
+      }
     });
+    const solsAtestado = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "ATESTADO",
+        status: "APROVADA",
+        OR: [
+          { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+          { dataReferencia: { gte: inicio, lte: fim } }
+        ]
+      },
+      select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
+    });
+    const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, solsAtestado);
 
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
@@ -2248,11 +2534,13 @@ export class AuditoriaService {
       const eDiaUtil = diasUteisCfg[diaSemana];
       const feriadoDia = feriadoMap.get(dataAtual);
       const nomeFeriado = feriadoDia?.nome;
-      const temAfastamento = afastamentos.some((a) => {
+      const afastamento = afastamentos.find((a) => {
         const aInicio = dataBrasiliaISO(a.dataInicio);
         const aFim = dataBrasiliaISO(a.dataFim);
         return dataAtual >= aInicio && dataAtual <= aFim;
       });
+      const temAfastamentoIntegral = !!afastamento && !isAfastamentoParcial(afastamento);
+      const afastamentoParcial = !!afastamento && isAfastamentoParcial(afastamento);
       const regsDodia = porDia.get(dataAtual) ?? [];
       const eHoje = dataAtual === hojeIso;
       /* Mesma regra do Histórico: em dias passados o trecho aberto (ex. retorno
@@ -2260,15 +2548,81 @@ export class AuditoriaService {
       const capMs = eHoje ? Date.now() : undefined;
 
       if (eDiaUtil) {
-        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
+        const optsDispAlmocoDia = {
+          horarioInicio: afastamento?.horarioInicio,
+          horarioFim: afastamento?.horarioFim,
+          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+        };
+        const semAlmocoDia =
+          semIntervaloCategoria ||
+          !!observacaoTurnoSemIntervalo(entradaDia?.observacoes) ||
+          dispensarAlmocoPorAtestadoParcial(afastamentoParcial, regsDodia, optsDispAlmocoDia);
+        const regsCalcDia = semAlmocoDia ? normalizarRegsAtestadoSemAlmoco(regsDodia) : regsDodia;
+        let horasTrabalhadasMinutos = this.calcHorasMinutos(regsCalcDia, capMs, {
+          exigirIntervalo: !semAlmocoDia,
+          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+        });
         let saldoDiaMinutos: number;
         let jornadaDia: number;
         let obs: string | undefined;
 
-        if (temAfastamento) {
+        if (temAfastamentoIntegral) {
           saldoDiaMinutos = 0;
           jornadaDia = 0;
           obs = "Afastamento";
+        } else if (afastamentoParcial && afastamento) {
+          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
+          const jornadaMandatoria = calcularJornadaComAtestadoParcial(
+            afastamento.horarioInicio!,
+            afastamento.horarioFim!,
+            {
+              horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+              horaSaida: jornadaCtx.horaSaida ?? "17:00",
+              jornadaDiariaMin: jornadaDiaMin,
+              almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+              almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+              almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+            }
+          );
+          const regsMinDia = regsDodia.map((r) => ({
+            tipo: r.tipo,
+            minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora).substring(0, 5))
+          }));
+          const prep = prepararRegsCalculoAtestadoParcial({
+            registros: regsMinDia,
+            horarioInicio: afastamento.horarioInicio!,
+            horarioFim: afastamento.horarioFim!,
+            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+            horaSaida: jornadaCtx.horaSaida ?? "17:00",
+            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+            fecharVespertinoNoMarco: !eHoje
+          });
+          horasTrabalhadasMinutos = calcHorasTrabalhadasMinutos(prep.registros, {
+            exigirIntervalo: !prep.semAlmoco,
+            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+          });
+          saldoDiaMinutos = calcularSaldoAtestadoParcialPorExpediente({
+            horarioInicioAtestado: afastamento.horarioInicio!,
+            horarioFimAtestado: afastamento.horarioFim!,
+            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+            horaSaida: jornadaCtx.horaSaida ?? "17:00",
+            fimTrabalhoMin: prep.fimTrabalhoMin,
+            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+            toleranciaCalculoMin: toleranciaCalculoMin ?? 5,
+            horaExtraLimiteMin: jornadaCtx.horaExtraLimiteAuto ?? 120
+          });
+          jornadaDia = jornadaMandatoria;
+          obs = `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
         } else if (feriadoDia) {
           const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
           if (feriadoDia.marcoHorario) {
@@ -2315,9 +2669,16 @@ export class AuditoriaService {
           saldoAcumuladoMinutos: saldoAcumulado,
           observacao: obs
         });
-      } else if (!temAfastamento && regsDodia.length > 0) {
+      } else if (!temAfastamentoIntegral && regsDodia.length > 0) {
         // Fim de semana com registros: aplica multiplicador
-        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
+        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {
+          exigirIntervalo:
+            !semIntervaloCategoria && !observacaoTurnoSemIntervalo(entradaDia?.observacoes),
+          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+        });
         const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
         const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
         const tipoLabel = nomeFeriado
@@ -2522,7 +2883,16 @@ export class AuditoriaService {
 
   /* ─── Relatório Mensal por Funcionário ─── */
 
-  async getRelatorioMensal(funcionarioId: string, mes: number, ano: number) {
+  async getRelatorioMensal(funcionarioId: string, mes: number, ano: number, isSuperAdmin = false) {
+    const mesPrefixCheck = `${ano}-${String(mes).padStart(2, "0")}`;
+    const dataInicioProducao = await getDataInicioProducao(this.prisma);
+    assertMesAposGoLive({
+      mesAnoPrefixo: mesPrefixCheck,
+      dataInicioProducao,
+      isSuperAdmin,
+      contexto: "Relatório de auditoria"
+    });
+
     const func = await this.prisma.funcionario.findUniqueOrThrow({
       where: { id: funcionarioId },
       include: { user: true, gerencia: true }
@@ -2697,8 +3067,11 @@ export class AuditoriaService {
     const tipoLabel = this.TIPO_LABEL[tipo] ?? tipo;
     const titulo = `Solicitação aguardando RH — ${funcNome}`;
     const corpo =
-      `A solicitação de ${tipoLabel} de ${funcNome} foi aprovada pelo gestor ` +
-      "e aguarda análise do RH.\n\nAcesse o sistema para revisar.";
+      tipo === "ATESTADO"
+        ? `O gestor deu ciência (com assinatura digital) no atestado de ${funcNome} ` +
+          "e o documento aguarda análise do RH.\n\nAcesse o sistema para revisar."
+        : `A solicitação de ${tipoLabel} de ${funcNome} foi aprovada pelo gestor ` +
+          "e aguarda análise do RH.\n\nAcesse o sistema para revisar.";
 
     await this.notificacaoService.dispararEvento(
       "SOLICITACAO_AGUARDANDO_RH",
@@ -2767,5 +3140,10 @@ export class AuditoriaService {
       "Acesse o sistema para consultar seu quadro.";
 
     await this.notificacaoService.dispararEvento("PERIODO_FECHADO", titulo, corpo, [dest]);
+  }
+
+  /** Recalcula períodos de ponto de todos os funcionários (regra de almoço mínimo). */
+  recalcularHistoricoAlmocoTodos() {
+    return this.pontoService.recalcularHistoricoAlmocoTodos();
   }
 }

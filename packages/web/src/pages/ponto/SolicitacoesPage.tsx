@@ -2969,10 +2969,19 @@ function SolicitacaoCard({
     (tipo === "ATESTADO" || tipo === "FERIAS" || tipo === "LICENCA" || tipo === "ABONO") &&
     s.dataInicio
   ) {
+    const horarioAtestado =
+      tipo === "ATESTADO" &&
+      typeof meta?.horarioInicio === "string" &&
+      typeof meta?.horarioFim === "string" &&
+      meta.horarioInicio &&
+      meta.horarioFim
+        ? ` · ${meta.horarioInicio}–${meta.horarioFim}`
+        : "";
     subInfo = (
       <span>
-        Período: {fmtDate(s.dataInicio)}{" "}
-        {s.dataFim && s.dataFim !== s.dataInicio ? `→ ${fmtDate(s.dataFim)}` : ""}
+        Período: {fmtDate(s.dataInicio)}
+        {s.dataFim && s.dataFim !== s.dataInicio ? ` → ${fmtDate(s.dataFim)}` : ""}
+        {horarioAtestado}
       </span>
     );
     if (tipo === "FERIAS" && (meta?.diasVendidos || meta?.diasVenda)) {

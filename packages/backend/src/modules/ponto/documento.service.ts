@@ -1,7 +1,9 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, BadRequestException } from "@nestjs/common";
 import { join } from "path";
-import { mkdir, writeFile, unlink } from "fs/promises";
-import { existsSync } from "fs";
+import { mkdir, writeFile, unlink, readFile } from "fs/promises";
+import { existsSync, readFileSync } from "fs";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { codigoCienciaGestorExibido } from "../../utils/assinatura-codigo";
 
 type SharpChain = {
   resize(opts: {
@@ -21,6 +23,50 @@ function tryLoadSharp(): ((input: Buffer) => SharpChain) | null {
   } catch {
     return null;
   }
+}
+
+export interface CienciaGestorAssinaturaMeta {
+  gestorNome: string;
+  assinadoEm: Date;
+  ipReal: string;
+  ipGateway?: string | null;
+  userAgent?: string | null;
+}
+
+function loadAssetBytes(filename: string): Buffer | null {
+  const cwd = process.cwd();
+  const candidates = [
+    join(cwd, "src", "assets", filename),
+    join(cwd, "dist", "assets", filename),
+    join(cwd, "packages", "backend", "src", "assets", filename),
+    join(cwd, "packages", "backend", "dist", "assets", filename)
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return readFileSync(p);
+  }
+  return null;
+}
+
+function shortUserAgent(ua: string | null | undefined): string {
+  if (!ua) return "—";
+  let browser = "Navegador";
+  if (/Edg\//.test(ua)) browser = "Edge";
+  else if (/OPR\/|Opera/.test(ua)) browser = "Opera";
+  else if (/Chrome\//.test(ua)) browser = "Chrome";
+  else if (/Firefox\//.test(ua)) browser = "Firefox";
+  else if (/Safari\//.test(ua)) browser = "Safari";
+  let os = "";
+  if (/Windows NT 10/.test(ua)) os = "Windows 10/11";
+  else if (/Windows/.test(ua)) os = "Windows";
+  else if (/Android/.test(ua)) os = "Android";
+  else if (/iPhone|iPad|iOS/.test(ua)) os = "iOS";
+  else if (/Mac OS X/.test(ua)) os = "macOS";
+  else if (/Linux/.test(ua)) os = "Linux";
+  return os ? `${browser} • ${os}` : browser;
+}
+
+function formatDateTimeBr(d: Date): string {
+  return d.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
 }
 
 @Injectable()
@@ -191,5 +237,186 @@ export class DocumentoService {
     const relUrl = `${this.urlPrefix}/${funcionarioId}/rh-envios/${filename}`;
     this.logger.log(`Documento RH enviado → ${relUrl}`);
     return relUrl;
+  }
+
+  /**
+   * Converte o atestado (PDF ou imagem) em PDF assinado com ciência do gestor
+   * no canto inferior esquerdo — selo + metadados (nome, data, IP, dispositivo).
+   * Retorna a nova URL do PDF assinado.
+   */
+  async assinarAtestadoCienciaGestor(params: {
+    documentoUrl: string;
+    funcionarioId: string;
+    solicitacaoId: string;
+    assinatura: CienciaGestorAssinaturaMeta;
+  }): Promise<string> {
+    const { documentoUrl, funcionarioId, solicitacaoId, assinatura } = params;
+    const filePath = this.resolveDocumentoPath(documentoUrl);
+    if (!existsSync(filePath)) {
+      throw new BadRequestException("Documento do atestado não encontrado para assinatura.");
+    }
+
+    const fileBuf = await readFile(filePath);
+    const lower = documentoUrl.toLowerCase();
+    const isPdf = lower.endsWith(".pdf");
+
+    let pdfDoc: PDFDocument;
+    if (isPdf) {
+      pdfDoc = await PDFDocument.load(fileBuf, { ignoreEncryption: true });
+    } else {
+      pdfDoc = await this.imagemParaPdf(fileBuf, lower);
+    }
+
+    await this.aplicarSeloCienciaGestor(pdfDoc, assinatura);
+
+    const dirPath = join(this.baseDir, funcionarioId);
+    if (!existsSync(dirPath)) {
+      await mkdir(dirPath, { recursive: true });
+    }
+
+    const pdfFilename = `${solicitacaoId}.pdf`;
+    const pdfPath = join(dirPath, pdfFilename);
+    const pdfBytes = await pdfDoc.save();
+    await writeFile(pdfPath, pdfBytes);
+
+    // Remove arquivo anterior se o path mudou (ex.: .jpg → .pdf ou id temporário)
+    if (filePath !== pdfPath) {
+      await unlink(filePath).catch(() => {});
+    }
+
+    const relUrl = `${this.urlPrefix}/${funcionarioId}/${pdfFilename}`;
+    this.logger.log(`Atestado assinado (ciência gestor) → ${relUrl}`);
+    return relUrl;
+  }
+
+  private resolveDocumentoPath(url: string): string {
+    const relative = url.replace(/^\/uploads\/documentos\//, "");
+    return join(this.baseDir, relative);
+  }
+
+  private async imagemParaPdf(imageBuf: Buffer, urlLower: string): Promise<PDFDocument> {
+    const pdfDoc = await PDFDocument.create();
+    const isPng = urlLower.endsWith(".png");
+    const embedded = isPng ? await pdfDoc.embedPng(imageBuf) : await pdfDoc.embedJpg(imageBuf);
+
+    // A4: encaixa a imagem preservando proporção, com margem inferior para o selo
+    const A4_W = 595.28;
+    const A4_H = 841.89;
+    const marginX = 28;
+    const marginTop = 28;
+    const marginBottom = 88; // espaço para selo/ciência
+    const maxW = A4_W - marginX * 2;
+    const maxH = A4_H - marginTop - marginBottom;
+    const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
+    const drawW = embedded.width * scale;
+    const drawH = embedded.height * scale;
+    const x = (A4_W - drawW) / 2;
+    const y = marginBottom + (maxH - drawH) / 2;
+
+    const page = pdfDoc.addPage([A4_W, A4_H]);
+    page.drawImage(embedded, { x, y, width: drawW, height: drawH });
+    return pdfDoc;
+  }
+
+  private async aplicarSeloCienciaGestor(
+    pdfDoc: PDFDocument,
+    assinatura: CienciaGestorAssinaturaMeta
+  ): Promise<void> {
+    const pages = pdfDoc.getPages();
+    if (!pages.length) {
+      throw new BadRequestException("PDF do atestado não possui páginas.");
+    }
+    // Carimba a primeira página (conteúdo do atestado)
+    const page = pages[0];
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const burgundy = rgb(0.42, 0.09, 0.16);
+    const ink = rgb(0.2, 0.2, 0.22);
+    const muted = rgb(0.4, 0.4, 0.45);
+
+    const marginLeft = 18;
+    const marginBottom = 14;
+    const boxW = 210;
+    const boxH = 62;
+
+    // Fundo semi-opaco para legibilidade sobre o documento
+    page.drawRectangle({
+      x: marginLeft - 4,
+      y: marginBottom - 4,
+      width: boxW + 8,
+      height: boxH + 8,
+      color: rgb(1, 1, 1),
+      opacity: 0.92,
+      borderColor: rgb(0.85, 0.78, 0.8),
+      borderWidth: 0.6
+    });
+
+    const seloBytes = loadAssetBytes("selo-assinado-digital.png");
+    let textStartY = marginBottom + boxH - 12;
+    if (seloBytes) {
+      const selo = await pdfDoc.embedPng(seloBytes);
+      const seloW = 118;
+      const seloH = (selo.height / selo.width) * seloW;
+      page.drawImage(selo, {
+        x: marginLeft,
+        y: marginBottom + boxH - seloH - 2,
+        width: seloW,
+        height: seloH
+      });
+      textStartY = marginBottom + boxH - seloH - 10;
+    } else {
+      page.drawText("Assinado digitalmente", {
+        x: marginLeft,
+        y: marginBottom + boxH - 12,
+        size: 8,
+        font: fontBold,
+        color: burgundy
+      });
+      textStartY = marginBottom + boxH - 24;
+    }
+
+    const hash = codigoCienciaGestorExibido(
+      assinatura.gestorNome,
+      assinatura.assinadoEm,
+      assinatura.ipReal,
+      assinatura.userAgent
+    );
+
+    const linhas: { text: string; size: number; bold?: boolean; color: ReturnType<typeof rgb> }[] =
+      [
+        {
+          text: `Ciência: ${assinatura.gestorNome}`,
+          size: 7,
+          bold: true,
+          color: ink
+        },
+        {
+          text: `Em ${formatDateTimeBr(assinatura.assinadoEm)}`,
+          size: 6,
+          color: muted
+        },
+        {
+          text: `IP ${assinatura.ipReal}${assinatura.ipGateway && assinatura.ipGateway !== assinatura.ipReal ? ` · GW ${assinatura.ipGateway}` : ""}`,
+          size: 5.5,
+          color: muted
+        },
+        {
+          text: `${shortUserAgent(assinatura.userAgent)} · ${hash}`,
+          size: 5,
+          color: muted
+        }
+      ];
+
+    let y = textStartY;
+    for (const linha of linhas) {
+      page.drawText(linha.text.slice(0, 72), {
+        x: marginLeft,
+        y,
+        size: linha.size,
+        font: linha.bold ? fontBold : font,
+        color: linha.color
+      });
+      y -= linha.size + 2.5;
+    }
   }
 }

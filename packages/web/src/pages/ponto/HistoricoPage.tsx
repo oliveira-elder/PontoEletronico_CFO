@@ -11,9 +11,11 @@ import {
   CheckCircleIcon,
   AlertCircleIcon,
   CheckIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  CoffeeIcon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
   type StatusDia,
@@ -318,7 +320,26 @@ function BannerAssinatura({
 }
 
 /* ─── Sub-componentes ─── */
-function StatusPill({ status, obs }: { status: StatusDia; obs?: string }) {
+function StatusPill({
+  status,
+  obs,
+  atestadoParcial,
+  atestadoParcialHorario
+}: {
+  status: StatusDia;
+  obs?: string;
+  atestadoParcial?: boolean;
+  atestadoParcialHorario?: string;
+}) {
+  if (atestadoParcial) {
+    const titulo =
+      obs ?? `Atestado médico parcial${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`;
+    return (
+      <span className="badge badge-blue" title={titulo}>
+        Atestado médico parcial
+      </span>
+    );
+  }
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
@@ -425,11 +446,15 @@ function PausaCell({ pausas }: { pausas?: Pausa[] }) {
 function HoraCell({
   hora,
   editado,
-  turnoSemIntervalo
+  turnoSemIntervalo,
+  almocoCurto,
+  onAlmocoInfo
 }: {
   hora: string | null;
   editado?: boolean;
   turnoSemIntervalo?: { turno?: string };
+  almocoCurto?: DiaRegistro["almocoCurto"];
+  onAlmocoInfo?: () => void;
 }) {
   if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
   const tituloTurno =
@@ -440,6 +465,9 @@ function HoraCell({
         : turnoSemIntervalo
           ? "Jornada sem intervalo de almoço"
           : undefined;
+  const tituloAlmoco = almocoCurto
+    ? `Almoço com referência de ${almocoCurto.minimoMin} min (configuração). Registrado ${almocoCurto.inicio}–${almocoCurto.fimRegistrado}; cálculo retoma às ${almocoCurto.fimReferencia}.`
+    : undefined;
   return (
     <span
       style={{
@@ -454,6 +482,28 @@ function HoraCell({
         <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
           <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
         </span>
+      )}
+      {almocoCurto && (
+        <button
+          type="button"
+          title={tituloAlmoco}
+          aria-label="Informativo do intervalo de almoço"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAlmocoInfo?.();
+          }}
+          style={{
+            display: "inline-flex",
+            lineHeight: 0,
+            border: "none",
+            background: "transparent",
+            padding: 0,
+            cursor: "pointer",
+            color: "#B45309"
+          }}
+        >
+          <CoffeeIcon size={12} style={{ flexShrink: 0 }} />
+        </button>
       )}
       {editado && (
         <span
@@ -478,13 +528,24 @@ function IntervaloNaoAplicavelCell({
   janelaAlmoco?: string;
   onClick?: () => void;
 }) {
-  const nomeTurno =
-    turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
   const janela = janelaAlmoco ?? "janela de almoço";
-  const title =
-    motivo === "DURANTE_JANELA"
-      ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
-      : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+  let title: string;
+  if (motivo === "ATESTADO_PARCIAL" || turno === "ATESTADO_PARCIAL") {
+    title =
+      "Intervalo de almoço não aplicável — atestado médico parcial (matutino ou vespertino). " +
+      "A dedução de 1h não é aplicada quando o almoço não foi registrado.";
+  } else if (motivo === "ATESTADO_PARCIAL_SAIDA") {
+    title =
+      "Saída não aplicável — atestado médico parcial no período da tarde. " +
+      "O expediente encerra com o atestado; correção de ponto não é exigida.";
+  } else {
+    const nomeTurno =
+      turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
+    title =
+      motivo === "DURANTE_JANELA"
+        ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
+        : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+  }
 
   return (
     <button
@@ -611,6 +672,141 @@ function ModalObservacoes({
               </p>
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalAlmocoReferencia({
+  dia,
+  info,
+  onClose
+}: {
+  dia: string;
+  info: NonNullable<DiaRegistro["almocoCurto"]>;
+  onClose: () => void;
+}) {
+  const hMin = Math.floor(info.minimoMin / 60);
+  const mMin = info.minimoMin % 60;
+  const duracaoLabel =
+    mMin === 0 ? `${hMin}h` : hMin > 0 ? `${hMin}h${String(mMin).padStart(2, "0")}` : `${mMin} min`;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 1000,
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 440,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+          overflow: "hidden",
+          isolation: "isolate"
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "16px 20px",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            background: "#fff"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <CoffeeIcon size={16} style={{ color: "#B45309", flexShrink: 0 }} />
+            <strong style={{ fontSize: 14, color: "var(--ink-900)" }}>
+              Referência de almoço — {dia}
+            </strong>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 18,
+              color: "var(--ink-500)",
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            aria-label="Fechar"
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          style={{
+            padding: "16px 20px",
+            fontSize: 13.5,
+            color: "var(--ink-800)",
+            lineHeight: 1.55,
+            background: "#fff"
+          }}
+        >
+          <p style={{ margin: "0 0 10px" }}>
+            O horário de retorno foi registrado, mas o cálculo de horas usa a{" "}
+            <strong>duração mínima de almoço configurada</strong> ({duracaoLabel}), contada a partir
+            do início do intervalo.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li>
+              Registrado: <strong>{info.inicio}</strong> → <strong>{info.fimRegistrado}</strong>
+            </li>
+            <li>
+              Referência de cálculo: <strong>{info.inicio}</strong> →{" "}
+              <strong>{info.fimReferencia}</strong> ({duracaoLabel})
+            </li>
+          </ul>
+          <p style={{ margin: "12px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+            O expediente retoma no cálculo às {info.fimReferencia}, conforme as configurações do
+            período/jornada do funcionário.
+          </p>
+        </div>
+        <div
+          style={{
+            padding: "12px 20px 16px",
+            display: "flex",
+            justifyContent: "flex-end",
+            borderTop: "1px solid rgba(122,30,38,0.08)",
+            background: "#fff"
+          }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "var(--radius-md, 8px)",
+              border: "1px solid rgba(122,30,38,0.18)",
+              background: "#fff",
+              color: "var(--ink-800)",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "inherit"
+            }}
+          >
+            Fechar
+          </button>
         </div>
       </div>
     </div>
@@ -835,9 +1031,13 @@ function PopupMesAno({
 export function HistoricoPage() {
   const hoje = new Date();
   const isMobile = useIsMobile(768);
+  const { user } = useAuth();
+  const isSuperAdmin = !!user?.isSuperAdmin;
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
   const [inicioAtividades, setInicioAtividades] = useState<string | null>(null);
+  const [dataInicioProducao, setDataInicioProducao] = useState<string | null>(null);
+  const [periodoTeste, setPeriodoTeste] = useState(false);
   const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
   const [saldoMesBanco, setSaldoMesBanco] = useState(0);
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
@@ -845,6 +1045,10 @@ export function HistoricoPage() {
   const [modalObs, setModalObs] = useState<{
     dia: string;
     observacoes: ObservacaoRegistro[];
+  } | null>(null);
+  const [modalAlmoco, setModalAlmoco] = useState<{
+    dia: string;
+    info: NonNullable<DiaRegistro["almocoCurto"]>;
   } | null>(null);
   const isMesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
   const [popupMes, setPopupMes] = useState(false);
@@ -865,6 +1069,8 @@ export function HistoricoPage() {
         .then((data) => {
           const inicio = data?.inicioAtividades ?? null;
           setInicioAtividades(inicio);
+          setDataInicioProducao(data?.dataInicioProducao ?? null);
+          setPeriodoTeste(!!data?.periodoTeste);
           setBancoPorDia(data?.bancoPorDia ?? {});
           setSaldoMesBanco(data?.saldoMesBanco ?? 0);
           setRegistros(
@@ -880,7 +1086,9 @@ export function HistoricoPage() {
               {
                 pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
                 semRegistroPonto: !!data?.semRegistroPonto,
-                periodosSemObrigacao: data?.periodosSemObrigacao ?? []
+                periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
+                exigirIntervalo:
+                  data?.categoria !== "ESTAGIARIO" && data?.categoria !== "MENOR_APRENDIZ"
               }
             )
           );
@@ -977,25 +1185,62 @@ export function HistoricoPage() {
       const minAno = iy;
       if (na < minAno || (na === minAno && nm < minMes)) return;
     }
+    /* Não-SA: piso do go-live (mês de produção). SA pode navegar fase de teste. */
+    if (!isSuperAdmin && dataInicioProducao) {
+      const [py, pm] = dataInicioProducao.split("-").map(Number);
+      if (na < py || (na === py && nm < pm)) return;
+    }
     setMes(nm);
     setAno(na);
   }
 
-  const minMesAno = inicioAtividades
-    ? {
-        minMes: Number(inicioAtividades.split("-")[1]),
-        minAno: Number(inicioAtividades.split("-")[0])
+  const pisoNav = (() => {
+    let minMes = 1;
+    let minAno = 2000;
+    if (inicioAtividades) {
+      minAno = Number(inicioAtividades.split("-")[0]);
+      minMes = Number(inicioAtividades.split("-")[1]);
+    }
+    if (!isSuperAdmin && dataInicioProducao) {
+      const py = Number(dataInicioProducao.split("-")[0]);
+      const pm = Number(dataInicioProducao.split("-")[1]);
+      if (py > minAno || (py === minAno && pm > minMes)) {
+        minAno = py;
+        minMes = pm;
       }
-    : { minMes: 1, minAno: 2000 };
+    }
+    return { minMes, minAno };
+  })();
+  const minMesAno = pisoNav;
   const noMesMinimo = mes === minMesAno.minMes && ano === minMesAno.minAno;
 
   const nomeMes = new Date(ano, mes - 1).toLocaleDateString("pt-BR", {
     month: "long",
     year: "numeric"
   });
+  const bancoDiasList = Object.values(bancoPorDia ?? {});
+  const usarBanco = bancoDiasList.length > 0;
+  /** Em atestado parcial, preferir o cálculo do transform (novas regras) ao banco legado. */
+  const minutosDiaExibidos = (r: (typeof registros)[number], isoKey: string) => {
+    const bancoDia = bancoPorDia?.[isoKey];
+    if (r.atestadoParcial) {
+      return { trab: r.horasMin, jornada: r.jornadaMin, saldo: r.horasMin - r.jornadaMin };
+    }
+    return {
+      trab: bancoDia?.horasTrabalhadasMinutos ?? r.horasMin,
+      jornada: bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin,
+      saldo:
+        bancoDia?.saldoDiaMinutos !== undefined && bancoDia?.saldoDiaMinutos !== null
+          ? bancoDia.saldoDiaMinutos
+          : r.horasMin - r.jornadaMin
+    };
+  };
   const totalTrabMin = registros
     .filter((r) => !r.apenasInformativo && (r.status === "OK" || r.status === "PENDENTE"))
-    .reduce((s, r) => s + r.horasMin, 0);
+    .reduce((s, r) => {
+      const [d, m, a] = r.data.split("/");
+      return s + minutosDiaExibidos(r, `${a}-${m}-${d}`).trab;
+    }, 0);
   const totalFaltas = registros.filter((r) => !r.apenasInformativo && r.status === "FALTA").length;
   const totalOK = registros.filter((r) => !r.apenasInformativo && r.status === "OK").length;
   const totalAfastamentos = registros.filter(
@@ -1018,7 +1263,23 @@ export function HistoricoPage() {
         r.status !== "FOLGA" &&
         r.status !== "ISENTO"
     )
-    .reduce((s, r) => s + r.jornadaMin, 0);
+    .reduce((s, r) => {
+      const [d, m, a] = r.data.split("/");
+      return s + minutosDiaExibidos(r, `${a}-${m}-${d}`).jornada;
+    }, 0);
+
+  /* Ajusta saldo do mês: troca saldos de atestado parcial do banco pelo cálculo atual */
+  let saldoMesAjustado = saldoMesBanco;
+  if (usarBanco) {
+    for (const r of registros) {
+      if (!r.atestadoParcial || r.apenasInformativo) continue;
+      const [d, m, a] = r.data.split("/");
+      const isoKey = `${a}-${m}-${d}`;
+      const bancoDia = bancoPorDia?.[isoKey];
+      if (!bancoDia) continue;
+      saldoMesAjustado = saldoMesAjustado - bancoDia.saldoDiaMinutos + (r.horasMin - r.jornadaMin);
+    }
+  }
 
   const fmtSaldoBanco = (min: number) => {
     const h = Math.floor(Math.abs(min) / 60);
@@ -1033,6 +1294,13 @@ export function HistoricoPage() {
           dia={modalObs.dia}
           observacoes={modalObs.observacoes}
           onClose={() => setModalObs(null)}
+        />
+      )}
+      {modalAlmoco && (
+        <ModalAlmocoReferencia
+          dia={modalAlmoco.dia}
+          info={modalAlmoco.info}
+          onClose={() => setModalAlmoco(null)}
         />
       )}
 
@@ -1134,6 +1402,21 @@ export function HistoricoPage() {
               {nomeMes}
               <ChevronDownIcon size={14} style={{ opacity: 0.5, marginTop: 2 }} />
             </button>
+            {periodoTeste && (
+              <span
+                style={{
+                  marginLeft: 8,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "#92400e",
+                  background: "#fef3c7",
+                  padding: "2px 8px",
+                  borderRadius: 999
+                }}
+              >
+                fase de teste
+              </span>
+            )}
             {popupMes && (
               <PopupMesAno
                 mes={mes}
@@ -1180,10 +1463,10 @@ export function HistoricoPage() {
                 trabalhadas
               </span>
               <span
-                className={saldoMesBanco >= 0 ? "badge badge-green" : "badge badge-red"}
+                className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}
                 title="Saldo do mês (banco de horas)"
               >
-                Saldo: {fmtSaldoBanco(saldoMesBanco)}
+                Saldo: {fmtSaldoBanco(saldoMesAjustado)}
               </span>
             </div>
           )}
@@ -1205,8 +1488,8 @@ export function HistoricoPage() {
               {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
               trabalhadas
             </span>
-            <span className={saldoMesBanco >= 0 ? "badge badge-green" : "badge badge-red"}>
-              Saldo: {fmtSaldoBanco(saldoMesBanco)}
+            <span className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}>
+              Saldo: {fmtSaldoBanco(saldoMesAjustado)}
             </span>
           </div>
         )}
@@ -1217,7 +1500,7 @@ export function HistoricoPage() {
         <ModalAssinarQuadro
           assinatura={assinatura}
           totalTrabMin={totalTrabMin}
-          saldoMesBanco={saldoMesBanco}
+          saldoMesBanco={saldoMesAjustado}
           onClose={() => setModalAssinar(false)}
           onConfirm={confirmarAssinatura}
           loading={loadingAssinar}
@@ -1299,7 +1582,9 @@ export function HistoricoPage() {
                         />
                       </td>
                       <td>
-                        {r.semIntervalo && !r.inicioIntervalo ? (
+                        {r.inicioIntervalo ? (
+                          <HoraCell hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        ) : r.semIntervalo ? (
                           <IntervaloNaoAplicavelCell
                             turno={r.turno}
                             motivo={r.motivoSemIntervalo}
@@ -1319,7 +1604,22 @@ export function HistoricoPage() {
                         )}
                       </td>
                       <td>
-                        {r.semIntervalo && !r.fimIntervalo ? (
+                        {r.fimIntervalo ? (
+                          <HoraCell
+                            hora={r.fimIntervalo}
+                            editado={r.fimIntervaloEditado}
+                            almocoCurto={r.almocoCurto}
+                            onAlmocoInfo={
+                              r.almocoCurto
+                                ? () =>
+                                    setModalAlmoco({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      info: r.almocoCurto!
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : r.semIntervalo || r.atestadoParcial ? (
                           <IntervaloNaoAplicavelCell
                             turno={r.turno}
                             motivo={r.motivoSemIntervalo}
@@ -1339,21 +1639,54 @@ export function HistoricoPage() {
                         )}
                       </td>
                       <td>
-                        <HoraCell hora={r.saida} editado={r.saidaEditada} />
+                        {r.saida ? (
+                          <HoraCell hora={r.saida} editado={r.saidaEditada} />
+                        ) : r.saidaNaoAplicavel ? (
+                          <IntervaloNaoAplicavelCell
+                            turno="ATESTADO_PARCIAL"
+                            motivo="ATESTADO_PARCIAL_SAIDA"
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCell hora={r.saida} editado={r.saidaEditada} />
+                        )}
                       </td>
                       <td>
                         <PausaCell pausas={r.pausas} />
                       </td>
                       <td>
-                        <HorasCell min={r.horasMin} status={r.status} />
+                        <HorasCell
+                          min={
+                            r.atestadoParcial
+                              ? r.horasMin
+                              : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
+                          }
+                          status={r.status}
+                        />
                       </td>
                       <td>
                         <SaldoCell
-                          trabMin={r.horasMin}
-                          jornadaMin={r.jornadaMin}
+                          trabMin={
+                            r.atestadoParcial
+                              ? r.horasMin
+                              : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
+                          }
+                          jornadaMin={
+                            r.atestadoParcial
+                              ? r.jornadaMin
+                              : (bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin)
+                          }
                           status={r.status}
-                          saldoBancoMin={bancoDia?.saldoDiaMinutos}
-                          saldoBancoNeutro={bancoDia?.neutro}
+                          saldoBancoMin={r.atestadoParcial ? undefined : bancoDia?.saldoDiaMinutos}
+                          saldoBancoNeutro={r.atestadoParcial ? false : bancoDia?.neutro}
                         />
                       </td>
                       <td
@@ -1365,7 +1698,12 @@ export function HistoricoPage() {
                         }}
                       >
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <StatusPill status={r.status} obs={r.obs} />
+                          <StatusPill
+                            status={r.status}
+                            obs={r.obs}
+                            atestadoParcial={r.atestadoParcial}
+                            atestadoParcialHorario={r.atestadoParcialHorario}
+                          />
                           {r.apenasInformativo && (
                             <span
                               title={MSG_SOLICITACAO_APENAS_INFORMATIVA}
@@ -1441,7 +1779,7 @@ export function HistoricoPage() {
                         trabMin={totalTrabMin}
                         jornadaMin={totalJornadaMin}
                         status="OK"
-                        saldoBancoMin={saldoMesBanco}
+                        saldoBancoMin={saldoMesAjustado}
                       />
                     </td>
                     <td style={{ width: "1%", paddingLeft: 10, paddingRight: 10 }} />
@@ -1462,7 +1800,7 @@ export function HistoricoPage() {
           { cls: "badge-green", label: "Jornada completa" },
           { cls: "badge-amber", label: "Pendente (saída não registrada)" },
           { cls: "badge-red", label: "Falta" },
-          { cls: "badge-blue", label: "Afastamento justificado" },
+          { cls: "badge-blue", label: "Afastamento / Atestado médico parcial" },
           { cls: "badge-gray", label: "Feriado, folga ou dia futuro" }
         ].map((item) => (
           <span
@@ -1481,6 +1819,19 @@ export function HistoricoPage() {
             {item.label}
           </span>
         ))}
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11.5,
+            color: "var(--ink-500)"
+          }}
+          title="Clique no ícone ao lado do fim de intervalo para detalhes"
+        >
+          <CoffeeIcon size={13} style={{ color: "#B45309" }} />
+          Almoço &lt; mínimo configurado (cálculo usa referência de 1h)
+        </span>
       </div>
     </div>
   );

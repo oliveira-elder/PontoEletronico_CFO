@@ -22,12 +22,22 @@ import {
 } from "../../utils/horario-brasilia";
 import { appendObservacao } from "../../utils/registro-observacoes";
 import { montarRelatorioQuadro } from "../../utils/historico-quadro";
+import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
 import {
   jornadaEsperadaMin,
   resolverJornadaHistoricoContexto,
   calcularJornadaParcialFeriado,
+  calcularJornadaComAtestadoParcial,
+  calcularSaldoAtestadoParcialPorExpediente,
+  prepararRegsCalculoAtestadoParcial,
+  isAfastamentoParcial,
+  dispensarAlmocoPorAtestadoParcial,
+  atestadoParcialEhMatutino,
+  normalizarRegsAtestadoSemAlmoco,
+  horarioNoPeriodoAfastamento,
   aplicarMargemCalculoDiario
 } from "../../utils/jornada-historico";
+import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import {
   classificarTurnoEntrada,
   criarObservacaoCategoriaSemIntervalo,
@@ -44,6 +54,7 @@ import {
   type CategoriaSemIntervaloAlmoco
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
    anexados pelo funcionário não podem mais ser editados/substituídos. */
@@ -213,17 +224,41 @@ export class PontoService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } }
+        jornadaPeriodo: {
+          select: {
+            jornadaDiariaMin: true,
+            horaEntrada: true,
+            horaSaida: true,
+            almocoMinMin: true,
+            almocoPodeIniciarA: true,
+            almocoPodeIniciarAte: true,
+            toleranciaCalculoMin: true,
+            horaExtraLimiteAuto: true
+          }
+        }
       }
     });
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
-      select: { horaEntrada: true, horaSaida: true }
+      select: {
+        horaEntrada: true,
+        horaSaida: true,
+        almocoMinMin: true,
+        almocoPodeIniciarA: true,
+        almocoPodeIniciarAte: true,
+        toleranciaCalculoMin: true,
+        horaExtraLimiteAuto: true
+      }
     });
     return resolverJornadaHistoricoContexto({
       ...func,
       configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
-      configuracaoHoraSaida: cfg?.horaSaida ?? null
+      configuracaoHoraSaida: cfg?.horaSaida ?? null,
+      configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
+      configuracaoAlmocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? null,
+      configuracaoAlmocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? null,
+      configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
+      configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
     });
   }
 
@@ -455,30 +490,94 @@ export class PontoService {
 
     const ultimo = registros[registros.length - 1];
 
-    const horasTrabalhadasMinutos = this.calcHorasMinutos(registros);
-
     const afastamento = await this.getAfastamentoDoDia(func.id, hojeIso);
-    const afastamentoHoje = afastamento
-      ? {
-          tipo: afastamento.tipo,
-          label: TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? afastamento.tipo,
-          dataInicio: dataBrasiliaISO(afastamento.dataInicio),
-          dataFim: dataBrasiliaISO(afastamento.dataFim)
-        }
-      : null;
+    const agoraHora = horarioDeDataBrasilia(new Date());
+    const afastamentoBloqueiaAgora =
+      !!afastamento &&
+      (!isAfastamentoParcial(afastamento) ||
+        horarioNoPeriodoAfastamento(
+          agoraHora,
+          afastamento.horarioInicio!,
+          afastamento.horarioFim!
+        ));
+    const afastamentoHoje =
+      afastamento && afastamentoBloqueiaAgora
+        ? {
+            tipo: afastamento.tipo,
+            label: isAfastamentoParcial(afastamento)
+              ? `${TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? afastamento.tipo} (${afastamento.horarioInicio}–${afastamento.horarioFim})`
+              : (TIPO_AFASTAMENTO_LABEL[afastamento.tipo] ?? afastamento.tipo),
+            dataInicio: dataBrasiliaISO(afastamento.dataInicio),
+            dataFim: dataBrasiliaISO(afastamento.dataFim),
+            horarioInicio: afastamento.horarioInicio ?? null,
+            horarioFim: afastamento.horarioFim ?? null
+          }
+        : null;
 
     const semIntervaloCategoria = categoriaSemIntervaloAlmoco(func.categoria);
+    const jornada = await this.getJornadaEfetiva(func.id);
+    const atestadoMatutino =
+      !!afastamento &&
+      isAfastamentoParcial(afastamento) &&
+      !!afastamento.horarioInicio &&
+      !!afastamento.horarioFim &&
+      atestadoParcialEhMatutino(afastamento.horarioInicio, afastamento.horarioFim, {
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "12:00",
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      });
     const { fase, acoesPermitidas: acoesPorFase } = this.getFaseEAcoes(registros, {
-      forcarSemIntervalo: semIntervaloCategoria
+      forcarSemIntervalo: semIntervaloCategoria || atestadoMatutino
     });
     const acoesPermitidas = afastamentoHoje || isentoHoje ? [] : acoesPorFase;
     const estado = afastamentoHoje || isentoHoje ? "FORA" : ESTADO_POR_FASE[fase];
 
-    const jornada = await this.getJornadaEfetiva(func.id);
+    let jornadaMinutos = jornada.jornadaDiariaMin;
+    if (
+      afastamento &&
+      isAfastamentoParcial(afastamento) &&
+      afastamento.horarioInicio &&
+      afastamento.horarioFim
+    ) {
+      jornadaMinutos = calcularJornadaComAtestadoParcial(
+        afastamento.horarioInicio,
+        afastamento.horarioFim,
+        {
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          jornadaDiariaMin: jornada.jornadaDiariaMin,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        }
+      );
+    }
 
     const entradaHoje = registros.find((r) => r.tipo === "ENTRADA");
     const obsTurno = entradaHoje ? observacaoTurnoSemIntervalo(entradaHoje.observacoes) : undefined;
-    const semIntervalo = !!obsTurno || semIntervaloCategoria;
+    const optsDispAlmoco = {
+      horarioInicio: afastamento?.horarioInicio,
+      horarioFim: afastamento?.horarioFim,
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    };
+    const semIntervalo =
+      !!obsTurno ||
+      semIntervaloCategoria ||
+      dispensarAlmocoPorAtestadoParcial(
+        isAfastamentoParcial(afastamento ?? {}),
+        registros,
+        optsDispAlmoco
+      );
+
+    const regsHoras = semIntervalo ? normalizarRegsAtestadoSemAlmoco(registros) : registros;
+    const horasTrabalhadasMinutos = this.calcHorasMinutos(regsHoras, Date.now(), {
+      exigirIntervalo: !semIntervalo,
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    });
 
     return {
       estado,
@@ -486,7 +585,7 @@ export class PontoService {
       ultimoRegistro: ultimo ?? null,
       registrosHoje: registros,
       horasTrabalhadasMinutos,
-      jornadaMinutos: jornada.jornadaDiariaMin,
+      jornadaMinutos,
       proximaAcao: acoesPermitidas[0] ?? null,
       acoesPermitidas,
       afastamentoHoje,
@@ -496,9 +595,18 @@ export class PontoService {
       modoHomeOffice: func.modoHomeOffice,
       modoHibridoLocal: func.modoHibridoLocal,
       semIntervalo,
-      turno: obsTurno?.turno ?? (entradaHoje ? "MATUTINO" : null),
+      turno: obsTurno?.turno ?? (atestadoMatutino ? "VESPERTINO" : entradaHoje ? "MATUTINO" : null),
       motivoSemIntervalo:
-        obsTurno?.motivo ?? (semIntervaloCategoria ? "CATEGORIA_CARGA_CORRIDA" : null),
+        obsTurno?.motivo ??
+        (semIntervaloCategoria
+          ? "CATEGORIA_CARGA_CORRIDA"
+          : dispensarAlmocoPorAtestadoParcial(
+                isAfastamentoParcial(afastamento ?? {}),
+                registros,
+                optsDispAlmoco
+              )
+            ? "ATESTADO_PARCIAL_SEM_ALMOCO"
+            : null),
       enderecoResidencial: func.enderecoResidencial
         ? {
             lat: func.enderecoResidencial.lat,
@@ -526,7 +634,13 @@ export class PontoService {
         dataInicio: { lte: diaSeguinte },
         dataFim: { gte: diaAnterior }
       },
-      select: { tipo: true, dataInicio: true, dataFim: true }
+      select: {
+        tipo: true,
+        dataInicio: true,
+        dataFim: true,
+        horarioInicio: true,
+        horarioFim: true
+      }
     });
 
     return candidatos.find((a) => {
@@ -539,38 +653,37 @@ export class PontoService {
   /* ─── Calcular horas trabalhadas em minutos ─── */
 
   /**
-   * Mesma regra do Histórico: diferença em HH:MM (Brasília), sem arredondar ms.
+   * Mesma regra do Histórico: diferença em HH:MM (Brasília), com almoço mínimo
+   * obrigatório quando a jornada exige intervalo.
    * @param capMs  Instantâneo do “agora” no dia corrente. Em dias históricos,
    *               omita para ignorar trecho aberto (retorno sem saída).
    */
-  private calcHorasMinutos(registros: { tipo: string; dataHora: Date }[], capMs?: number) {
-    let totalMinutos = 0;
-    let entradaMin: number | null = null;
-    for (const r of registros) {
-      const ts = horarioParaMinutos(horarioDeDataBrasilia(r.dataHora));
-      if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-        entradaMin = ts;
-      } else if (
-        (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-        entradaMin !== null
-      ) {
-        totalMinutos += ts - entradaMin;
-        entradaMin = null;
-      } else if (r.tipo === "FIM_INTERVALO") {
-        entradaMin = ts;
-      } else if (r.tipo === "SAIDA" && entradaMin !== null) {
-        totalMinutos += ts - entradaMin;
-        entradaMin = null;
+  private calcHorasMinutos(
+    registros: { tipo: string; dataHora: Date }[],
+    capMs?: number,
+    opts?: {
+      exigirIntervalo?: boolean;
+      almocoMinMin?: number;
+      almocoPodeIniciarA?: string;
+      almocoPodeIniciarAte?: string;
+    }
+  ) {
+    return calcHorasTrabalhadasMinutos(
+      registros.map((r) => ({
+        tipo: r.tipo,
+        minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora))
+      })),
+      {
+        agoraMin:
+          capMs !== undefined
+            ? horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)))
+            : undefined,
+        exigirIntervalo: opts?.exigirIntervalo,
+        almocoMinMin: opts?.almocoMinMin,
+        almocoPodeIniciarA: opts?.almocoPodeIniciarA,
+        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte
       }
-    }
-
-    /* Trecho em aberto: só conta se houver teto (dia corrente). */
-    if (entradaMin !== null && capMs !== undefined) {
-      const capMin = horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)));
-      totalMinutos += capMin - entradaMin;
-    }
-
-    return totalMinutos;
+    );
   }
 
   /* ─── Bater ponto ─── */
@@ -820,16 +933,22 @@ export class PontoService {
 
     const agora = new Date();
 
-    /* Encerrar a jornada sem ter feito o intervalo de almoço (ex.: após
-       Interromper/Reiniciar Expediente pela manhã): completa as posições
-       de Início/Fim do Almoço no histórico com o mesmo horário da Saída
-       (1–2ms antes, só para preservar a ordenação) e registra o motivo
-       nas observações de cada um. */
+    /* Encerrar a jornada sem ter feito o intervalo de almoço: completa as
+       posições de Início/Fim no histórico (duração zero junto à saída) para
+       documentação. A dedução mínima de almoço é aplicada no cálculo de horas. */
     if (dto.tipo === "SAIDA" && status.fase === "MANHA") {
+      const jornadaSaida = await this.getJornadaEfetiva(func.id);
+      const minutoAgora = horarioParaMinutos(horarioDeDataBrasilia(agora));
+      const janelaIni = horarioParaMinutos(jornadaSaida.almocoPodeIniciarA ?? "11:30");
+      const almocoMin = jornadaSaida.almocoMinMin ?? 60;
+      const aposJanelaAlmoco = minutoAgora >= janelaIni;
+
       const observacaoAjuste = {
         data: agora.toISOString(),
         tipo: "AJUSTE_AUTOMATICO" as const,
-        texto: "Intervalo de almoço não realizado — jornada encerrada antes do horário de almoço."
+        texto: aposJanelaAlmoco
+          ? `Intervalo de almoço não registrado — ${almocoMin} min deduzidos automaticamente no cálculo.`
+          : "Intervalo de almoço não realizado — jornada encerrada antes do horário de almoço."
       };
       await this.prisma.registroPonto.createMany({
         data: [
@@ -875,11 +994,32 @@ export class PontoService {
       } else {
         const jornada = await this.getJornadaEfetiva(func.id);
         const horaAgora = horarioDeDataBrasilia(agora);
-        const classificacao = classificarTurnoEntrada(
+        let classificacao = classificarTurnoEntrada(
           horaAgora,
           jornada.almocoPodeIniciarA,
           jornada.almocoPodeIniciarAte
         );
+        /* Atestado matutino: retorno à tarde segue o fluxo de início de jornada vespertina */
+        const afastHoje = await this.getAfastamentoDoDia(func.id, hojeIso);
+        if (
+          afastHoje &&
+          isAfastamentoParcial(afastHoje) &&
+          afastHoje.horarioInicio &&
+          afastHoje.horarioFim &&
+          atestadoParcialEhMatutino(afastHoje.horarioInicio, afastHoje.horarioFim, {
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "12:00",
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          }) &&
+          horarioParaMinutos(horaAgora.substring(0, 5)) >= horarioParaMinutos(afastHoje.horarioFim)
+        ) {
+          classificacao = {
+            turno: "VESPERTINO",
+            semIntervalo: true,
+            motivo: "APOS_JANELA",
+            janelaAlmoco: `${jornada.almocoPodeIniciarA}–${jornada.almocoPodeIniciarAte}`
+          };
+        }
         if (classificacao.semIntervalo) {
           observacoesEntrada = appendObservacao(
             [],
@@ -935,7 +1075,7 @@ export class PontoService {
 
   /* ─── Histórico (paginado por mês) ─── */
 
-  async getHistorico(keycloakSub: string, mes: number, ano: number) {
+  async getHistorico(keycloakSub: string, mes: number, ano: number, isSuperAdmin = false) {
     const user = await this.prisma.user.findUnique({
       where: { externalId: keycloakSub },
       select: { createdAt: true }
@@ -946,6 +1086,13 @@ export class PontoService {
     const func = await this.getFuncionario(keycloakSub);
     const inicioAtividades = dataBrasiliaISO(user.createdAt);
     const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
+    const dataInicioProducao = await getDataInicioProducao(this.prisma);
+    const { periodoTeste } = assertMesAposGoLive({
+      mesAnoPrefixo: mesPrefix,
+      dataInicioProducao,
+      isSuperAdmin,
+      contexto: "Histórico"
+    });
     const mm = String(mes).padStart(2, "0");
     const ultimoDia = new Date(ano, mes, 0).getDate();
     const primeiroDia = `${ano}-${mm}-01`;
@@ -978,7 +1125,7 @@ export class PontoService {
     const fimBuffer = new Date(fim);
     fimBuffer.setUTCDate(fimBuffer.getUTCDate() + 1);
 
-    const afastamentos = await this.prisma.afastamento.findMany({
+    const afastamentosRaw = await this.prisma.afastamento.findMany({
       where: {
         funcionarioId: func.id,
         dataInicio: { lte: fimBuffer },
@@ -986,13 +1133,56 @@ export class PontoService {
       },
       orderBy: { dataInicio: "asc" },
       select: {
+        id: true,
         tipo: true,
         dataInicio: true,
         dataFim: true,
         justificativa: true,
-        apenasInformativo: true
+        apenasInformativo: true,
+        horarioInicio: true,
+        horarioFim: true
       }
     });
+
+    const solsAtestado = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId: func.id,
+        tipo: "ATESTADO",
+        status: "APROVADA",
+        OR: [
+          { dataInicio: { lte: fimBuffer }, dataFim: { gte: inicioBuffer } },
+          { dataReferencia: { gte: inicioBuffer, lte: fimBuffer } }
+        ]
+      },
+      select: {
+        dataInicio: true,
+        dataFim: true,
+        dataReferencia: true,
+        metadados: true
+      }
+    });
+
+    const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, solsAtestado);
+
+    // Persiste horários descobertos nas solicitações (corrige DB sem script manual)
+    for (let i = 0; i < afastamentos.length; i++) {
+      const a = afastamentos[i];
+      const raw = afastamentosRaw[i];
+      if (
+        a.tipo === "ATESTADO" &&
+        a.id &&
+        a.horarioInicio &&
+        a.horarioFim &&
+        (!raw.horarioInicio || !raw.horarioFim)
+      ) {
+        await this.prisma.afastamento
+          .update({
+            where: { id: a.id },
+            data: { horarioInicio: a.horarioInicio, horarioFim: a.horarioFim }
+          })
+          .catch(() => {});
+      }
+    }
 
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: inicio, lte: fim } },
@@ -1026,7 +1216,13 @@ export class PontoService {
         saldoAcumuladoMinutos: d.saldoAcumuladoMinutos,
         jornadaEsperadaMinutos: d.jornadaEsperadaMinutos,
         observacao: d.observacao,
-        neutro: !!d.observacao
+        /* Neutro só quando o saldo não deve aparecer (afastamento integral / isento /
+           feriado sem trabalho). Atestado parcial e feriado parcial mostram saldo. */
+        neutro:
+          !!d.observacao &&
+          (d.observacao === "Afastamento" ||
+            d.observacao.startsWith("Isento") ||
+            (d.observacao.startsWith("Feriado:") && d.horasTrabalhadasMinutos === 0))
       };
     }
     const saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
@@ -1046,6 +1242,8 @@ export class PontoService {
       mes,
       ano,
       inicioAtividades,
+      dataInicioProducao,
+      periodoTeste,
       pontoObrigatorioDesde,
       semRegistroPonto: categoriaSemRegistroPonto(func.categoria),
       categoria: func.categoria,
@@ -1069,8 +1267,8 @@ export class PontoService {
 
   /* ─── Relatório mensal ─── */
 
-  async getRelatorio(keycloakSub: string, mes: number, ano: number) {
-    const historico = await this.getHistorico(keycloakSub, mes, ano);
+  async getRelatorio(keycloakSub: string, mes: number, ano: number, isSuperAdmin = false) {
+    const historico = await this.getHistorico(keycloakSub, mes, ano, isSuperAdmin);
 
     const registrosCalc = historico.registros.filter((r) => !r.apenasInformativo);
     const afastamentosCalc = historico.afastamentos.filter((a) => !a.apenasInformativo);
@@ -1085,7 +1283,8 @@ export class PontoService {
       historico.multiplicadores.sabadoPct,
       historico.multiplicadores.domingoPct,
       historico.multiplicadores.feriadoPct,
-      historico.inicioAtividades
+      historico.inicioAtividades,
+      { forcarSemIntervalo: categoriaSemIntervaloAlmoco(historico.categoria) }
     );
 
     const diasMesBanco = Object.entries(historico.bancoPorDia).map(([data, d]) => ({
@@ -1213,10 +1412,14 @@ export class PontoService {
         dataHora: { gte: inicio, lte: fim }
       },
       orderBy: { dataHora: "asc" },
-      select: { tipo: true, dataHora: true }
+      select: { tipo: true, dataHora: true, observacoes: true }
     });
 
-    const porDia = new Map<string, { tipo: string; dataHora: Date }[]>();
+    const porDia = new Map<
+      string,
+      { tipo: string; dataHora: Date; observacoes: Prisma.JsonValue }[]
+    >();
+    const semIntervaloCategoria = categoriaSemIntervaloAlmoco(funcMeta?.categoria);
     for (const r of registros) {
       const key = dataBrasiliaISO(r.dataHora);
       if (!porDia.has(key)) porDia.set(key, []);
@@ -1224,15 +1427,35 @@ export class PontoService {
     }
 
     // Afastamentos aprovados que interceptam o ciclo (exceto informativos)
-    const afastamentos = await this.prisma.afastamento.findMany({
+    const afastamentosRaw = await this.prisma.afastamento.findMany({
       where: {
         funcionarioId,
         apenasInformativo: false,
         dataInicio: { lte: fim },
         dataFim: { gte: inicio }
       },
-      select: { dataInicio: true, dataFim: true }
+      select: {
+        id: true,
+        tipo: true,
+        dataInicio: true,
+        dataFim: true,
+        horarioInicio: true,
+        horarioFim: true
+      }
     });
+    const solsAtestado = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "ATESTADO",
+        status: "APROVADA",
+        OR: [
+          { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
+          { dataReferencia: { gte: inicio, lte: fim } }
+        ]
+      },
+      select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
+    });
+    const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, solsAtestado);
 
     // Todos os feriados do ciclo (inclusive os que não bloqueiam registro)
     const feriados = await this.prisma.feriadoConfig.findMany({
@@ -1278,6 +1501,7 @@ export class PontoService {
         const aFim = dataBrasiliaISO(a.dataFim);
         return dataAtual >= aInicio && dataAtual <= aFim;
       });
+      const afastamentoParcial = afastamento ? isAfastamentoParcial(afastamento) : false;
       const regsDodia = porDia.get(dataAtual) ?? [];
       const eHoje = dataAtual === hojeIso;
       /* Mesma regra do Histórico: em dias passados o trecho aberto (ex. retorno
@@ -1313,16 +1537,82 @@ export class PontoService {
 
       if (eDiaUtil) {
         // Dia útil normal
-        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
+        const optsDispAlmocoDia = {
+          horarioInicio: afastamento?.horarioInicio,
+          horarioFim: afastamento?.horarioFim,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        };
+        const semAlmocoDia =
+          semIntervaloCategoria ||
+          !!observacaoTurnoSemIntervalo(entradaDia?.observacoes) ||
+          dispensarAlmocoPorAtestadoParcial(afastamentoParcial, regsDodia, optsDispAlmocoDia);
+        const regsCalcDia = semAlmocoDia ? normalizarRegsAtestadoSemAlmoco(regsDodia) : regsDodia;
+        let horasTrabalhadasMinutos = this.calcHorasMinutos(regsCalcDia, capMs, {
+          exigirIntervalo: !semAlmocoDia,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        });
         let saldoDiaMinutos: number;
         let jornadaDia: number;
         let obs: string | undefined;
 
-        if (afastamento) {
-          // Afastamento: saldo neutro
+        if (afastamento && !afastamentoParcial) {
+          // Afastamento dia inteiro: saldo neutro
           saldoDiaMinutos = 0;
           jornadaDia = 0;
           obs = "Afastamento";
+        } else if (afastamento && afastamentoParcial) {
+          const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
+          const jornadaMandatoria = calcularJornadaComAtestadoParcial(
+            afastamento.horarioInicio!,
+            afastamento.horarioFim!,
+            {
+              horaEntrada: jornada.horaEntrada ?? "08:00",
+              horaSaida: jornada.horaSaida ?? "17:00",
+              jornadaDiariaMin: jornadaDiaMin,
+              almocoMinMin: jornada.almocoMinMin ?? 60,
+              almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+              almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+            }
+          );
+          const regsMinDia = regsDodia.map((r) => ({
+            tipo: r.tipo,
+            minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora).substring(0, 5))
+          }));
+          const prep = prepararRegsCalculoAtestadoParcial({
+            registros: regsMinDia,
+            horarioInicio: afastamento.horarioInicio!,
+            horarioFim: afastamento.horarioFim!,
+            horaEntrada: jornada.horaEntrada ?? "08:00",
+            horaSaida: jornada.horaSaida ?? "17:00",
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+            fecharVespertinoNoMarco: !eHoje
+          });
+          horasTrabalhadasMinutos = calcHorasTrabalhadasMinutos(prep.registros, {
+            exigirIntervalo: !prep.semAlmoco,
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          });
+          saldoDiaMinutos = calcularSaldoAtestadoParcialPorExpediente({
+            horarioInicioAtestado: afastamento.horarioInicio!,
+            horarioFimAtestado: afastamento.horarioFim!,
+            horaEntrada: jornada.horaEntrada ?? "08:00",
+            horaSaida: jornada.horaSaida ?? "17:00",
+            fimTrabalhoMin: prep.fimTrabalhoMin,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 5,
+            horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
+          });
+          jornadaDia = jornadaMandatoria;
+          obs = `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
         } else if (feriadoDia) {
           const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
           if (feriadoDia.marcoHorario) {
@@ -1373,9 +1663,17 @@ export class PontoService {
           saldoAcumuladoMinutos: saldoAcumulado,
           observacao: obs
         });
-      } else if (!afastamento && regsDodia.length > 0) {
+      } else if ((!afastamento || isAfastamentoParcial(afastamento)) && regsDodia.length > 0) {
         // Fim de semana COM registros: aplica multiplicador
-        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs);
+        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
+        const exigirIntervalo =
+          !semIntervaloCategoria && !observacaoTurnoSemIntervalo(entradaDia?.observacoes);
+        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {
+          exigirIntervalo,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        });
         const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
         const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
         const tipoLabel = nomeFeriado
@@ -1448,11 +1746,15 @@ export class PontoService {
   /* Verifica se a hora extra do dia ultrapassou o limite configurado e, caso positivo,
      cria uma solicitação automática de HORA_EXTRA (se ainda não existir uma para hoje). */
   private async verificarHoraExtraAuto(funcionarioId: string) {
-    const [jornada, solCfg] = await Promise.all([
+    const [jornada, solCfg, funcMeta] = await Promise.all([
       this.getJornadaEfetiva(funcionarioId),
       this.prisma.configuracaoSolicitacoes.findUnique({
         where: { id: "singleton" },
         select: { tipoAtivoHoraExtra: true }
+      }),
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { categoria: true }
       })
     ]);
 
@@ -1465,7 +1767,7 @@ export class PontoService {
     const registros = await this.prisma.registroPonto.findMany({
       where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
       orderBy: { dataHora: "asc" },
-      select: { tipo: true, dataHora: true }
+      select: { tipo: true, dataHora: true, observacoes: true }
     });
 
     // Verifica se hoje é feriado parcial para ajustar a jornada obrigatória
@@ -1481,7 +1783,17 @@ export class PontoService {
         })
       : jornada.jornadaDiariaMin;
 
-    const overtimeRaw = this.calcHorasMinutos(registros) - jornadaMandatoria;
+    const entradaHoje = registros.find((r) => r.tipo === "ENTRADA");
+    const exigirIntervalo =
+      !categoriaSemIntervaloAlmoco(funcMeta?.categoria) &&
+      !observacaoTurnoSemIntervalo(entradaHoje?.observacoes);
+    const overtimeRaw =
+      this.calcHorasMinutos(registros, undefined, {
+        exigirIntervalo,
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      }) - jornadaMandatoria;
     const overtime = aplicarMargemCalculoDiario(overtimeRaw, jornada.toleranciaCalculoMin);
     // Permanência residual dentro da tolerância de HE também não dispara solicitação
     if (overtime <= (jornada.toleranciaHoraExtraMin ?? 0)) return;
@@ -2056,5 +2368,214 @@ export class PontoService {
         mimeType: body.mimeType || null
       }
     });
+  }
+
+  /**
+   * Recalcula horas/extras/faltas de todos os PeriodoPonto com a regra de
+   * almoço mínimo obrigatório e atualiza saldos de assinaturas ainda pendentes.
+   */
+  async recalcularHistoricoAlmocoTodos(): Promise<{
+    funcionarios: number;
+    periodosAtualizados: number;
+    assinaturasAtualizadas: number;
+    erros: Array<{ funcionarioId: string; mes?: number; ano?: number; erro: string }>;
+  }> {
+    const funcs = await this.prisma.funcionario.findMany({
+      select: {
+        id: true,
+        categoria: true,
+        user: { select: { createdAt: true, name: true } }
+      }
+    });
+
+    let periodosAtualizados = 0;
+    let assinaturasAtualizadas = 0;
+    const erros: Array<{ funcionarioId: string; mes?: number; ano?: number; erro: string }> = [];
+
+    for (const func of funcs) {
+      try {
+        const meses = new Set<string>();
+
+        const regsDatas = await this.prisma.registroPonto.findMany({
+          where: { funcionarioId: func.id, apenasInformativo: false },
+          select: { dataHora: true }
+        });
+        for (const r of regsDatas) {
+          meses.add(dataBrasiliaISO(r.dataHora).slice(0, 7));
+        }
+
+        const periodosExistentes = await this.prisma.periodoPonto.findMany({
+          where: { funcionarioId: func.id },
+          select: { mes: true, ano: true }
+        });
+        for (const p of periodosExistentes) {
+          meses.add(`${p.ano}-${String(p.mes).padStart(2, "0")}`);
+        }
+
+        for (const ym of [...meses].sort()) {
+          const [anoStr, mesStr] = ym.split("-");
+          const ano = Number(anoStr);
+          const mes = Number(mesStr);
+          try {
+            const resumo = await this.calcularResumoMensalPorFuncionarioId(func.id, mes, ano);
+            await this.prisma.periodoPonto.upsert({
+              where: {
+                funcionarioId_mes_ano: { funcionarioId: func.id, mes, ano }
+              },
+              create: {
+                funcionarioId: func.id,
+                mes,
+                ano,
+                horasTrabalhadasMinutos: resumo.horasTrabalhadasMinutos,
+                horasExtrasMinutos: resumo.horasExtrasMinutos,
+                horasFaltaMinutos: resumo.horasFaltaMinutos,
+                diasTrabalhados: resumo.diasTrabalhados
+              },
+              update: {
+                horasTrabalhadasMinutos: resumo.horasTrabalhadasMinutos,
+                horasExtrasMinutos: resumo.horasExtrasMinutos,
+                horasFaltaMinutos: resumo.horasFaltaMinutos,
+                diasTrabalhados: resumo.diasTrabalhados
+              }
+            });
+            periodosAtualizados++;
+          } catch (err) {
+            erros.push({
+              funcionarioId: func.id,
+              mes,
+              ano,
+              erro: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+
+        try {
+          const bh = await this.calcularBancoHorasAdmin(func.id);
+          const saldo = bh.saldoAtualMinutos ?? 0;
+          const pendentes = await this.prisma.assinaturaQuadro.findMany({
+            where: {
+              status: "PENDENTE_FUNCIONARIO",
+              periodo: { funcionarioId: func.id }
+            },
+            select: { id: true }
+          });
+          for (const a of pendentes) {
+            await this.prisma.assinaturaQuadro.update({
+              where: { id: a.id },
+              data: { bancoHorasSaldoTotalMinutos: saldo }
+            });
+            assinaturasAtualizadas++;
+          }
+        } catch (err) {
+          erros.push({
+            funcionarioId: func.id,
+            erro: `BH: ${err instanceof Error ? err.message : String(err)}`
+          });
+        }
+      } catch (err) {
+        erros.push({
+          funcionarioId: func.id,
+          erro: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+
+    this.logger.log(
+      `Recálculo almoço: ${funcs.length} funcionários, ${periodosAtualizados} períodos, ` +
+        `${assinaturasAtualizadas} assinaturas, ${erros.length} erros`
+    );
+
+    return {
+      funcionarios: funcs.length,
+      periodosAtualizados,
+      assinaturasAtualizadas,
+      erros
+    };
+  }
+
+  /** Resumo mensal por funcionário (admin) — usa a mesma regra de almoço do Histórico. */
+  async calcularResumoMensalPorFuncionarioId(funcionarioId: string, mes: number, ano: number) {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        id: true,
+        categoria: true,
+        user: { select: { createdAt: true } }
+      }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+
+    const primeiroDia = `${ano}-${String(mes).padStart(2, "0")}-01`;
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const ultimoDiaIso = `${ano}-${String(mes).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+    const { inicio } = intervaloDiaBrasilia(primeiroDia);
+    const { fim } = intervaloDiaBrasilia(ultimoDiaIso);
+    const inicioBuffer = new Date(inicio.getTime() - 3 * 60 * 60 * 1000);
+    const fimBuffer = new Date(fim.getTime() + 3 * 60 * 60 * 1000);
+
+    const [registros, afastamentos, feriados, cfgMult, jornadaCtx] = await Promise.all([
+      this.prisma.registroPonto.findMany({
+        where: {
+          funcionarioId,
+          apenasInformativo: false,
+          dataHora: { gte: inicio, lte: fim }
+        },
+        orderBy: { dataHora: "asc" },
+        select: { tipo: true, dataHora: true, observacoes: true }
+      }),
+      this.prisma.afastamento.findMany({
+        where: {
+          funcionarioId,
+          apenasInformativo: false,
+          dataInicio: { lte: fimBuffer },
+          dataFim: { gte: inicioBuffer }
+        },
+        select: { dataInicio: true, dataFim: true }
+      }),
+      this.prisma.feriadoConfig.findMany({
+        where: { data: { gte: inicio, lte: fim } },
+        select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+      }),
+      this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: {
+          bancoHorasSabadoPct: true,
+          bancoHorasDomingoPct: true,
+          bancoHorasFeriadoPct: true
+        }
+      }),
+      this.getJornadaHistoricoContexto(funcionarioId)
+    ]);
+
+    const inicioAtividades = func.user?.createdAt ? dataBrasiliaISO(func.user.createdAt) : null;
+
+    const quadro = montarRelatorioQuadro(
+      registros,
+      afastamentos,
+      mes,
+      ano,
+      jornadaCtx,
+      feriados,
+      cfgMult?.bancoHorasSabadoPct ?? 100,
+      cfgMult?.bancoHorasDomingoPct ?? 200,
+      cfgMult?.bancoHorasFeriadoPct ?? 200,
+      inicioAtividades,
+      { forcarSemIntervalo: categoriaSemIntervaloAlmoco(func.categoria) }
+    );
+
+    const horasExtrasMinutos = quadro.dias
+      .filter((d) => (d.saldoMin ?? 0) > 0)
+      .reduce((s, d) => s + (d.saldoMin ?? 0), 0);
+    const horasFaltaMinutos = quadro.dias
+      .filter((d) => (d.saldoMin ?? 0) < 0)
+      .reduce((s, d) => s + Math.abs(d.saldoMin ?? 0), 0);
+    const diasTrabalhados = quadro.dias.filter((d) => d.statusInterno === "OK").length;
+
+    return {
+      horasTrabalhadasMinutos: quadro.horasTrabalhadasMinutos,
+      horasExtrasMinutos,
+      horasFaltaMinutos,
+      diasTrabalhados
+    };
   }
 }

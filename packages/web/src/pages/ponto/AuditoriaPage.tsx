@@ -33,8 +33,10 @@ import {
   FileTextIcon,
   DatabaseIcon,
   InfoIcon,
-  Trash2Icon
+  Trash2Icon,
+  CoffeeIcon
 } from "../../components/icons";
+import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "../../utils/calcHorasTrabalhadas";
 import {
   FeriasDetalheBlock,
   LogTimelineGestor,
@@ -54,6 +56,13 @@ interface RankingItem {
   minutosFormatado: string;
 }
 
+interface RankingQuantidadeItem {
+  funcionarioId: string;
+  nome: string;
+  matricula: string;
+  quantidade: number;
+}
+
 interface Dashboard {
   totalFuncionarios: number;
   funcionariosAtivos: number;
@@ -71,6 +80,11 @@ interface Dashboard {
   topAdiantados?: RankingItem[];
   topBancoNegativo?: RankingItem[];
   topBancoPositivo?: RankingItem[];
+  topMaisAtestados?: RankingQuantidadeItem[];
+  topMenosAtestados?: RankingQuantidadeItem[];
+  topMaisAbonos?: RankingQuantidadeItem[];
+  topMenosAbonos?: RankingQuantidadeItem[];
+  atestadosPorMes?: { mes: string; label: string; total: number }[];
   filtro?: { dataInicio: string; dataFim: string };
   ultimosLogs: AuditLog[];
   origens: { origem: string; total: number }[];
@@ -462,6 +476,47 @@ const ENDPOINT_MAP: Array<{ re: RegExp; info: EndpointInfo }> = [
   {
     re: /^GET \/api\/admin\/grupos-sistema/,
     info: { desc: "Mapeamento de grupos para papéis do sistema", categoria: "Administração" }
+  },
+  // Sistema — Super Admin / Start
+  {
+    re: /^GET \/api\/sistema\/super-admins$/,
+    info: { desc: "Listagem de Super Administradores", categoria: "Administração" }
+  },
+  {
+    re: /^GET \/api\/sistema\/candidatos-gerti$/,
+    info: { desc: "Listagem de candidatos GERTI a Super Admin", categoria: "Administração" }
+  },
+  {
+    re: /^POST \/api\/sistema\/super-admins$/,
+    info: { desc: "Concessão de Super Administrador", categoria: "Administração" }
+  },
+  {
+    re: /^DELETE \/api\/sistema\/super-admins/,
+    info: { desc: "Revogação de Super Administrador", categoria: "Administração" }
+  },
+  {
+    re: /^GET \/api\/sistema\/start\/pendencias$/,
+    info: { desc: "Consulta de pendências de Start do sistema", categoria: "Administração" }
+  },
+  {
+    re: /^GET \/api\/sistema\/start$/,
+    info: { desc: "Status do Start / go-live do sistema", categoria: "Administração" }
+  },
+  {
+    re: /^POST \/api\/sistema\/start\/[^/]+\/aprovar-gerti$/,
+    info: { desc: "Aprovação GERTI do Start do sistema", categoria: "Administração" }
+  },
+  {
+    re: /^POST \/api\/sistema\/start\/[^/]+\/aprovar-rh$/,
+    info: { desc: "Aprovação RH e execução do Start do sistema", categoria: "Administração" }
+  },
+  {
+    re: /^POST \/api\/sistema\/start\/[^/]+\/rejeitar$/,
+    info: { desc: "Rejeição do Start do sistema", categoria: "Administração" }
+  },
+  {
+    re: /^POST \/api\/sistema\/start$/,
+    info: { desc: "Solicitação de Start / go-live do sistema", categoria: "Administração" }
   },
   // Autenticação
   {
@@ -1129,6 +1184,8 @@ function TabDashboard({
   const [erro, setErro] = useState<string | null>(null);
   const [modoPontualidade, setModoPontualidade] = useState<"atrasados" | "adiantados">("atrasados");
   const [modoBanco, setModoBanco] = useState<"negativo" | "positivo">("negativo");
+  const [modoAtestado, setModoAtestado] = useState<"mais" | "menos">("mais");
+  const [modoAbono, setModoAbono] = useState<"mais" | "menos">("mais");
   const [diaDetalhe, setDiaDetalhe] = useState<string | null>(null);
   const [serieDetalhe, setSerieDetalhe] = useState<
     { label: string; minuto: number; total: number }[]
@@ -1378,18 +1435,36 @@ function TabDashboard({
     modoPontualidade === "atrasados" ? (data.topAtrasados ?? []) : (data.topAdiantados ?? []);
   const rankingBanco =
     modoBanco === "negativo" ? (data.topBancoNegativo ?? []) : (data.topBancoPositivo ?? []);
+  const rankingAtestado =
+    modoAtestado === "mais" ? (data.topMaisAtestados ?? []) : (data.topMenosAtestados ?? []);
+  const rankingAbono =
+    modoAbono === "mais" ? (data.topMaisAbonos ?? []) : (data.topMenosAbonos ?? []);
   /* Ordem da API: maior primeiro. No BarChart vertical o 1º item fica no topo. */
+  const abbreviarNome = (nome: string) =>
+    nome.split(" ")[0] + (nome.split(" ")[1] ? ` ${nome.split(" ")[1][0]}.` : "");
   const chartPont = rankingPont.map((r) => ({
-    nome: r.nome.split(" ")[0] + (r.nome.split(" ")[1] ? ` ${r.nome.split(" ")[1][0]}.` : ""),
+    nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     minutos: r.minutos,
     label: r.minutosFormatado
   }));
   const chartBanco = rankingBanco.map((r) => ({
-    nome: r.nome.split(" ")[0] + (r.nome.split(" ")[1] ? ` ${r.nome.split(" ")[1][0]}.` : ""),
+    nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     minutos: r.minutos,
     label: r.minutosFormatado
+  }));
+  const chartAtestado = rankingAtestado.map((r) => ({
+    nome: abbreviarNome(r.nome),
+    nomeCompleto: r.nome,
+    quantidade: r.quantidade,
+    label: String(r.quantidade)
+  }));
+  const chartAbono = rankingAbono.map((r) => ({
+    nome: abbreviarNome(r.nome),
+    nomeCompleto: r.nome,
+    quantidade: r.quantidade,
+    label: String(r.quantidade)
   }));
 
   return (
@@ -2081,6 +2156,253 @@ function TabDashboard({
               </ResponsiveContainer>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Top 10 atestados + Top 10 abonos lado a lado */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "18px 20px",
+            minWidth: 0
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 12,
+              flexWrap: "wrap"
+            }}
+          >
+            <p
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)",
+                margin: 0
+              }}
+            >
+              Top 10 {modoAtestado === "mais" ? "mais atestados" : "menos atestados"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setModoAtestado((m) => (m === "mais" ? "menos" : "mais"))}
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(122,30,38,0.20)",
+                background: "transparent",
+                color: "var(--burgundy-600)",
+                cursor: "pointer"
+              }}
+            >
+              Ver {modoAtestado === "mais" ? "menos atestados" : "mais atestados"}
+            </button>
+          </div>
+          <div style={{ width: "100%", height: 280 }}>
+            {chartAtestado.length === 0 ? (
+              <p
+                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
+              >
+                Sem dados no período.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartAtestado} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis
+                    type="number"
+                    allowDecimals={false}
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="nome"
+                    width={88}
+                    tick={{ fontSize: 11, fill: "#374151" }}
+                  />
+                  <Tooltip
+                    formatter={(
+                      v: number | string,
+                      _n: string,
+                      item?: { payload?: { label?: string } }
+                    ) => [item?.payload?.label ?? String(v), "Atestados"]}
+                    labelFormatter={(
+                      _l: string,
+                      p?: Array<{ payload?: { nomeCompleto?: string } }>
+                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
+                  />
+                  <Bar
+                    dataKey="quantidade"
+                    name="Atestados"
+                    fill={modoAtestado === "mais" ? "#c8393f" : "#2f7d4f"}
+                    radius={[0, 4, 4, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(122,30,38,0.08)",
+            padding: "18px 20px",
+            minWidth: 0
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              marginBottom: 12,
+              flexWrap: "wrap"
+            }}
+          >
+            <p
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)",
+                margin: 0
+              }}
+            >
+              Top 10{" "}
+              {modoAbono === "mais" ? "mais solicitações de abono" : "menos solicitações de abono"}
+            </p>
+            <button
+              type="button"
+              onClick={() => setModoAbono((m) => (m === "mais" ? "menos" : "mais"))}
+              style={{
+                padding: "5px 10px",
+                fontSize: 11,
+                fontWeight: 600,
+                borderRadius: "var(--radius-md)",
+                border: "1px solid rgba(122,30,38,0.20)",
+                background: "transparent",
+                color: "var(--burgundy-600)",
+                cursor: "pointer"
+              }}
+            >
+              Ver {modoAbono === "mais" ? "menos solicitações" : "mais solicitações"}
+            </button>
+          </div>
+          <div style={{ width: "100%", height: 280 }}>
+            {chartAbono.length === 0 ? (
+              <p
+                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
+              >
+                Sem dados no período.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartAbono} layout="vertical" margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                  <XAxis
+                    type="number"
+                    allowDecimals={false}
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="nome"
+                    width={88}
+                    tick={{ fontSize: 11, fill: "#374151" }}
+                  />
+                  <Tooltip
+                    formatter={(
+                      v: number | string,
+                      _n: string,
+                      item?: { payload?: { label?: string } }
+                    ) => [item?.payload?.label ?? String(v), "Solicitações de abono"]}
+                    labelFormatter={(
+                      _l: string,
+                      p?: Array<{ payload?: { nomeCompleto?: string } }>
+                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
+                  />
+                  <Bar
+                    dataKey="quantidade"
+                    name="Abonos"
+                    fill={modoAbono === "mais" ? "#c8393f" : "#2f7d4f"}
+                    radius={[0, 4, 4, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Atestados por mês (últimos 12 meses) */}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-lg)",
+          border: "1px solid rgba(122,30,38,0.08)",
+          padding: "18px 20px"
+        }}
+      >
+        <p
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "var(--ink-500)",
+            margin: "0 0 12px"
+          }}
+        >
+          Atestados por mês
+        </p>
+        <div style={{ width: "100%", height: 280 }}>
+          {(data.atestadosPorMes ?? []).length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
+              Sem dados.
+            </p>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={data.atestadosPorMes}
+                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
+                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6b7280" }} />
+                <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#6b7280" }} width={36} />
+                <Tooltip
+                  formatter={(v: number | string) => [v as number, "Atestados"]}
+                  labelFormatter={(
+                    _l: string,
+                    payload?: Array<{ payload?: { mes?: string; label?: string } }>
+                  ) => {
+                    const mes = payload?.[0]?.payload?.mes;
+                    if (!mes) return payload?.[0]?.payload?.label ?? "";
+                    const [y, m] = mes.split("-").map(Number);
+                    return new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
+                      month: "long",
+                      year: "numeric"
+                    });
+                  }}
+                />
+                <Bar dataKey="total" name="Atestados" fill="#c8393f" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 
@@ -4836,13 +5158,25 @@ interface JornadaHistorico {
   atualMin: number;
   horaEntrada?: string;
   horaSaida?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  toleranciaCalculoMin?: number;
+  horaExtraLimiteAuto?: number;
   vigenciaDesde: string | null;
 }
 
 const JORNADA_PADRAO_AUD: JornadaHistorico = {
   anteriorMin: 480,
   atualMin: 480,
-  vigenciaDesde: null
+  vigenciaDesde: null,
+  horaEntrada: "08:00",
+  horaSaida: "17:00",
+  almocoMinMin: 60,
+  almocoPodeIniciarA: "11:30",
+  almocoPodeIniciarAte: "13:00",
+  toleranciaCalculoMin: 5,
+  horaExtraLimiteAuto: 120
 };
 
 function jornadaMinDia(isoKey: string, jornada: JornadaHistorico): number {
@@ -4878,6 +5212,15 @@ interface DiaHist {
   turno?: string;
   motivoSemIntervalo?: string;
   janelaAlmoco?: string;
+  atestadoParcial?: boolean;
+  atestadoParcialHorario?: string;
+  saidaNaoAplicavel?: boolean;
+  almocoCurto?: {
+    inicio: string;
+    fimRegistrado: string;
+    fimReferencia: string;
+    minimoMin: number;
+  };
 }
 
 interface ApiRegHist {
@@ -4898,6 +5241,8 @@ interface ApiAfast {
   tipo: string;
   dataInicio: string;
   dataFim: string;
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
 }
 interface ApiFeriadoH {
   data: string;
@@ -4936,31 +5281,182 @@ function dtKeyH(iso: string) {
     day: "2-digit"
   }).format(new Date(iso));
 }
-function calcHorasH(regs: ApiRegHist[], agoraMin?: number): number {
-  let total = 0,
-    entrada: number | null = null;
-  for (const r of regs) {
-    const ts = toMinH(fmtHoraH(r.dataHora));
-    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
-      entrada = ts;
-    } else if (
-      (r.tipo === "INICIO_INTERVALO" || r.tipo === "INTERROMPER_EXPEDIENTE") &&
-      entrada !== null
-    ) {
-      total += ts - entrada;
-      entrada = null;
-    } else if (r.tipo === "FIM_INTERVALO") {
-      entrada = ts;
-    } else if (r.tipo === "SAIDA" && entrada !== null) {
-      total += ts - entrada;
-      entrada = null;
-    }
+function calcHorasH(
+  regs: ApiRegHist[],
+  agoraMin?: number,
+  opts?: {
+    exigirIntervalo?: boolean;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
   }
-  if (entrada !== null && agoraMin !== undefined) total += agoraMin - entrada;
-  return total;
+): number {
+  const entrada = regs.find((r) => r.tipo === "ENTRADA");
+  const obsSemIntervalo = (
+    entrada as { observacoes?: Array<{ tipo?: string }> } | undefined
+  )?.observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO");
+  return calcHorasTrabalhadasMinutos(
+    regs.map((r) => ({ tipo: r.tipo, minuto: toMinH(fmtHoraH(r.dataHora)) })),
+    {
+      agoraMin,
+      exigirIntervalo: opts?.exigirIntervalo !== false && !obsSemIntervalo,
+      almocoMinMin: opts?.almocoMinMin ?? 60,
+      almocoPodeIniciarA: opts?.almocoPodeIniciarA ?? "11:30",
+      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00"
+    }
+  );
+}
+function normalizarRegsSemAlmocoH<T extends { tipo: string }>(regs: T[]): T[] {
+  const temSaida = regs.some((r) => r.tipo === "SAIDA");
+  if (temSaida) {
+    return regs.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+  }
+  const temInicio = regs.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temFim = regs.some((r) => r.tipo === "FIM_INTERVALO");
+  if (temInicio && !temFim) {
+    return regs
+      .map((r) => (r.tipo === "INICIO_INTERVALO" ? { ...r, tipo: "SAIDA" } : r))
+      .filter((r) => r.tipo !== "FIM_INTERVALO");
+  }
+  return regs.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+}
+function atestadoEhMatutinoH(horarioFim: string, jornada: JornadaHistorico): boolean {
+  const inicioAlmoco = toMinH(jornada.almocoPodeIniciarA ?? "12:00");
+  const duracao = Math.max(0, jornada.almocoMinMin ?? 60);
+  return toMinH(horarioFim) <= inicioAlmoco + duracao;
+}
+function aplicarMargemH(saldo: number, tolerancia?: number | null): number {
+  const margem = Math.max(0, Number(tolerancia) || 0);
+  if (margem > 0 && Math.abs(saldo) <= margem) return 0;
+  return saldo;
+}
+function saldoAtestadoExpedienteH(opts: {
+  hi: string;
+  hf: string;
+  horaEntrada: string;
+  horaSaida: string;
+  fimTrabalhoMin: number | null;
+  jornada: JornadaHistorico;
+}): number {
+  const marco = marcoAtestadoH(opts.hi, opts.hf, opts.horaEntrada, opts.horaSaida, opts.jornada);
+  if (opts.fimTrabalhoMin == null) return 0;
+  let delta = opts.fimTrabalhoMin - marco;
+  const limiteHe = Math.max(0, opts.jornada.horaExtraLimiteAuto ?? 120);
+  if (delta > 0) delta = Math.min(delta, limiteHe);
+  return aplicarMargemH(delta, opts.jornada.toleranciaCalculoMin ?? 5);
+}
+function marcoAtestadoH(
+  hi: string,
+  hf: string,
+  horaEntrada: string,
+  horaSaida: string,
+  jornada: JornadaHistorico
+): number {
+  const matutino = atestadoEhMatutinoH(hf, jornada);
+  const entr = toMinH(horaEntrada);
+  const sai = toMinH(horaSaida);
+  const almoco = Math.max(0, jornada.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = toMinH(jornada.almocoPodeIniciarA ?? "12:00");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  return matutino ? toMinH(horaSaida) : Math.min(toMinH(hi), lunchStart);
+}
+function prepararRegsAtestadoH(opts: {
+  registros: Array<{ tipo: string; minuto: number }>;
+  hi: string;
+  hf: string;
+  horaEntrada: string;
+  horaSaida: string;
+  jornada: JornadaHistorico;
+  fecharVespertinoNoMarco?: boolean;
+}): {
+  registros: Array<{ tipo: string; minuto: number }>;
+  fimTrabalhoMin: number | null;
+  semAlmoco: boolean;
+} {
+  const hiM = toMinH(opts.hi);
+  const hfM = toMinH(opts.hf);
+  const fora =
+    hfM > hiM ? opts.registros.filter((r) => r.minuto < hiM || r.minuto > hfM) : opts.registros;
+  const matutino = atestadoEhMatutinoH(opts.hf, opts.jornada);
+  const semAlmoco = matutino || !fora.some((r) => r.tipo === "INICIO_INTERVALO");
+  let registros = semAlmoco ? normalizarRegsSemAlmocoH(fora) : fora;
+  const marco = marcoAtestadoH(opts.hi, opts.hf, opts.horaEntrada, opts.horaSaida, opts.jornada);
+  let fimTrabalhoMin = fimTrabalhoMinH(registros);
+  if (
+    opts.fecharVespertinoNoMarco &&
+    !matutino &&
+    fimTrabalhoMin == null &&
+    registros.some((r) => r.tipo === "ENTRADA")
+  ) {
+    registros = [...registros, { tipo: "SAIDA", minuto: marco }];
+    fimTrabalhoMin = marco;
+  }
+  return { registros, fimTrabalhoMin, semAlmoco };
+}
+function fimTrabalhoMinH(regs: Array<{ tipo: string; minuto: number }>): number | null {
+  const saida = [...regs].reverse().find((r) => r.tipo === "SAIDA");
+  if (saida) return saida.minuto;
+  if (!regs.some((r) => r.tipo === "FIM_INTERVALO")) {
+    const ini = [...regs].reverse().find((r) => r.tipo === "INICIO_INTERVALO");
+    if (ini) return ini.minuto;
+  }
+  const fim = [...regs].reverse().find((r) => r.tipo === "FIM_INTERVALO");
+  return fim ? fim.minuto : null;
 }
 function afastDoDia(key: string, lista: ApiAfast[]) {
   return lista.find((a) => key >= dtKeyH(a.dataInicio) && key <= dtKeyH(a.dataFim));
+}
+function isAfastParcial(a: { horarioInicio?: string | null; horarioFim?: string | null }) {
+  return !!(a.horarioInicio && a.horarioFim);
+}
+function atestadoDispensaSaida(
+  horarioInicio: string,
+  horarioFim: string,
+  jornadaOrAte: string | JornadaHistorico = "13:00"
+): boolean {
+  void horarioInicio;
+  if (typeof jornadaOrAte === "object" && jornadaOrAte) {
+    return !atestadoEhMatutinoH(horarioFim, jornadaOrAte);
+  }
+  if (toMinH(horarioFim) <= toMinH(jornadaOrAte)) return false;
+  return true;
+}
+function calcJornadaAtestadoParcial(
+  horarioInicio: string,
+  horarioFim: string,
+  jornadaDiariaMin: number,
+  horaEntrada: string,
+  horaSaida: string,
+  opts?: {
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
+): number {
+  const entr = toMinH(horaEntrada);
+  const sai = toMinH(horaSaida);
+  const hi = toMinH(horarioInicio);
+  const hf = toMinH(horarioFim);
+  if (sai <= entr || hf <= hi) return Math.max(0, jornadaDiariaMin);
+
+  const almoco = Math.max(0, opts?.almocoMinMin ?? 60);
+  const noon = 12 * 60;
+  const pref = toMinH(opts?.almocoPodeIniciarA ?? "11:30");
+  let lunchStart: number;
+  if (noon >= entr && noon + almoco <= sai) lunchStart = noon;
+  else if (pref >= entr && pref + almoco <= sai) lunchStart = pref;
+  else lunchStart = Math.max(entr, Math.min(pref, sai - almoco));
+  const lunchEnd = lunchStart + almoco;
+
+  const overlap = (a0: number, a1: number, b0: number, b1: number) =>
+    Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+
+  const cobertos = overlap(hi, hf, entr, lunchStart) + overlap(hi, hf, lunchEnd, sai);
+  return Math.max(0, jornadaDiariaMin - cobertos);
 }
 function textoObsLeg(t: string) {
   return t.replace(/\s*\(#[a-z0-9]+\)/gi, "").replace(/\s*#[a-z0-9]+\.?/gi, ".");
@@ -4984,7 +5480,8 @@ function buildHistorico(
   domingoPct = 200,
   feriadoPct = 200,
   jornada: JornadaHistorico = JORNADA_PADRAO_AUD,
-  periodosSemObrigacao: Array<{ inicio: string; fim: string | null }> = []
+  periodosSemObrigacao: Array<{ inicio: string; fim: string | null }> = [],
+  exigirIntervalo = true
 ): DiaHist[] {
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
@@ -5069,7 +5566,7 @@ function buildHistorico(
     }
 
     const af = afastDoDia(isoKey, afasts);
-    if (af) {
+    if (af && !isAfastParcial(af)) {
       result.push({
         data: dataStr,
         diaSemana: NOMES[dow],
@@ -5084,6 +5581,7 @@ function buildHistorico(
       });
       continue;
     }
+    const atestadoParcial = af && isAfastParcial(af) ? af : null;
     const dayRegs = byDay[isoKey] ?? [];
     // Fim de semana sem registros: FOLGA (aparece na view do RH sempre)
     if (fimDeSemana && dayRegs.length === 0) {
@@ -5127,6 +5625,41 @@ function buildHistorico(
             ? `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
             : `Feriado: ${feriadoDia.nome}`
         });
+      } else if (atestadoParcial) {
+        const jornadaMandatoria = calcJornadaAtestadoParcial(
+          atestadoParcial.horarioInicio!,
+          atestadoParcial.horarioFim!,
+          jornadaMinDia(isoKey, jornada),
+          jornada.horaEntrada ?? "08:00",
+          jornada.horaSaida ?? "17:00",
+          {
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          }
+        );
+        result.push({
+          data: dataStr,
+          diaSemana: NOMES[dow],
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: jornadaMandatoria,
+          status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
+          obs: `Atestado médico parcial (${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim})`,
+          atestadoParcial: true,
+          atestadoParcialHorario: `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`,
+          semIntervalo: true,
+          motivoSemIntervalo: "ATESTADO_PARCIAL",
+          turno: "ATESTADO_PARCIAL",
+          saidaNaoAplicavel: atestadoDispensaSaida(
+            atestadoParcial.horarioInicio!,
+            atestadoParcial.horarioFim!,
+            jornada
+          )
+        });
       } else {
         result.push({
           data: dataStr,
@@ -5148,10 +5681,57 @@ function buildHistorico(
       iiR = get("INICIO_INTERVALO"),
       fiR = get("FIM_INTERVALO"),
       sR = get("SAIDA");
-    const entrada = eR ? fmtHoraH(eR.dataHora) : null;
-    const inicioIntervalo = iiR ? fmtHoraH(iiR.dataHora) : null;
-    const fimIntervalo = fiR ? fmtHoraH(fiR.dataHora) : null;
-    const saida = sR ? fmtHoraH(sR.dataHora) : null;
+    const atestadoMatutino =
+      !!atestadoParcial && atestadoEhMatutinoH(atestadoParcial.horarioFim!, jornada);
+    const prepAtestado = atestadoParcial
+      ? prepararRegsAtestadoH({
+          registros: dayRegs.map((r) => ({
+            tipo: r.tipo,
+            minuto: toMinH(fmtHoraH(r.dataHora))
+          })),
+          hi: atestadoParcial.horarioInicio!,
+          hf: atestadoParcial.horarioFim!,
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          jornada,
+          fecharVespertinoNoMarco: dt.toDateString() !== hoje.toDateString()
+        })
+      : null;
+    const semAlmocoDia =
+      atestadoMatutino ||
+      !!(eR?.observacoes ?? []).some((o) => o.tipo === "TURNO_SEM_INTERVALO") ||
+      (!!atestadoParcial &&
+        !(prepAtestado
+          ? prepAtestado.registros.some((r) => r.tipo === "INICIO_INTERVALO")
+          : dayRegs.some((r) => r.tipo === "INICIO_INTERVALO"))) ||
+      !!prepAtestado?.semAlmoco;
+    const dayRegsHoras = semAlmocoDia
+      ? normalizarRegsSemAlmocoH(
+          atestadoParcial
+            ? dayRegs.filter((r) => {
+                const m = toMinH(fmtHoraH(r.dataHora));
+                const hi = toMinH(atestadoParcial.horarioInicio!);
+                const hf = toMinH(atestadoParcial.horarioFim!);
+                return m < hi || m > hf;
+              })
+            : dayRegs
+        )
+      : atestadoParcial
+        ? dayRegs.filter((r) => {
+            const m = toMinH(fmtHoraH(r.dataHora));
+            const hi = toMinH(atestadoParcial.horarioInicio!);
+            const hf = toMinH(atestadoParcial.horarioFim!);
+            return m < hi || m > hf;
+          })
+        : dayRegs;
+    const eRh = dayRegs.find((r) => r.tipo === "ENTRADA");
+    const iiDisplay = dayRegs.find((r) => r.tipo === "INICIO_INTERVALO");
+    const fiDisplay = dayRegs.find((r) => r.tipo === "FIM_INTERVALO");
+    const sDisplay = dayRegs.find((r) => r.tipo === "SAIDA");
+    const entrada = eRh ? fmtHoraH(eRh.dataHora) : eR ? fmtHoraH(eR.dataHora) : null;
+    const inicioIntervalo = iiDisplay ? fmtHoraH(iiDisplay.dataHora) : null;
+    const fimIntervalo = fiDisplay ? fmtHoraH(fiDisplay.dataHora) : null;
+    const saida = sDisplay ? fmtHoraH(sDisplay.dataHora) : null;
     const isHoje = dt.toDateString() === hoje.toDateString();
     let horasMin = 0,
       status: StatusDia,
@@ -5161,14 +5741,40 @@ function buildHistorico(
        — hoje sem saída: soma trechos fechados + aberto até agora
        — com intervalo e sem saída: só trechos fechados (retorno aberto ignorado)
        — só entrada em dia passado: 0h (falta) */
-    if (entrada && saida) {
-      horasMin = calcHorasH(dayRegs);
+    const exigirIntervaloDia = exigirIntervalo && !semAlmocoDia;
+    const calcOptsH = {
+      exigirIntervalo: exigirIntervaloDia,
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+    };
+    const dispensaSaida =
+      !!atestadoParcial &&
+      atestadoDispensaSaida(atestadoParcial.horarioInicio!, atestadoParcial.horarioFim!, jornada);
+    if (prepAtestado) {
+      horasMin = calcHorasTrabalhadasMinutos(prepAtestado.registros, {
+        exigirIntervalo: calcOptsH.exigirIntervalo,
+        almocoMinMin: calcOptsH.almocoMinMin,
+        almocoPodeIniciarA: calcOptsH.almocoPodeIniciarA,
+        almocoPodeIniciarAte: calcOptsH.almocoPodeIniciarAte,
+        agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
+      });
+      if (!entrada) status = "PENDENTE";
+      else if (dispensaSaida) status = isHoje ? "PENDENTE" : "OK";
+      else if (saida) status = "OK";
+      else if (isHoje) status = "PENDENTE";
+      else status = "FALTA";
+      if (!obs) {
+        obs = `Atestado médico parcial (${atestadoParcial!.horarioInicio}–${atestadoParcial!.horarioFim})`;
+      }
+    } else if (entrada && saida) {
+      horasMin = calcHorasH(dayRegsHoras, undefined, calcOptsH);
       status = "OK";
     } else if (entrada && isHoje) {
-      horasMin = calcHorasH(dayRegs, hoje.getHours() * 60 + hoje.getMinutes());
+      horasMin = calcHorasH(dayRegsHoras, hoje.getHours() * 60 + hoje.getMinutes(), calcOptsH);
       status = "PENDENTE";
     } else if (entrada && inicioIntervalo) {
-      horasMin = calcHorasH(dayRegs);
+      horasMin = calcHorasH(dayRegsHoras, undefined, calcOptsH);
       status = "PENDENTE";
     } else if (entrada) {
       horasMin = 0;
@@ -5180,7 +5786,36 @@ function buildHistorico(
     horasMin = Math.max(0, horasMin);
     // Multiplicador para fins de semana e feriados
     let jornadaMin = jornadaMinDia(isoKey, jornada);
-    if (fimDeSemana || feriadoDia) {
+    if (atestadoParcial && prepAtestado && !fimDeSemana) {
+      const jornadaRef = calcJornadaAtestadoParcial(
+        atestadoParcial.horarioInicio!,
+        atestadoParcial.horarioFim!,
+        jornadaMin,
+        jornada.horaEntrada ?? "08:00",
+        jornada.horaSaida ?? "17:00",
+        {
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        }
+      );
+      if (status === "FALTA" && horasMin === 0) {
+        jornadaMin = jornadaRef;
+      } else {
+        const saldoExp = saldoAtestadoExpedienteH({
+          hi: atestadoParcial.horarioInicio!,
+          hf: atestadoParcial.horarioFim!,
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          fimTrabalhoMin: prepAtestado.fimTrabalhoMin,
+          jornada
+        });
+        jornadaMin = Math.max(0, horasMin - saldoExp);
+      }
+      if (!obs) {
+        obs = `Atestado médico parcial (${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim})`;
+      }
+    } else if (fimDeSemana || feriadoDia) {
       if (feriadoDia?.marcoHorario && !fimDeSemana) {
         jornadaMin = calcJornadaParcial(
           feriadoDia.marcoHorario,
@@ -5211,6 +5846,24 @@ function buildHistorico(
     if (aberta) pausas.push({ inicio: aberta, fim: null });
     const observacoes = dayRegs.flatMap((r) => r.observacoes ?? []);
     const obsTurno = (eR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+    const bloquearIntervalo = !!atestadoParcial || !!obsTurno || semAlmocoDia;
+    const almocoCurtoDetect = !bloquearIntervalo
+      ? analisarAlmocoCurto(
+          dayRegs.map((r) => ({
+            tipo: r.tipo,
+            minuto: toMinH(fmtHoraH(r.dataHora))
+          })),
+          {
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            exigirIntervalo: exigirIntervalo && !semAlmocoDia
+          }
+        )
+      : null;
+    const fmtMinH = (min: number) => {
+      const h = Math.floor(min / 60);
+      const m = min % 60;
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    };
     result.push({
       data: dataStr,
       diaSemana: NOMES[dow],
@@ -5225,20 +5878,56 @@ function buildHistorico(
       obs,
       observacoes: observacoes.length ? observacoes : undefined,
       entradaEditada: !!eR?.ajustado,
-      inicioIntervaloEditado: !!iiR?.ajustado,
-      fimIntervaloEditado: !!fiR?.ajustado,
-      saidaEditada: !!sR?.ajustado,
-      semIntervalo: !!obsTurno,
-      turno: obsTurno?.turno,
-      motivoSemIntervalo: obsTurno?.motivo,
-      janelaAlmoco: obsTurno?.janelaAlmoco
+      inicioIntervaloEditado: !!iiDisplay?.ajustado || !!iiR?.ajustado,
+      fimIntervaloEditado: !!fiDisplay?.ajustado || !!fiR?.ajustado,
+      saidaEditada: !!sDisplay?.ajustado || !!sR?.ajustado,
+      semIntervalo: bloquearIntervalo,
+      turno: obsTurno?.turno ?? (atestadoParcial ? "ATESTADO_PARCIAL" : undefined),
+      motivoSemIntervalo: atestadoParcial ? "ATESTADO_PARCIAL" : obsTurno?.motivo,
+      janelaAlmoco: obsTurno?.janelaAlmoco,
+      atestadoParcial: !!atestadoParcial,
+      atestadoParcialHorario: atestadoParcial
+        ? `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`
+        : undefined,
+      saidaNaoAplicavel: dispensaSaida && !saida,
+      almocoCurto: almocoCurtoDetect
+        ? {
+            inicio: fmtMinH(almocoCurtoDetect.inicioMin),
+            fimRegistrado: fmtMinH(almocoCurtoDetect.fimRegistradoMin),
+            fimReferencia: fmtMinH(almocoCurtoDetect.fimReferenciaMin),
+            minimoMin: almocoCurtoDetect.minimoMin
+          }
+        : undefined
     });
   }
   return result;
 }
 
 /* Sub-components do histórico */
-function StatusPillH({ status, obs }: { status: StatusDia; obs?: string }) {
+function StatusPillH({
+  status,
+  obs,
+  atestadoParcial,
+  atestadoParcialHorario
+}: {
+  status: StatusDia;
+  obs?: string;
+  atestadoParcial?: boolean;
+  atestadoParcialHorario?: string;
+}) {
+  if (atestadoParcial) {
+    return (
+      <span
+        className="badge badge-blue"
+        title={
+          obs ??
+          `Atestado médico parcial${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`
+        }
+      >
+        Atestado médico parcial
+      </span>
+    );
+  }
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
@@ -5264,11 +5953,13 @@ function StatusPillH({ status, obs }: { status: StatusDia; obs?: string }) {
 function HoraCellH({
   hora,
   editado,
-  turnoSemIntervalo
+  turnoSemIntervalo,
+  almocoCurto
 }: {
   hora: string | null;
   editado?: boolean;
   turnoSemIntervalo?: { turno?: string };
+  almocoCurto?: DiaHist["almocoCurto"];
 }) {
   if (!hora) return <span style={{ color: "var(--ink-500)" }}>—</span>;
   const tituloTurno =
@@ -5279,6 +5970,9 @@ function HoraCellH({
         : turnoSemIntervalo
           ? "Jornada sem intervalo de almoço"
           : undefined;
+  const tituloAlmoco = almocoCurto
+    ? `Almoço: horário de referência = ${almocoCurto.minimoMin} min a partir de ${almocoCurto.inicio}. Registrado retorno às ${almocoCurto.fimRegistrado}; cálculo retoma às ${almocoCurto.fimReferencia}.`
+    : undefined;
   return (
     <span
       style={{
@@ -5292,6 +5986,16 @@ function HoraCellH({
       {turnoSemIntervalo && (
         <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
           <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
+        </span>
+      )}
+      {almocoCurto && (
+        <span
+          title={tituloAlmoco}
+          role="img"
+          aria-label={tituloAlmoco}
+          style={{ display: "inline-flex", lineHeight: 0, color: "#B45309", cursor: "help" }}
+        >
+          <CoffeeIcon size={12} style={{ flexShrink: 0 }} />
         </span>
       )}
       {editado && <Edit2Icon size={11} style={{ color: "#1e40af", opacity: 0.85 }} />}
@@ -5310,13 +6014,24 @@ function IntervaloNaoAplicavelCellH({
   janelaAlmoco?: string;
   onClick?: () => void;
 }) {
-  const nomeTurno =
-    turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
   const janela = janelaAlmoco ?? "janela de almoço";
-  const title =
-    motivo === "DURANTE_JANELA"
-      ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
-      : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+  let title: string;
+  if (motivo === "ATESTADO_PARCIAL" || turno === "ATESTADO_PARCIAL") {
+    title =
+      "Intervalo de almoço não aplicável — atestado médico parcial (matutino ou vespertino). " +
+      "A dedução de 1h não é aplicada quando o almoço não foi registrado.";
+  } else if (motivo === "ATESTADO_PARCIAL_SAIDA") {
+    title =
+      "Saída não aplicável — atestado médico parcial no período da tarde. " +
+      "O expediente encerra com o atestado; correção de ponto não é exigida.";
+  } else {
+    const nomeTurno =
+      turno === "NOTURNO" ? "noturno" : turno === "VESPERTINO" ? "vespertino" : "atípico";
+    title =
+      motivo === "DURANTE_JANELA"
+        ? `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} durante a janela vigente (${janela}).`
+        : `Intervalo de almoço não aplicável — entrada no turno ${nomeTurno} após a janela de almoço (${janela}).`;
+  }
 
   return (
     <button
@@ -5954,6 +6669,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       const [regsRaw, afastsRaw, assinData, feriadosRaw, cfgRaw] = await Promise.all([
         api.get<{
           registros: ApiRegHist[];
+          categoria?: string | null;
           jornada?: JornadaHistorico;
           periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
         }>(`/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`, token),
@@ -5985,6 +6701,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       const regs = regsRaw?.registros ?? [];
       const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
       const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
+      const exigirIntervalo =
+        regsRaw?.categoria !== "ESTAGIARIO" && regsRaw?.categoria !== "MENOR_APRENDIZ";
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
       const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
         ? feriadosRaw
@@ -6015,7 +6733,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           domingoPct,
           feriadoPct,
           jornada,
-          periodosSemObrigacao
+          periodosSemObrigacao,
+          exigirIntervalo
         )
       );
 
@@ -6299,7 +7018,9 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                         />
                       </td>
                       <td>
-                        {r.semIntervalo && !r.inicioIntervalo ? (
+                        {r.inicioIntervalo ? (
+                          <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                        ) : r.semIntervalo ? (
                           <IntervaloNaoAplicavelCellH
                             turno={r.turno}
                             motivo={r.motivoSemIntervalo}
@@ -6319,7 +7040,13 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                         )}
                       </td>
                       <td>
-                        {r.semIntervalo && !r.fimIntervalo ? (
+                        {r.fimIntervalo ? (
+                          <HoraCellH
+                            hora={r.fimIntervalo}
+                            editado={r.fimIntervaloEditado}
+                            almocoCurto={r.almocoCurto}
+                          />
+                        ) : r.semIntervalo || r.atestadoParcial ? (
                           <IntervaloNaoAplicavelCellH
                             turno={r.turno}
                             motivo={r.motivoSemIntervalo}
@@ -6339,7 +7066,25 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                         )}
                       </td>
                       <td>
-                        <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                        {r.saida ? (
+                          <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                        ) : r.saidaNaoAplicavel ? (
+                          <IntervaloNaoAplicavelCellH
+                            turno="ATESTADO_PARCIAL"
+                            motivo="ATESTADO_PARCIAL_SAIDA"
+                            onClick={
+                              r.observacoes?.length
+                                ? () =>
+                                    setModalObs({
+                                      dia: `${r.diaSemana}, ${r.data}`,
+                                      observacoes: r.observacoes ?? []
+                                    })
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                        )}
                       </td>
                       <td>
                         <PausaCellH pausas={r.pausas} />
@@ -6363,7 +7108,12 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                         }}
                       >
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <StatusPillH status={r.status} obs={r.obs} />
+                          <StatusPillH
+                            status={r.status}
+                            obs={r.obs}
+                            atestadoParcial={r.atestadoParcial}
+                            atestadoParcialHorario={r.atestadoParcialHorario}
+                          />
                           <BotaoObsH
                             observacoes={r.observacoes ?? []}
                             onClick={() =>
@@ -6463,7 +7213,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           { cls: "badge-green", l: "Jornada completa" },
           { cls: "badge-amber", l: "Pendente (saída não registrada)" },
           { cls: "badge-red", l: "Falta" },
-          { cls: "badge-blue", l: "Afastamento justificado" },
+          { cls: "badge-blue", l: "Afastamento / Atestado médico parcial" },
           { cls: "badge-gray", l: "Feriado ou dia futuro" }
         ].map((item) => (
           <span
@@ -8496,6 +9246,27 @@ interface AssinaturaRH {
   };
 }
 
+interface ResultadoCodigoAssinatura {
+  tipo: "QUADRO_MENSAL" | "CIENCIA_ATESTADO";
+  papel: "FUNCIONARIO" | "GESTOR" | "CIENCIA_GESTOR";
+  codigo: string;
+  id: string;
+  funcionarioNome: string;
+  matricula: string | null;
+  gerenciaNome: string | null;
+  assinadoEm: string | null;
+  signatarioNome: string | null;
+  periodo?: { mes: number; ano: number };
+  status?: string;
+  documentoUrl?: string | null;
+}
+
+const PAPEL_CODIGO_LABEL: Record<ResultadoCodigoAssinatura["papel"], string> = {
+  FUNCIONARIO: "Assinatura do funcionário (quadro mensal)",
+  GESTOR: "Assinatura do gestor (quadro mensal)",
+  CIENCIA_GESTOR: "Ciência do gestor (atestado)"
+};
+
 function fmtBH(min: number): string {
   const sign = min < 0 ? "-" : "+";
   const abs = Math.abs(min);
@@ -8545,10 +9316,19 @@ function TabValidacoes({ token }: { token: string }) {
     agora.getMonth() === 0 ? agora.getFullYear() - 1 : agora.getFullYear()
   );
   const [status, setStatus] = useState("");
+  const [codigoInput, setCodigoInput] = useState("");
+  const [codigoBusca, setCodigoBusca] = useState("");
+  const [resultadosCodigo, setResultadosCodigo] = useState<ResultadoCodigoAssinatura[] | null>(
+    null
+  );
+  const [erroCodigo, setErroCodigo] = useState("");
   const [gerandoMes, setGerandoMes] = useState(false);
   const [msgGerar, setMsgGerar] = useState("");
 
+  const buscandoPorCodigo = codigoBusca.trim().length > 0;
+
   const carregar = useCallback(() => {
+    if (buscandoPorCodigo) return;
     setLoading(true);
     const p = new URLSearchParams();
     if (gerenciaId) p.set("gerenciaId", gerenciaId);
@@ -8565,7 +9345,36 @@ function TabValidacoes({ token }: { token: string }) {
       })
       .catch(() => setAssinaturas([]))
       .finally(() => setLoading(false));
-  }, [token, gerenciaId, mes, ano, status, page]);
+  }, [token, gerenciaId, mes, ano, status, page, buscandoPorCodigo]);
+
+  const buscarPorCodigo = useCallback(
+    (codigo: string) => {
+      const c = codigo.trim();
+      if (!c) {
+        setCodigoBusca("");
+        setResultadosCodigo(null);
+        setErroCodigo("");
+        return;
+      }
+      setLoading(true);
+      setErroCodigo("");
+      setCodigoBusca(c);
+      api
+        .get<{ total: number; encontrados: ResultadoCodigoAssinatura[] }>(
+          `/auditoria/assinaturas/verificar?codigo=${encodeURIComponent(c)}`,
+          token
+        )
+        .then((d) => {
+          setResultadosCodigo(d?.encontrados ?? []);
+        })
+        .catch((e: unknown) => {
+          setResultadosCodigo([]);
+          setErroCodigo((e as Error)?.message ?? "Erro ao buscar código.");
+        })
+        .finally(() => setLoading(false));
+    },
+    [token]
+  );
 
   useEffect(() => {
     carregar();
@@ -8605,18 +9414,78 @@ function TabValidacoes({ token }: { token: string }) {
       );
   }
 
+  function limparBuscaCodigo() {
+    setCodigoInput("");
+    setCodigoBusca("");
+    setResultadosCodigo(null);
+    setErroCodigo("");
+  }
+
   const totalPages = Math.ceil(total / limit);
 
   return (
     <div>
-      {/* Filtros */}
+      {/* Busca por código da assinatura digital */}
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          marginBottom: 14,
+          flexWrap: "wrap",
+          alignItems: "flex-end",
+          padding: "12px 14px",
+          background: "rgba(122,30,38,0.04)",
+          border: "1px solid rgba(122,30,38,0.12)",
+          borderRadius: "var(--radius-md)"
+        }}
+      >
+        <div style={{ flex: "1 1 280px", minWidth: 220 }}>
+          <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 4 }}>
+            Código da assinatura digital
+          </p>
+          <input
+            type="text"
+            value={codigoInput}
+            onChange={(e) => setCodigoInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") buscarPorCodigo(codigoInput);
+            }}
+            placeholder="Cole o SHA-256 do PDF (quadro mensal ou ciência de atestado)"
+            style={{
+              width: "100%",
+              padding: "7px 10px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13,
+              fontFamily: "var(--font-mono)",
+              boxSizing: "border-box"
+            }}
+          />
+        </div>
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => buscarPorCodigo(codigoInput)}
+          style={{ gap: 5 }}
+        >
+          <SearchIcon size={13} /> Buscar código
+        </button>
+        {buscandoPorCodigo && (
+          <button className="btn btn-ghost btn-sm" onClick={limparBuscaCodigo} style={{ gap: 5 }}>
+            Limpar
+          </button>
+        )}
+      </div>
+
+      {/* Filtros da listagem mensal */}
       <div
         style={{
           display: "flex",
           gap: 10,
           marginBottom: 16,
           flexWrap: "wrap",
-          alignItems: "flex-end"
+          alignItems: "flex-end",
+          opacity: buscandoPorCodigo ? 0.45 : 1,
+          pointerEvents: buscandoPorCodigo ? "none" : "auto"
         }}
       >
         <div>
@@ -8743,8 +9612,132 @@ function TabValidacoes({ token }: { token: string }) {
         </div>
       )}
 
-      {/* Tabela */}
-      {loading ? (
+      {erroCodigo && (
+        <div
+          style={{
+            background: "#fee2e2",
+            color: "#7a1e26",
+            border: "1px solid #fca5a5",
+            borderRadius: "var(--radius-md)",
+            padding: "10px 14px",
+            marginBottom: 14,
+            fontSize: 13
+          }}
+        >
+          {erroCodigo}
+        </div>
+      )}
+
+      {/* Resultados da busca por código */}
+      {buscandoPorCodigo ? (
+        loading ? (
+          <p style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
+            Verificando código…
+          </p>
+        ) : !resultadosCodigo?.length ? (
+          <div style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
+            <p style={{ fontSize: 14 }}>Nenhuma assinatura encontrada para este código.</p>
+            <p style={{ fontSize: 12, marginTop: 6 }}>
+              Confira se o código foi copiado corretamente do PDF (quadro mensal ou selo de ciência
+              do atestado).
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <p style={{ fontSize: 13, color: "var(--ink-600)", margin: 0 }}>
+              {resultadosCodigo.length} resultado
+              {resultadosCodigo.length !== 1 ? "s" : ""} para o código informado
+            </p>
+            {resultadosCodigo.map((r) => (
+              <div
+                key={`${r.tipo}-${r.id}-${r.papel}`}
+                className="card-flat"
+                style={{
+                  padding: "14px 16px",
+                  borderLeft: `3px solid ${r.tipo === "CIENCIA_ATESTADO" ? "#7c3aed" : "var(--burgundy-600)"}`
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    alignItems: "flex-start"
+                  }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-400)"
+                      }}
+                    >
+                      {PAPEL_CODIGO_LABEL[r.papel]}
+                    </p>
+                    <p style={{ margin: "6px 0 0", fontSize: 15, fontWeight: 600 }}>
+                      {r.funcionarioNome}
+                    </p>
+                    <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+                      Matr. {r.matricula ?? "—"}
+                      {r.gerenciaNome ? ` · ${r.gerenciaNome}` : ""}
+                      {r.periodo
+                        ? ` · ${String(r.periodo.mes).padStart(2, "0")}/${r.periodo.ano}`
+                        : ""}
+                      {r.status ? ` · ${r.status}` : ""}
+                    </p>
+                    <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+                      Signatário: {r.signatarioNome ?? "—"}
+                      {r.assinadoEm ? ` · ${new Date(r.assinadoEm).toLocaleString("pt-BR")}` : ""}
+                    </p>
+                    <p
+                      style={{
+                        margin: "8px 0 0",
+                        fontSize: 12,
+                        fontFamily: "var(--font-mono)",
+                        fontWeight: 600,
+                        letterSpacing: "0.04em"
+                      }}
+                    >
+                      {r.codigo}
+                    </p>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {r.tipo === "QUADRO_MENSAL" && r.periodo && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        title="Baixar PDF do quadro"
+                        onClick={() =>
+                          baixarPdf(r.id, r.matricula ?? r.id, r.periodo!.mes, r.periodo!.ano)
+                        }
+                        style={{ gap: 5 }}
+                      >
+                        <DownloadIcon size={14} /> PDF
+                      </button>
+                    )}
+                    {r.tipo === "CIENCIA_ATESTADO" && r.documentoUrl && (
+                      <a
+                        href={r.documentoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-ghost btn-sm"
+                        style={{ gap: 5, textDecoration: "none" }}
+                      >
+                        <FileTextIcon size={14} /> Documento
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      ) : loading ? (
         <p style={{ textAlign: "center", padding: 40, color: "var(--ink-400)" }}>
           Carregando validações…
         </p>
@@ -8897,7 +9890,7 @@ function TabValidacoes({ token }: { token: string }) {
       )}
 
       {/* Paginação */}
-      {totalPages > 1 && (
+      {!buscandoPorCodigo && totalPages > 1 && (
         <div
           style={{
             display: "flex",
@@ -8927,9 +9920,11 @@ function TabValidacoes({ token }: { token: string }) {
         </div>
       )}
 
-      <p style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 12 }}>
-        Total: {total} registro{total !== 1 ? "s" : ""}
-      </p>
+      {!buscandoPorCodigo && (
+        <p style={{ fontSize: 12, color: "var(--ink-400)", marginTop: 12 }}>
+          Total: {total} registro{total !== 1 ? "s" : ""}
+        </p>
+      )}
     </div>
   );
 }

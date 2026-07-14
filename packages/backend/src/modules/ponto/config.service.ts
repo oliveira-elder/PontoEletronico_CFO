@@ -37,10 +37,13 @@ export class ConfigService {
   }
 
   async updateSistema(data: Record<string, unknown>) {
+    /* dataInicioProducao só é definida pelo fluxo Start do Sistema (Super Admin). */
+    const safe = { ...(data as Record<string, unknown>) };
+    delete safe.dataInicioProducao;
     const updated = await this.prisma.configuracaoSistema.upsert({
       where: { id: "singleton" },
-      create: { id: "singleton", ...data },
-      update: data
+      create: { id: "singleton", ...safe },
+      update: safe
     });
 
     /* Espelha parâmetros da aba Períodos na jornada padrão, para que o cálculo

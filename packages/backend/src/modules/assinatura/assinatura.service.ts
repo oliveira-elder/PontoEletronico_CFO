@@ -15,6 +15,14 @@ import {
   montarRelatorioQuadro,
   resolverJornadaHistoricoContexto
 } from "../../utils/historico-quadro";
+import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
+import {
+  codigoAssinaturaCoincide,
+  codigoCienciaGestorExibido,
+  computeQuadroSignatoryHash,
+  groupCodigoAssinatura,
+  normalizeCodigoAssinatura
+} from "../../utils/assinatura-codigo";
 import {
   buildQuadroPdfDocDefinition,
   buildRascunhoPdfDocDefinition,
@@ -387,6 +395,169 @@ export class AssinaturaService {
     return { total, page, limit, assinaturas };
   }
 
+  /**
+   * Busca assinaturas digitais pelo código SHA impresso no PDF
+   * (quadro mensal — funcionário/gestor — e ciência do gestor em atestados).
+   */
+  async buscarPorCodigoAssinatura(codigoRaw: string) {
+    const codigo = normalizeCodigoAssinatura(codigoRaw);
+    if (codigo.length < 4) {
+      throw new BadRequestException(
+        "Informe ao menos 4 caracteres do código da assinatura digital."
+      );
+    }
+
+    const encontrados: Array<{
+      tipo: "QUADRO_MENSAL" | "CIENCIA_ATESTADO";
+      papel: "FUNCIONARIO" | "GESTOR" | "CIENCIA_GESTOR";
+      codigo: string;
+      id: string;
+      funcionarioNome: string;
+      matricula: string | null;
+      gerenciaNome: string | null;
+      assinadoEm: string | null;
+      signatarioNome: string | null;
+      periodo?: { mes: number; ano: number };
+      status?: string;
+      documentoUrl?: string | null;
+    }> = [];
+
+    const quadros = await this.prisma.assinaturaQuadro.findMany({
+      where: {
+        OR: [{ assinadoFuncionarioEm: { not: null } }, { assinadoGestorEm: { not: null } }]
+      },
+      include: {
+        periodo: {
+          include: {
+            funcionario: {
+              include: {
+                user: { select: { name: true } },
+                gerencia: { select: { nome: true } }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    for (const a of quadros) {
+      const matricula = a.periodo.funcionario.matricula ?? "";
+      const periodo = `${a.periodo.mes}/${a.periodo.ano}`;
+      const base = {
+        tipo: "QUADRO_MENSAL" as const,
+        id: a.id,
+        funcionarioNome: a.periodo.funcionario.user.name,
+        matricula: a.periodo.funcionario.matricula,
+        gerenciaNome: a.periodo.funcionario.gerencia?.nome ?? null,
+        periodo: { mes: a.periodo.mes, ano: a.periodo.ano },
+        status: a.status
+      };
+
+      if (a.assinadoFuncionarioEm) {
+        const hash = computeQuadroSignatoryHash(
+          matricula,
+          periodo,
+          a.assinadoFuncionarioEm,
+          a.assinadoFuncionarioIp
+        );
+        const codigoExibido = groupCodigoAssinatura(hash, 32);
+        if (codigoAssinaturaCoincide(codigoExibido, codigo)) {
+          encontrados.push({
+            ...base,
+            papel: "FUNCIONARIO",
+            codigo: codigoExibido,
+            assinadoEm: a.assinadoFuncionarioEm.toISOString(),
+            signatarioNome: a.periodo.funcionario.user.name
+          });
+        }
+      }
+
+      if (a.assinadoGestorEm) {
+        const hash = computeQuadroSignatoryHash(
+          matricula,
+          periodo,
+          a.assinadoGestorEm,
+          a.assinadoGestorIp
+        );
+        const codigoExibido = groupCodigoAssinatura(hash, 32);
+        if (codigoAssinaturaCoincide(codigoExibido, codigo)) {
+          encontrados.push({
+            ...base,
+            papel: "GESTOR",
+            codigo: codigoExibido,
+            assinadoEm: a.assinadoGestorEm.toISOString(),
+            signatarioNome: a.assinadoGestorNome
+          });
+        }
+      }
+    }
+
+    const atestados = await this.prisma.solicitacao.findMany({
+      where: { tipo: "ATESTADO" },
+      include: {
+        funcionario: {
+          include: {
+            user: { select: { name: true } },
+            gerencia: { select: { nome: true } }
+          }
+        }
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+
+    for (const s of atestados) {
+      const meta =
+        s.metadados && typeof s.metadados === "object"
+          ? (s.metadados as Record<string, unknown>)
+          : null;
+      const ciencia =
+        meta?.cienciaGestor && typeof meta.cienciaGestor === "object"
+          ? (meta.cienciaGestor as Record<string, unknown>)
+          : null;
+      if (!ciencia) continue;
+
+      const gestorNome = typeof ciencia.gestorNome === "string" ? ciencia.gestorNome : "";
+      const em = typeof ciencia.em === "string" ? ciencia.em : null;
+      const ipReal = typeof ciencia.ipReal === "string" ? ciencia.ipReal : "";
+      const userAgent = typeof ciencia.userAgent === "string" ? ciencia.userAgent : null;
+      if (!gestorNome || !em || !ipReal) continue;
+
+      const persistido =
+        typeof ciencia.codigoHash === "string"
+          ? normalizeCodigoAssinatura(ciencia.codigoHash)
+          : null;
+      const codigoExibido =
+        persistido?.slice(0, 16) ??
+        codigoCienciaGestorExibido(gestorNome, new Date(em), ipReal, userAgent);
+
+      if (!codigoAssinaturaCoincide(codigoExibido, codigo)) continue;
+
+      const documentoUrl =
+        typeof meta?.documentoUrl === "string" ? (meta.documentoUrl as string) : null;
+
+      encontrados.push({
+        tipo: "CIENCIA_ATESTADO",
+        papel: "CIENCIA_GESTOR",
+        codigo: groupCodigoAssinatura(codigoExibido.replace(/\s/g, ""), 16),
+        id: s.id,
+        funcionarioNome: s.funcionario.user.name,
+        matricula: s.funcionario.matricula,
+        gerenciaNome: s.funcionario.gerencia?.nome ?? null,
+        assinadoEm: em,
+        signatarioNome: gestorNome,
+        status: s.status,
+        documentoUrl
+      });
+    }
+
+    return {
+      codigoBuscado: codigo,
+      total: encontrados.length,
+      encontrados
+    };
+  }
+
   /* ─── Metadados para filename do PDF ─── */
 
   async getAssinaturaParaPdf(id: string) {
@@ -428,7 +599,7 @@ export class AssinaturaService {
     const fimBuffer = new Date(fim);
     fimBuffer.setUTCDate(fimBuffer.getUTCDate() + 1);
 
-    const afastamentos = await this.prisma.afastamento.findMany({
+    const afastamentosRaw = await this.prisma.afastamento.findMany({
       where: {
         funcionarioId,
         dataInicio: { lte: fimBuffer },
@@ -436,6 +607,21 @@ export class AssinaturaService {
       },
       orderBy: { dataInicio: "asc" }
     });
+
+    const sols = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "ATESTADO",
+        status: "APROVADA",
+        OR: [
+          { dataInicio: { lte: fimBuffer }, dataFim: { gte: inicioBuffer } },
+          { dataReferencia: { gte: inicioBuffer, lte: fimBuffer } }
+        ]
+      },
+      select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
+    });
+
+    const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, sols);
 
     return { registros, afastamentos };
   }
