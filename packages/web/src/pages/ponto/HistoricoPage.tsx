@@ -24,9 +24,13 @@ import {
   type DiaRegistro,
   type HistoricoApiResponse,
   JORNADA_PADRAO,
-  transformarHistorico
+  transformarHistorico,
+  badgeLabelParcial
 } from "../../utils/historicoTransform";
-import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
+import {
+  MSG_SOLICITACAO_APENAS_INFORMATIVA,
+  categoriaSemVisibilidadeBancoHoras
+} from "../../utils/categoriaPonto";
 
 /* ─── Tipos de Assinatura ─── */
 type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
@@ -59,6 +63,7 @@ function ModalAssinarQuadro({
   assinatura,
   totalTrabMin,
   saldoMesBanco,
+  ocultarBancoHoras,
   onClose,
   onConfirm,
   loading
@@ -66,6 +71,7 @@ function ModalAssinarQuadro({
   assinatura: AssinaturaQuadro;
   totalTrabMin: number;
   saldoMesBanco: number;
+  ocultarBancoHoras?: boolean;
   onClose: () => void;
   onConfirm: () => void;
   loading: boolean;
@@ -144,34 +150,40 @@ function ModalAssinarQuadro({
               {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}
             </p>
           </div>
-          <div>
-            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>Saldo do mês</p>
-            <p
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                color: saldoMin >= 0 ? "#15803D" : "#B91C1C",
-                fontFamily: "var(--font-mono)"
-              }}
-            >
-              {fmtBH(saldoMin)}
-            </p>
-          </div>
-          <div>
-            <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>
-              Banco de horas (total)
-            </p>
-            <p
-              style={{
-                fontSize: 15,
-                fontWeight: 700,
-                color: assinatura.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C",
-                fontFamily: "var(--font-mono)"
-              }}
-            >
-              {fmtBH(assinatura.bancoHorasSaldoTotalMinutos)}
-            </p>
-          </div>
+          {!ocultarBancoHoras && (
+            <>
+              <div>
+                <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>
+                  Saldo do mês
+                </p>
+                <p
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: saldoMin >= 0 ? "#15803D" : "#B91C1C",
+                    fontFamily: "var(--font-mono)"
+                  }}
+                >
+                  {fmtBH(saldoMin)}
+                </p>
+              </div>
+              <div>
+                <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 2 }}>
+                  Banco de horas (total)
+                </p>
+                <p
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: assinatura.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C",
+                    fontFamily: "var(--font-mono)"
+                  }}
+                >
+                  {fmtBH(assinatura.bancoHorasSaldoTotalMinutos)}
+                </p>
+              </div>
+            </>
+          )}
         </div>
 
         <p style={{ fontSize: 12.5, color: "var(--ink-600)", marginBottom: 24, lineHeight: 1.6 }}>
@@ -332,22 +344,25 @@ function StatusPill({
   atestadoParcialHorario?: string;
 }) {
   if (atestadoParcial) {
-    const titulo =
-      obs ?? `Atestado médico parcial${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`;
+    const label = badgeLabelParcial(obs);
+    const titulo = obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`;
     return (
       <span className="badge badge-blue" title={titulo}>
-        Atestado médico parcial
+        {label}
       </span>
     );
   }
+  /* Dias futuros: sem badge — o dia ainda não ocorreu. */
+  if (status === "FUTURO") return null;
+
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
     PENDENTE: { label: "Pendente", cls: "badge-amber" },
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
-    FUTURO: { label: "—", cls: "badge-gray" },
-    FOLGA: { label: "Folga", cls: "badge-gray" },
+    FUTURO: { label: "", cls: "badge-gray" },
+    FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
     ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
   };
   const { label, cls } = map[status];
@@ -367,7 +382,7 @@ function StatusPill({
           ? obs
           : status === "FERIADO" && obs
             ? `Feriado: ${obs}`
-            : status === "FOLGA" && obs
+            : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
               ? obs
               : label}
     </span>
@@ -856,7 +871,13 @@ function BotaoObservacoes({
 }
 
 function HorasCell({ min, status }: { min: number; status: StatusDia }) {
-  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO" || status === "ISENTO")
+  if (
+    status === "FUTURO" ||
+    status === "FOLGA" ||
+    status === "FALTA" ||
+    status === "AFASTAMENTO" ||
+    status === "ISENTO"
+  )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   return (
     <span style={{ fontFamily: "var(--font-mono)" }}>
@@ -1040,6 +1061,7 @@ export function HistoricoPage() {
   const [periodoTeste, setPeriodoTeste] = useState(false);
   const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
   const [saldoMesBanco, setSaldoMesBanco] = useState(0);
+  const [ocultarBancoHoras, setOcultarBancoHoras] = useState(false);
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalObs, setModalObs] = useState<{
@@ -1073,6 +1095,9 @@ export function HistoricoPage() {
           setPeriodoTeste(!!data?.periodoTeste);
           setBancoPorDia(data?.bancoPorDia ?? {});
           setSaldoMesBanco(data?.saldoMesBanco ?? 0);
+          setOcultarBancoHoras(
+            !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria)
+          );
           setRegistros(
             transformarHistorico(
               data?.registros ?? [],
@@ -1336,10 +1361,12 @@ export function HistoricoPage() {
                 Filtros
               </button>
             )}
-            <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
-              <TrendingUpIcon size={14} />
-              {isMobile ? "Banco" : "Banco de Horas"}
-            </Link>
+            {!ocultarBancoHoras && (
+              <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
+                <TrendingUpIcon size={14} />
+                {isMobile ? "Banco" : "Banco de Horas"}
+              </Link>
+            )}
             <button
               className="btn btn-ghost btn-sm"
               style={{ gap: 6 }}
@@ -1462,12 +1489,14 @@ export function HistoricoPage() {
                 {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
                 trabalhadas
               </span>
-              <span
-                className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}
-                title="Saldo do mês (banco de horas)"
-              >
-                Saldo: {fmtSaldoBanco(saldoMesAjustado)}
-              </span>
+              {!ocultarBancoHoras && (
+                <span
+                  className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}
+                  title="Saldo do mês (banco de horas)"
+                >
+                  Saldo: {fmtSaldoBanco(saldoMesAjustado)}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -1488,9 +1517,11 @@ export function HistoricoPage() {
               {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
               trabalhadas
             </span>
-            <span className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}>
-              Saldo: {fmtSaldoBanco(saldoMesAjustado)}
-            </span>
+            {!ocultarBancoHoras && (
+              <span className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}>
+                Saldo: {fmtSaldoBanco(saldoMesAjustado)}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -1501,6 +1532,7 @@ export function HistoricoPage() {
           assinatura={assinatura}
           totalTrabMin={totalTrabMin}
           saldoMesBanco={saldoMesAjustado}
+          ocultarBancoHoras={ocultarBancoHoras}
           onClose={() => setModalAssinar(false)}
           onConfirm={confirmarAssinatura}
           loading={loadingAssinar}
@@ -1534,7 +1566,7 @@ export function HistoricoPage() {
                     "Saída",
                     "Pausa",
                     "Horas",
-                    "Saldo",
+                    ...(ocultarBancoHoras ? [] : ["Saldo"]),
                     "Status"
                   ].map((h) => (
                     <th
@@ -1672,23 +1704,27 @@ export function HistoricoPage() {
                           status={r.status}
                         />
                       </td>
-                      <td>
-                        <SaldoCell
-                          trabMin={
-                            r.atestadoParcial
-                              ? r.horasMin
-                              : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
-                          }
-                          jornadaMin={
-                            r.atestadoParcial
-                              ? r.jornadaMin
-                              : (bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin)
-                          }
-                          status={r.status}
-                          saldoBancoMin={r.atestadoParcial ? undefined : bancoDia?.saldoDiaMinutos}
-                          saldoBancoNeutro={r.atestadoParcial ? false : bancoDia?.neutro}
-                        />
-                      </td>
+                      {!ocultarBancoHoras && (
+                        <td>
+                          <SaldoCell
+                            trabMin={
+                              r.atestadoParcial
+                                ? r.horasMin
+                                : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
+                            }
+                            jornadaMin={
+                              r.atestadoParcial
+                                ? r.jornadaMin
+                                : (bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin)
+                            }
+                            status={r.status}
+                            saldoBancoMin={
+                              r.atestadoParcial ? undefined : bancoDia?.saldoDiaMinutos
+                            }
+                            saldoBancoNeutro={r.atestadoParcial ? false : bancoDia?.neutro}
+                          />
+                        </td>
+                      )}
                       <td
                         style={{
                           width: "1%",
@@ -1741,7 +1777,7 @@ export function HistoricoPage() {
                 {registros.length === 0 && (
                   <tr>
                     <td
-                      colSpan={10}
+                      colSpan={ocultarBancoHoras ? 9 : 10}
                       style={{ textAlign: "center", padding: "40px", color: "var(--ink-500)" }}
                     >
                       Nenhum registro encontrado para este período.
@@ -1774,14 +1810,16 @@ export function HistoricoPage() {
                     >
                       {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}
                     </td>
-                    <td>
-                      <SaldoCell
-                        trabMin={totalTrabMin}
-                        jornadaMin={totalJornadaMin}
-                        status="OK"
-                        saldoBancoMin={saldoMesAjustado}
-                      />
-                    </td>
+                    {!ocultarBancoHoras && (
+                      <td>
+                        <SaldoCell
+                          trabMin={totalTrabMin}
+                          jornadaMin={totalJornadaMin}
+                          status="OK"
+                          saldoBancoMin={saldoMesAjustado}
+                        />
+                      </td>
+                    )}
                     <td style={{ width: "1%", paddingLeft: 10, paddingRight: 10 }} />
                   </tr>
                 </tfoot>
@@ -1801,7 +1839,7 @@ export function HistoricoPage() {
           { cls: "badge-amber", label: "Pendente (saída não registrada)" },
           { cls: "badge-red", label: "Falta" },
           { cls: "badge-blue", label: "Afastamento / Atestado médico parcial" },
-          { cls: "badge-gray", label: "Feriado, folga ou dia futuro" }
+          { cls: "badge-gray", label: "Feriado ou sem expediente" }
         ].map((item) => (
           <span
             key={item.label}

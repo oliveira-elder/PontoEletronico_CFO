@@ -143,6 +143,8 @@ export interface HistoricoApiResponse {
   >;
   saldoMesBanco?: number;
   saldoAcumuladoMes?: number;
+  /** True quando a categoria do funcionário não deve ver banco de horas. */
+  ocultarBancoHoras?: boolean;
   registros: ApiRegistro[];
   afastamentos: ApiAfastamento[];
   feriados?: ApiFeriado[];
@@ -469,8 +471,20 @@ function atestadoParcialDispensaSaida(
   return true;
 }
 
-function labelAtestadoParcial(hi: string, hf: string): string {
-  return `Atestado médico parcial (${hi}–${hf})`;
+function labelAtestadoParcial(hi: string, hf: string, tipo?: string): string {
+  const nome =
+    tipo === "ABONO"
+      ? "Abono parcial"
+      : tipo === "ATESTADO"
+        ? "Atestado médico parcial"
+        : "Afastamento parcial";
+  return `${nome} (${hi}–${hf})`;
+}
+
+export function badgeLabelParcial(obs?: string): string {
+  if (obs?.startsWith("Abono parcial")) return "Abono parcial";
+  if (obs?.startsWith("Afastamento parcial")) return "Afastamento parcial";
+  return "Atestado médico parcial";
 }
 
 function toMin(h: string): number {
@@ -783,7 +797,8 @@ export function transformarHistorico(
         );
         const label = labelAtestadoParcial(
           atestadoParcial.horarioInicio!,
-          atestadoParcial.horarioFim!
+          atestadoParcial.horarioFim!,
+          atestadoParcial.tipo
         );
         result.push({
           data: dataStr,
@@ -936,7 +951,11 @@ export function transformarHistorico(
         status = "FALTA";
       }
       if (!obs) {
-        obs = labelAtestadoParcial(atestadoParcial!.horarioInicio!, atestadoParcial!.horarioFim!);
+        obs = labelAtestadoParcial(
+          atestadoParcial!.horarioInicio!,
+          atestadoParcial!.horarioFim!,
+          atestadoParcial!.tipo
+        );
       }
     } else if (entrada && (saida || saidaParaStatus)) {
       horasMin = calcHorasMinutosDia(
@@ -998,7 +1017,11 @@ export function transformarHistorico(
         jornadaMin = Math.max(0, horasMin - saldoExpediente);
       }
       if (!obs) {
-        obs = labelAtestadoParcial(atestadoParcial.horarioInicio!, atestadoParcial.horarioFim!);
+        obs = labelAtestadoParcial(
+          atestadoParcial.horarioInicio!,
+          atestadoParcial.horarioFim!,
+          atestadoParcial.tipo
+        );
       }
     } else if (fimDeSemana || feriadoDia) {
       if (feriadoDia?.marcoHorario && !fimDeSemana) {

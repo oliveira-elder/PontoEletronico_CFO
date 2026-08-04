@@ -6,6 +6,17 @@ export function categoriaSemRegistroPonto(categoria: string | null | undefined):
   return (CATEGORIAS_SEM_REGISTRO_PONTO as readonly string[]).includes(categoria);
 }
 
+/**
+ * Estagiário e Menor Aprendiz não veem banco de horas (página, links, relatórios self-service).
+ * O cálculo permanece no backend; RH vê em auditoria.
+ */
+export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+
+export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | undefined): boolean {
+  if (!categoria) return false;
+  return (CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS as readonly string[]).includes(categoria);
+}
+
 export function labelCategoriaSemRegistroPonto(categoria: string): string {
   return categoria === "GERENTE" ? "Gerente" : "Assessor";
 }

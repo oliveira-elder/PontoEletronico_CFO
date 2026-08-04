@@ -37,16 +37,72 @@ export interface SolicitacaoResumo {
   };
 }
 
-/** Badge-link para abrir atestado/documento anexado — visível e reutilizável. */
+/** Badge-link para abrir documento anexado — estilo canônico do sistema. */
+export function labelDocumentoAnexado(
+  nomeArquivo?: string | null,
+  fallback = "Ver documento anexado"
+): string {
+  const nome = typeof nomeArquivo === "string" ? nomeArquivo.trim() : "";
+  return nome ? `Ver documento — ${nome}` : fallback;
+}
+
+/** Variantes de cor por tipo de processo/documento. */
+export type LinkDocumentoVariant =
+  | "funcionario" // atestado / anexo do funcionário
+  | "guia" // guia médica (RH → funcionário)
+  | "folha" // folha de pagamento de férias (RH)
+  | "retorno" // documento de retorno / folha assinada
+  | "rh"; // documento do RH (requisições / docs gerais)
+
+const DOC_VARIANT_THEME: Record<
+  LinkDocumentoVariant,
+  {
+    rgb: string;
+    solid: string;
+    badgeLabel: string;
+  }
+> = {
+  funcionario: { rgb: "122,30,38", solid: "#7a1e26", badgeLabel: "Anexo" },
+  guia: { rgb: "124,58,237", solid: "#7c3aed", badgeLabel: "Guia" },
+  folha: { rgb: "47,125,79", solid: "#2f7d4f", badgeLabel: "Folha" },
+  retorno: { rgb: "30,74,122", solid: "#1e4a7a", badgeLabel: "Retorno" },
+  rh: { rgb: "14,116,144", solid: "#0e7490", badgeLabel: "RH" }
+};
+
+function estilosDocVariant(rgb: string) {
+  return {
+    border: `1px solid rgba(${rgb},0.22)`,
+    background: `linear-gradient(180deg, rgba(${rgb},0.08) 0%, rgba(${rgb},0.04) 100%)`,
+    color: `rgb(${rgb})`,
+    boxShadow: `0 1px 2px rgba(${rgb},0.06)`,
+    hoverBg: `linear-gradient(180deg, rgba(${rgb},0.14) 0%, rgba(${rgb},0.08) 100%)`,
+    hoverBorder: `rgba(${rgb},0.38)`,
+    hoverShadow: `0 2px 6px rgba(${rgb},0.12)`,
+    iconBg: `rgba(${rgb},0.12)`
+  };
+}
+
 export function LinkDocumentoAnexado({
   href,
-  label = "Ver atestado anexado",
+  label,
+  nomeArquivo,
+  badge,
+  variant = "funcionario",
   style
 }: {
   href: string;
+  /** Texto completo do link. Se omitido, usa `nomeArquivo` ou fallback genérico. */
   label?: string;
+  nomeArquivo?: string | null;
+  badge?: string;
+  variant?: LinkDocumentoVariant;
   style?: React.CSSProperties;
 }) {
+  const texto = label ?? labelDocumentoAnexado(nomeArquivo);
+  const theme = DOC_VARIANT_THEME[variant] ?? DOC_VARIANT_THEME.funcionario;
+  const estilos = estilosDocVariant(theme.rgb);
+  const badgeTexto = badge ?? theme.badgeLabel;
+
   return (
     <a
       href={href}
@@ -59,30 +115,29 @@ export function LinkDocumentoAnexado({
         marginTop: 8,
         padding: "8px 14px",
         borderRadius: "var(--radius-md)",
-        border: "1px solid rgba(122,30,38,0.22)",
-        background: "linear-gradient(180deg, rgba(122,30,38,0.08) 0%, rgba(122,30,38,0.04) 100%)",
-        color: "var(--burgundy-600)",
+        border: estilos.border,
+        background: estilos.background,
+        color: estilos.color,
         fontSize: 13.5,
         fontWeight: 700,
         lineHeight: 1.3,
         textDecoration: "none",
-        boxShadow: "0 1px 2px rgba(122,30,38,0.06)",
+        boxShadow: estilos.boxShadow,
         transition: "background 160ms ease, border-color 160ms ease, box-shadow 160ms ease",
+        maxWidth: "100%",
         ...style
       }}
       onMouseEnter={(e) => {
         const el = e.currentTarget;
-        el.style.background =
-          "linear-gradient(180deg, rgba(122,30,38,0.14) 0%, rgba(122,30,38,0.08) 100%)";
-        el.style.borderColor = "rgba(122,30,38,0.38)";
-        el.style.boxShadow = "0 2px 6px rgba(122,30,38,0.12)";
+        el.style.background = estilos.hoverBg;
+        el.style.borderColor = estilos.hoverBorder;
+        el.style.boxShadow = estilos.hoverShadow;
       }}
       onMouseLeave={(e) => {
         const el = e.currentTarget;
-        el.style.background =
-          "linear-gradient(180deg, rgba(122,30,38,0.08) 0%, rgba(122,30,38,0.04) 100%)";
-        el.style.borderColor = "rgba(122,30,38,0.22)";
-        el.style.boxShadow = "0 1px 2px rgba(122,30,38,0.06)";
+        el.style.background = estilos.background;
+        el.style.borderColor = `rgba(${theme.rgb},0.22)`;
+        el.style.boxShadow = estilos.boxShadow;
       }}
     >
       <span
@@ -93,27 +148,28 @@ export function LinkDocumentoAnexado({
           width: 26,
           height: 26,
           borderRadius: "50%",
-          background: "rgba(122,30,38,0.12)",
+          background: estilos.iconBg,
           flexShrink: 0
         }}
       >
         <FileTextIcon size={14} />
       </span>
-      <span>{label}</span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{texto}</span>
       <span
         className="badge"
         style={{
-          marginLeft: 2,
+          marginLeft: "auto",
           fontSize: 10,
           fontWeight: 700,
           letterSpacing: "0.02em",
-          background: "var(--burgundy-600)",
+          background: theme.solid,
           color: "#fff",
           padding: "2px 7px",
-          borderRadius: "var(--radius-full)"
+          borderRadius: "var(--radius-full)",
+          flexShrink: 0
         }}
       >
-        Anexo
+        {badgeTexto}
       </span>
     </a>
   );
@@ -126,7 +182,8 @@ const TIPO_LABEL: Record<string, string> = {
   LICENCA: "Licença",
   ABONO: "Abono de Falta",
   DAY_OFF: "Day Off de Aniversário",
-  HORA_EXTRA: "Hora Extra"
+  HORA_EXTRA: "Hora Extra",
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
 };
 
 const TIPO_PONTO: Record<string, string> = {
@@ -306,13 +363,22 @@ export function textoResumo(s: SolicitacaoResumo): string {
       const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
       const tipoAbono =
         (meta?.tipoAbono as string) === "FUTURO" ? "abono de dia futuro" : "abono de falta";
-      if (inicio === fim) return `${nome} solicita ${tipoAbono} em ${inicio}.`;
+      const periodo =
+        meta?.horarioInicio && meta?.horarioFim
+          ? ` (${meta.horarioInicio as string}–${meta.horarioFim as string})`
+          : "";
+      if (inicio === fim) return `${nome} solicita ${tipoAbono} em ${inicio}${periodo}.`;
       const dias = s.dataInicio && s.dataFim ? diffDias(s.dataInicio, s.dataFim) : 0;
-      return `${nome} solicita ${tipoAbono} de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
+      return `${nome} solicita ${tipoAbono} de ${inicio} a ${fim}${periodo} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
     }
     case "DAY_OFF": {
       const dia = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
       return `${nome} solicita Day Off de Aniversário em ${dia}.`;
+    }
+    case "ENVIO_DOCUMENTO_RH": {
+      const arquivo =
+        typeof meta?.nomeArquivo === "string" && meta.nomeArquivo ? ` (${meta.nomeArquivo})` : "";
+      return `${nome} enviou um documento ao RH${arquivo}.`;
     }
     default:
       return `${nome} abriu uma solicitação de ${TIPO_LABEL[s.tipo] ?? s.tipo}.`;
@@ -725,38 +791,60 @@ export function SolicitacaoCardRH({
           <div
             style={{
               marginTop: 6,
-              padding: "8px 12px",
-              background: "rgba(47,125,79,0.04)",
-              border: "1px solid rgba(47,125,79,0.12)",
-              borderRadius: "var(--radius-md)",
               display: "flex",
               flexDirection: "column",
-              gap: 3
+              gap: 4
             }}
           >
             {s.guiaMedicoUrl && (
-              <p style={{ margin: 0, fontSize: 12, color: "#2f7d4f", fontWeight: 600 }}>
-                📄{" "}
-                <a href={s.guiaMedicoUrl} target="_blank" rel="noopener noreferrer">
-                  Ver folha de pagamento de férias
-                </a>
-                {s.guiaMedicoEnviadaEm ? ` — enviada em ${fmtDateTime(s.guiaMedicoEnviadaEm)}` : ""}
-              </p>
+              <>
+                <LinkDocumentoAnexado
+                  href={s.guiaMedicoUrl}
+                  label="Ver documento — Folha de pagamento de férias"
+                  variant="folha"
+                />
+                {s.guiaMedicoEnviadaEm && (
+                  <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
+                    Enviada em {fmtDateTime(s.guiaMedicoEnviadaEm)}
+                  </p>
+                )}
+              </>
             )}
             {s.documentoRetornoUrl && (
-              <p style={{ margin: 0, fontSize: 12, color: "#16a34a", fontWeight: 600 }}>
-                ✅{" "}
-                <a href={s.documentoRetornoUrl} target="_blank" rel="noopener noreferrer">
-                  Folha assinada pelo funcionário
-                </a>
-                {s.documentoRetornoEm ? ` — em ${fmtDateTime(s.documentoRetornoEm)}` : ""}
-              </p>
+              <>
+                <LinkDocumentoAnexado
+                  href={s.documentoRetornoUrl}
+                  label="Ver documento — Folha assinada pelo funcionário"
+                  variant="retorno"
+                />
+                {s.documentoRetornoEm && (
+                  <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
+                    Enviada em {fmtDateTime(s.documentoRetornoEm)}
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
 
         {s.tipo === "ATESTADO" && typeof s.metadados?.documentoUrl === "string" && (
-          <LinkDocumentoAnexado href={s.metadados.documentoUrl as string} />
+          <LinkDocumentoAnexado
+            href={s.metadados.documentoUrl as string}
+            nomeArquivo={
+              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : "Atestado"
+            }
+            variant="funcionario"
+          />
+        )}
+
+        {s.tipo === "ENVIO_DOCUMENTO_RH" && typeof s.metadados?.documentoUrl === "string" && (
+          <LinkDocumentoAnexado
+            href={s.metadados.documentoUrl as string}
+            nomeArquivo={
+              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
+            }
+            variant="funcionario"
+          />
         )}
 
         {s.tipo === "ATESTADO" && s.guiaMedicoUrl && (
@@ -765,20 +853,12 @@ export function SolicitacaoCardRH({
               display: "flex",
               flexDirection: "column",
               gap: 4,
-              marginTop: 8,
-              padding: "10px 12px",
-              background: "rgba(124,58,237,0.05)",
-              border: "1px solid rgba(124,58,237,0.15)",
-              borderRadius: "var(--radius-md)"
+              marginTop: 8
             }}
           >
-            <p style={{ margin: 0, fontSize: 11.5, color: "#7c3aed", lineHeight: 1.45 }}>
-              📄 <strong>Guia médica enviada</strong>
+            <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-600)", lineHeight: 1.45 }}>
+              <strong>Guia médica enviada</strong>
               {s.guiaMedicoEnviadaEm ? ` em ${fmtDateTime(s.guiaMedicoEnviadaEm)}` : ""}
-              {" — "}
-              <a href={s.guiaMedicoUrl} target="_blank" rel="noopener noreferrer">
-                ver guia
-              </a>
             </p>
             {s.guiaMedicoObservacao && (
               <p
@@ -787,17 +867,27 @@ export function SolicitacaoCardRH({
                 "{s.guiaMedicoObservacao}"
               </p>
             )}
+            <LinkDocumentoAnexado
+              href={s.guiaMedicoUrl}
+              label="Ver documento — Guia médica"
+              variant="guia"
+            />
           </div>
         )}
 
         {s.tipo === "ATESTADO" && s.documentoRetornoUrl && (
-          <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "#16a34a" }}>
-            📎{" "}
-            <a href={s.documentoRetornoUrl} target="_blank" rel="noopener noreferrer">
-              Ver documento de retorno (consulta)
-            </a>
-            {s.documentoRetornoEm ? ` — enviado em ${fmtDateTime(s.documentoRetornoEm)}` : ""}
-          </p>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+            <LinkDocumentoAnexado
+              href={s.documentoRetornoUrl}
+              label="Ver documento — Documento de retorno (consulta)"
+              variant="retorno"
+            />
+            {s.documentoRetornoEm && (
+              <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
+                Enviado em {fmtDateTime(s.documentoRetornoEm)}
+              </p>
+            )}
+          </div>
         )}
 
         {s.descricao && (
@@ -848,7 +938,8 @@ export function SolicitacaoCardRH({
                   fontWeight: 600
                 }}
               >
-                <CheckCircleIcon size={14} /> Aprovar (RH)
+                <CheckCircleIcon size={14} />{" "}
+                {s.tipo === "ENVIO_DOCUMENTO_RH" ? "Confirmar recebimento" : "Aprovar (RH)"}
               </button>
               <button
                 onClick={() => onDecidir(s, "REJEITAR")}
@@ -940,7 +1031,11 @@ export function ModalDecisaoRH({
   const corAcaoClaro = isAprovar ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.06)";
   const corBorda = isAprovar ? "rgba(22,163,74,0.25)" : "rgba(220,38,38,0.25)";
   const emoji = isAprovar ? "✅" : "❌";
-  const titulo = isAprovar ? "Confirmar Aprovação Final (RH)" : "Confirmar Rejeição (RH)";
+  const titulo = isAprovar
+    ? solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+      ? "Confirmar recebimento do documento"
+      : "Confirmar Aprovação Final (RH)"
+    : "Confirmar Rejeição (RH)";
 
   return (
     <div
@@ -1050,10 +1145,12 @@ export function ModalDecisaoRH({
             }}
           >
             {isAprovar
-              ? "Você confirma a aprovação final desta solicitação?"
+              ? solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+                ? "Confirma o recebimento deste documento?"
+                : "Você confirma a aprovação final desta solicitação?"
               : "Você confirma a rejeição desta solicitação?"}
           </p>
-          {isAprovar && (
+          {isAprovar && solicitacao.tipo !== "ENVIO_DOCUMENTO_RH" && (
             <p
               style={{
                 margin: "-8px 0 0",
@@ -1065,6 +1162,19 @@ export function ModalDecisaoRH({
               A aprovação será definitiva e a alteração será aplicada ao ponto do funcionário.
             </p>
           )}
+          {isAprovar &&
+            solicitacao.tipo === "ENVIO_DOCUMENTO_RH" &&
+            typeof solicitacao.metadados?.documentoUrl === "string" && (
+              <LinkDocumentoAnexado
+                href={solicitacao.metadados.documentoUrl as string}
+                nomeArquivo={
+                  typeof solicitacao.metadados?.nomeArquivo === "string"
+                    ? solicitacao.metadados.nomeArquivo
+                    : null
+                }
+                variant="funcionario"
+              />
+            )}
 
           <div>
             <label
@@ -1145,7 +1255,11 @@ export function ModalDecisaoRH({
               {loading ? (
                 <>⏳ Processando...</>
               ) : isAprovar ? (
-                <>✅ Sim, aprovar</>
+                <>
+                  {solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+                    ? "✅ Confirmar recebimento"
+                    : "✅ Sim, aprovar"}
+                </>
               ) : (
                 <>❌ Sim, rejeitar</>
               )}
@@ -1395,6 +1509,7 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
   const diasVendidos = Number(meta.diasVendidos ?? meta.diasVenda ?? 0);
   const totalGozo = Number(meta.totalDiasGozo ?? periodos.reduce((s, p) => s + p.dias, 0));
   const isAlteracao = typeof meta.alteracaoDeId === "string";
+  const cicloNumero = meta.cicloNumero != null ? Number(meta.cicloNumero) : null;
 
   if (periodos.length === 0 && diasVendidos === 0) return null;
 
@@ -1418,7 +1533,9 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
           letterSpacing: "0.06em"
         }}
       >
-        🌴 Períodos de férias{isAlteracao ? " — solicitação de alteração" : ""}
+        🌴 Períodos de férias
+        {cicloNumero != null ? ` — ciclo ${cicloNumero}` : ""}
+        {isAlteracao ? " — solicitação de mudança" : ""}
       </p>
       {periodos.map((p, i) => (
         <p key={i} style={{ margin: "0 0 3px", fontSize: 12.5, color: "var(--ink-800)" }}>
@@ -1426,10 +1543,16 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
           {fmtDate(p.dataFim)} <span style={{ color: "var(--ink-500)" }}>({p.dias} dias)</span>
         </p>
       ))}
-      {diasVendidos > 0 && (
-        <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+      {diasVendidos > 0 ? (
+        <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--ink-600)" }}>
           + {diasVendidos} dia{diasVendidos !== 1 ? "s" : ""} vendidos (abono pecuniário)
         </p>
+      ) : (
+        !isAlteracao && (
+          <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+            Sem venda de dias nesta solicitação
+          </p>
+        )
       )}
       {(periodos.length > 0 || diasVendidos > 0) && (
         <p

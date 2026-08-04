@@ -17,6 +17,7 @@ import {
   type ResumoHistorico,
   resumoFromHistoricoApi
 } from "../../utils/historicoTransform";
+import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
 
 /* ─── Helpers ─── */
 function minToHM(min: number) {
@@ -42,6 +43,7 @@ function diasUteisMes(mes: number, ano: number): number {
 /* ─── Types ─── */
 type RelatorioMes = ResumoHistorico & {
   funcionario?: { matricula: string; cargo: string };
+  ocultarBancoHoras?: boolean;
 };
 
 const EMPTY: RelatorioMes = {
@@ -52,12 +54,20 @@ const EMPTY: RelatorioMes = {
   horasEsperadasMinutos: 0,
   horasExtrasMinutos: 0,
   horasFaltaMinutos: 0,
-  saldoMinutos: 0
+  saldoMinutos: 0,
+  ocultarBancoHoras: false
 };
 
 async function carregarResumoMes(m: number, a: number, tk: string): Promise<RelatorioMes> {
   const data = await api.get<HistoricoApiResponse>(`/ponto/historico?mes=${m}&ano=${a}`, tk);
-  return resumoFromHistoricoApi(data, m, a);
+  const resumo = resumoFromHistoricoApi(data, m, a);
+  const ocultarBancoHoras =
+    !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria);
+  return {
+    ...resumo,
+    ocultarBancoHoras,
+    ...(ocultarBancoHoras ? { horasExtrasMinutos: 0, horasFaltaMinutos: 0, saldoMinutos: 0 } : {})
+  };
 }
 
 /* ─── Mini bar chart ─── */
@@ -241,11 +251,15 @@ export function RelatoriosPage() {
   });
   const diasUteis = diasUteisMes(mes, ano);
   const pctDias = diasUteis > 0 ? (rel.diasTrabalhados / diasUteis) * 100 : 0;
+  const ocultarBancoHoras = !!rel.ocultarBancoHoras;
 
   function exportarPdf() {
     setExportandoPdf(true);
     try {
-      gerarRelatorioPdf(rel, trend, { nomeUsuario: user?.name ?? "—" });
+      gerarRelatorioPdf(rel, trend, {
+        nomeUsuario: user?.name ?? "—",
+        ocultarBancoHoras
+      });
     } catch (e: unknown) {
       alert("Erro ao gerar PDF: " + ((e as Error)?.message ?? "desconhecido"));
     } finally {
@@ -346,7 +360,11 @@ export function RelatoriosPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)",
+                gridTemplateColumns: isMobile
+                  ? "1fr 1fr"
+                  : ocultarBancoHoras
+                    ? "repeat(2,1fr)"
+                    : "repeat(4,1fr)",
                 gap: isMobile ? 16 : 24
               }}
             >
@@ -355,24 +373,37 @@ export function RelatoriosPage() {
                 value={minToHM(rel.horasTrabalhadasMinutos)}
                 sub={`de ${minToHM(rel.horasEsperadasMinutos)}`}
               />
-              <Stat
-                label="Saldo Mensal"
-                value={minToHM(rel.saldoMinutos)}
-                sub={rel.saldoMinutos >= 0 ? "a favor" : "negativo"}
-                cor={rel.saldoMinutos >= 0 ? "var(--green)" : "var(--red)"}
-              />
-              <Stat
-                label="Horas Extras"
-                value={minToHM(rel.horasExtrasMinutos)}
-                sub="acumuladas no mês"
-                cor={rel.horasExtrasMinutos > 0 ? "var(--burgundy-600)" : "var(--ink-900)"}
-              />
-              <Stat
-                label="Horas de Falta"
-                value={minToHM(rel.horasFaltaMinutos)}
-                sub="a compensar"
-                cor={rel.horasFaltaMinutos > 0 ? "var(--red)" : "var(--ink-900)"}
-              />
+              {!ocultarBancoHoras && (
+                <Stat
+                  label="Saldo Mensal"
+                  value={minToHM(rel.saldoMinutos)}
+                  sub={rel.saldoMinutos >= 0 ? "a favor" : "negativo"}
+                  cor={rel.saldoMinutos >= 0 ? "var(--green)" : "var(--red)"}
+                />
+              )}
+              {!ocultarBancoHoras && (
+                <Stat
+                  label="Horas Extras"
+                  value={minToHM(rel.horasExtrasMinutos)}
+                  sub="acumuladas no mês"
+                  cor={rel.horasExtrasMinutos > 0 ? "var(--burgundy-600)" : "var(--ink-900)"}
+                />
+              )}
+              {!ocultarBancoHoras && (
+                <Stat
+                  label="Horas de Falta"
+                  value={minToHM(rel.horasFaltaMinutos)}
+                  sub="a compensar"
+                  cor={rel.horasFaltaMinutos > 0 ? "var(--red)" : "var(--ink-900)"}
+                />
+              )}
+              {ocultarBancoHoras && (
+                <Stat
+                  label="Dias Trabalhados"
+                  value={String(rel.diasTrabalhados)}
+                  sub={`de ${diasUteis} dias úteis`}
+                />
+              )}
             </div>
             <div className="divider" />
             <div>
@@ -442,18 +473,22 @@ export function RelatoriosPage() {
                     max: rel.horasEsperadasMinutos + 120,
                     cor: "rgba(122,30,38,0.25)"
                   },
-                  {
-                    label: "Horas extras",
-                    value: rel.horasExtrasMinutos,
-                    max: rel.horasEsperadasMinutos + 120,
-                    cor: "var(--green)"
-                  },
-                  {
-                    label: "Horas de falta",
-                    value: rel.horasFaltaMinutos,
-                    max: rel.horasEsperadasMinutos + 120,
-                    cor: "var(--red)"
-                  }
+                  ...(ocultarBancoHoras
+                    ? []
+                    : [
+                        {
+                          label: "Horas extras",
+                          value: rel.horasExtrasMinutos,
+                          max: rel.horasEsperadasMinutos + 120,
+                          cor: "var(--green)"
+                        },
+                        {
+                          label: "Horas de falta",
+                          value: rel.horasFaltaMinutos,
+                          max: rel.horasEsperadasMinutos + 120,
+                          cor: "var(--red)"
+                        }
+                      ])
                 ]}
               />
             </div>

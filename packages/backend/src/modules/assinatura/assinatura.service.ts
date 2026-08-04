@@ -611,7 +611,7 @@ export class AssinaturaService {
     const sols = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId,
-        tipo: "ATESTADO",
+        tipo: { in: ["ATESTADO", "ABONO"] },
         status: "APROVADA",
         OR: [
           { dataInicio: { lte: fimBuffer }, dataFim: { gte: inicioBuffer } },
@@ -842,7 +842,7 @@ export class AssinaturaService {
     const corpo = `Seu quadro de ponto de ${mesNome}/${ano} está disponível para assinatura. Acesse o sistema para assinar.`;
 
     if (email && (await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO"))) {
-      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo, "ASSINAR_QUADRO");
     }
     if (externalId && (await this.notificacaoService.isSistemaAtivoParaEvento("ASSINAR_QUADRO"))) {
       await this.notificacaoService.criarNotificacaoParaUsuario(
@@ -888,7 +888,12 @@ export class AssinaturaService {
       emailGestor &&
       (await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO_GESTOR"))
     ) {
-      await this.notificacaoService.enviarEmailSistema(emailGestor, titulo, corpo);
+      await this.notificacaoService.enviarEmailSistema(
+        emailGestor,
+        titulo,
+        corpo,
+        "ASSINAR_QUADRO_GESTOR"
+      );
     }
     if (
       gestor.externalId &&
@@ -928,7 +933,12 @@ export class AssinaturaService {
     const email = user?.emailReal ?? user?.email;
 
     if (email && (await this.notificacaoService.isEmailAtivoParaEvento("ASSINATURA_CONCLUIDA"))) {
-      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+      await this.notificacaoService.enviarEmailSistema(
+        email,
+        titulo,
+        corpo,
+        "ASSINATURA_CONCLUIDA"
+      );
     }
     if (
       user?.externalId &&

@@ -39,6 +39,7 @@ import {
 import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "../../utils/calcHorasTrabalhadas";
 import {
   FeriasDetalheBlock,
+  LinkDocumentoAnexado,
   LogTimelineGestor,
   SolicitacaoResumo,
   textoResumo
@@ -329,6 +330,11 @@ interface DocumentoRhEnvio {
   nomeArquivo: string | null;
   mimeType: string | null;
   createdAt: string;
+  origem?: "LEGADO" | "SOLICITACAO";
+  status?: string | null;
+  solicitacaoId?: string | null;
+  rhObservacao?: string | null;
+  rhResolvidoEm?: string | null;
 }
 
 interface AuditLog {
@@ -698,6 +704,8 @@ function statusSolBadge(status: string) {
     return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo Gestor" };
   if (status === "REJEITADA_RH")
     return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo RH" };
+  if (status === "CANCELADA")
+    return { bg: "rgba(109,110,113,0.12)", color: "#6d6e71", label: "Cancelada" };
   return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada" };
 }
 
@@ -4474,7 +4482,7 @@ function TabSolicitacoes({
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const [statusFiltro, setStatusFiltro] = useState("PENDENTE");
+  const [statusFiltro, setStatusFiltro] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState("");
   const [modalAdminSol, setModalAdminSol] = useState<Solicitacao | null>(null);
   const [modalAdminDecisao, setModalAdminDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
@@ -4555,7 +4563,10 @@ function TabSolicitacoes({
         ResolvidoEm: s.resolvidoEm ? fmtDate(s.resolvidoEm) : "",
         CriadoEm: fmtDate(s.createdAt)
       })),
-      `solicitacoes_${statusFiltro}.csv`
+      `solicitacoes_${statusFiltro || "todas"}${tipoFiltro ? `_${tipoFiltro}` : ""}.csv`.replace(
+        /,/g,
+        "-"
+      )
     );
   }
 
@@ -4724,6 +4735,10 @@ function TabSolicitacoes({
           onChange={setStatusFiltro}
           options={[
             { value: "", label: "Todos" },
+            {
+              value: "PENDENTE,AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO,AGUARDANDO_GESTOR_RH",
+              label: "Em andamento"
+            },
             { value: "PENDENTE", label: "Aguardando Gestor" },
             { value: "AGUARDANDO_RH", label: "Aguardando RH" },
             { value: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", label: "Aguardando Doc. Funcionário" },
@@ -4731,7 +4746,8 @@ function TabSolicitacoes({
             { value: "APROVADA", label: "Aprovadas pelo RH" },
             { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Gestor" },
             { value: "REJEITADA_RH", label: "Rejeitadas pelo RH" },
-            { value: "REJEITADA", label: "Rejeitadas (legado)" }
+            { value: "REJEITADA", label: "Rejeitadas (legado)" },
+            { value: "CANCELADA", label: "Canceladas" }
           ]}
         />
         <SelectField
@@ -4744,7 +4760,10 @@ function TabSolicitacoes({
             { value: "ATESTADO", label: "Atestado" },
             { value: "FERIAS", label: "Férias" },
             { value: "LICENCA", label: "Licença" },
-            { value: "ABONO", label: "Abono" }
+            { value: "ABONO", label: "Abono" },
+            { value: "DAY_OFF", label: "Day Off de Aniversário" },
+            { value: "HORA_EXTRA", label: "Hora Extra" },
+            { value: "ENVIO_DOCUMENTO_RH", label: "Envio de Documento ao RH" }
           ]}
         />
         <BtnBuscar onClick={() => carregar(1)} />
@@ -4880,7 +4899,11 @@ function TabelaSolicitacoes({
               </p>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <Badge
-                  label={s.tipo.replace(/_/g, " ")}
+                  label={
+                    s.tipo === "ENVIO_DOCUMENTO_RH"
+                      ? "Envio de Documento ao RH"
+                      : s.tipo.replace(/_/g, " ")
+                  }
                   bg="rgba(122,30,38,0.06)"
                   color="var(--burgundy-700)"
                 />
@@ -4903,7 +4926,23 @@ function TabelaSolicitacoes({
                 {resumo}
               </p>
               {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
-              {s.status === "AGUARDANDO_RH" && <LogTimelineGestor s={s} />}
+              {(s.tipo === "ATESTADO" || s.tipo === "ENVIO_DOCUMENTO_RH") &&
+                typeof meta?.documentoUrl === "string" && (
+                  <LinkDocumentoAnexado
+                    href={meta.documentoUrl as string}
+                    nomeArquivo={
+                      typeof meta.nomeArquivo === "string"
+                        ? meta.nomeArquivo
+                        : s.tipo === "ATESTADO"
+                          ? "Atestado"
+                          : null
+                    }
+                    variant="funcionario"
+                  />
+                )}
+              {s.status === "AGUARDANDO_RH" && s.tipo !== "ENVIO_DOCUMENTO_RH" && (
+                <LogTimelineGestor s={s} />
+              )}
 
               {/* Detalhes da correção criada pelo RH */}
               {isCorrecaoRH && correcoesDia && correcoesDia.length > 0 && (
@@ -5261,6 +5300,22 @@ const TIPO_AFAST_LABEL: Record<string, string> = {
   ABONO: "Abono"
 };
 
+function labelParcialAfast(tipo: string | undefined, hi: string, hf: string): string {
+  const nome =
+    tipo === "ABONO"
+      ? "Abono parcial"
+      : tipo === "ATESTADO"
+        ? "Atestado médico parcial"
+        : "Afastamento parcial";
+  return `${nome} (${hi}–${hf})`;
+}
+
+function badgeLabelParcialH(obs?: string): string {
+  if (obs?.startsWith("Abono parcial")) return "Abono parcial";
+  if (obs?.startsWith("Afastamento parcial")) return "Afastamento parcial";
+  return "Atestado médico parcial";
+}
+
 function toMinH(h: string) {
   const [hh, mm] = h.split(":").map(Number);
   return hh * 60 + mm;
@@ -5583,7 +5638,7 @@ function buildHistorico(
     }
     const atestadoParcial = af && isAfastParcial(af) ? af : null;
     const dayRegs = byDay[isoKey] ?? [];
-    // Fim de semana sem registros: FOLGA (aparece na view do RH sempre)
+    // Fim de semana sem registros: Sem Expediente (aparece na view do RH sempre)
     if (fimDeSemana && dayRegs.length === 0) {
       result.push({
         data: dataStr,
@@ -5594,8 +5649,8 @@ function buildHistorico(
         saida: null,
         horasMin: 0,
         jornadaMin: 0,
-        status: "FUTURO",
-        obs: nomeFeriado ? `Folga — Feriado: ${nomeFeriado}` : "Folga"
+        status: "FOLGA",
+        obs: nomeFeriado ? `Sem Expediente — Feriado: ${nomeFeriado}` : "Sem Expediente"
       });
       continue;
     }
@@ -5648,7 +5703,11 @@ function buildHistorico(
           horasMin: 0,
           jornadaMin: jornadaMandatoria,
           status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
-          obs: `Atestado médico parcial (${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim})`,
+          obs: labelParcialAfast(
+            atestadoParcial.tipo,
+            atestadoParcial.horarioInicio!,
+            atestadoParcial.horarioFim!
+          ),
           atestadoParcial: true,
           atestadoParcialHorario: `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`,
           semIntervalo: true,
@@ -5765,7 +5824,11 @@ function buildHistorico(
       else if (isHoje) status = "PENDENTE";
       else status = "FALTA";
       if (!obs) {
-        obs = `Atestado médico parcial (${atestadoParcial!.horarioInicio}–${atestadoParcial!.horarioFim})`;
+        obs = labelParcialAfast(
+          atestadoParcial!.tipo,
+          atestadoParcial!.horarioInicio!,
+          atestadoParcial!.horarioFim!
+        );
       }
     } else if (entrada && saida) {
       horasMin = calcHorasH(dayRegsHoras, undefined, calcOptsH);
@@ -5813,7 +5876,11 @@ function buildHistorico(
         jornadaMin = Math.max(0, horasMin - saldoExp);
       }
       if (!obs) {
-        obs = `Atestado médico parcial (${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim})`;
+        obs = labelParcialAfast(
+          atestadoParcial.tipo,
+          atestadoParcial.horarioInicio!,
+          atestadoParcial.horarioFim!
+        );
       }
     } else if (fimDeSemana || feriadoDia) {
       if (feriadoDia?.marcoHorario && !fimDeSemana) {
@@ -5916,26 +5983,27 @@ function StatusPillH({
   atestadoParcialHorario?: string;
 }) {
   if (atestadoParcial) {
+    const label = badgeLabelParcialH(obs);
     return (
       <span
         className="badge badge-blue"
-        title={
-          obs ??
-          `Atestado médico parcial${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`
-        }
+        title={obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`}
       >
-        Atestado médico parcial
+        {label}
       </span>
     );
   }
+  /* Dias futuros: sem badge — o dia ainda não ocorreu. */
+  if (status === "FUTURO") return null;
+
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
     PENDENTE: { label: "Pendente", cls: "badge-amber" },
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
-    FUTURO: { label: "Folga", cls: "badge-gray" },
-    FOLGA: { label: "Folga", cls: "badge-gray" },
+    FUTURO: { label: "", cls: "badge-gray" },
+    FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
     ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-gray" };
@@ -5946,7 +6014,9 @@ function StatusPillH({
         ? "Isento — Assessor/Gerente"
         : status === "AFASTAMENTO" && obs
           ? obs
-          : label}
+          : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
+            ? obs
+            : label}
     </span>
   );
 }
@@ -6061,7 +6131,13 @@ function IntervaloNaoAplicavelCellH({
   );
 }
 function HorasCellH({ min, status }: { min: number; status: StatusDia }) {
-  if (status === "FUTURO" || status === "FALTA" || status === "AFASTAMENTO" || status === "ISENTO")
+  if (
+    status === "FUTURO" ||
+    status === "FOLGA" ||
+    status === "FALTA" ||
+    status === "AFASTAMENTO" ||
+    status === "ISENTO"
+  )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   return (
     <span style={{ fontFamily: "var(--font-mono)" }}>
@@ -6078,7 +6154,7 @@ function SaldoCellH({
   jornadaMin: number;
   status: StatusDia;
 }) {
-  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "ISENTO")
+  if (status === "FUTURO" || status === "FOLGA" || status === "AFASTAMENTO" || status === "ISENTO")
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (status === "FALTA") {
     const h = Math.floor(jornadaMin / 60);
@@ -6783,10 +6859,20 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
   const totalFaltas = dias.filter((r) => r.status === "FALTA").length;
   const totalAfasts = dias.filter((r) => r.status === "AFASTAMENTO").length;
   const totalUteis = dias.filter(
-    (r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "ISENTO"
+    (r) =>
+      r.status !== "FUTURO" &&
+      r.status !== "FOLGA" &&
+      r.status !== "AFASTAMENTO" &&
+      r.status !== "ISENTO"
   ).length;
   const totalJornadaMin = dias
-    .filter((r) => r.status !== "FUTURO" && r.status !== "AFASTAMENTO" && r.status !== "ISENTO")
+    .filter(
+      (r) =>
+        r.status !== "FUTURO" &&
+        r.status !== "FOLGA" &&
+        r.status !== "AFASTAMENTO" &&
+        r.status !== "ISENTO"
+    )
     .reduce((s, r) => s + r.jornadaMin, 0);
   const mesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
 
@@ -7214,7 +7300,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           { cls: "badge-amber", l: "Pendente (saída não registrada)" },
           { cls: "badge-red", l: "Falta" },
           { cls: "badge-blue", l: "Afastamento / Atestado médico parcial" },
-          { cls: "badge-gray", l: "Feriado ou dia futuro" }
+          { cls: "badge-gray", l: "Feriado ou sem expediente" }
         ].map((item) => (
           <span
             key={item.l}
@@ -7441,26 +7527,30 @@ function PainelFerias({
                   <FeriasDetalheBlock meta={meta} />
                   {/* Folha e retorno */}
                   {(s.guiaMedicoUrl || s.documentoRetornoUrl) && (
-                    <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <div
+                      style={{
+                        marginTop: 8,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                        alignItems: "flex-start"
+                      }}
+                    >
                       {s.guiaMedicoUrl && (
-                        <a
+                        <LinkDocumentoAnexado
                           href={s.guiaMedicoUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ fontSize: 11.5, color: "#2f7d4f", fontWeight: 600 }}
-                        >
-                          📄 Folha de pagamento
-                        </a>
+                          label="Ver documento — Folha de pagamento de férias"
+                          variant="folha"
+                          style={{ marginTop: 0 }}
+                        />
                       )}
                       {s.documentoRetornoUrl && (
-                        <a
+                        <LinkDocumentoAnexado
                           href={s.documentoRetornoUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ fontSize: 11.5, color: "#16a34a", fontWeight: 600 }}
-                        >
-                          ✅ Folha assinada
-                        </a>
+                          label="Ver documento — Folha assinada"
+                          variant="retorno"
+                          style={{ marginTop: 0 }}
+                        />
                       )}
                     </div>
                   )}
@@ -7516,6 +7606,10 @@ function TabelaDocumentosRh({
   const [erro, setErro] = useState<string | null>(null);
 
   async function excluirDocumento(doc: DocumentoRhEnvio) {
+    if (doc.origem === "SOLICITACAO") {
+      setErro("Documentos vinculados a solicitações não podem ser excluídos por aqui.");
+      return;
+    }
     const nome = doc.nomeArquivo ?? doc.descricao;
     if (
       !window.confirm(
@@ -7547,60 +7641,117 @@ function TabelaDocumentosRh({
 
   return (
     <div style={{ background: "#fff", borderRadius: "var(--radius-md)", overflow: "hidden" }}>
+      <p
+        style={{
+          margin: 0,
+          padding: "12px 14px 0",
+          fontSize: 12,
+          color: "var(--ink-500)",
+          lineHeight: 1.45
+        }}
+      >
+        Inclui envios por solicitação (todos os status) e o histórico anterior de envio direto.
+      </p>
       {erro && (
         <p style={{ margin: 0, padding: "10px 14px", fontSize: 12, color: "var(--red)" }}>{erro}</p>
       )}
       <div style={{ overflowX: "auto" }}>
-        <table className="table-cfo" style={{ minWidth: 520 }}>
+        <table className="table-cfo" style={{ minWidth: 640 }}>
           <thead>
             <tr>
               <th>Data / Hora</th>
               <th>Descrição</th>
+              <th>Origem</th>
+              <th>Status</th>
               <th>Arquivo</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {documentos.map((doc) => (
-              <tr key={doc.id}>
-                <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(doc.createdAt)}</td>
-                <td>{doc.descricao}</td>
-                <td style={{ color: "var(--ink-500)", fontSize: 12 }}>
-                  {doc.nomeArquivo ??
-                    (doc.mimeType?.includes("pdf") ? "documento.pdf" : "documento")}
-                </td>
-                <td>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {doc.arquivoUrl ? (
-                      <a
-                        href={doc.arquivoUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn btn-ghost btn-sm"
-                        style={{ gap: 5 }}
-                      >
-                        <DownloadIcon size={13} /> Abrir
-                      </a>
+            {documentos.map((doc) => {
+              const isSolicitacao = doc.origem === "SOLICITACAO";
+              const bd = doc.status ? statusSolBadge(doc.status) : null;
+              return (
+                <tr key={`${doc.origem ?? "LEGADO"}-${doc.id}`}>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(doc.createdAt)}</td>
+                  <td>
+                    <div>
+                      <p style={{ margin: 0, fontSize: 13, color: "var(--ink-900)" }}>
+                        {doc.descricao}
+                      </p>
+                      {doc.rhObservacao && (
+                        <p
+                          style={{
+                            margin: "4px 0 0",
+                            fontSize: 11.5,
+                            color: "#065f46",
+                            fontStyle: "italic"
+                          }}
+                        >
+                          RH: {doc.rhObservacao}
+                        </p>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: "var(--radius-full)",
+                        background: isSolicitacao
+                          ? "rgba(37,99,235,0.10)"
+                          : "rgba(109,110,113,0.12)",
+                        color: isSolicitacao ? "#1e40af" : "var(--ink-600)"
+                      }}
+                    >
+                      {isSolicitacao ? "Solicitação" : "Envio direto"}
+                    </span>
+                  </td>
+                  <td>
+                    {bd ? (
+                      <Badge label={bd.label} bg={bd.bg} color={bd.color} />
                     ) : (
-                      "—"
+                      <span style={{ fontSize: 12, color: "var(--ink-400)" }}>—</span>
                     )}
-                    {isSuperAdmin && (
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        style={{ gap: 5, color: "var(--red)" }}
-                        disabled={excluindoId === doc.id}
-                        onClick={() => excluirDocumento(doc)}
-                        title="Excluir documento (Super Admin)"
-                      >
-                        <Trash2Icon size={13} />
-                        {excluindoId === doc.id ? "Excluindo…" : "Excluir"}
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td style={{ color: "var(--ink-500)", fontSize: 12 }}>
+                    {doc.nomeArquivo ??
+                      (doc.mimeType?.includes("pdf") ? "documento.pdf" : "documento")}
+                  </td>
+                  <td>
+                    <div
+                      style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}
+                    >
+                      {doc.arquivoUrl ? (
+                        <LinkDocumentoAnexado
+                          href={doc.arquivoUrl}
+                          nomeArquivo={doc.nomeArquivo}
+                          variant="rh"
+                          style={{ marginTop: 0, fontSize: 12.5, padding: "6px 12px" }}
+                        />
+                      ) : (
+                        "—"
+                      )}
+                      {isSuperAdmin && !isSolicitacao && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          style={{ gap: 5, color: "var(--red)" }}
+                          disabled={excluindoId === doc.id}
+                          onClick={() => excluirDocumento(doc)}
+                          title="Excluir documento (Super Admin)"
+                        >
+                          <Trash2Icon size={13} />
+                          {excluindoId === doc.id ? "Excluindo…" : "Excluir"}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -9721,15 +9872,12 @@ function TabValidacoes({ token }: { token: string }) {
                       </button>
                     )}
                     {r.tipo === "CIENCIA_ATESTADO" && r.documentoUrl && (
-                      <a
+                      <LinkDocumentoAnexado
                         href={r.documentoUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn btn-ghost btn-sm"
-                        style={{ gap: 5, textDecoration: "none" }}
-                      >
-                        <FileTextIcon size={14} /> Documento
-                      </a>
+                        label="Ver documento — Atestado"
+                        variant="funcionario"
+                        style={{ marginTop: 0, fontSize: 12.5, padding: "6px 12px" }}
+                      />
                     )}
                   </div>
                 </div>

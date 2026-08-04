@@ -69,6 +69,9 @@ services:
       # Credenciais da API Admin do Keycloak (lista usuários/grupos do AD para seed no banco).
       KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER:-}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
+      # URL pública do frontend — links de atalho em e-mails/notificações
+      APP_BASE_URL: ${APP_BASE_URL:-https://ponto.cfo.org.br}
+      VITE_APP_BASE_URL: ${VITE_APP_BASE_URL:-https://ponto.cfo.org.br}
     volumes:
       - ./:/app
       - node_modules_root:/app/node_modules

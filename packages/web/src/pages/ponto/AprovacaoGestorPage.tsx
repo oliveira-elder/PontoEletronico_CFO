@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -82,7 +83,10 @@ const TIPO_LABEL: Record<string, string> = {
   ATESTADO: "Atestado Médico",
   FERIAS: "Férias",
   LICENCA: "Licença",
-  ABONO: "Abono de Falta"
+  ABONO: "Abono de Falta",
+  DAY_OFF: "Day Off de Aniversário",
+  HORA_EXTRA: "Hora Extra",
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
 };
 
 function fmtDate(iso: string) {
@@ -337,7 +341,16 @@ function ModalDecisao({
             )}
             {isCienciaAtestado && typeof solicitacao.metadados?.documentoUrl === "string" && (
               <div style={{ marginTop: 10 }}>
-                <LinkDocumentoAnexado href={solicitacao.metadados.documentoUrl as string} />
+                <LinkDocumentoAnexado
+                  href={solicitacao.metadados.documentoUrl as string}
+                  nomeArquivo={
+                    typeof solicitacao.metadados?.nomeArquivo === "string"
+                      ? solicitacao.metadados.nomeArquivo
+                      : "Atestado"
+                  }
+                  variant="funcionario"
+                  style={{ marginTop: 0 }}
+                />
               </div>
             )}
           </div>
@@ -624,7 +637,23 @@ function SolicitacaoCard({
         )}
 
         {s.tipo === "ATESTADO" && typeof s.metadados?.documentoUrl === "string" && (
-          <LinkDocumentoAnexado href={s.metadados.documentoUrl as string} />
+          <LinkDocumentoAnexado
+            href={s.metadados.documentoUrl as string}
+            nomeArquivo={
+              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : "Atestado"
+            }
+            variant="funcionario"
+          />
+        )}
+
+        {s.tipo === "ENVIO_DOCUMENTO_RH" && typeof s.metadados?.documentoUrl === "string" && (
+          <LinkDocumentoAnexado
+            href={s.metadados.documentoUrl as string}
+            nomeArquivo={
+              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
+            }
+            variant="funcionario"
+          />
         )}
 
         {!mostrarAcoes && (s.gestorResolvidoEm || s.gestorObservacao || s.observacaoGestor) && (
@@ -733,8 +762,23 @@ function fmtBH(min: number): string {
   return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}min`;
 }
 
+const ETAPAS_VALIDAS: EtapaAprovacao[] = ["gestor", "rh", "assinaturas", "correcoes_rh"];
+
+function etapaInicialFromUrl(
+  searchParams: URLSearchParams,
+  isRH: boolean,
+  isGestorArea: boolean
+): EtapaAprovacao {
+  const raw = searchParams.get("etapa");
+  if (raw && ETAPAS_VALIDAS.includes(raw as EtapaAprovacao)) {
+    return raw as EtapaAprovacao;
+  }
+  return isRH && !isGestorArea ? "rh" : "gestor";
+}
+
 export function AprovacaoGestorPage() {
   const { user, hasRole, token } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // PROVISÓRIO: isManager via campo do Funcionario dá acesso enquanto responsavelUserId não está configurado
   const isManagerProvisorio = !!user?.funcionario?.isManager;
@@ -753,7 +797,9 @@ export function AprovacaoGestorPage() {
   const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const temAcesso = isGestorArea || isRH;
 
-  const [etapa, setEtapa] = useState<EtapaAprovacao>(isRH && !isGestorArea ? "rh" : "gestor");
+  const [etapa, setEtapa] = useState<EtapaAprovacao>(() =>
+    etapaInicialFromUrl(searchParams, isRH, isGestorArea)
+  );
   const [aba, setAba] = useState<"pendentes" | "historico">("pendentes");
   const [busca, setBusca] = useState("");
   const [tipo, setTipo] = useState("");
@@ -907,8 +953,26 @@ export function AprovacaoGestorPage() {
   }, [aba, page, tipo, etapa]);
 
   useEffect(() => {
+    const fromUrl = searchParams.get("etapa");
+    if (fromUrl && ETAPAS_VALIDAS.includes(fromUrl as EtapaAprovacao)) {
+      setEtapa(fromUrl as EtapaAprovacao);
+      return;
+    }
     if (isRH && !isGestorArea) setEtapa("rh");
-  }, [isRH, isGestorArea]);
+  }, [isRH, isGestorArea, searchParams]);
+
+  function selecionarEtapa(nova: EtapaAprovacao) {
+    setEtapa(nova);
+    setAba("pendentes");
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("etapa", nova);
+        return next;
+      },
+      { replace: true }
+    );
+  }
 
   useEffect(() => {
     void carregarEquipe();
@@ -1188,8 +1252,7 @@ export function AprovacaoGestorPage() {
             <button
               key={e.id}
               onClick={() => {
-                setEtapa(e.id);
-                setAba("pendentes");
+                selecionarEtapa(e.id);
               }}
               style={{
                 padding: "8px 16px",

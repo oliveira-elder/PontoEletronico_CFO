@@ -312,6 +312,7 @@ type Tab =
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
   atestadoDiasLimiteInss: number;
+  atestadoPrazoEnvioDias: number;
   atestadoMensagemOriginais: string;
   feriasAntecedenciaMinDias: number;
   feriasMinimoGrandePeriodo: number;
@@ -326,6 +327,7 @@ interface ConfigSolicitacoes {
   tipoAtivoAbono: boolean;
   tipoAtivoDayOff: boolean;
   tipoAtivoHoraExtra: boolean;
+  tipoAtivoEnvioDocumentoRh: boolean;
 }
 
 interface FeriadoConfig {
@@ -5568,6 +5570,12 @@ export function ConfiguracoesPage() {
                   emoji: "⏱️",
                   label: "Hora Extra",
                   desc: "Solicitação antecipada de hora extra (≥ limite configurado) — aprovação do gestor e RH"
+                },
+                {
+                  key: "tipoAtivoEnvioDocumentoRh",
+                  emoji: "📎",
+                  label: "Envio de Documento ao RH",
+                  desc: "Envio de documentos (comprovantes, declarações, etc.) diretamente ao RH"
                 }
               ] as { key: keyof ConfigSolicitacoes; emoji: string; label: string; desc: string }[]
             ).map(({ key, emoji, label, desc }) => (
@@ -5636,8 +5644,15 @@ export function ConfiguracoesPage() {
 
           {/* ── Regras de Atestado ── */}
           <Secao titulo="Regras de Atestado Médico" icon={<AlertCircleIcon size={18} />}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              <div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 16,
+                alignItems: "stretch"
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column" }}>
                 <label
                   style={{
                     fontSize: 12,
@@ -5649,7 +5664,7 @@ export function ConfiguracoesPage() {
                 >
                   Limite simples (dias)
                 </label>
-                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px" }}>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px", flex: 1 }}>
                   Atestados até este limite são padrão sem homologação
                 </p>
                 <input
@@ -5668,11 +5683,12 @@ export function ConfiguracoesPage() {
                     border: "1px solid rgba(122,30,38,0.14)",
                     borderRadius: "var(--radius-md)",
                     fontSize: 14,
-                    fontFamily: "var(--font-mono)"
+                    fontFamily: "var(--font-mono)",
+                    marginTop: "auto"
                   }}
                 />
               </div>
-              <div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
                 <label
                   style={{
                     fontSize: 12,
@@ -5684,7 +5700,7 @@ export function ConfiguracoesPage() {
                 >
                   Limite para INSS (dias)
                 </label>
-                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px" }}>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px", flex: 1 }}>
                   A partir deste limite exige documento do INSS
                 </p>
                 <input
@@ -5703,7 +5719,44 @@ export function ConfiguracoesPage() {
                     border: "1px solid rgba(122,30,38,0.14)",
                     borderRadius: "var(--radius-md)",
                     fontSize: 14,
-                    fontFamily: "var(--font-mono)"
+                    fontFamily: "var(--font-mono)",
+                    marginTop: "auto"
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                    display: "block",
+                    marginBottom: 4
+                  }}
+                >
+                  Prazo para envio do atestado (dias)
+                </label>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px", flex: 1 }}>
+                  Prazo informado no e-mail de ponto incompleto para envio do atestado
+                </p>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={configSol.atestadoPrazoEnvioDias ?? 2}
+                  onChange={(e) =>
+                    setConfigSol((c) =>
+                      c ? { ...c, atestadoPrazoEnvioDias: parseInt(e.target.value) || 2 } : c
+                    )
+                  }
+                  style={{
+                    width: 80,
+                    padding: "7px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)",
+                    marginTop: "auto"
                   }}
                 />
               </div>

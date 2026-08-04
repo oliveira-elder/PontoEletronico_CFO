@@ -221,6 +221,7 @@ export class ApiServidoraService {
         ? {
             atestadoDiasLimiteSimples: solicitacoes.atestadoDiasLimiteSimples,
             atestadoDiasLimiteInss: solicitacoes.atestadoDiasLimiteInss,
+            atestadoPrazoEnvioDias: solicitacoes.atestadoPrazoEnvioDias,
             feriasAntecedenciaMinDias: solicitacoes.feriasAntecedenciaMinDias,
             feriasMinimoGrandePeriodo: solicitacoes.feriasMinimoGrandePeriodo,
             feriasMaxPeriodos: solicitacoes.feriasMaxPeriodos

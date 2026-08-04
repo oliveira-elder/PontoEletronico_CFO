@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { FileTextIcon, ArrowLeftIcon, DownloadIcon, RefreshCwIcon } from "../../components/icons";
+import { FileTextIcon, ArrowLeftIcon, RefreshCwIcon } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
-import { DocumentoRhEnvio, DocumentoRhUpload } from "../../components/ponto/DocumentoRhUpload";
+import { DocumentoRhEnvio } from "../../components/ponto/DocumentoRhUpload";
+import { LinkDocumentoAnexado } from "./solicitacaoUi";
 
 const fmtDateTime = (iso: string) =>
   new Date(iso).toLocaleString("pt-BR", {
@@ -90,43 +91,40 @@ export function DocumentosRhPage() {
       </div>
 
       <div
+        className="card-flat"
         style={{
-          display: "grid",
-          gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
-          gap: 16,
-          marginBottom: 24
+          marginBottom: 24,
+          display: "flex",
+          flexDirection: isMobile ? "column" : "row",
+          alignItems: isMobile ? "stretch" : "center",
+          justifyContent: "space-between",
+          gap: 14
         }}
       >
-        <div className="card-flat">
-          <DocumentoRhUpload onEnviado={() => carregar()} />
-        </div>
-
-        <div className="card-flat" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div>
           <p
             style={{
               fontFamily: "var(--font-display)",
               fontStyle: "italic",
               color: "var(--burgundy-600)",
               fontSize: 16,
-              margin: 0
+              margin: "0 0 6px"
             }}
           >
-            Orientações
+            Novo envio
           </p>
-          <ul
-            style={{
-              margin: 0,
-              paddingLeft: 18,
-              fontSize: 13,
-              color: "var(--ink-700)",
-              lineHeight: 1.55
-            }}
-          >
-            <li>Formatos aceitos: JPG, PNG, WEBP e PDF.</li>
-            <li>Descreva o conteúdo do documento para facilitar a triagem do RH.</li>
-            <li>O histórico abaixo registra todos os envios realizados por você.</li>
-          </ul>
+          <p style={{ fontSize: 13, color: "var(--ink-600)", margin: 0, lineHeight: 1.5 }}>
+            O envio de documentos ao RH agora é feito por solicitação. Abra uma nova solicitação do
+            tipo <strong>Envio de Documento ao RH</strong>.
+          </p>
         </div>
+        <Link
+          to="/ponto/solicitacoes"
+          className="btn btn-primary btn-sm"
+          style={{ whiteSpace: "nowrap", flexShrink: 0, textAlign: "center" }}
+        >
+          Ir para Solicitações
+        </Link>
       </div>
 
       <div className="card-flat">
@@ -148,7 +146,7 @@ export function DocumentosRhPage() {
               margin: 0
             }}
           >
-            Histórico de envios
+            Histórico de envios anteriores
           </p>
           <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
             {documentos.length} documento{documentos.length !== 1 ? "s" : ""}
@@ -179,7 +177,7 @@ export function DocumentosRhPage() {
               padding: "24px 0"
             }}
           >
-            Nenhum documento enviado ainda.
+            Nenhum documento no histórico anterior.
           </p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -228,15 +226,12 @@ export function DocumentosRhPage() {
                   </p>
                 </div>
                 {doc.arquivoUrl && (
-                  <a
+                  <LinkDocumentoAnexado
                     href={doc.arquivoUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-ghost btn-sm"
-                    style={{ gap: 5, flexShrink: 0 }}
-                  >
-                    <DownloadIcon size={14} /> Abrir
-                  </a>
+                    nomeArquivo={doc.nomeArquivo}
+                    variant="rh"
+                    style={{ marginTop: 0, flexShrink: 0 }}
+                  />
                 )}
               </div>
             ))}

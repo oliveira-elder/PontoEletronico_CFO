@@ -54,7 +54,7 @@ export function enriquecerAfastamentosComSolicitacoes<T extends AfastamentoComHo
   if (!solsParciais.length) return afastamentos;
 
   return afastamentos.map((a) => {
-    if (a.tipo !== "ATESTADO") return a;
+    if (a.tipo !== "ATESTADO" && a.tipo !== "ABONO") return a;
     if (a.horarioInicio && a.horarioFim) return a;
     const aIni = dataBrasiliaISO(a.dataInicio);
     const aFim = dataBrasiliaISO(a.dataFim);

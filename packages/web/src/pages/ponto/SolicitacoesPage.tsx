@@ -30,7 +30,8 @@ type TipoSolicitacao =
   | "LICENCA"
   | "ABONO"
   | "DAY_OFF"
-  | "HORA_EXTRA";
+  | "HORA_EXTRA"
+  | "ENVIO_DOCUMENTO_RH";
 type StatusSolicitacao =
   | "PENDENTE"
   | "AGUARDANDO_RH"
@@ -74,6 +75,7 @@ interface RegistroDoDia {
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
   atestadoDiasLimiteInss: number;
+  atestadoPrazoEnvioDias: number;
   atestadoMensagemOriginais: string;
   feriasAntecedenciaMinDias: number;
   feriasMinimoGrandePeriodo: number;
@@ -88,6 +90,7 @@ interface ConfigSolicitacoes {
   tipoAtivoAbono?: boolean;
   tipoAtivoDayOff?: boolean;
   tipoAtivoHoraExtra?: boolean;
+  tipoAtivoEnvioDocumentoRh?: boolean;
 }
 
 const TIPO_LABEL: Record<TipoSolicitacao, string> = {
@@ -97,7 +100,8 @@ const TIPO_LABEL: Record<TipoSolicitacao, string> = {
   LICENCA: "Licença",
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
-  HORA_EXTRA: "Hora Extra"
+  HORA_EXTRA: "Hora Extra",
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
 };
 
 const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
@@ -107,7 +111,8 @@ const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
   LICENCA: "📋",
   ABONO: "📆",
   DAY_OFF: "🎂",
-  HORA_EXTRA: "⏱️"
+  HORA_EXTRA: "⏱️",
+  ENVIO_DOCUMENTO_RH: "📎"
 };
 
 /* Status que encerram a análise — a partir daqui, documentos anexados pelo
@@ -200,7 +205,8 @@ const TIPO_FLAG: Record<TipoSolicitacao, keyof ConfigSolicitacoes> = {
   LICENCA: "tipoAtivoLicenca",
   ABONO: "tipoAtivoAbono",
   DAY_OFF: "tipoAtivoDayOff",
-  HORA_EXTRA: "tipoAtivoHoraExtra"
+  HORA_EXTRA: "tipoAtivoHoraExtra",
+  ENVIO_DOCUMENTO_RH: "tipoAtivoEnvioDocumentoRh"
 };
 
 function TipoSeletor({
@@ -1104,6 +1110,20 @@ interface PeriodoFerias {
   dataFim: string;
   dias: number;
 }
+
+interface CicloFerias {
+  numero: number;
+  inicio: string;
+  fim: string;
+  diasPorCiclo: number;
+  diasGozo: number;
+  diasVendidos: number;
+  diasDisponiveis: number;
+  status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
+  solicitacaoId: string | null;
+  solicitacaoStatus: string | null;
+}
+
 interface SaldoFerias {
   dataAdmissao: string;
   ciclosVencidos: number;
@@ -1115,17 +1135,36 @@ interface SaldoFerias {
   mesesTotal: number;
   isEstagiario?: boolean;
   duracaoCicloMeses?: number;
-  ciclos: Array<{ numero: number; inicio: string; fim: string }>;
+  diasPorCiclo?: number;
+  ciclos: CicloFerias[];
+}
+
+function slotsPeriodosIniciais(qtd: number): PeriodoFerias[] {
+  return Array.from({ length: Math.max(1, qtd) }, () => ({
+    dataInicio: "",
+    dataFim: "",
+    dias: 0
+  }));
+}
+
+function fmtPeriodoCurto(iso: string) {
+  try {
+    return new Date(iso).toLocaleDateString("pt-BR");
+  } catch {
+    return iso.slice(0, 10);
+  }
 }
 
 function FormFerias({
   config,
   onSubmit,
-  enviando
+  enviando,
+  solicitacoesFerias = []
 }: {
   config: ConfigSolicitacoes | null;
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
+  solicitacoesFerias?: Solicitacao[];
 }) {
   const cfg = config ?? {
     feriasAntecedenciaMinDias: 30,
@@ -1138,9 +1177,10 @@ function FormFerias({
 
   const [saldo, setSaldo] = useState<SaldoFerias | null>(null);
   const [saldoLoading, setSaldoLoading] = useState(true);
-  const [periodos, setPeriodos] = useState<PeriodoFerias[]>([
-    { dataInicio: "", dataFim: "", dias: 0 }
-  ]);
+  const [cicloSelecionado, setCicloSelecionado] = useState<number | null>(null);
+  const [periodos, setPeriodos] = useState<PeriodoFerias[]>(() =>
+    slotsPeriodosIniciais(cfg.feriasMaxPeriodos)
+  );
   const [diasVenda, setDiasVenda] = useState(0);
   const [descricao, setDescricao] = useState("");
   const [erros, setErros] = useState<string[]>([]);
@@ -1148,32 +1188,92 @@ function FormFerias({
   useEffect(() => {
     api
       .get<SaldoFerias>("/ponto/ferias/saldo")
-      .then((s) => setSaldo(s))
+      .then((s) => {
+        setSaldo(s);
+        if (s?.ciclos?.length) {
+          const preferido =
+            s.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0) ??
+            s.ciclos.find((c) => c.status === "CONFIGURADO" || c.status === "EM_ANALISE") ??
+            s.ciclos[0];
+          setCicloSelecionado(preferido?.numero ?? null);
+        }
+      })
       .catch(() => setSaldo(null))
       .finally(() => setSaldoLoading(false));
   }, []);
 
   const isEstagiario = saldo?.isEstagiario ?? false;
+  const diasPorCiclo = saldo?.diasPorCiclo ?? (isEstagiario ? 15 : 30);
+  const cicloAtual = saldo?.ciclos?.find((c) => c.numero === cicloSelecionado) ?? null;
+
+  const solicitacaoDoCiclo = (() => {
+    if (!cicloAtual?.solicitacaoId) return null;
+    return (
+      solicitacoesFerias.find((s) => s.id === cicloAtual.solicitacaoId) ??
+      solicitacoesFerias.find((s) => {
+        const m = s.metadados;
+        return m && Number(m.cicloNumero) === cicloAtual.numero;
+      }) ??
+      null
+    );
+  })();
+
+  const modo: "nova" | "alteracao" | "em_analise" | "indisponivel" = (() => {
+    if (!cicloAtual) {
+      if ((saldo?.diasDisponiveis ?? 0) > 0) return "nova";
+      return "indisponivel";
+    }
+    if (cicloAtual.status === "EM_ANALISE") return "em_analise";
+    if (cicloAtual.status === "CONFIGURADO" && solicitacaoDoCiclo?.status === "APROVADA")
+      return "alteracao";
+    if (cicloAtual.diasDisponiveis > 0) return "nova";
+    return "indisponivel";
+  })();
+
+  const diasDisponiveisCiclo =
+    modo === "nova" ? (cicloAtual?.diasDisponiveis ?? saldo?.diasDisponiveis ?? 0) : 0;
 
   // Garante que estagiário não tenha diasVenda > 0
   useEffect(() => {
     if (isEstagiario && diasVenda > 0) setDiasVenda(0);
   }, [isEstagiario, diasVenda]);
 
+  // Ao mudar venda ou ciclo em modo nova: ajusta quantidade de slots (3 sem venda, 2 com venda)
+  useEffect(() => {
+    if (modo !== "nova") return;
+    const maxGozo =
+      !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
+    setPeriodos((prev) => {
+      if (prev.length === maxGozo) return prev;
+      if (prev.length > maxGozo) return prev.slice(0, maxGozo);
+      return [...prev, ...slotsPeriodosIniciais(maxGozo - prev.length)];
+    });
+  }, [modo, diasVenda, isEstagiario, cfg.feriasMaxPeriodos, cicloSelecionado]);
+
+  // Reset form ao trocar de ciclo (modo nova)
+  useEffect(() => {
+    if (modo !== "nova") return;
+    setDiasVenda(0);
+    setDescricao("");
+    setPeriodos(
+      slotsPeriodosIniciais(
+        !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos
+      )
+    );
+    // Reset proposital ao trocar ciclo (deps incompletas de propósito).
+  }, [cicloSelecionado]);
+
   const hoje = new Date();
   const minData = new Date(hoje);
   minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
   const minDataStr = minData.toISOString().slice(0, 10);
 
-  const totalDiasGozo = periodos.reduce((s, p) => s + p.dias, 0);
-  // Estagiário não pode vender dias
+  const periodosPreenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
+  const totalDiasGozo = periodosPreenchidos.reduce((s, p) => s + p.dias, 0);
   const diasVendaEfetivo = isEstagiario ? 0 : diasVenda;
   const totalDiasUtilizados = totalDiasGozo + diasVendaEfetivo;
-  const diasRestantes = (saldo?.diasDisponiveis ?? 0) - totalDiasUtilizados;
-  const maxVenda = isEstagiario
-    ? 0
-    : Math.min(cfg.feriasMaxDiasVenda, saldo?.diasDisponiveis ?? cfg.feriasMaxDiasVenda);
-  // venda ocupa 1 slot dos feriasMaxPeriodos disponíveis (não se aplica a estagiários)
+  const diasRestantes = diasDisponiveisCiclo - totalDiasUtilizados;
+  const maxVenda = isEstagiario ? 0 : Math.min(cfg.feriasMaxDiasVenda, diasDisponiveisCiclo);
   const maxPeriodosGozo =
     !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
 
@@ -1187,6 +1287,7 @@ function FormFerias({
       next[idx] = { ...next[idx], [field]: val };
       const p = next[idx];
       if (p.dataInicio && p.dataFim) next[idx].dias = calcDias(p.dataInicio, p.dataFim);
+      else next[idx].dias = 0;
       return next;
     });
   }
@@ -1202,17 +1303,19 @@ function FormFerias({
   }
 
   useEffect(() => {
+    if (modo !== "nova") {
+      setErros([]);
+      return;
+    }
     const errs: string[] = [];
-    const todosPreenchidos = periodos.every((p) => p.dataInicio && p.dataFim);
+    const preenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
 
-    // venda excede limite de slots (não se aplica a estagiários)
     if (!isEstagiario && diasVenda > 0 && periodos.length > maxPeriodosGozo) {
       errs.push(`Com venda de dias, o máximo é ${maxPeriodosGozo} período(s) de gozo.`);
     }
 
-    // validação por período
-    periodos.forEach((p, i) => {
-      if (!p.dataInicio || !p.dataFim) return;
+    preenchidos.forEach((p) => {
+      const i = periodos.indexOf(p);
       if (new Date(p.dataInicio) < minData)
         errs.push(
           `Período ${i + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
@@ -1221,11 +1324,15 @@ function FormFerias({
         errs.push(`Período ${i + 1}: mínimo de ${cfg.feriasMinimoOutrosPeriodos} dias.`);
     });
 
-    // ao menos um período deve ter o mínimo do grande período
+    // Períodos parcialmente preenchidos
+    periodos.forEach((p, i) => {
+      if ((p.dataInicio && !p.dataFim) || (!p.dataInicio && p.dataFim))
+        errs.push(`Período ${i + 1}: informe início e fim.`);
+    });
+
     if (
-      todosPreenchidos &&
-      periodos.length > 0 &&
-      !periodos.some((p) => p.dias >= cfg.feriasMinimoGrandePeriodo)
+      preenchidos.length > 0 &&
+      !preenchidos.some((p) => p.dias >= cfg.feriasMinimoGrandePeriodo)
     ) {
       errs.push(
         `Ao menos um período deve ter no mínimo ${cfg.feriasMinimoGrandePeriodo} dias corridos.`
@@ -1234,22 +1341,25 @@ function FormFerias({
 
     if (!isEstagiario && diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
 
-    // invariante: gozo (+ venda para não-estagiários) = dias disponíveis
-    if (saldo && todosPreenchidos && diasRestantes !== 0) {
+    if (diasDisponiveisCiclo > 0 && preenchidos.length > 0 && diasRestantes !== 0) {
       errs.push(
         diasRestantes > 0
-          ? `${isEstagiario ? "Gozo" : "Gozo + venda"} deve igualar os ${saldo.diasDisponiveis} dias disponíveis (faltam ${diasRestantes} dias).`
-          : `Total excede os ${saldo.diasDisponiveis} dias disponíveis (sobram ${-diasRestantes} dias).`
+          ? `${isEstagiario ? "Gozo" : "Gozo + venda"} deve igualar os ${diasDisponiveisCiclo} dias do ciclo (Restam deve ser 0; faltam ${diasRestantes} dias).`
+          : `Total excede os ${diasDisponiveisCiclo} dias do ciclo (Restam = ${diasRestantes}d).`
       );
+    }
+
+    if (diasDisponiveisCiclo <= 0) {
+      errs.push("Não há dias disponíveis neste ciclo para uma nova solicitação.");
     }
 
     setErros(errs);
   }, [
+    modo,
     periodos,
     diasVenda,
     isEstagiario,
-    saldo,
-    totalDiasUtilizados,
+    diasDisponiveisCiclo,
     diasRestantes,
     maxVenda,
     maxPeriodosGozo,
@@ -1257,20 +1367,24 @@ function FormFerias({
     minData
   ]);
 
-  const diasDisponiveis = saldo?.diasDisponiveis ?? 0;
-
   const podeEnviar =
-    periodos.every((p) => p.dataInicio && p.dataFim && p.dias > 0) &&
+    modo === "nova" &&
+    periodosPreenchidos.length > 0 &&
+    periodos.every(
+      (p) => (!p.dataInicio && !p.dataFim) || (p.dataInicio && p.dataFim && p.dias > 0)
+    ) &&
     erros.length === 0 &&
-    totalDiasUtilizados > 0;
+    totalDiasUtilizados > 0 &&
+    diasRestantes === 0;
 
   const handleSubmit = () => {
     if (!podeEnviar) return;
-    const primeiroInicio = periodos.reduce(
+    const preenchidos = periodos.filter((p) => p.dataInicio && p.dataFim && p.dias > 0);
+    const primeiroInicio = preenchidos.reduce(
       (m, p) => (!m || p.dataInicio < m ? p.dataInicio : m),
       ""
     );
-    const ultimoFim = periodos.reduce((m, p) => (!m || p.dataFim > m ? p.dataFim : m), "");
+    const ultimoFim = preenchidos.reduce((m, p) => (!m || p.dataFim > m ? p.dataFim : m), "");
     onSubmit({
       tipo: "FERIAS",
       dataReferencia: new Date(primeiroInicio + "T12:00:00").toISOString(),
@@ -1278,7 +1392,7 @@ function FormFerias({
       dataFim: new Date(ultimoFim + "T23:59:59").toISOString(),
       descricao,
       metadados: {
-        periodos: periodos.map((p) => ({
+        periodos: preenchidos.map((p) => ({
           dataInicio: p.dataInicio + "T00:00:00.000Z",
           dataFim: p.dataFim + "T23:59:59.000Z",
           dias: p.dias
@@ -1286,7 +1400,9 @@ function FormFerias({
         diasVendidos: diasVendaEfetivo,
         totalDiasGozo: totalDiasGozo,
         totalDias: totalDiasUtilizados,
-        diasDisponiveis: diasDisponiveis
+        diasDisponiveis: diasDisponiveisCiclo,
+        cicloNumero: cicloAtual?.numero ?? null,
+        diasPorCiclo
       }
     });
   };
@@ -1306,6 +1422,101 @@ function FormFerias({
     fontSize: 13,
     boxSizing: "border-box"
   };
+
+  if (modo === "alteracao" && solicitacaoDoCiclo) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {saldo && saldo.ciclos.length > 1 && (
+          <SeletorCicloFerias
+            ciclos={saldo.ciclos}
+            selecionado={cicloSelecionado}
+            onSelect={setCicloSelecionado}
+          />
+        )}
+        <ResumoSolicitacaoFeriasOriginal solicitacao={solicitacaoDoCiclo} />
+        <FormFeriasAlteracao
+          solicitacaoOriginal={solicitacaoDoCiclo}
+          config={config}
+          onSubmit={onSubmit}
+          enviando={enviando}
+          cicloNumero={cicloAtual?.numero}
+        />
+      </div>
+    );
+  }
+
+  if (modo === "em_analise" && solicitacaoDoCiclo) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {saldo && saldo.ciclos.length > 1 && (
+          <SeletorCicloFerias
+            ciclos={saldo.ciclos}
+            selecionado={cicloSelecionado}
+            onSelect={setCicloSelecionado}
+          />
+        )}
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(247,196,55,0.10)",
+            border: "1px solid rgba(247,196,55,0.35)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "#8a6a00",
+            lineHeight: 1.55
+          }}
+        >
+          Já existe uma solicitação de férias <strong>em análise</strong> para este ciclo. Aguarde a
+          conclusão para solicitar alteração dos períodos.
+        </div>
+        <ResumoSolicitacaoFeriasOriginal solicitacao={solicitacaoDoCiclo} />
+      </div>
+    );
+  }
+
+  if (modo === "indisponivel") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {saldo && saldo.ciclos.length > 1 && (
+          <SeletorCicloFerias
+            ciclos={saldo.ciclos}
+            selecionado={cicloSelecionado}
+            onSelect={setCicloSelecionado}
+          />
+        )}
+        {!saldoLoading && !saldo ? (
+          <div
+            style={{
+              padding: "10px 14px",
+              background: "rgba(247,196,55,0.08)",
+              border: "1px solid rgba(247,196,55,0.25)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 12.5,
+              color: "#8a6a00"
+            }}
+          >
+            Data de admissão não cadastrada. Solicite ao RH para calcular o saldo de férias.
+          </div>
+        ) : (
+          <div
+            style={{
+              padding: "12px 14px",
+              background: "rgba(122,30,38,0.05)",
+              border: "1px solid rgba(122,30,38,0.15)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13,
+              color: "var(--ink-700)",
+              lineHeight: 1.55
+            }}
+          >
+            {saldoLoading
+              ? "Carregando saldo de férias…"
+              : "Não há dias disponíveis para nova solicitação neste ciclo. Se já configurou as férias, use a opção de mudança nos períodos ainda elegíveis (antecedência mínima)."}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1377,7 +1588,7 @@ function FormFerias({
               {saldo.ciclos
                 .map(
                   (c) =>
-                    `${new Date(c.inicio).toLocaleDateString("pt-BR")} – ${new Date(c.fim).toLocaleDateString("pt-BR")}`
+                    `${fmtPeriodoCurto(c.inicio)} – ${fmtPeriodoCurto(c.fim)} (${c.diasDisponiveis}d disp.)`
                 )
                 .join(" | ")}
             </p>
@@ -1395,6 +1606,30 @@ function FormFerias({
           }}
         >
           Data de admissão não cadastrada. Solicite ao RH para calcular o saldo de férias.
+        </div>
+      )}
+
+      {saldo && saldo.ciclos.length > 1 && (
+        <SeletorCicloFerias
+          ciclos={saldo.ciclos}
+          selecionado={cicloSelecionado}
+          onSelect={setCicloSelecionado}
+        />
+      )}
+
+      {cicloAtual && (
+        <div
+          style={{
+            padding: "8px 12px",
+            background: "rgba(47,125,79,0.06)",
+            border: "1px solid rgba(47,125,79,0.18)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "#166534"
+          }}
+        >
+          Configurando <strong>ciclo {cicloAtual.numero}</strong> ({diasDisponiveisCiclo} dias a
+          programar). Na primeira solicitação, informe todos os períodos até Restam = 0.
         </div>
       )}
 
@@ -1416,7 +1651,7 @@ function FormFerias({
             acúmulo de ciclos · sem venda de dias · todos os períodos mín.{" "}
             {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
             {cfg.feriasMinimoGrandePeriodo} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias}{" "}
-            dias · agendar até o 5º mês do ciclo.
+            dias · agendar até o 5º mês do ciclo · Restam deve ser 0 para enviar.
           </>
         ) : (
           <>
@@ -1425,8 +1660,8 @@ function FormFerias({
             {cfg.feriasMinimoGrandePeriodo} dias · venda equivale a 1 período (máx.{" "}
             {cfg.feriasMaxPeriodos - 1} períodos de gozo com venda) · venda máx.{" "}
             {cfg.feriasMaxDiasVenda} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias} dias ·
-            na primeira solicitação informe todos os períodos · gozo + venda deve igualar os dias
-            disponíveis · alterações permitidas com 30 dias de antecedência por período.
+            na primeira solicitação preencha os períodos (com ou sem venda) até Restam = 0 ·
+            alterações posteriores com antecedência por período · cada ciclo se configura à parte.
           </>
         )}
       </div>
@@ -1447,13 +1682,13 @@ function FormFerias({
           />
           {diasVenda > 0 && (
             <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
-              {diasVenda} dia(s) serão convertidos em pagamento.
+              {diasVenda} dia(s) serão convertidos em pagamento (contam como 1 período).
             </p>
           )}
         </div>
       )}
 
-      {/* Períodos */}
+      {/* Períodos — pré-exibidos (3 sem venda / 2 com venda) */}
       {periodos.map((p, idx) => (
         <div
           key={idx}
@@ -1542,7 +1777,7 @@ function FormFerias({
         </div>
       ))}
 
-      {periodos.length < maxPeriodosGozo && (!saldo || diasRestantes > 0) && (
+      {periodos.length < maxPeriodosGozo && diasRestantes > 0 && (
         <button
           onClick={addPeriodo}
           style={{
@@ -1562,7 +1797,7 @@ function FormFerias({
       )}
 
       {/* Resumo */}
-      {totalDiasUtilizados > 0 && (
+      {(totalDiasUtilizados > 0 || diasDisponiveisCiclo > 0) && (
         <div
           style={{
             padding: "10px 14px",
@@ -1578,7 +1813,7 @@ function FormFerias({
               ["Total", totalDiasUtilizados],
               ["Restam", diasRestantes]
             ].map(([l, v]) => (
-              <div key={l}>
+              <div key={String(l)}>
                 <p
                   style={{
                     fontSize: 10,
@@ -1596,10 +1831,12 @@ function FormFerias({
                     fontSize: 15,
                     fontWeight: 700,
                     color:
-                      Number(v) === 0
-                        ? "var(--green)"
-                        : l === "Restam" && Number(v) > 0
-                          ? "var(--red)"
+                      l === "Restam"
+                        ? Number(v) === 0
+                          ? "var(--green)"
+                          : "var(--red)"
+                        : Number(v) === 0
+                          ? "var(--ink-400)"
                           : "var(--ink-900)",
                     margin: 0
                   }}
@@ -1609,6 +1846,11 @@ function FormFerias({
               </div>
             ))}
           </div>
+          {diasRestantes !== 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--red)", margin: "8px 0 0" }}>
+              Para enviar a primeira solicitação, Restam deve ser igual a 0.
+            </p>
+          )}
         </div>
       )}
 
@@ -1633,13 +1875,164 @@ function FormFerias({
         />
       </div>
 
-      <button
-        className="btn btn-primary"
-        disabled={enviando || periodos.some((p) => !p.dataInicio || !p.dataFim) || erros.length > 0}
-        onClick={handleSubmit}
-      >
+      <button className="btn btn-primary" disabled={enviando || !podeEnviar} onClick={handleSubmit}>
         {enviando ? "Enviando…" : "Enviar Solicitação"}
       </button>
+    </div>
+  );
+}
+
+function SeletorCicloFerias({
+  ciclos,
+  selecionado,
+  onSelect
+}: {
+  ciclos: CicloFerias[];
+  selecionado: number | null;
+  onSelect: (n: number) => void;
+}) {
+  const statusLabel: Record<CicloFerias["status"], string> = {
+    DISPONIVEL: "Disponível",
+    EM_ANALISE: "Em análise",
+    CONFIGURADO: "Configurado"
+  };
+  return (
+    <div>
+      <p
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: "var(--ink-700)",
+          margin: "0 0 8px"
+        }}
+      >
+        Selecione o ciclo de férias
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {ciclos.map((c) => {
+          const ativo = selecionado === c.numero;
+          return (
+            <button
+              key={c.numero}
+              type="button"
+              onClick={() => onSelect(c.numero)}
+              style={{
+                textAlign: "left",
+                padding: "10px 12px",
+                borderRadius: "var(--radius-md)",
+                border: ativo
+                  ? "1.5px solid var(--burgundy-600)"
+                  : "1px solid rgba(122,30,38,0.12)",
+                background: ativo ? "rgba(122,30,38,0.05)" : "#fff",
+                cursor: "pointer"
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  alignItems: "center"
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-800)" }}>
+                  Ciclo {c.numero}
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color:
+                      c.status === "DISPONIVEL"
+                        ? "var(--green)"
+                        : c.status === "EM_ANALISE"
+                          ? "#8a6a00"
+                          : "var(--ink-500)"
+                  }}
+                >
+                  {statusLabel[c.status]}
+                </span>
+              </div>
+              <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "4px 0 0" }}>
+                {fmtPeriodoCurto(c.inicio)} – {fmtPeriodoCurto(c.fim)} · {c.diasDisponiveis}d
+                disponíveis
+                {c.diasVendidos > 0 ? ` · ${c.diasVendidos}d vendidos` : ""}
+                {c.diasGozo > 0 ? ` · ${c.diasGozo}d gozo` : ""}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ResumoSolicitacaoFeriasOriginal({ solicitacao }: { solicitacao: Solicitacao }) {
+  const meta = solicitacao.metadados ?? {};
+  const periodos =
+    (meta.periodos as Array<{ dataInicio: string; dataFim: string; dias: number }> | undefined) ??
+    [];
+  const diasVendidos = Number(meta.diasVendidos ?? 0);
+  const cicloNumero = meta.cicloNumero != null ? Number(meta.cicloNumero) : null;
+  const totalGozo = Number(meta.totalDiasGozo ?? periodos.reduce((s, p) => s + (p.dias || 0), 0));
+
+  return (
+    <div
+      style={{
+        padding: "12px 14px",
+        background: "rgba(47,125,79,0.06)",
+        border: "1px solid rgba(47,125,79,0.20)",
+        borderRadius: "var(--radius-md)"
+      }}
+    >
+      <p
+        style={{
+          margin: "0 0 8px",
+          fontSize: 11,
+          fontWeight: 700,
+          color: "#2f7d4f",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em"
+        }}
+      >
+        O que foi solicitado
+        {cicloNumero != null ? ` — ciclo ${cicloNumero}` : ""}
+      </p>
+      {periodos.length === 0 && diasVendidos === 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-600)" }}>
+          Sem detalhe de períodos na solicitação original.
+        </p>
+      )}
+      {periodos.map((p, i) => (
+        <p key={i} style={{ margin: "0 0 3px", fontSize: 12.5, color: "var(--ink-800)" }}>
+          <span style={{ fontWeight: 600 }}>{i + 1}º período:</span> {fmtPeriodoCurto(p.dataInicio)}{" "}
+          a {fmtPeriodoCurto(p.dataFim)}{" "}
+          <span style={{ color: "var(--ink-500)" }}>({p.dias} dias)</span>
+        </p>
+      ))}
+      {diasVendidos > 0 ? (
+        <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--ink-700)" }}>
+          <strong>Venda (abono pecuniário):</strong> {diasVendidos} dia
+          {diasVendidos !== 1 ? "s" : ""} — não pode ser alterada nesta mudança.
+        </p>
+      ) : (
+        <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+          Nenhum dia vendido na solicitação original.
+        </p>
+      )}
+      <p
+        style={{
+          margin: "8px 0 0",
+          fontSize: 12,
+          fontWeight: 700,
+          color: "#2f7d4f",
+          borderTop: "1px solid rgba(47,125,79,0.12)",
+          paddingTop: 6
+        }}
+      >
+        Total: {totalGozo + diasVendidos} dias ({totalGozo} gozo
+        {diasVendidos > 0 ? ` + ${diasVendidos} venda` : ""})
+      </p>
     </div>
   );
 }
@@ -1652,12 +2045,14 @@ function FormFeriasAlteracao({
   solicitacaoOriginal,
   config,
   onSubmit,
-  enviando
+  enviando,
+  cicloNumero
 }: {
   solicitacaoOriginal: Solicitacao;
   config: ConfigSolicitacoes | null;
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
+  cicloNumero?: number | null;
 }) {
   const cfg = config ?? {
     feriasAntecedenciaMinDias: 30,
@@ -1673,6 +2068,8 @@ function FormFeriasAlteracao({
       | Array<{ dataInicio: string; dataFim: string; dias: number }>
       | undefined) ?? [];
   const diasVendaOriginal = (metaOriginal?.diasVendidos as number | undefined) ?? 0;
+  const cicloOriginal =
+    cicloNumero ?? (metaOriginal?.cicloNumero != null ? Number(metaOriginal.cicloNumero) : null);
 
   const hoje = new Date();
   const minAlteracao = new Date(hoje);
@@ -1729,6 +2126,7 @@ function FormFeriasAlteracao({
   }, [periodos, cfg, minAlteracao]);
 
   const podeEnviar =
+    periodos.some((p) => !p.bloqueado) &&
     periodos.filter((p) => !p.bloqueado).every((p) => p.dataInicio && p.dataFim && p.dias > 0) &&
     erros.length === 0;
 
@@ -1755,7 +2153,8 @@ function FormFeriasAlteracao({
         diasVendidos: diasVendaOriginal,
         totalDiasGozo,
         totalDias: totalDiasGozo + diasVendaOriginal,
-        alteracaoDeId: solicitacaoOriginal.id
+        alteracaoDeId: solicitacaoOriginal.id,
+        cicloNumero: cicloOriginal
       }
     });
   };
@@ -1782,6 +2181,8 @@ function FormFeriasAlteracao({
     cursor: "not-allowed"
   };
 
+  const algumEditavel = periodos.some((p) => !p.bloqueado);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div
@@ -1795,9 +2196,27 @@ function FormFeriasAlteracao({
           lineHeight: 1.6
         }}
       >
-        Períodos bloqueados (início em menos de {cfg.feriasAntecedenciaMinDias} dias) não podem ser
-        alterados. Altere apenas os períodos disponíveis.
+        Solicitação de <strong>mudança de férias</strong>
+        {cicloOriginal != null ? ` (ciclo ${cicloOriginal})` : ""}. Períodos bloqueados (início em
+        menos de {cfg.feriasAntecedenciaMinDias} dias) não podem ser alterados. A venda de dias da
+        solicitação original permanece inalterada.
       </div>
+
+      {!algumEditavel && (
+        <div
+          style={{
+            padding: "10px 14px",
+            background: "rgba(122,30,38,0.05)",
+            border: "1px solid rgba(122,30,38,0.15)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "var(--ink-700)"
+          }}
+        >
+          Nenhum período está elegível para alteração no momento (todos com menos de{" "}
+          {cfg.feriasAntecedenciaMinDias} dias de antecedência).
+        </div>
+      )}
 
       {periodos.map((p, idx) => (
         <div
@@ -1922,7 +2341,14 @@ function FormSimples({
 }) {
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
+  const [horaInicio, setHoraInicio] = useState("");
+  const [horaFim, setHoraFim] = useState("");
   const [descricao, setDescricao] = useState("");
+
+  const isAbono = tipo === "ABONO";
+  const dias = diffDias(dataInicio, dataFim || dataInicio);
+  const diaUnico = !dataInicio || dias <= 1;
+
   const labelBase: React.CSSProperties = {
     fontSize: 12,
     fontWeight: 600,
@@ -1939,18 +2365,33 @@ function FormSimples({
     boxSizing: "border-box"
   };
 
+  const aplicarAtalho = (periodo: "MATUTINO" | "VESPERTINO") => {
+    if (periodo === "MATUTINO") {
+      setHoraInicio("08:00");
+      setHoraFim("12:00");
+    } else {
+      setHoraInicio("13:00");
+      setHoraFim("18:00");
+    }
+  };
+
   const handleSubmit = () => {
     if (!dataInicio || !descricao) return;
+    const metadados: Record<string, unknown> =
+      tipo === "ABONO"
+        ? {
+            tipoAbono: new Date(dataInicio) < new Date() ? "PASSADO" : "FUTURO",
+            horarioInicio: diaUnico ? horaInicio || null : null,
+            horarioFim: diaUnico ? horaFim || null : null
+          }
+        : {};
     onSubmit({
       tipo,
       dataReferencia: new Date(dataInicio + "T12:00:00").toISOString(),
       dataInicio: new Date(dataInicio + "T00:00:00").toISOString(),
       dataFim: new Date((dataFim || dataInicio) + "T23:59:59").toISOString(),
       descricao,
-      metadados:
-        tipo === "ABONO"
-          ? { tipoAbono: new Date(dataInicio) < new Date() ? "PASSADO" : "FUTURO" }
-          : {}
+      metadados
     });
   };
 
@@ -1981,8 +2422,14 @@ function FormSimples({
             style={input}
             value={dataInicio}
             onChange={(e) => {
-              setDataInicio(e.target.value);
-              if (!dataFim) setDataFim(e.target.value);
+              const novoInicio = e.target.value;
+              setDataInicio(novoInicio);
+              if (!dataFim) {
+                setDataFim(novoInicio);
+              } else if (isAbono && dataFim !== novoInicio) {
+                setHoraInicio("");
+                setHoraFim("");
+              }
             }}
           />
         </div>
@@ -1993,10 +2440,80 @@ function FormSimples({
             style={input}
             value={dataFim}
             min={dataInicio}
-            onChange={(e) => setDataFim(e.target.value)}
+            onChange={(e) => {
+              const novoFim = e.target.value;
+              setDataFim(novoFim);
+              if (isAbono && novoFim !== dataInicio) {
+                setHoraInicio("");
+                setHoraFim("");
+              }
+            }}
           />
         </div>
       </div>
+
+      {isAbono && dataInicio && dias > 0 && (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>
+          Duração:{" "}
+          <strong>
+            {dias} dia{dias !== 1 ? "s" : ""}
+          </strong>
+          {diaUnico ? " — dia inteiro ou período" : " — dias inteiros"}
+        </p>
+      )}
+
+      {isAbono && diaUnico && dataInicio ? (
+        <div>
+          <label style={labelBase}>Período do abono (atalhos)</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => aplicarAtalho("MATUTINO")}
+            >
+              ☀️ Matutino (08:00–12:00)
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => aplicarAtalho("VESPERTINO")}
+            >
+              🌆 Vespertino (13:00–18:00)
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={labelBase}>Horário inicial</label>
+              <input
+                type="time"
+                style={{ ...input, maxWidth: 140 }}
+                value={horaInicio}
+                onChange={(e) => setHoraInicio(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={labelBase}>Horário final</label>
+              <input
+                type="time"
+                style={{ ...input, maxWidth: 140 }}
+                value={horaFim}
+                onChange={(e) => setHoraFim(e.target.value)}
+              />
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+            Deixe em branco se o abono cobrir o dia inteiro.
+          </p>
+        </div>
+      ) : (
+        isAbono &&
+        dias > 1 && (
+          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
+            Abonos com mais de um dia são sempre considerados dia inteiro (sem horário parcial).
+          </p>
+        )
+      )}
+
       <div>
         <label style={labelBase}>
           Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
@@ -2374,6 +2891,141 @@ function FormHoraExtra({
 }
 
 /* ══════════════════════════════════════════
+   FORM ENVIO DE DOCUMENTO AO RH
+══════════════════════════════════════════ */
+
+function FormEnvioDocumentoRh({
+  onSubmit,
+  enviando
+}: {
+  onSubmit: (data: Record<string, unknown>) => void;
+  enviando: boolean;
+}) {
+  const [descricao, setDescricao] = useState("");
+  const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
+  const [documentoMime, setDocumentoMime] = useState("application/pdf");
+  const [nomeArquivo, setNomeArquivo] = useState("");
+  const [erroLocal, setErroLocal] = useState("");
+
+  const labelBase: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "var(--ink-700)",
+    display: "block",
+    marginBottom: 4
+  };
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: "9px 11px",
+    border: "1px solid rgba(122,30,38,0.14)",
+    borderRadius: "var(--radius-md)",
+    fontSize: 13,
+    boxSizing: "border-box"
+  };
+
+  const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNomeArquivo(file.name);
+    setDocumentoMime(file.type || "application/octet-stream");
+    setErroLocal("");
+    const reader = new FileReader();
+    reader.onload = (ev) => setDocumentoBase64(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = () => {
+    if (!descricao.trim() || descricao.trim().length < 3) {
+      setErroLocal("Informe uma descrição com pelo menos 3 caracteres.");
+      return;
+    }
+    if (!documentoBase64) {
+      setErroLocal("Selecione um arquivo (imagem ou PDF).");
+      return;
+    }
+    const agora = new Date();
+    onSubmit({
+      tipo: "ENVIO_DOCUMENTO_RH",
+      dataReferencia: agora.toISOString(),
+      descricao: descricao.trim(),
+      metadados: {
+        documentoBase64,
+        documentoMime,
+        nomeArquivo: nomeArquivo || undefined
+      }
+    });
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <p style={{ fontSize: 13, color: "var(--ink-500)", margin: 0, lineHeight: 1.5 }}>
+        Envie documentos ao setor de RH com uma breve descrição (comprovantes, declarações, etc.). A
+        solicitação vai direto para análise do RH.
+      </p>
+
+      <div>
+        <label style={labelBase}>
+          Descrição do documento <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <textarea
+          style={{ ...input, resize: "vertical" }}
+          rows={3}
+          value={descricao}
+          onChange={(e) => {
+            setDescricao(e.target.value);
+            setErroLocal("");
+          }}
+          placeholder="Descreva o documento que está enviando…"
+        />
+      </div>
+
+      <div>
+        <label style={labelBase}>
+          Arquivo (imagem ou PDF) <span style={{ color: "var(--red)" }}>*</span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "12px 14px",
+            borderRadius: "var(--radius-md)",
+            border: "1.5px dashed rgba(122,30,38,0.22)",
+            background: "rgba(122,30,38,0.03)",
+            cursor: "pointer",
+            fontSize: 13,
+            color: "var(--ink-700)"
+          }}
+        >
+          <span style={{ fontSize: 18 }}>📎</span>
+          <span
+            style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {nomeArquivo || "Selecionar arquivo…"}
+          </span>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp,application/pdf"
+            style={{ display: "none" }}
+            onChange={handleArquivo}
+          />
+        </label>
+      </div>
+
+      {erroLocal && <p style={{ fontSize: 12, color: "var(--red)", margin: 0 }}>⚠️ {erroLocal}</p>}
+
+      <button
+        className="btn btn-primary"
+        disabled={enviando || !descricao.trim() || !documentoBase64}
+        onClick={handleSubmit}
+      >
+        {enviando ? "Enviando…" : "Enviar ao RH"}
+      </button>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════
    MODAL ALTERAÇÃO DE FÉRIAS
 ══════════════════════════════════════════ */
 
@@ -2423,10 +3075,10 @@ function AlterarFeriasModal({
         background: "rgba(10,5,6,0.55)",
         zIndex: 200,
         display: "flex",
-        alignItems: "flex-start",
+        alignItems: "center",
         justifyContent: "center",
-        padding: "16px 16px 80px",
-        overflowY: "auto"
+        padding: 16,
+        overflow: "hidden"
       }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
@@ -2436,13 +3088,15 @@ function AlterarFeriasModal({
           borderRadius: "var(--radius-xl)",
           width: "100%",
           maxWidth: 560,
-          padding: 28,
+          maxHeight: "calc(100dvh - 32px)",
           boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
-          marginTop: 24
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden"
         }}
       >
         {ok ? (
-          <div style={{ textAlign: "center", padding: "24px 0" }}>
+          <div style={{ textAlign: "center", padding: "52px 28px" }}>
             <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
             <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>Alteração enviada!</p>
             <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Aguardando análise do gestor.</p>
@@ -2454,11 +3108,13 @@ function AlterarFeriasModal({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 20
+                padding: "20px 28px 16px",
+                borderBottom: "1px solid rgba(122,30,38,0.08)",
+                flexShrink: 0
               }}
             >
               <h2 style={{ fontSize: 19, fontFamily: "var(--font-display)", margin: 0 }}>
-                ✏️ Alterar Períodos de Férias
+                ✏️ Solicitar Mudança de Férias
               </h2>
               <button
                 onClick={onClose}
@@ -2473,15 +3129,28 @@ function AlterarFeriasModal({
                 ✕
               </button>
             </div>
-            {erro && (
-              <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
-            )}
-            <FormFeriasAlteracao
-              solicitacaoOriginal={solicitacao}
-              config={config}
-              onSubmit={handleSubmit}
-              enviando={enviando}
-            />
+            <div
+              style={{
+                padding: "16px 28px 28px",
+                overflowY: "auto",
+                flex: 1,
+                minHeight: 0,
+                WebkitOverflowScrolling: "touch"
+              }}
+            >
+              {erro && (
+                <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <ResumoSolicitacaoFeriasOriginal solicitacao={solicitacao} />
+                <FormFeriasAlteracao
+                  solicitacaoOriginal={solicitacao}
+                  config={config}
+                  onSubmit={handleSubmit}
+                  enviando={enviando}
+                />
+              </div>
+            </div>
           </>
         )}
       </div>
@@ -2495,10 +3164,12 @@ function AlterarFeriasModal({
 
 function NovaModal({
   onClose,
-  onCriada
+  onCriada,
+  solicitacoesFerias = []
 }: {
   onClose: () => void;
   onCriada: (s: Solicitacao) => void;
+  solicitacoesFerias?: Solicitacao[];
 }) {
   const [tipo, setTipo] = useState<TipoSolicitacao | null>(null);
   const [enviando, setEnviando] = useState(false);
@@ -2530,6 +3201,15 @@ function NovaModal({
     }
   };
 
+  const tituloModal =
+    tipo === "FERIAS"
+      ? solicitacoesFerias.some((s) => s.status === "APROVADA")
+        ? `${TIPO_EMOJI.FERIAS} Férias / Mudança`
+        : `${TIPO_EMOJI.FERIAS} Férias`
+      : tipo
+        ? `${TIPO_EMOJI[tipo]} ${TIPO_LABEL[tipo]}`
+        : "Nova Solicitação";
+
   return (
     <div
       style={{
@@ -2538,10 +3218,10 @@ function NovaModal({
         background: "rgba(10,5,6,0.55)",
         zIndex: 200,
         display: "flex",
-        alignItems: "flex-start",
+        alignItems: "center",
         justifyContent: "center",
-        padding: "16px 16px 80px",
-        overflowY: "auto"
+        padding: 16,
+        overflow: "hidden"
       }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
@@ -2551,16 +3231,22 @@ function NovaModal({
           borderRadius: "var(--radius-xl)",
           width: "100%",
           maxWidth: 560,
-          padding: 28,
+          maxHeight: "calc(100dvh - 32px)",
           boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
-          marginTop: 24
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden"
         }}
       >
         {ok ? (
-          <div style={{ textAlign: "center", padding: "24px 0" }}>
+          <div style={{ textAlign: "center", padding: "52px 28px" }}>
             <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
             <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>Solicitação enviada!</p>
-            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Aguardando análise do gestor.</p>
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              {tipo === "ENVIO_DOCUMENTO_RH"
+                ? "Documento encaminhado ao RH para análise."
+                : "Aguardando análise do gestor."}
+            </p>
           </div>
         ) : (
           <>
@@ -2569,7 +3255,9 @@ function NovaModal({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                marginBottom: 20
+                padding: "20px 28px 16px",
+                borderBottom: "1px solid rgba(122,30,38,0.08)",
+                flexShrink: 0
               }}
             >
               <div>
@@ -2589,7 +3277,7 @@ function NovaModal({
                   </button>
                 )}
                 <h2 style={{ fontSize: 19, fontFamily: "var(--font-display)", margin: 0 }}>
-                  {tipo ? `${TIPO_EMOJI[tipo]} ${TIPO_LABEL[tipo]}` : "Nova Solicitação"}
+                  {tituloModal}
                 </h2>
               </div>
               <button
@@ -2606,38 +3294,58 @@ function NovaModal({
               </button>
             </div>
 
-            {erro && (
-              <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
-            )}
+            <div
+              style={{
+                padding: "16px 28px 28px",
+                overflowY: "auto",
+                flex: 1,
+                minHeight: 0,
+                WebkitOverflowScrolling: "touch"
+              }}
+            >
+              {erro && (
+                <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
+              )}
 
-            {!tipo && <TipoSeletor onSelect={setTipo} config={config} />}
-            {tipo === "CORRECAO_PONTO" && (
-              <FormCorrecaoPonto onSubmit={handleSubmit} enviando={enviando} />
-            )}
-            {tipo === "ATESTADO" && (
-              <FormAtestado config={config} onSubmit={handleSubmit} enviando={enviando} />
-            )}
-            {tipo === "FERIAS" && (
-              <FormFerias config={config} onSubmit={handleSubmit} enviando={enviando} />
-            )}
-            {tipo === "LICENCA" && (
-              <FormSimples
-                tipo="LICENCA"
-                onSubmit={handleSubmit}
-                enviando={enviando}
-                obs="Preencha o período de licença e descreva a justificativa."
-              />
-            )}
-            {tipo === "ABONO" && (
-              <FormSimples
-                tipo="ABONO"
-                onSubmit={handleSubmit}
-                enviando={enviando}
-                obs="O abono pode ser solicitado para datas passadas ou futuras."
-              />
-            )}
-            {tipo === "DAY_OFF" && <FormDayOff onSubmit={handleSubmit} enviando={enviando} />}
-            {tipo === "HORA_EXTRA" && <FormHoraExtra onSubmit={handleSubmit} enviando={enviando} />}
+              {!tipo && <TipoSeletor onSelect={setTipo} config={config} />}
+              {tipo === "CORRECAO_PONTO" && (
+                <FormCorrecaoPonto onSubmit={handleSubmit} enviando={enviando} />
+              )}
+              {tipo === "ATESTADO" && (
+                <FormAtestado config={config} onSubmit={handleSubmit} enviando={enviando} />
+              )}
+              {tipo === "FERIAS" && (
+                <FormFerias
+                  config={config}
+                  onSubmit={handleSubmit}
+                  enviando={enviando}
+                  solicitacoesFerias={solicitacoesFerias}
+                />
+              )}
+              {tipo === "LICENCA" && (
+                <FormSimples
+                  tipo="LICENCA"
+                  onSubmit={handleSubmit}
+                  enviando={enviando}
+                  obs="Preencha o período de licença e descreva a justificativa."
+                />
+              )}
+              {tipo === "ABONO" && (
+                <FormSimples
+                  tipo="ABONO"
+                  onSubmit={handleSubmit}
+                  enviando={enviando}
+                  obs="O abono pode ser solicitado para datas passadas ou futuras."
+                />
+              )}
+              {tipo === "DAY_OFF" && <FormDayOff onSubmit={handleSubmit} enviando={enviando} />}
+              {tipo === "HORA_EXTRA" && (
+                <FormHoraExtra onSubmit={handleSubmit} enviando={enviando} />
+              )}
+              {tipo === "ENVIO_DOCUMENTO_RH" && (
+                <FormEnvioDocumentoRh onSubmit={handleSubmit} enviando={enviando} />
+              )}
+            </div>
           </>
         )}
       </div>
@@ -2743,28 +3451,25 @@ function AtestadoGuiaSection({
                 : "Encontrou um erro no documento de retorno enviado? Você pode substituí-lo enquanto o RH ainda não concluir a análise."}
             </p>
           )}
-          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <a
+          <div
+            style={{
+              marginTop: 10,
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              alignItems: "center"
+            }}
+          >
+            <LinkDocumentoAnexado
               href={s.guiaMedicoUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "7px 14px",
-                border: `1px solid ${cor}`,
-                borderRadius: "var(--radius-md)",
-                background: cor,
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12.5,
-                fontWeight: 600,
-                textDecoration: "none"
-              }}
-            >
-              {isFerias ? "📥 Baixar Folha de Férias" : "📥 Baixar Guia Médica"}
-            </a>
+              label={
+                isFerias
+                  ? "Ver documento — Folha de pagamento de férias"
+                  : "Ver documento — Guia médica"
+              }
+              variant={isFerias ? "folha" : "guia"}
+              style={{ marginTop: 0 }}
+            />
             {podeEnviarOuEditarRetorno && (
               <>
                 <input
@@ -2811,13 +3516,23 @@ function AtestadoGuiaSection({
       )}
 
       {s.documentoRetornoUrl && (
-        <p style={{ margin: 0, fontSize: 12, color: "#16a34a" }}>
-          📎{" "}
-          <a href={s.documentoRetornoUrl} target="_blank" rel="noopener noreferrer">
-            {isFerias ? "Ver folha de férias assinada enviada" : "Ver documento de retorno enviado"}
-          </a>
-          {s.documentoRetornoEm ? ` em ${fmtDateTime(s.documentoRetornoEm)}` : ""}
-        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <LinkDocumentoAnexado
+            href={s.documentoRetornoUrl}
+            label={
+              isFerias
+                ? "Ver documento — Folha de férias assinada enviada"
+                : "Ver documento — Documento de retorno enviado"
+            }
+            variant="retorno"
+            style={{ marginTop: 0 }}
+          />
+          {s.documentoRetornoEm && (
+            <p style={{ margin: 0, fontSize: 12, color: "var(--ink-500)" }}>
+              Enviado em {fmtDateTime(s.documentoRetornoEm)}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -2872,7 +3587,10 @@ function DocumentoAnexadoSection({
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <LinkDocumentoAnexado
           href={documentoUrl}
-          label="Ver documento anexado"
+          nomeArquivo={
+            typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
+          }
+          variant="funcionario"
           style={{ marginTop: 0 }}
         />
         {editavel && (
@@ -2965,12 +3683,20 @@ function SolicitacaoCard({
         {isAuto ? " · gerada automaticamente" : ""}
       </span>
     );
+  } else if (tipo === "ENVIO_DOCUMENTO_RH") {
+    subInfo = (
+      <span>
+        Enviado em {fmtDateTime(s.createdAt)}
+        {meta?.documentoUrl ? " · 📎 doc. anexado" : ""}
+        {typeof meta?.nomeArquivo === "string" ? ` · ${meta.nomeArquivo}` : ""}
+      </span>
+    );
   } else if (
     (tipo === "ATESTADO" || tipo === "FERIAS" || tipo === "LICENCA" || tipo === "ABONO") &&
     s.dataInicio
   ) {
-    const horarioAtestado =
-      tipo === "ATESTADO" &&
+    const horarioPeriodo =
+      (tipo === "ATESTADO" || tipo === "ABONO") &&
       typeof meta?.horarioInicio === "string" &&
       typeof meta?.horarioFim === "string" &&
       meta.horarioInicio &&
@@ -2981,7 +3707,7 @@ function SolicitacaoCard({
       <span>
         Período: {fmtDate(s.dataInicio)}
         {s.dataFim && s.dataFim !== s.dataInicio ? ` → ${fmtDate(s.dataFim)}` : ""}
-        {horarioAtestado}
+        {horarioPeriodo}
       </span>
     );
     if (tipo === "FERIAS" && (meta?.diasVendidos || meta?.diasVenda)) {
@@ -3134,6 +3860,9 @@ function SolicitacaoCard({
       )}
 
       {tipo === "ATESTADO" && <DocumentoAnexadoSection s={s} onAtualizado={onAtualizado} />}
+      {tipo === "ENVIO_DOCUMENTO_RH" && (
+        <DocumentoAnexadoSection s={s} onAtualizado={onAtualizado} />
+      )}
 
       {tipo === "ATESTADO" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} />}
 
@@ -3166,7 +3895,7 @@ function SolicitacaoCard({
                   cursor: "pointer"
                 }}
               >
-                ✏️ Alterar Períodos
+                ✏️ Solicitar Mudança
               </button>
             </div>
           );
@@ -3296,6 +4025,7 @@ export function SolicitacoesPage() {
       {modalAberto && (
         <NovaModal
           onClose={() => setModalAberto(false)}
+          solicitacoesFerias={solicitacoes.filter((s) => s.tipo === "FERIAS")}
           onCriada={(nova) => {
             setSolicitacoes((prev) => [nova, ...prev]);
             setPagina(1);

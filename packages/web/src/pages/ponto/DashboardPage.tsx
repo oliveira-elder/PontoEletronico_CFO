@@ -17,7 +17,7 @@ import {
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
-import { DocumentoRhUpload } from "../../components/ponto/DocumentoRhUpload";
+import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -42,6 +42,7 @@ interface ApiStatus {
   horasTrabalhadasMinutos: number;
   jornadaMinutos: number;
   proximaAcao: string;
+  categoria?: string;
 }
 
 interface ApiRelatorio {
@@ -51,33 +52,43 @@ interface ApiRelatorio {
   horasExtrasMinutos: number;
   horasFaltaMinutos: number;
   saldoMinutos: number;
+  ocultarBancoHoras?: boolean;
 }
 
-interface DiaSemana {
+interface DiaQuinzena {
   dia: string;
   data: string;
+  isoKey: string;
   isHoje: boolean;
   horasMin: number;
   status: "OK" | "PARCIAL" | "FALTA" | "FUTURO";
 }
 
-/* ─── Computa a semana atual a partir dos registros do mês ─── */
-function computeSemana(registros: { tipo: string; dataHora: string }[], today: Date): DiaSemana[] {
-  const dow = today.getDay();
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
-  const monday = new Date(today);
-  monday.setDate(today.getDate() + mondayOffset);
-  monday.setHours(0, 0, 0, 0);
+/* ─── Computa a quinzena atual (1–15 ou 16–fim) a partir dos registros ─── */
+function computeQuinzena(
+  registros: { tipo: string; dataHora: string }[],
+  today: Date
+): DiaQuinzena[] {
+  const ano = today.getFullYear();
+  const mes = today.getMonth();
+  const diaMes = today.getDate();
+  const inicioDia = diaMes <= 15 ? 1 : 16;
+  const fimDia = diaMes <= 15 ? 15 : new Date(ano, mes + 1, 0).getDate();
 
   const toMin = (iso: string) => {
     const d = new Date(iso);
     return d.getHours() * 60 + d.getMinutes();
   };
-  const nomes = ["Seg", "Ter", "Qua", "Qui", "Sex"];
+  const nomes = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 
-  return nomes.map((dia, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
+  const dias: DiaQuinzena[] = [];
+  for (let diaNum = inicioDia; diaNum <= fimDia; diaNum++) {
+    const d = new Date(ano, mes, diaNum);
+    d.setHours(0, 0, 0, 0);
+    const dow = d.getDay();
+    /* Apenas dias úteis (seg–sex) */
+    if (dow === 0 || dow === 6) continue;
+
     const isoKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const dayRegs = registros.filter((r) => r.dataHora.slice(0, 10) === isoKey);
     const isFuture = d > today;
@@ -98,7 +109,7 @@ function computeSemana(registros: { tipo: string; dataHora: string }[], today: D
       horasMin = nowMin - toMin(entradaR.dataHora) - intervalo;
     }
 
-    const status: DiaSemana["status"] = isFuture
+    const status: DiaQuinzena["status"] = isFuture
       ? "FUTURO"
       : !entradaR
         ? "FALTA"
@@ -106,14 +117,24 @@ function computeSemana(registros: { tipo: string; dataHora: string }[], today: D
           ? "OK"
           : "PARCIAL";
 
-    return { dia, data: pad(d.getDate()), isHoje, horasMin: Math.max(0, horasMin), status };
-  });
+    dias.push({
+      dia: nomes[dow],
+      data: pad(d.getDate()),
+      isoKey,
+      isHoje,
+      horasMin: Math.max(0, horasMin),
+      status
+    });
+  }
+  return dias;
 }
 
-/** Dias com registro na semana profissional atual (seg–sex). */
-function progressoSemanaProfissional(semana: DiaSemana[]) {
-  const diasTrabalhados = semana.filter((d) => d.status === "OK" || d.status === "PARCIAL").length;
-  return { diasTrabalhados, diasUteis: 5 };
+/** Dias com registro na quinzena profissional atual. */
+function progressoQuinzena(quinzena: DiaQuinzena[]) {
+  const diasTrabalhados = quinzena.filter(
+    (d) => d.status === "OK" || d.status === "PARCIAL"
+  ).length;
+  return { diasTrabalhados, diasUteis: quinzena.length };
 }
 
 /* ─── Config visual de estado ─── */
@@ -222,35 +243,36 @@ function StatPill({
 }
 
 /* ─── Day card ─── */
-function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
+function DayCard({ dia, data, isHoje, horasMin, status }: DiaQuinzena) {
   const pct = status === "FUTURO" ? 0 : Math.min(100, (horasMin / 480) * 100);
   return (
     <div
       style={{
-        flex: "0 0 56px",
-        width: 56,
+        width: "100%",
+        minWidth: 0,
         background:
           status === "OK"
             ? "rgba(47,125,79,0.08)"
             : isHoje
               ? "rgba(122,30,38,0.06)"
-              : "transparent",
+              : "var(--cream-50)",
         border: isHoje
           ? "2px solid var(--burgundy-600)"
           : status === "OK"
             ? "1px solid rgba(47,125,79,0.20)"
             : "1px solid rgba(122,30,38,0.08)",
         borderRadius: "var(--radius-md)",
-        padding: "8px 4px",
+        padding: "12px 4px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 5
+        gap: 6,
+        boxSizing: "border-box"
       }}
     >
       <p
         style={{
-          fontSize: 9,
+          fontSize: 10,
           fontWeight: 700,
           letterSpacing: "0.06em",
           textTransform: "uppercase",
@@ -261,14 +283,15 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
       </p>
       <p
         style={{
-          fontSize: 14,
+          fontSize: 17,
           fontWeight: 700,
-          color: isHoje ? "var(--burgundy-600)" : "var(--ink-900)"
+          color: isHoje ? "var(--burgundy-600)" : "var(--ink-900)",
+          lineHeight: 1
         }}
       >
         {data}
       </p>
-      <div style={{ width: "80%", height: 3, background: "rgba(122,30,38,0.08)", borderRadius: 2 }}>
+      <div style={{ width: "70%", height: 4, background: "rgba(122,30,38,0.08)", borderRadius: 2 }}>
         <div
           style={{
             width: `${pct}%`,
@@ -281,7 +304,7 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
       </div>
       <p
         style={{
-          fontSize: 10,
+          fontSize: 11,
           color: status === "FUTURO" ? "var(--ink-500)" : "var(--ink-700)",
           fontFamily: "var(--font-mono)"
         }}
@@ -292,8 +315,15 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaSemana) {
   );
 }
 
-/* ─── Seção: Esta Semana ─── */
-function SemanaSection({ semana, compact }: { semana: DiaSemana[]; compact?: boolean }) {
+/* ─── Seção: Essa Quinzena ─── */
+function QuinzenaSection({ quinzena, compact }: { quinzena: DiaQuinzena[]; compact?: boolean }) {
+  const hoje = new Date();
+  const diaMes = hoje.getDate();
+  const inicio = diaMes <= 15 ? 1 : 16;
+  const fim = diaMes <= 15 ? 15 : new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+  const periodoLabel = `${pad(inicio)}–${pad(fim)}/${pad(hoje.getMonth() + 1)}`;
+  const colunas = Math.min(Math.max(quinzena.length, 1), compact ? 5 : 10);
+
   return (
     <>
       <div
@@ -301,20 +331,27 @@ function SemanaSection({ semana, compact }: { semana: DiaSemana[]; compact?: boo
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: compact ? 12 : 14
+          marginBottom: compact ? 14 : 16,
+          gap: 8,
+          flexWrap: "wrap"
         }}
       >
-        <p
-          style={{
-            fontFamily: "var(--font-display)",
-            fontStyle: "italic",
-            color: "var(--burgundy-600)",
-            fontSize: compact ? 15 : 16,
-            margin: 0
-          }}
-        >
-          Esta Semana
-        </p>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+          <p
+            style={{
+              fontFamily: "var(--font-display)",
+              fontStyle: "italic",
+              color: "var(--burgundy-600)",
+              fontSize: compact ? 16 : 18,
+              margin: 0
+            }}
+          >
+            Essa Quinzena
+          </p>
+          <span style={{ fontSize: 12, color: "var(--ink-500)", fontFamily: "var(--font-mono)" }}>
+            {periodoLabel}
+          </span>
+        </div>
         <Link
           to="/ponto/historico"
           style={{
@@ -329,20 +366,19 @@ function SemanaSection({ semana, compact }: { semana: DiaSemana[]; compact?: boo
         </Link>
       </div>
       <div
-        style={
-          {
-            display: "flex",
-            gap: 8,
-            overflowX: "auto",
-            paddingBottom: 4,
-            WebkitOverflowScrolling: "touch"
-          } as React.CSSProperties
-        }
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${colunas}, minmax(0, 1fr))`,
+          gap: compact ? 6 : 8,
+          width: "100%"
+        }}
       >
-        {semana.length > 0 ? (
-          semana.map((d) => <DayCard key={d.dia} {...d} />)
+        {quinzena.length > 0 ? (
+          quinzena.map((d) => <DayCard key={d.isoKey} {...d} />)
         ) : (
-          <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros esta semana.</p>
+          <p style={{ fontSize: 13, color: "var(--ink-500)", gridColumn: "1 / -1" }}>
+            Sem registros nesta quinzena.
+          </p>
         )}
       </div>
     </>
@@ -603,13 +639,13 @@ function RequisicoesRhSection({ token }: { token: string }) {
   );
 }
 
-/* ─── Card unificado: Semana + Upload + Requisições RH ─── */
+/* ─── Card unificado: Quinzena + Requisições RH ─── */
 function DashboardPainelPrincipal({
-  semana,
+  quinzena,
   compact,
   token
 }: {
-  semana: DiaSemana[];
+  quinzena: DiaQuinzena[];
   compact?: boolean;
   token: string;
 }) {
@@ -619,34 +655,28 @@ function DashboardPainelPrincipal({
         background: "#fff",
         borderRadius: "var(--radius-lg)",
         border: "1px solid rgba(122,30,38,0.08)",
-        padding: compact ? "14px" : undefined
+        padding: compact ? "14px" : undefined,
+        height: "100%",
+        boxSizing: "border-box",
+        display: "flex",
+        flexDirection: "column",
+        minWidth: 0,
+        width: "100%"
       }}
       className={compact ? undefined : "card-flat"}
     >
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: compact ? "1fr" : "1fr 1fr",
-          gap: compact ? 16 : 20,
           marginBottom: compact ? 16 : 20,
           paddingBottom: compact ? 16 : 20,
           borderBottom: "1px solid rgba(122,30,38,0.08)"
         }}
       >
-        <div
-          style={
-            compact
-              ? { paddingBottom: 16, borderBottom: "1px solid rgba(122,30,38,0.08)" }
-              : { paddingRight: 20, borderRight: "1px solid rgba(122,30,38,0.08)" }
-          }
-        >
-          <SemanaSection semana={semana} compact={compact} />
-        </div>
-        <div>
-          <DocumentoRhUpload compact />
-        </div>
+        <QuinzenaSection quinzena={quinzena} compact={compact} />
       </div>
-      <RequisicoesRhSection token={token} />
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <RequisicoesRhSection token={token} />
+      </div>
     </div>
   );
 }
@@ -659,7 +689,7 @@ export function DashboardPage() {
 
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [relatorio, setRelatorio] = useState<ApiRelatorio | null>(null);
-  const [semana, setSemana] = useState<DiaSemana[]>([]);
+  const [quinzena, setQuinzena] = useState<DiaQuinzena[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -694,7 +724,7 @@ export function DashboardPage() {
             (r) => !statusData?.registrosHoje?.some((h) => h.dataHora === r.dataHora)
           )
         ];
-        setSemana(computeSemana(todos, new Date()));
+        setQuinzena(computeQuinzena(todos, new Date()));
       })
       .catch(() => {})
       .finally(() => {
@@ -722,9 +752,11 @@ export function DashboardPage() {
   const extrasMes = relatorio?.horasExtrasMinutos ?? 0;
   const diasTrab = relatorio?.diasTrabalhados ?? 0;
   const saldoMes = relatorio?.saldoMinutos ?? 0;
+  const ocultarBancoHoras =
+    !!relatorio?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(status?.categoria);
 
-  const { diasTrabalhados: diasTrabSemana, diasUteis: diasUteisSemana } =
-    progressoSemanaProfissional(semana);
+  const { diasTrabalhados: diasTrabQuinzena, diasUteis: diasUteisQuinzena } =
+    progressoQuinzena(quinzena);
 
   /* Dias úteis do mês atual até hoje (para o card mensal de dias trabalhados) */
   const diasUteisMes = (() => {
@@ -894,8 +926,8 @@ export function DashboardPage() {
           />
         </div>
 
-        {/* Painel principal: semana + upload + requisições RH */}
-        <DashboardPainelPrincipal semana={semana} compact token={token() ?? ""} />
+        {/* Painel principal: quinzena + requisições RH */}
+        <DashboardPainelPrincipal quinzena={quinzena} compact token={token() ?? ""} />
 
         {/* Registros hoje */}
         <div
@@ -1022,12 +1054,14 @@ export function DashboardPage() {
             <div
               style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}
             >
-              <Link
-                to="/ponto/banco-horas"
-                style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
-              >
-                Banco de Horas →
-              </Link>
+              {!ocultarBancoHoras && (
+                <Link
+                  to="/ponto/banco-horas"
+                  style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
+                >
+                  Banco de Horas →
+                </Link>
+              )}
               <Link
                 to="/ponto/relatorios"
                 style={{ fontSize: 12, color: "var(--burgundy-600)", fontWeight: 600 }}
@@ -1046,19 +1080,25 @@ export function DashboardPage() {
                 sub: `de ${toHM(esperMes)}`,
                 ok: true
               },
-              { label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true },
+              ...(ocultarBancoHoras
+                ? []
+                : [{ label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true }]),
               {
                 label: "Dias Trabalhados",
                 value: `${diasTrab}`,
                 sub: `de ${diasUteisMes} úteis no mês`,
                 ok: true
               },
-              {
-                label: "Saldo Mensal",
-                value: toHM(saldoMes),
-                sub: saldoMes >= 0 ? "a favor" : "negativo",
-                ok: saldoMes >= 0
-              }
+              ...(ocultarBancoHoras
+                ? []
+                : [
+                    {
+                      label: "Saldo Mensal",
+                      value: toHM(saldoMes),
+                      sub: saldoMes >= 0 ? "a favor" : "negativo",
+                      ok: saldoMes >= 0
+                    }
+                  ])
             ].map((item) => (
               <div
                 key={item.label}
@@ -1096,18 +1136,21 @@ export function DashboardPage() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
               <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
-                {diasTrabSemana} de {diasUteisSemana} dias úteis
+                {diasTrabQuinzena} de {diasUteisQuinzena} dias úteis
               </span>
               <span
                 style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}
               >
-                {diasUteisSemana > 0 ? Math.round((diasTrabSemana / diasUteisSemana) * 100) : 0}%
+                {diasUteisQuinzena > 0
+                  ? Math.round((diasTrabQuinzena / diasUteisQuinzena) * 100)
+                  : 0}
+                %
               </span>
             </div>
             <div style={{ height: 5, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
               <div
                 style={{
-                  width: `${diasUteisSemana > 0 ? (diasTrabSemana / diasUteisSemana) * 100 : 0}%`,
+                  width: `${diasUteisQuinzena > 0 ? (diasTrabQuinzena / diasUteisQuinzena) * 100 : 0}%`,
                   height: "100%",
                   background: "var(--burgundy-600)",
                   borderRadius: 3
@@ -1167,7 +1210,7 @@ export function DashboardPage() {
 
   /* ════════════ DESKTOP ════════════ */
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: 1100, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
       <div style={{ marginBottom: 28 }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
           Painel Principal
@@ -1181,7 +1224,7 @@ export function DashboardPage() {
             flexWrap: "wrap"
           }}
         >
-          <div>
+          <div style={{ minWidth: 0, flex: "1 1 auto" }}>
             <h1
               style={{
                 fontSize: "clamp(22px,3vw,30px)",
@@ -1202,7 +1245,7 @@ export function DashboardPage() {
               {fmtDate(now)}
             </p>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <span
               className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
               style={{ fontSize: 12, padding: "4px 10px" }}
@@ -1220,9 +1263,15 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Grid topo */}
+      {/* Grid topo — 3 colunas iguais */}
       <div
-        style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gap: 16,
+          marginBottom: 24,
+          alignItems: "stretch"
+        }}
       >
         <div
           className="card-flat"
@@ -1234,7 +1283,10 @@ export function DashboardPage() {
             alignItems: "center",
             justifyContent: "center",
             padding: "28px 16px",
-            gap: 8
+            gap: 8,
+            minWidth: 0,
+            width: "100%",
+            boxSizing: "border-box"
           }}
         >
           <p className="eyebrow" style={{ color: "var(--gold-500)" }}>
@@ -1262,7 +1314,17 @@ export function DashboardPage() {
             {ESTADO_LABEL[estado]}
           </span>
         </div>
-        <div className="card-flat" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          className="card-flat"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            minWidth: 0,
+            width: "100%",
+            boxSizing: "border-box"
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <p
               style={{
@@ -1284,7 +1346,8 @@ export function DashboardPage() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: "var(--burgundy-600)"
+                color: "var(--burgundy-600)",
+                flexShrink: 0
               }}
             >
               <ClockIcon size={18} />
@@ -1306,7 +1369,17 @@ export function DashboardPage() {
             </p>
           </div>
         </div>
-        <div className="card-flat" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          className="card-flat"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            minWidth: 0,
+            width: "100%",
+            boxSizing: "border-box"
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <p
               style={{
@@ -1328,7 +1401,8 @@ export function DashboardPage() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                color: saldoHoje >= 0 ? "var(--green)" : "var(--red)"
+                color: saldoHoje >= 0 ? "var(--green)" : "var(--red)",
+                flexShrink: 0
               }}
             >
               <TrendingUpIcon size={18} />
@@ -1352,11 +1426,29 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Painel principal + Registros hoje */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, marginBottom: 24 }}>
-        <DashboardPainelPrincipal semana={semana} token={token() ?? ""} />
+      {/* Painel principal (2fr) + Registros hoje (1fr) — alinha com o card Saldo do topo */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
+          gap: 16,
+          marginBottom: 24,
+          alignItems: "stretch"
+        }}
+      >
+        <DashboardPainelPrincipal quinzena={quinzena} token={token() ?? ""} />
 
-        <div className="card-flat">
+        <div
+          className="card-flat"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            minWidth: 0,
+            width: "100%",
+            boxSizing: "border-box"
+          }}
+        >
           <p
             style={{
               fontFamily: "var(--font-display)",
@@ -1368,7 +1460,7 @@ export function DashboardPage() {
           >
             Registros de Hoje
           </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
             {(status?.registrosHoje ?? []).map((r, i) => {
               const Ic = getIconForTipo(r.tipo);
               return (
@@ -1381,11 +1473,13 @@ export function DashboardPage() {
                     padding: "9px 12px",
                     background: "var(--cream-50)",
                     borderRadius: "var(--radius-md)",
-                    border: "1px solid rgba(122,30,38,0.07)"
+                    border: "1px solid rgba(122,30,38,0.07)",
+                    width: "100%",
+                    boxSizing: "border-box"
                   }}
                 >
                   <Ic size={16} style={{ color: "var(--burgundy-600)", flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <p
                       style={{
                         fontSize: 11,
@@ -1403,7 +1497,8 @@ export function DashboardPage() {
                       fontFamily: "var(--font-mono)",
                       fontSize: 14,
                       color: "var(--ink-900)",
-                      fontWeight: 500
+                      fontWeight: 500,
+                      flexShrink: 0
                     }}
                   >
                     {fmtHoraCurta(r.dataHora)}
@@ -1422,7 +1517,9 @@ export function DashboardPage() {
                   background: "rgba(122,30,38,0.04)",
                   borderRadius: "var(--radius-md)",
                   border: "1.5px dashed rgba(122,30,38,0.20)",
-                  textDecoration: "none"
+                  textDecoration: "none",
+                  width: "100%",
+                  boxSizing: "border-box"
                 }}
               >
                 <SunsetIcon size={16} style={{ color: "var(--burgundy-600)", opacity: 0.5 }} />
@@ -1473,15 +1570,27 @@ export function DashboardPage() {
             </p>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm">
-              Banco de Horas
-            </Link>
+            {!ocultarBancoHoras && (
+              <Link to="/ponto/banco-horas" className="btn btn-ghost btn-sm">
+                Banco de Horas
+              </Link>
+            )}
             <Link to="/ponto/relatorios" className="btn btn-ghost btn-sm">
               Ver relatório completo
             </Link>
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: ocultarBancoHoras
+              ? isMobile
+                ? "1fr 1fr"
+                : "repeat(2, minmax(0, 1fr))"
+              : "repeat(4, minmax(0, 1fr))",
+            gap: 12
+          }}
+        >
           {[
             {
               label: "Horas Trabalhadas",
@@ -1489,19 +1598,25 @@ export function DashboardPage() {
               sub: `de ${toHM(esperMes)}`,
               ok: true
             },
-            { label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true },
+            ...(ocultarBancoHoras
+              ? []
+              : [{ label: "Horas Extras", value: toHM(extrasMes), sub: "acumuladas", ok: true }]),
             {
               label: "Dias Trabalhados",
               value: `${diasTrab}`,
               sub: `de ${diasUteisMes} úteis no mês`,
               ok: true
             },
-            {
-              label: "Saldo Mensal",
-              value: toHM(saldoMes),
-              sub: saldoMes >= 0 ? "a favor" : "negativo",
-              ok: saldoMes >= 0
-            }
+            ...(ocultarBancoHoras
+              ? []
+              : [
+                  {
+                    label: "Saldo Mensal",
+                    value: toHM(saldoMes),
+                    sub: saldoMes >= 0 ? "a favor" : "negativo",
+                    ok: saldoMes >= 0
+                  }
+                ])
           ].map((item) => (
             <div
               key={item.label}
@@ -1540,16 +1655,17 @@ export function DashboardPage() {
         <div style={{ marginTop: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
             <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
-              Progresso ({diasTrabSemana} de {diasUteisSemana} dias úteis)
+              Progresso ({diasTrabQuinzena} de {diasUteisQuinzena} dias úteis)
             </span>
             <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-700)" }}>
-              {diasUteisSemana > 0 ? Math.round((diasTrabSemana / diasUteisSemana) * 100) : 0}%
+              {diasUteisQuinzena > 0 ? Math.round((diasTrabQuinzena / diasUteisQuinzena) * 100) : 0}
+              %
             </span>
           </div>
           <div style={{ height: 6, background: "rgba(122,30,38,0.08)", borderRadius: 3 }}>
             <div
               style={{
-                width: `${diasUteisSemana > 0 ? (diasTrabSemana / diasUteisSemana) * 100 : 0}%`,
+                width: `${diasUteisQuinzena > 0 ? (diasTrabQuinzena / diasUteisQuinzena) * 100 : 0}%`,
                 height: "100%",
                 background: "var(--burgundy-600)",
                 borderRadius: 3

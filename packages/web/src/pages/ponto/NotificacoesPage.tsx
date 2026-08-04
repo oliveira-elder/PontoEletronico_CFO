@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../hooks/useApi";
 import { BellIcon, CheckCircleIcon } from "../../components/icons";
+import { ATALHOS_NOTIFICACAO, segmentosComLinks } from "../../utils/atalhosNotificacao";
 
 interface Notificacao {
   id: string;
@@ -36,6 +37,44 @@ function dataCompleta(iso: string): string {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function CorpoNotificacao({ corpo, expandido }: { corpo: string; expandido: boolean }) {
+  const segmentos = segmentosComLinks(corpo);
+  return (
+    <p
+      style={{
+        fontSize: expandido ? 13.5 : 12.5,
+        color: "var(--ink-500)",
+        margin: "0 0 6px",
+        lineHeight: 1.55,
+        whiteSpace: expandido ? "pre-wrap" : "normal",
+        overflow: expandido ? "visible" : "hidden",
+        display: expandido ? "block" : "-webkit-box",
+        WebkitLineClamp: expandido ? undefined : 2,
+        WebkitBoxOrient: expandido ? undefined : "vertical"
+      }}
+    >
+      {segmentos.map((s, i) =>
+        s.tipo === "link" ? (
+          <a
+            key={i}
+            href={s.valor}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              color: "var(--burgundy-600)",
+              textDecoration: "underline",
+              wordBreak: "break-all"
+            }}
+          >
+            {s.valor}
+          </a>
+        ) : (
+          <React.Fragment key={i}>{s.valor}</React.Fragment>
+        )
+      )}
+    </p>
+  );
 }
 
 export function NotificacoesPage() {
@@ -230,22 +269,27 @@ export function NotificacoesPage() {
                   >
                     {n.titulo}
                   </p>
-                  {n.corpo && (
-                    <p
+                  {n.corpo && <CorpoNotificacao corpo={n.corpo} expandido={isAberta} />}
+                  {isAberta && n.tipo && ATALHOS_NOTIFICACAO[n.tipo] && (
+                    <Link
+                      to={ATALHOS_NOTIFICACAO[n.tipo].path}
+                      onClick={(e) => e.stopPropagation()}
+                      className="btn btn-ghost btn-sm"
                       style={{
-                        fontSize: isAberta ? 13.5 : 12.5,
-                        color: "var(--ink-500)",
-                        margin: "0 0 6px",
-                        lineHeight: 1.55,
-                        whiteSpace: isAberta ? "pre-wrap" : "normal",
-                        overflow: isAberta ? "visible" : "hidden",
-                        display: isAberta ? "block" : "-webkit-box",
-                        WebkitLineClamp: isAberta ? undefined : 2,
-                        WebkitBoxOrient: isAberta ? undefined : "vertical"
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        margin: "4px 0 8px",
+                        fontSize: 12.5,
+                        color: "var(--burgundy-700)",
+                        textDecoration: "none",
+                        border: "1px solid rgba(122,30,38,0.25)",
+                        borderRadius: "var(--radius-sm)",
+                        padding: "4px 10px"
                       }}
                     >
-                      {n.corpo}
-                    </p>
+                      Abrir: {ATALHOS_NOTIFICACAO[n.tipo].label}
+                    </Link>
                   )}
                   <p style={{ fontSize: 11, color: "var(--ink-400)", margin: 0 }}>
                     {isAberta ? dataCompleta(n.criadoEm) : tempoRelativo(n.criadoEm)}

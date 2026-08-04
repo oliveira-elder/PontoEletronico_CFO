@@ -760,7 +760,7 @@ model Afastamento {
 model Solicitacao {
   id                   String            @id @default(cuid())
   funcionarioId        String
-  tipo                 String // CORRECAO_PONTO | ATESTADO | FERIAS | LICENCA | ABONO
+  tipo                 String // CORRECAO_PONTO | ATESTADO | FERIAS | LICENCA | ABONO | DAY_OFF | HORA_EXTRA | ENVIO_DOCUMENTO_RH
   dataReferencia       DateTime
   dataInicio           DateTime? // data inicial (ATESTADO, FERIAS, LICENCA, ABONO)
   dataFim              DateTime? // data final do intervalo
@@ -810,6 +810,7 @@ model ConfiguracaoSolicitacoes {
   // Regras de Atestado
   atestadoDiasLimiteSimples   Int      @default(3)
   atestadoDiasLimiteInss      Int      @default(14)
+  atestadoPrazoEnvioDias      Int      @default(2)
   atestadoMensagemOriginais   String   @default("Os originais devem ser entregues ao setor de RH.")
   // Regras de Férias
   feriasAntecedenciaMinDias   Int      @default(30)
@@ -826,6 +827,7 @@ model ConfiguracaoSolicitacoes {
   tipoAtivoAbono              Boolean  @default(true)
   tipoAtivoDayOff             Boolean  @default(true)
   tipoAtivoHoraExtra          Boolean  @default(true)
+  tipoAtivoEnvioDocumentoRh   Boolean  @default(true)
   updatedAt                   DateTime @updatedAt
   createdAt                   DateTime @default(now())
 }

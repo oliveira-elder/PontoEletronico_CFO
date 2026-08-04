@@ -47,6 +47,7 @@ import {
 import {
   categoriaSemIntervaloAlmoco,
   categoriaSemRegistroPonto,
+  categoriaSemVisibilidadeBancoHoras,
   diaSemObrigacaoPonto,
   labelCategoriaSemIntervalo,
   labelCategoriaSemRegistroPonto,
@@ -78,7 +79,8 @@ const TIPO_SOLICITACAO_LABEL: Record<string, string> = {
   LICENCA: "Licença",
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
-  HORA_EXTRA: "Hora Extra"
+  HORA_EXTRA: "Hora Extra",
+  ENVIO_DOCUMENTO_RH: "Envio de documento ao RH"
 };
 
 const TIPO_PONTO_LABEL: Record<string, string> = {
@@ -1075,7 +1077,13 @@ export class PontoService {
 
   /* ─── Histórico (paginado por mês) ─── */
 
-  async getHistorico(keycloakSub: string, mes: number, ano: number, isSuperAdmin = false) {
+  async getHistorico(
+    keycloakSub: string,
+    mes: number,
+    ano: number,
+    isSuperAdmin = false,
+    opts?: { exporBancoHoras?: boolean }
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { externalId: keycloakSub },
       select: { createdAt: true }
@@ -1147,7 +1155,7 @@ export class PontoService {
     const solsAtestado = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId: func.id,
-        tipo: "ATESTADO",
+        tipo: { in: ["ATESTADO", "ABONO"] },
         status: "APROVADA",
         OR: [
           { dataInicio: { lte: fimBuffer }, dataFim: { gte: inicioBuffer } },
@@ -1169,7 +1177,7 @@ export class PontoService {
       const a = afastamentos[i];
       const raw = afastamentosRaw[i];
       if (
-        a.tipo === "ATESTADO" &&
+        (a.tipo === "ATESTADO" || a.tipo === "ABONO") &&
         a.id &&
         a.horarioInicio &&
         a.horarioFim &&
@@ -1238,6 +1246,9 @@ export class PontoService {
       categoriaAtual: func.categoria
     });
 
+    const ocultarBancoHoras = categoriaSemVisibilidadeBancoHoras(func.categoria);
+    const exporBancoHoras = opts?.exporBancoHoras === true || !ocultarBancoHoras;
+
     return {
       mes,
       ano,
@@ -1250,9 +1261,10 @@ export class PontoService {
       periodosSemObrigacao,
       categoriaHistorico: historicoCat,
       funcionario: { id: func.id, matricula: func.matricula, cargo: func.cargo },
-      bancoPorDia,
-      saldoMesBanco,
-      saldoAcumuladoMes,
+      bancoPorDia: exporBancoHoras ? bancoPorDia : {},
+      saldoMesBanco: exporBancoHoras ? saldoMesBanco : 0,
+      saldoAcumuladoMes: exporBancoHoras ? saldoAcumuladoMes : 0,
+      ocultarBancoHoras,
       registros,
       afastamentos,
       feriados,
@@ -1268,7 +1280,9 @@ export class PontoService {
   /* ─── Relatório mensal ─── */
 
   async getRelatorio(keycloakSub: string, mes: number, ano: number, isSuperAdmin = false) {
-    const historico = await this.getHistorico(keycloakSub, mes, ano, isSuperAdmin);
+    const historico = await this.getHistorico(keycloakSub, mes, ano, isSuperAdmin, {
+      exporBancoHoras: true
+    });
 
     const registrosCalc = historico.registros.filter((r) => !r.apenasInformativo);
     const afastamentosCalc = historico.afastamentos.filter((a) => !a.apenasInformativo);
@@ -1304,6 +1318,8 @@ export class PontoService {
       (d) => d.horasTrabalhadasMinutos > 0 && d.observacao !== "Afastamento"
     ).length;
 
+    const ocultarBancoHoras = !!historico.ocultarBancoHoras;
+
     return {
       mes,
       ano,
@@ -1311,9 +1327,10 @@ export class PontoService {
       diasTrabalhados,
       horasTrabalhadasMinutos: quadro.horasTrabalhadasMinutos,
       horasEsperadasMinutos,
-      horasExtrasMinutos,
-      horasFaltaMinutos,
-      saldoMinutos
+      horasExtrasMinutos: ocultarBancoHoras ? 0 : horasExtrasMinutos,
+      horasFaltaMinutos: ocultarBancoHoras ? 0 : horasFaltaMinutos,
+      saldoMinutos: ocultarBancoHoras ? 0 : saldoMinutos,
+      ocultarBancoHoras
     };
   }
 
@@ -1321,6 +1338,11 @@ export class PontoService {
 
   async getBancoHoras(keycloakSub: string) {
     const func = await this.getFuncionario(keycloakSub);
+    if (categoriaSemVisibilidadeBancoHoras(func.categoria)) {
+      throw new ForbiddenException(
+        "Banco de horas não está disponível para consulta nesta categoria funcional."
+      );
+    }
     const user = await this.prisma.user.findUnique({
       where: { id: func.userId },
       select: { createdAt: true }
@@ -1446,7 +1468,7 @@ export class PontoService {
     const solsAtestado = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId,
-        tipo: "ATESTADO",
+        tipo: { in: ["ATESTADO", "ABONO"] },
         status: "APROVADA",
         OR: [
           { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
@@ -1612,7 +1634,10 @@ export class PontoService {
             horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
           });
           jornadaDia = jornadaMandatoria;
-          obs = `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
+          obs =
+            afastamento.tipo === "ABONO"
+              ? `Abono parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`
+              : `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
         } else if (feriadoDia) {
           const jornadaDiaMin = this.jornadaDiariaParaDia(jornadaCtx, dataAtual);
           if (feriadoDia.marcoHorario) {
@@ -1925,9 +1950,11 @@ export class PontoService {
           );
         }
       }
-    } else {
+    } else if (body.tipo !== "ENVIO_DOCUMENTO_RH") {
+      /* Envio de documento ao RH pode ocorrer várias vezes no mesmo dia. */
       const conflito = aprovadas.find((s) => {
         if (alteracaoDeId && s.id === alteracaoDeId) return false;
+        if (s.tipo === "ENVIO_DOCUMENTO_RH") return false;
         const inicioExist = s.dataInicio ?? s.dataReferencia;
         const fimExist = s.dataFim ?? inicioExist;
         return periodosSobrepostos(novoInicio, novoFim, inicioExist, fimExist);
@@ -2009,8 +2036,71 @@ export class PontoService {
       }
     }
 
-    // Salva documento de atestado se enviado em base64
-    if (body.tipo === "ATESTADO" && metadados && typeof metadados.documentoBase64 === "string") {
+    if (body.tipo === "FERIAS" && !alteracaoDeId) {
+      const meta = (body.metadados ?? {}) as Record<string, unknown>;
+      const totalGozo = Number(meta.totalDiasGozo ?? 0);
+      const diasVendidos = Number(meta.diasVendidos ?? 0);
+      const total = totalGozo + diasVendidos;
+      const cicloNumero =
+        meta.cicloNumero != null && meta.cicloNumero !== "" ? Number(meta.cicloNumero) : null;
+
+      const saldo = await this.calcularSaldoFeriasFuncionario(func.id);
+      if (!saldo || saldo.diasDisponiveis <= 0) {
+        throw new BadRequestException(
+          "Não há dias de férias disponíveis para uma nova solicitação."
+        );
+      }
+
+      const ciclo =
+        cicloNumero != null
+          ? saldo.ciclos.find((c) => c.numero === cicloNumero)
+          : saldo.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0);
+
+      if (ciclo) {
+        if (ciclo.status !== "DISPONIVEL" || ciclo.diasDisponiveis <= 0) {
+          throw new BadRequestException(
+            `O ciclo ${ciclo.numero} já está configurado ou em análise. Solicite uma mudança, não uma nova solicitação.`
+          );
+        }
+        if (total !== ciclo.diasDisponiveis) {
+          throw new BadRequestException(
+            `Na primeira solicitação do ciclo, gozo + venda deve igualar os ${ciclo.diasDisponiveis} dias disponíveis (Restam = 0).`
+          );
+        }
+        // Garante cicloNumero nos metadados
+        body.metadados = { ...meta, cicloNumero: ciclo.numero };
+        metadados = body.metadados;
+      } else if (total !== saldo.diasDisponiveis) {
+        throw new BadRequestException(
+          `Na primeira solicitação, gozo + venda deve igualar os ${saldo.diasDisponiveis} dias disponíveis (Restam = 0).`
+        );
+      }
+    }
+
+    if (body.tipo === "ENVIO_DOCUMENTO_RH") {
+      const solCfg = await this.prisma.configuracaoSolicitacoes.findUnique({
+        where: { id: "singleton" },
+        select: { tipoAtivoEnvioDocumentoRh: true }
+      });
+      if (solCfg?.tipoAtivoEnvioDocumentoRh === false) {
+        throw new BadRequestException(
+          "O envio de documento ao RH está desativado. Entre em contato com o RH."
+        );
+      }
+      if (!body.descricao?.trim() || body.descricao.trim().length < 3) {
+        throw new BadRequestException("Informe uma descrição com pelo menos 3 caracteres.");
+      }
+      if (!metadados || typeof metadados.documentoBase64 !== "string") {
+        throw new BadRequestException("Anexe um arquivo (imagem ou PDF) para enviar ao RH.");
+      }
+    }
+
+    // Salva documento de atestado / envio ao RH se enviado em base64
+    if (
+      (body.tipo === "ATESTADO" || body.tipo === "ENVIO_DOCUMENTO_RH") &&
+      metadados &&
+      typeof metadados.documentoBase64 === "string"
+    ) {
       const url = await this.documentoService.salvarDocumento({
         funcionarioId: func.id,
         solicitacaoId: `${func.id}-${Date.now()}`,
@@ -2020,8 +2110,16 @@ export class PontoService {
       const resto = { ...(metadados as Record<string, unknown>) };
       delete resto.documentoBase64;
       delete resto.documentoMime;
-      metadados = { ...resto, documentoUrl: url };
+      metadados = {
+        ...resto,
+        documentoUrl: url,
+        ...(body.tipo === "ENVIO_DOCUMENTO_RH" && typeof resto.nomeArquivo === "string"
+          ? { nomeArquivo: resto.nomeArquivo }
+          : {})
+      };
     }
+
+    const vaiDiretoAoRh = body.tipo === "ENVIO_DOCUMENTO_RH";
 
     const solicitacao = await this.prisma.solicitacao.create({
       data: {
@@ -2031,17 +2129,47 @@ export class PontoService {
         dataInicio: body.dataInicio ? new Date(body.dataInicio) : null,
         dataFim: body.dataFim ? new Date(body.dataFim) : null,
         descricao: body.descricao,
-        apenasInformativo: categoriaSemRegistroPonto(func.categoria),
+        apenasInformativo: categoriaSemRegistroPonto(func.categoria) || vaiDiretoAoRh,
+        status: vaiDiretoAoRh ? "AGUARDANDO_RH" : "PENDENTE",
         metadados: metadados ? JSON.parse(JSON.stringify(metadados)) : undefined
       },
       include: { funcionario: { include: { user: { select: { name: true } } } } }
     });
 
-    this.notificarNovaSolicitacaoGestor(solicitacao).catch((e) =>
-      this.logger.error(`Falha ao notificar SOLICITACAO_NOVA_GESTOR: ${e}`)
-    );
+    if (vaiDiretoAoRh) {
+      this.notificarEnvioDocumentoRh(solicitacao).catch((e) =>
+        this.logger.error(`Falha ao notificar ENVIO_DOCUMENTO_RH: ${e}`)
+      );
+    } else {
+      this.notificarNovaSolicitacaoGestor(solicitacao).catch((e) =>
+        this.logger.error(`Falha ao notificar SOLICITACAO_NOVA_GESTOR: ${e}`)
+      );
+    }
 
     return solicitacao;
+  }
+
+  private async notificarEnvioDocumentoRh(solicitacao: {
+    tipo: string;
+    descricao: string | null;
+    funcionario: { user: { name: string } | null };
+  }) {
+    const destinatarios = await this.notificacaoService.getUsuariosRh();
+    if (!destinatarios.length) return;
+
+    const funcNome = solicitacao.funcionario.user?.name ?? "Funcionário";
+    const titulo = `Documento enviado ao RH — ${funcNome}`;
+    const corpo =
+      `${funcNome} enviou um documento ao RH.` +
+      (solicitacao.descricao ? `\n\nDescrição: ${solicitacao.descricao}` : "") +
+      "\n\nAcesse Aprovações → RH para revisar e confirmar o recebimento.";
+
+    await this.notificacaoService.dispararEvento(
+      "SOLICITACAO_AGUARDANDO_RH",
+      titulo,
+      corpo,
+      destinatarios
+    );
   }
 
   private async notificarNovaSolicitacaoGestor(solicitacao: {
@@ -2216,22 +2344,52 @@ export class PontoService {
         diasDisponiveis: 0,
         diasGozo: 0,
         diasVendidos: 0,
+        totalVencido: 0,
         obrigatorio: false,
         isEstagiario,
         duracaoCicloMeses,
+        diasPorCiclo,
         ciclos: []
       };
     }
 
-    // Dias já consumidos (aprovados)
-    const aprovadas = await this.prisma.solicitacao.findMany({
-      where: { funcionarioId, tipo: "FERIAS", status: "APROVADA" },
-      select: { metadados: true }
+    const STATUS_EM_ANALISE = [
+      "PENDENTE",
+      "AGUARDANDO_RH",
+      "AGUARDANDO_DOCUMENTO_FUNCIONARIO"
+    ] as const;
+
+    // Aprovadas + em análise (para bloquear nova 1ª solicitação do mesmo ciclo)
+    const solicitacoesFerias = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "FERIAS",
+        status: { in: ["APROVADA", ...STATUS_EM_ANALISE] }
+      },
+      select: { id: true, status: true, metadados: true, createdAt: true },
+      orderBy: { createdAt: "asc" }
     });
+
+    // Ignora alterações: o consumo conta na solicitação vigente (aprovada ou em análise sem alteracaoDeId,
+    // ou a alteração em análise que substitui a original)
+    type SolFerias = (typeof solicitacoesFerias)[number];
+    const vigentes: SolFerias[] = [];
+    const alteradasIds = new Set<string>();
+    for (const s of solicitacoesFerias) {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      const altDe = typeof m.alteracaoDeId === "string" ? m.alteracaoDeId : null;
+      if (altDe) alteradasIds.add(altDe);
+    }
+    for (const s of solicitacoesFerias) {
+      if (alteradasIds.has(s.id) && s.status === "APROVADA") continue;
+      // Se há alteração em análise da original, a original aprovada ainda conta até a alteração ser aprovada
+      vigentes.push(s);
+    }
 
     let diasGozo = 0;
     let diasVendidos = 0;
-    for (const s of aprovadas) {
+    for (const s of vigentes) {
+      if (s.status !== "APROVADA") continue;
       const m = (s.metadados ?? {}) as Record<string, unknown>;
       diasGozo += Number(m.totalDiasGozo ?? 0);
       diasVendidos += Number(m.diasVendidos ?? 0);
@@ -2242,25 +2400,142 @@ export class PontoService {
 
     let obrigatorio: boolean;
     if (isEstagiario) {
-      // Estagiário: obrigatório a partir do 5º mês do ciclo atual (ciclo dura 6 meses)
       const mesesNoCicloAtual = mesesTotal % duracaoCicloMeses;
       obrigatorio = ciclosVencidos >= 1 && diasDisponiveis > 0 && mesesNoCicloAtual >= 5;
     } else {
-      // Demais: obrigatório no 23º+ mês do período de acúmulo (2 ciclos = 24 meses)
       const mesesNoPeriodoAcumulo = mesesTotal % (maxAcumulo * 12);
       obrigatorio =
         ciclosVencidos >= maxAcumulo && diasDisponiveis > 0 && mesesNoPeriodoAcumulo >= 23;
     }
 
     const ciclosVisiveis = Math.min(ciclosVencidos, maxAcumulo);
-    const ciclos = Array.from({ length: ciclosVisiveis }, (_, i) => {
+    type CicloDetalhe = {
+      numero: number;
+      inicio: Date;
+      fim: Date;
+      diasPorCiclo: number;
+      diasGozo: number;
+      diasVendidos: number;
+      diasDisponiveis: number;
+      status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
+      solicitacaoId: string | null;
+      solicitacaoStatus: string | null;
+    };
+
+    const ciclosBase: CicloDetalhe[] = Array.from({ length: ciclosVisiveis }, (_, i) => {
       const cicloNum = ciclosVencidos - ciclosVisiveis + i + 1;
       const inicio = new Date(admissao);
       inicio.setMonth(admissao.getMonth() + (cicloNum - 1) * duracaoCicloMeses);
       const fim = new Date(inicio);
       fim.setMonth(fim.getMonth() + duracaoCicloMeses);
       fim.setDate(fim.getDate() - 1);
-      return { numero: cicloNum, inicio, fim };
+      return {
+        numero: cicloNum,
+        inicio,
+        fim,
+        diasPorCiclo,
+        diasGozo: 0,
+        diasVendidos: 0,
+        diasDisponiveis: diasPorCiclo,
+        status: "DISPONIVEL" as const,
+        solicitacaoId: null,
+        solicitacaoStatus: null
+      };
+    });
+
+    // Atribui consumo por cicloNumero explícito; demais FIFO nos ciclos livres
+    const consumoPorCiclo = new Map<
+      number,
+      {
+        diasGozo: number;
+        diasVendidos: number;
+        solicitacaoId: string;
+        solicitacaoStatus: string;
+      }
+    >();
+
+    const alocarEmCiclo = (cicloNum: number, s: SolFerias, gozo: number, venda: number) => {
+      const prev = consumoPorCiclo.get(cicloNum);
+      if (prev) {
+        prev.diasGozo += gozo;
+        prev.diasVendidos += venda;
+        // Mantém a solicitação mais recente / em análise como referência
+        if (s.status !== "APROVADA" || !prev.solicitacaoId) {
+          prev.solicitacaoId = s.id;
+          prev.solicitacaoStatus = s.status;
+        }
+      } else {
+        consumoPorCiclo.set(cicloNum, {
+          diasGozo: gozo,
+          diasVendidos: venda,
+          solicitacaoId: s.id,
+          solicitacaoStatus: s.status
+        });
+      }
+    };
+
+    const comCiclo: SolFerias[] = [];
+    const semCiclo: SolFerias[] = [];
+    for (const s of vigentes) {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      // Alterações em análise referenciam a original — usam o ciclo da original se houver
+      if (typeof m.cicloNumero === "number") comCiclo.push(s);
+      else semCiclo.push(s);
+    }
+
+    for (const s of comCiclo) {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      const cicloNum = Number(m.cicloNumero);
+      const gozo = Number(m.totalDiasGozo ?? 0);
+      const venda = Number(m.diasVendidos ?? 0);
+      if (ciclosBase.some((c) => c.numero === cicloNum)) {
+        alocarEmCiclo(cicloNum, s, gozo, venda);
+      } else {
+        semCiclo.push(s);
+      }
+    }
+
+    for (const s of semCiclo) {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      let gozoRest = Number(m.totalDiasGozo ?? 0);
+      let vendaRest = Number(m.diasVendidos ?? 0);
+      if (gozoRest + vendaRest <= 0) continue;
+      for (const c of ciclosBase) {
+        if (gozoRest + vendaRest <= 0) break;
+        const usado = consumoPorCiclo.get(c.numero);
+        const ocupado = usado ? usado.diasGozo + usado.diasVendidos : 0;
+        const livre = Math.max(0, diasPorCiclo - ocupado);
+        if (livre <= 0) continue;
+        const gozoTake = Math.min(gozoRest, livre);
+        const vendaTake = Math.min(vendaRest, livre - gozoTake);
+        alocarEmCiclo(c.numero, s, gozoTake, vendaTake);
+        gozoRest -= gozoTake;
+        vendaRest -= vendaTake;
+      }
+    }
+
+    const ciclos = ciclosBase.map((c) => {
+      const uso = consumoPorCiclo.get(c.numero);
+      if (!uso) return c;
+      const gozo = uso.diasGozo;
+      const venda = uso.diasVendidos;
+      const disp = Math.max(0, diasPorCiclo - gozo - venda);
+      const emAnalise = STATUS_EM_ANALISE.includes(
+        uso.solicitacaoStatus as (typeof STATUS_EM_ANALISE)[number]
+      );
+      return {
+        ...c,
+        diasGozo: gozo,
+        diasVendidos: venda,
+        diasDisponiveis: emAnalise ? 0 : disp,
+        status: emAnalise
+          ? ("EM_ANALISE" as const)
+          : disp <= 0
+            ? ("CONFIGURADO" as const)
+            : ("DISPONIVEL" as const),
+        solicitacaoId: uso.solicitacaoId,
+        solicitacaoStatus: uso.solicitacaoStatus
+      };
     });
 
     return {
@@ -2274,6 +2549,7 @@ export class PontoService {
       mesesTotal,
       isEstagiario,
       duracaoCicloMeses,
+      diasPorCiclo,
       ciclos
     };
   }

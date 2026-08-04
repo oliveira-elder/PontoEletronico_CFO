@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { RelatorioQuadroMensal } from "../../utils/historico-quadro";
 import { computeQuadroSignatoryHash, groupCodigoAssinatura } from "../../utils/assinatura-codigo";
+import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
 
 const MESES_PT = [
   "Janeiro",
@@ -349,7 +350,8 @@ function buildFuncionarioCard(input: QuadroPdfInput): unknown {
 }
 
 function buildTabelaDias(input: QuadroPdfInput): unknown {
-  const { relatorio } = input;
+  const { relatorio, funcionario } = input;
+  const ocultarBh = categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
 
   const tableBody: unknown[][] = [
     [
@@ -361,7 +363,7 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
       { text: "Saída", style: "thCell" },
       { text: "Pausa", style: "thCell" },
       { text: "Horas", style: "thCell" },
-      { text: "Saldo", style: "thCell" },
+      ...(ocultarBh ? [] : [{ text: "Saldo", style: "thCell" }]),
       { text: "Status", style: "thCell" }
     ]
   ];
@@ -380,7 +382,7 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
       cell(horaOuTraco(dia.saida)),
       cell(formatPausas(dia.pausas)),
       cell(dia.horasFormatado),
-      cell(dia.saldoFormatado),
+      ...(ocultarBh ? [] : [cell(dia.saldoFormatado)]),
       cell(dia.status)
     ]);
   }
@@ -391,7 +393,9 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
       // Colunas de largura fixa (caracteres de hora/data sempre do mesmo tamanho);
       // Pausa e Status recebem o espaço restante (*) pois variam de tamanho.
       //        Data  Dia  Entr  IInt  FInt  Saíd  Pausa Horas Saldo Status
-      widths: [42, 22, 34, 34, 34, 34, "*", 34, 40, "*"],
+      widths: ocultarBh
+        ? [42, 22, 34, 34, 34, 34, "*", 40, "*"]
+        : [42, 22, 34, 34, 34, 34, "*", 34, 40, "*"],
       body: tableBody
     },
     layout: TABLE_LAYOUT,
@@ -400,7 +404,38 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
 }
 
 function buildTotais(input: QuadroPdfInput): unknown {
-  const { relatorio, assinatura } = input;
+  const { relatorio, assinatura, funcionario } = input;
+  const ocultarBh = categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
+
+  if (ocultarBh) {
+    return {
+      table: {
+        widths: ["*", "*"],
+        body: [
+          [
+            { text: "Dias Trabalhados", style: "totalLabel", alignment: "center" },
+            { text: "Total Horas", style: "totalLabel", alignment: "center" }
+          ],
+          [
+            { text: String(relatorio.diasTrabalhados), style: "totalValue", alignment: "center" },
+            { text: relatorio.horasTrabalhadasFormatado, style: "totalValue", alignment: "center" }
+          ]
+        ]
+      },
+      layout: {
+        hLineWidth: () => 0.4,
+        vLineWidth: () => 0.4,
+        hLineColor: () => "#D1D5DB",
+        vLineColor: () => "#D1D5DB",
+        paddingTop: () => 4,
+        paddingBottom: () => 4,
+        paddingLeft: () => 4,
+        paddingRight: () => 4
+      },
+      margin: [0, 0, 0, 6]
+    };
+  }
+
   return {
     table: {
       widths: ["*", "*", "*", "*"],

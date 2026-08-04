@@ -31,6 +31,20 @@ export interface AfastamentoHistorico {
   tipo?: string;
 }
 
+function labelAfastamentoParcial(a: {
+  tipo?: string;
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
+}): string {
+  const nome =
+    a.tipo === "ABONO"
+      ? "Abono parcial"
+      : a.tipo === "ATESTADO"
+        ? "Atestado parcial"
+        : "Afastamento parcial";
+  return `${nome} ${a.horarioInicio}–${a.horarioFim}`;
+}
+
 export interface FeriadoHistorico {
   data: Date;
   nome: string;
@@ -154,13 +168,13 @@ function statusPdfDe(status: StatusDiaQuadro, semRegistros: boolean): string {
     case "FUTURO":
       return "—";
     case "FOLGA":
-      return "Folga";
+      return "Sem Expediente";
   }
 }
 
 /**
  * Monta os dias do quadro com a mesma lógica da página /ponto/historico.
- * - Fins de semana sem registros → Folga.
+ * - Fins de semana sem registros → Sem Expediente.
  * - Fins de semana COM registros → status correto + saldo multiplicado (sabadoPct/domingoPct).
  * - Feriados COM registros em dia útil → saldo multiplicado (feriadoPct).
  * - Feriados em dia útil sem registros → saldo neutro (0).
@@ -276,7 +290,7 @@ export function montarRelatorioQuadro(
     });
     const forcarSemIntervaloDia = forcarSemIntervalo || semAlmocoParcial;
 
-    // Fim de semana: só aparece se tiver registros; caso contrário é Folga
+    // Fim de semana: só aparece se tiver registros; caso contrário é Sem Expediente
     if (fimDeSemana) {
       if (dayRegs.length === 0) {
         dias.push({
@@ -290,7 +304,7 @@ export function montarRelatorioQuadro(
           horasFormatado: "—",
           saldoMin: null,
           saldoFormatado: "—",
-          status: "Folga",
+          status: "Sem Expediente",
           statusInterno: "FOLGA"
         });
         continue;
@@ -395,7 +409,7 @@ export function montarRelatorioQuadro(
           horasFormatado: "0h00m",
           saldoMin: -jornadaMin,
           saldoFormatado: jornadaMin === 0 ? "—" : fmtSaldoMin(-jornadaMin),
-          status: `Atestado parcial ${parcial.horarioInicio}–${parcial.horarioFim}`,
+          status: labelAfastamentoParcial(parcial),
           statusInterno: jornadaMin > 0 ? "FALTA" : "AFASTAMENTO"
         });
       } else {
@@ -536,7 +550,7 @@ export function montarRelatorioQuadro(
       saldoMin,
       saldoFormatado: saldoMin === null ? "—" : fmtSaldoMin(saldoMin),
       status: parcial
-        ? `Atestado parcial ${parcial.horarioInicio}–${parcial.horarioFim}`
+        ? labelAfastamentoParcial(parcial)
         : feriadoDia
           ? feriadoDia.marcoHorario
             ? `Trabalhado (Feriado parcial: ${feriadoDia.nome})`

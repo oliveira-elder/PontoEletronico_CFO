@@ -70,7 +70,7 @@ function parChaveValor(
 export function gerarRelatorioPdf(
   rel: RelatorioMesPdf,
   trend: RelatorioMesPdf[],
-  opts: { nomeUsuario: string }
+  opts: { nomeUsuario: string; ocultarBancoHoras?: boolean }
 ): void {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const margin = 18;
@@ -78,6 +78,7 @@ export function gerarRelatorioPdf(
   const colTrab = pageWidth - margin - 52;
   const colSaldo = pageWidth - margin;
   let y = margin;
+  const ocultarBh = !!opts.ocultarBancoHoras;
 
   const periodo = new Date(rel.ano, rel.mes - 1).toLocaleDateString("pt-BR", {
     month: "long",
@@ -138,9 +139,11 @@ export function gerarRelatorioPdf(
     y,
     margin
   );
-  y = parChaveValor(doc, "Saldo mensal", minToPdf(rel.saldoMinutos), y, margin);
-  y = parChaveValor(doc, "Horas extras", minToPdfNeutro(rel.horasExtrasMinutos), y, margin);
-  y = parChaveValor(doc, "Horas de falta", minToPdfNeutro(rel.horasFaltaMinutos), y, margin);
+  if (!ocultarBh) {
+    y = parChaveValor(doc, "Saldo mensal", minToPdf(rel.saldoMinutos), y, margin);
+    y = parChaveValor(doc, "Horas extras", minToPdfNeutro(rel.horasExtrasMinutos), y, margin);
+    y = parChaveValor(doc, "Horas de falta", minToPdfNeutro(rel.horasFaltaMinutos), y, margin);
+  }
   y += 2;
 
   y = tituloSecao(doc, "Assiduidade", y, margin);
@@ -155,12 +158,16 @@ export function gerarRelatorioPdf(
   y += 2;
 
   y = tituloSecao(doc, "Distribuição de Horas", y, margin);
-  const distribuicao = [
+  const distribuicao: [string, string][] = [
     ["Trabalhadas", minToPdfNeutro(rel.horasTrabalhadasMinutos)],
-    ["Esperadas (jornada)", minToPdfNeutro(rel.horasEsperadasMinutos)],
-    ["Horas extras", minToPdfNeutro(rel.horasExtrasMinutos)],
-    ["Horas de falta", minToPdfNeutro(rel.horasFaltaMinutos)]
+    ["Esperadas (jornada)", minToPdfNeutro(rel.horasEsperadasMinutos)]
   ];
+  if (!ocultarBh) {
+    distribuicao.push(
+      ["Horas extras", minToPdfNeutro(rel.horasExtrasMinutos)],
+      ["Horas de falta", minToPdfNeutro(rel.horasFaltaMinutos)]
+    );
+  }
   for (const [label, val] of distribuicao) {
     y = parChaveValor(doc, label, val, y, margin);
   }
@@ -174,7 +181,9 @@ export function gerarRelatorioPdf(
     doc.setFontSize(9);
     doc.text("Mês", margin, y);
     doc.text("Horas trabalhadas", colTrab, y, { align: "right" });
-    doc.text("Saldo", colSaldo, y, { align: "right" });
+    if (!ocultarBh) {
+      doc.text("Saldo", colSaldo, y, { align: "right" });
+    }
     y += 4;
     linha(doc, y, margin, pageWidth);
     y += 6;
@@ -188,7 +197,9 @@ export function gerarRelatorioPdf(
 
       doc.text(mesLabel, margin, y);
       doc.text(minToPdfNeutro(m.horasTrabalhadasMinutos), colTrab, y, { align: "right" });
-      doc.text(minToPdf(m.saldoMinutos), colSaldo, y, { align: "right" });
+      if (!ocultarBh) {
+        doc.text(minToPdf(m.saldoMinutos), colSaldo, y, { align: "right" });
+      }
 
       if (destaque) doc.setFont("helvetica", "normal");
       y += 7;

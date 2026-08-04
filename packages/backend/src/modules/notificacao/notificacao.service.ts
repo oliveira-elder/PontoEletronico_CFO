@@ -12,6 +12,7 @@ import {
 import {
   categoriaSemIntervaloAlmoco,
   categoriaSemRegistroPonto,
+  categoriaSemVisibilidadeBancoHoras,
   diaSemObrigacaoPonto
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
@@ -23,6 +24,7 @@ import {
   dispensarAlmocoPorAtestadoParcial
 } from "../../utils/jornada-historico";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
+import { anexarAtalhoAoCorpo, corpoParaHtmlEmail, getAppBaseUrl } from "./atalhos-evento";
 
 export interface DestinatarioNotificacao {
   externalId: string | null;
@@ -445,7 +447,7 @@ export class NotificacaoService {
             from: `"${cfg.nomeRemetente}" <${cfg.emailRemetente}>`,
             to: email,
             subject: dto.assunto,
-            html: dto.corpo.replace(/\n/g, "<br>")
+            html: corpoParaHtmlEmail(dto.corpo)
           });
           enviados++;
         } catch (err) {
@@ -668,7 +670,7 @@ export class NotificacaoService {
       const email = this.emailEntregavel(dest);
       if (emailAtivo) {
         if (email) {
-          await this.enviarEmailSistema(email, titulo, corpo)
+          await this.enviarEmailSistema(email, titulo, corpo, eventoId)
             .then(() => {
               emailsEnviados++;
             })
@@ -886,7 +888,12 @@ export class NotificacaoService {
   }
 
   /** Envia e-mail de sistema para um endereço, se configurado */
-  async enviarEmailSistema(to: string, subject: string, body: string): Promise<void> {
+  async enviarEmailSistema(
+    to: string,
+    subject: string,
+    body: string,
+    eventoId?: string
+  ): Promise<void> {
     const cfg = await this.prisma.configuracaoEmail.findUnique({ where: { id: "singleton" } });
     if (!cfg?.ativo) {
       this.logger.warn(`enviarEmailSistema: SMTP inativo — não enviou para ${to}.`);
@@ -897,13 +904,15 @@ export class NotificacaoService {
       return;
     }
 
+    const corpo = anexarAtalhoAoCorpo(body, eventoId);
+
     try {
       const transporter = this.buildTransporter(cfg as EmailConfigDto);
       await transporter.sendMail({
         from: `"${cfg.nomeRemetente}" <${cfg.emailRemetente}>`,
         to,
         subject,
-        html: body.replace(/\n/g, "<br>")
+        html: corpoParaHtmlEmail(corpo)
       });
       this.logger.log(`E-mail enviado para ${to}: ${subject}`);
     } catch (err) {
@@ -921,8 +930,9 @@ export class NotificacaoService {
     corpo?: string,
     tipo?: string
   ) {
+    const corpoFinal = corpo != null && corpo !== "" ? anexarAtalhoAoCorpo(corpo, tipo) : corpo;
     return this.prisma.notificacao.create({
-      data: { userExternalId, titulo, corpo, tipo }
+      data: { userExternalId, titulo, corpo: corpoFinal, tipo }
     });
   }
 
@@ -1015,7 +1025,7 @@ export class NotificacaoService {
       const email = func.user.emailReal ?? func.user.email;
 
       if (emailAtivo && email) {
-        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
+        await this.enviarEmailSistema(email, titulo, corpo, eventoId).catch((e) =>
           this.logger.error(`Falha FERIAS_OBRIGATORIO email para func ${func.id}: ${e}`)
         );
       }
@@ -1059,6 +1069,7 @@ export class NotificacaoService {
             funcionario: {
               select: {
                 id: true,
+                categoria: true,
                 user: { select: { externalId: true, email: true, emailReal: true } }
               }
             }
@@ -1071,6 +1082,11 @@ export class NotificacaoService {
     for (const ass of assinaturas) {
       const funcId = ass.periodo.funcionario.id;
       if (notificados.has(funcId)) continue;
+
+      // Estagiário / Menor Aprendiz não recebem alerta de banco de horas
+      if (categoriaSemVisibilidadeBancoHoras(ass.periodo.funcionario.categoria)) {
+        continue;
+      }
 
       // Data de vencimento: último dia do mês do período + vigenciaDias
       const fimPeriodo = new Date(ass.periodo.ano, ass.periodo.mes, 0); // último dia do mês
@@ -1091,7 +1107,7 @@ export class NotificacaoService {
       const email = user.emailReal ?? user.email;
 
       if (emailAtivo && email) {
-        await this.enviarEmailSistema(email, titulo, corpo).catch((e) =>
+        await this.enviarEmailSistema(email, titulo, corpo, eventoId).catch((e) =>
           this.logger.error(`Falha BANCO_HORAS_VENCIMENTO email para func ${funcId}: ${e}`)
         );
       }
@@ -1168,6 +1184,13 @@ export class NotificacaoService {
     const dataFmt = ontem.toLocaleDateString("pt-BR");
     let enviados = 0;
 
+    const cfgSol = await this.prisma.configuracaoSolicitacoes.findUnique({
+      where: { id: "singleton" },
+      select: { atestadoPrazoEnvioDias: true }
+    });
+    const prazoAtestadoDias = cfgSol?.atestadoPrazoEnvioDias ?? 2;
+    const urlSolicitacoes = `${getAppBaseUrl()}/ponto/solicitacoes`;
+
     for (const func of funcionarios) {
       if (categoriaSemRegistroPonto(func.categoria)) continue;
 
@@ -1204,7 +1227,7 @@ export class NotificacaoService {
       const sols = await this.prisma.solicitacao.findMany({
         where: {
           funcionarioId: func.id,
-          tipo: "ATESTADO",
+          tipo: { in: ["ATESTADO", "ABONO"] },
           status: "APROVADA",
           OR: [
             { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
@@ -1254,7 +1277,10 @@ export class NotificacaoService {
       const corpo =
         `Identificamos registros de ponto incompletos ou ausentes em ${dataFmt} ` +
         `(faltando: ${listaFaltantes || "ciclo completo"}). ` +
-        `Por favor, abra uma solicitação de correção de ponto no sistema para regularizar o dia.`;
+        `Por favor, abra uma solicitação de correção de ponto no sistema para regularizar o dia.\n\n` +
+        `Caso a ausência seja por atestado médico, você terá até ${prazoAtestadoDias} dias para enviar o atestado pelo sistema.\n\n` +
+        `Atalho — Solicitações — Correção de ponto:\n${urlSolicitacoes}\n\n` +
+        `Atalho — Solicitações — Envio de atestado médico:\n${urlSolicitacoes}`;
 
       const dest = {
         externalId: func.user.externalId,

@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowLeftIcon,
-  DownloadIcon,
   UploadIcon,
   SendIcon,
   RefreshCwIcon,
@@ -11,6 +10,7 @@ import {
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { RequerimentoEnderecoCard } from "../../components/RequerimentoEnderecoCard";
+import { LinkDocumentoAnexado } from "./solicitacaoUi";
 
 /* ── Tipos ─────────────────────────────────────────────── */
 type TipoReq = "PERIODICO" | "EXAME_MEDICO" | "FERIAS" | "ASSINATURA_DOCUMENTOS" | "OUTRO";
@@ -257,48 +257,20 @@ function MinhaReqCard({
           {(req.arquivoUrl || item.arquivoIndividualUrl) && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
               {req.arquivoUrl && (
-                <a
+                <LinkDocumentoAnexado
                   href={req.arquivoUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 7,
-                    padding: "8px 14px",
-                    background: "rgba(122,30,38,0.06)",
-                    border: "1px solid rgba(122,30,38,0.15)",
-                    borderRadius: "var(--radius-md)",
-                    color: "var(--burgundy-600)",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    textDecoration: "none"
-                  }}
-                >
-                  <DownloadIcon size={14} /> Baixar documento do RH
-                </a>
+                  label="Ver documento — Documento do RH"
+                  variant="rh"
+                  style={{ marginTop: 0 }}
+                />
               )}
               {item.arquivoIndividualUrl && (
-                <a
+                <LinkDocumentoAnexado
                   href={item.arquivoIndividualUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 7,
-                    padding: "8px 14px",
-                    background: "rgba(26,79,122,0.07)",
-                    border: "1px solid rgba(26,79,122,0.18)",
-                    borderRadius: "var(--radius-md)",
-                    color: "#1a4f7a",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    textDecoration: "none"
-                  }}
-                >
-                  <DownloadIcon size={14} /> Baixar documento individual
-                </a>
+                  label="Ver documento — Documento individual"
+                  variant="rh"
+                  style={{ marginTop: 0 }}
+                />
               )}
             </div>
           )}
@@ -321,20 +293,12 @@ function MinhaReqCard({
                 </p>
               )}
               {item.respostaArquivoUrl && (
-                <a
+                <LinkDocumentoAnexado
                   href={item.respostaArquivoUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    fontSize: 12,
-                    color: "#1a4f7a"
-                  }}
-                >
-                  <DownloadIcon size={12} /> Arquivo enviado
-                </a>
+                  label="Ver documento — Arquivo enviado"
+                  variant="retorno"
+                  style={{ marginTop: 0 }}
+                />
               )}
             </div>
           ) : (

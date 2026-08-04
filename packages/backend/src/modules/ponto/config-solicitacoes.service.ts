@@ -4,6 +4,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 const DEFAULTS = {
   atestadoDiasLimiteSimples: 3,
   atestadoDiasLimiteInss: 14,
+  atestadoPrazoEnvioDias: 2,
   atestadoMensagemOriginais: "Os originais devem ser entregues ao setor de RH.",
   feriasAntecedenciaMinDias: 30,
   feriasMinimoGrandePeriodo: 14,
@@ -17,7 +18,8 @@ const DEFAULTS = {
   tipoAtivoLicenca: true,
   tipoAtivoAbono: true,
   tipoAtivoDayOff: true,
-  tipoAtivoHoraExtra: true
+  tipoAtivoHoraExtra: true,
+  tipoAtivoEnvioDocumentoRh: true
 };
 
 export type ConfigSolicitacoesData = typeof DEFAULTS;
@@ -30,7 +32,7 @@ export class ConfigSolicitacoesService {
     const row = await this.prisma.configuracaoSolicitacoes.findUnique({
       where: { id: "singleton" }
     });
-    return (row ?? DEFAULTS) as ConfigSolicitacoesData;
+    return { ...DEFAULTS, ...(row ?? {}) } as ConfigSolicitacoesData;
   }
 
   async updateConfig(data: Partial<ConfigSolicitacoesData>): Promise<ConfigSolicitacoesData> {

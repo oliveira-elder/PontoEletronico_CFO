@@ -41,7 +41,7 @@ function buildSampleRelatorio(mes, ano) {
       saldoMin: trabalhado ? (d === 12 ? 266 : 0) : null,
       saldoFormatado: trabalhado ? (d === 12 ? "+4h26m" : "0h00m") : "—",
       status: fimDeSemana
-        ? "Folga"
+        ? "Sem Expediente"
         : trabalhado
           ? "Trabalhado"
           : d <= 11

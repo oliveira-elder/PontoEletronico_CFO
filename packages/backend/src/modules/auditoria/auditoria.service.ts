@@ -2126,19 +2126,29 @@ export class AuditoriaService {
         }
       });
     } else if (tipo === "ABONO") {
+      const horarioInicio =
+        typeof meta.horarioInicio === "string" && meta.horarioInicio.trim()
+          ? meta.horarioInicio.trim()
+          : null;
+      const horarioFim =
+        typeof meta.horarioFim === "string" && meta.horarioFim.trim()
+          ? meta.horarioFim.trim()
+          : null;
       await this.prisma.afastamento.create({
         data: {
           funcionarioId: funcId,
           tipo: "ABONO",
           dataInicio: ref,
           dataFim: fim,
+          horarioInicio,
+          horarioFim,
           justificativa: solicitacao.descricao || obsInformativo,
           aprovadoPor: rhKeycloakSub,
           apenasInformativo
         }
       });
     }
-    /* HORA_EXTRA: aprovação registrada no status da solicitação; sem efeito adicional no banco */
+    /* HORA_EXTRA / ENVIO_DOCUMENTO_RH: aprovação registrada no status; sem efeito adicional no banco */
 
     if (["FERIAS", "ATESTADO", "LICENCA", "ABONO"].includes(tipo)) {
       this.notificarAfastamentoRegistrado(funcId, tipo, ref, fim).catch((e) =>
@@ -2207,7 +2217,7 @@ export class AuditoriaService {
       const sols = await this.prisma.solicitacao.findMany({
         where: {
           funcionarioId: filtros.funcionarioId,
-          tipo: "ATESTADO",
+          tipo: { in: ["ATESTADO", "ABONO"] },
           status: "APROVADA"
         },
         select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
@@ -2217,7 +2227,7 @@ export class AuditoriaService {
         const a = afastamentos[i];
         const raw = afastamentosRaw[i];
         if (
-          a.tipo === "ATESTADO" &&
+          (a.tipo === "ATESTADO" || a.tipo === "ABONO") &&
           a.horarioInicio &&
           a.horarioFim &&
           (!raw.horarioInicio || !raw.horarioFim)
@@ -2486,7 +2496,7 @@ export class AuditoriaService {
     const solsAtestado = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId,
-        tipo: "ATESTADO",
+        tipo: { in: ["ATESTADO", "ABONO"] },
         status: "APROVADA",
         OR: [
           { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
@@ -2622,7 +2632,10 @@ export class AuditoriaService {
             horaExtraLimiteMin: jornadaCtx.horaExtraLimiteAuto ?? 120
           });
           jornadaDia = jornadaMandatoria;
-          obs = `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
+          obs =
+            afastamento.tipo === "ABONO"
+              ? `Abono parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`
+              : `Atestado parcial ${afastamento.horarioInicio}–${afastamento.horarioFim}`;
         } else if (feriadoDia) {
           const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
           if (feriadoDia.marcoHorario) {
@@ -2808,10 +2821,58 @@ export class AuditoriaService {
 
   async getDocumentosRhFuncionario(funcionarioId: string) {
     await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
-    return this.prisma.documentoRhEnvio.findMany({
-      where: { funcionarioId },
-      orderBy: { createdAt: "desc" }
+
+    const [legados, solicitacoes] = await Promise.all([
+      this.prisma.documentoRhEnvio.findMany({
+        where: { funcionarioId },
+        orderBy: { createdAt: "desc" }
+      }),
+      this.prisma.solicitacao.findMany({
+        where: { funcionarioId, tipo: "ENVIO_DOCUMENTO_RH" },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          descricao: true,
+          status: true,
+          metadados: true,
+          createdAt: true,
+          rhObservacao: true,
+          rhResolvidoEm: true
+        }
+      })
+    ]);
+
+    const deSolicitacoes = solicitacoes.map((s) => {
+      const meta = (s.metadados ?? {}) as Record<string, unknown>;
+      const arquivoUrl = typeof meta.documentoUrl === "string" ? meta.documentoUrl : "";
+      const nomeArquivo = typeof meta.nomeArquivo === "string" ? meta.nomeArquivo : null;
+      return {
+        id: s.id,
+        descricao: s.descricao,
+        arquivoUrl,
+        nomeArquivo,
+        mimeType: null as string | null,
+        createdAt: s.createdAt,
+        origem: "SOLICITACAO" as const,
+        status: s.status,
+        solicitacaoId: s.id,
+        rhObservacao: s.rhObservacao,
+        rhResolvidoEm: s.rhResolvidoEm
+      };
     });
+
+    const deLegados = legados.map((d) => ({
+      ...d,
+      origem: "LEGADO" as const,
+      status: null as string | null,
+      solicitacaoId: null as string | null,
+      rhObservacao: null as string | null,
+      rhResolvidoEm: null as Date | null
+    }));
+
+    return [...deSolicitacoes, ...deLegados].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
   }
 
   async excluirDocumentoRhFuncionario(funcionarioId: string, documentoId: string) {
@@ -3014,7 +3075,9 @@ export class AuditoriaService {
     HORA_EXTRA: "Hora Extra",
     CORRECAO_PONTO: "Correção de Ponto",
     ABONO: "Abono",
-    BANCO_HORAS: "Banco de Horas"
+    BANCO_HORAS: "Banco de Horas",
+    DAY_OFF: "Day Off de Aniversário",
+    ENVIO_DOCUMENTO_RH: "Envio de documento ao RH"
   };
 
   private async notificarSolicitacaoFuncionario(
@@ -3048,7 +3111,7 @@ export class AuditoriaService {
 
     const email = func.user.emailReal ?? func.user.email;
     if (emailAtivo && email) {
-      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo);
+      await this.notificacaoService.enviarEmailSistema(email, titulo, corpo, eventoId);
     }
     if (sistemaAtivo && func.user.externalId) {
       await this.notificacaoService.criarNotificacaoParaUsuario(

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Navigate } from "react-router-dom";
 import {
   CalendarIcon,
   AlertCircleIcon,
@@ -8,6 +9,7 @@ import {
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -59,6 +61,7 @@ export function BancoHorasPage() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [mesAtivo, setMesAtivo] = useState<string>("");
+  const [bloqueado, setBloqueado] = useState(false);
 
   useEffect(() => {
     const tk = token();
@@ -68,8 +71,16 @@ export function BancoHorasPage() {
     }
     setLoading(true);
     api
-      .get<ApiBancoHoras>("/ponto/banco-horas", tk)
+      .get<{ categoria?: string }>("/ponto/status", tk)
+      .then((status) => {
+        if (categoriaSemVisibilidadeBancoHoras(status?.categoria)) {
+          setBloqueado(true);
+          return null;
+        }
+        return api.get<ApiBancoHoras>("/ponto/banco-horas", tk);
+      })
       .then((d) => {
+        if (!d) return;
         setDados(d);
         if (d?.dias.length) {
           setMesAtivo(d.dias[d.dias.length - 1].data.slice(0, 7));
@@ -78,6 +89,10 @@ export function BancoHorasPage() {
       .catch((e) => setErro(e instanceof Error ? e.message : "Erro ao carregar"))
       .finally(() => setLoading(false));
   }, []);
+
+  if (!loading && bloqueado) {
+    return <Navigate to="/ponto/historico" replace />;
+  }
 
   const saldo = dados?.saldoAtualMinutos ?? 0;
   const excedeLimite = dados ? Math.abs(saldo) > dados.limiteMinutos : false;

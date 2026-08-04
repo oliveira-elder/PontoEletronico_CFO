@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   PlusIcon,
   FileTextIcon,
-  DownloadIcon,
   ChevronDownIcon,
   XIcon,
   RefreshCwIcon,
@@ -10,6 +9,7 @@ import {
 } from "../../components/icons";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { LinkDocumentoAnexado } from "./solicitacaoUi";
 
 /* ── Tipos ─────────────────────────────────────────────── */
 type TipoReq = "PERIODICO" | "EXAME_MEDICO" | "FERIAS" | "ASSINATURA_DOCUMENTOS" | "OUTRO";
@@ -1177,22 +1177,12 @@ function ReqCard({ item, token }: { item: ReqRhListItem; token: string }) {
                 </p>
               )}
               {detalhe.arquivoUrl && (
-                <a
+                <LinkDocumentoAnexado
                   href={detalhe.arquivoUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    fontSize: 12,
-                    color: "var(--burgundy-600)",
-                    marginBottom: 14,
-                    fontWeight: 600
-                  }}
-                >
-                  <DownloadIcon size={13} /> Documento do RH
-                </a>
+                  label="Ver documento — Documento do RH"
+                  variant="rh"
+                  style={{ marginTop: 0, marginBottom: 14 }}
+                />
               )}
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -1258,40 +1248,24 @@ function ReqCard({ item, token }: { item: ReqRhListItem; token: string }) {
                           </td>
                           <td style={{ padding: "8px 10px" }}>
                             {d.arquivoIndividualUrl ? (
-                              <a
+                              <LinkDocumentoAnexado
                                 href={d.arquivoIndividualUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  color: "#1a4f7a",
-                                  fontSize: 11
-                                }}
-                              >
-                                <DownloadIcon size={12} /> Baixar
-                              </a>
+                                label="Ver documento — Individual"
+                                variant="rh"
+                                style={{ marginTop: 0, fontSize: 12, padding: "6px 10px" }}
+                              />
                             ) : (
                               <span style={{ color: "var(--ink-400)" }}>—</span>
                             )}
                           </td>
                           <td style={{ padding: "8px 10px" }}>
                             {d.respostaArquivoUrl ? (
-                              <a
+                              <LinkDocumentoAnexado
                                 href={d.respostaArquivoUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  color: "var(--burgundy-600)",
-                                  fontSize: 11
-                                }}
-                              >
-                                <DownloadIcon size={12} /> Baixar
-                              </a>
+                                label="Ver documento — Resposta"
+                                variant="retorno"
+                                style={{ marginTop: 0, fontSize: 12, padding: "6px 10px" }}
+                              />
                             ) : d.respostaTexto ? (
                               <span style={{ color: "var(--ink-600)", fontStyle: "italic" }}>
                                 {d.respostaTexto}

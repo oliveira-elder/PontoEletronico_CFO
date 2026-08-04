@@ -8,6 +8,17 @@ export function categoriaSemIntervaloAlmoco(categoria: string | null | undefined
   return (CATEGORIAS_SEM_INTERVALO_ALMOCO as readonly string[]).includes(categoria);
 }
 
+/**
+ * Categorias que não visualizam banco de horas (self-service / relatórios do próprio funcionário).
+ * O cálculo continua no backend; RH/auditoria mantém acesso.
+ */
+export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+
+export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | undefined): boolean {
+  if (!categoria) return false;
+  return (CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS as readonly string[]).includes(categoria);
+}
+
 export function labelCategoriaSemIntervalo(categoria: string): string {
   return categoria === "MENOR_APRENDIZ" ? "Menor Aprendiz" : "Estagiário";
 }
