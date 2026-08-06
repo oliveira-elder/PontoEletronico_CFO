@@ -188,7 +188,7 @@ export class ConfigController {
 
   @Post("banco-horas/marcos")
   @Roles(...ADMIN_CONFIG_ROLES)
-  createMarcoBancoHoras(@Body() body: { data: string; descricao?: string }) {
+  createMarcoBancoHoras(@Body() body: { dia: number; mes: number; descricao?: string }) {
     return this.configService.createMarcoBancoHoras(body);
   }
 

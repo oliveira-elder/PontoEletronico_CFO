@@ -26,9 +26,11 @@ import {
 import {
   buildQuadroPdfDocDefinition,
   buildRascunhoPdfDocDefinition,
-  loadAssetBase64
+  loadAssetBase64,
+  type ResumoBadgesPdf
 } from "./quadro-registro-pdf.builder";
 import { getPdfFonts } from "./pdf-fonts";
+import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
 
 /** Metadados de autenticidade capturados no momento da assinatura. */
 export interface SignatureMeta {
@@ -691,6 +693,78 @@ export class AssinaturaService {
     };
   }
 
+  /** Monta o resumo equivalente aos badges da página Histórico para o PDF. */
+  private async montarResumoBadgesPdf(
+    funcionarioId: string,
+    categoria: string | null | undefined,
+    mes: number,
+    ano: number,
+    relatorio: {
+      dias: Array<{ statusInterno: string }>;
+      horasTrabalhadasMinutos: number;
+      saldoMinutos: number;
+    }
+  ): Promise<ResumoBadgesPdf> {
+    const diasOk = relatorio.dias.filter((d) => d.statusInterno === "OK").length;
+    const faltas = relatorio.dias.filter((d) => d.statusInterno === "FALTA").length;
+    const afastamentos = relatorio.dias.filter((d) => d.statusInterno === "AFASTAMENTO").length;
+    const ocultarBancoHoras = categoriaSemVisibilidadeBancoHoras(categoria);
+
+    const mesAnterior = mes === 1 ? 12 : mes - 1;
+    const anoMesAnterior = mes === 1 ? ano - 1 : ano;
+    const labelMesAnterior = new Date(anoMesAnterior, mesAnterior - 1, 1).toLocaleDateString(
+      "pt-BR",
+      { month: "short", year: "numeric" }
+    );
+
+    let saldoAcumuladoMesAnteriorMinutos = 0;
+    if (!ocultarBancoHoras) {
+      try {
+        const bh = await this.auditoriaService.getBancoHorasFuncionario(funcionarioId);
+        const mesPrefixInicio = `${ano}-${String(mes).padStart(2, "0")}-01`;
+        const diasAntes = (bh.dias ?? [])
+          .filter((d: { data: string }) => d.data < mesPrefixInicio)
+          .sort((a: { data: string }, b: { data: string }) =>
+            a.data < b.data ? -1 : a.data > b.data ? 1 : 0
+          );
+        if (diasAntes.length > 0) {
+          saldoAcumuladoMesAnteriorMinutos =
+            diasAntes[diasAntes.length - 1].saldoAcumuladoMinutos ?? 0;
+        } else {
+          const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
+          const bancoMes = (bh.dias ?? [])
+            .filter((d: { data: string }) => d.data.startsWith(mesPrefix))
+            .sort((a: { data: string }, b: { data: string }) =>
+              a.data < b.data ? -1 : a.data > b.data ? 1 : 0
+            );
+          if (bancoMes.length > 0) {
+            const primeiro = bancoMes[0] as {
+              saldoAcumuladoMinutos: number;
+              saldoDiaMinutos: number;
+            };
+            saldoAcumuladoMesAnteriorMinutos =
+              primeiro.saldoAcumuladoMinutos - primeiro.saldoDiaMinutos;
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`montarResumoBadgesPdf: falha ao obter banco de horas — ${String(err)}`);
+      }
+    }
+
+    const saldoMesMinutos = relatorio.saldoMinutos;
+    return {
+      diasOk,
+      faltas,
+      afastamentos,
+      horasTrabalhadasMinutos: relatorio.horasTrabalhadasMinutos,
+      ocultarBancoHoras,
+      saldoAcumuladoMesAnteriorMinutos,
+      labelMesAnterior,
+      saldoMesMinutos,
+      totalAcumuladoMinutos: saldoAcumuladoMesAnteriorMinutos + saldoMesMinutos
+    };
+  }
+
   /* ─── Geração de PDF ─── */
 
   async gerarRascunhoPdf(keycloakSub: string, mes: number, ano: number): Promise<Buffer> {
@@ -705,6 +779,13 @@ export class AssinaturaService {
 
     const { relatorio, jornada } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
     const jornadaHorasExibicao = Math.round(jornada.atualMin / 60);
+    const resumoBadges = await this.montarResumoBadgesPdf(
+      funcionario.id,
+      funcionario.categoria,
+      mes,
+      ano,
+      relatorio
+    );
 
     const logoBase64 = loadAssetBase64("logo.png");
 
@@ -729,11 +810,12 @@ export class AssinaturaService {
         assinadoGestorEm: null,
         assinadoGestorIp: null,
         assinadoGestorNome: null,
-        bancoHorasSaldoTotalMinutos: 0
+        bancoHorasSaldoTotalMinutos: resumoBadges.totalAcumuladoMinutos
       },
       relatorio,
       logoBase64,
-      certificadoBase64: null
+      certificadoBase64: null,
+      resumoBadges
     });
 
     if (!PdfPrinter) throw new InternalServerErrorException("pdfmake não disponível");
@@ -776,6 +858,13 @@ export class AssinaturaService {
     this.logger.log(`Buscando relatório para funcionário ${funcionario.id}, ${mes}/${ano}`);
     const { relatorio } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
     this.logger.log(`Relatório OK — ${relatorio.dias.length} dias`);
+    const resumoBadges = await this.montarResumoBadgesPdf(
+      funcionario.id,
+      funcionario.categoria,
+      mes,
+      ano,
+      relatorio
+    );
 
     const logoBase64 = loadAssetBase64("logo.png");
     const certificadoBase64 = loadAssetBase64("certificado-digital.png");
@@ -791,7 +880,8 @@ export class AssinaturaService {
       assinatura,
       relatorio,
       logoBase64,
-      certificadoBase64
+      certificadoBase64,
+      resumoBadges
     });
 
     if (!PdfPrinter) {

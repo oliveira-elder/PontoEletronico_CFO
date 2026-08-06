@@ -35,7 +35,10 @@ interface Subrede {
 }
 interface MarcoBancoHoras {
   id: string;
-  data: string;
+  dia: number;
+  mes: number;
+  ano: number | null;
+  chave: string;
   descricao: string | null;
 }
 interface AreaViagem {
@@ -377,10 +380,10 @@ const JP_VAZIO: Omit<JornadaPeriodo, "id" | "ePadrao" | "ativo"> = {
   jornadaSemanalMin: 2400,
   diasUteis: "[false,true,true,true,true,true,false]",
   tipoFlexibilidade: "FIXO",
-  toleranciaEntradaMin: 15,
-  toleranciaSaidaMin: 15,
+  toleranciaEntradaMin: 5,
+  toleranciaSaidaMin: 5,
   toleranciaHoraExtraMin: 10,
-  toleranciaCalculoMin: 5,
+  toleranciaCalculoMin: 0,
   almocoPodeIniciarA: "11:30",
   almocoPodeIniciarAte: "13:00",
   almocoMinMin: 60,
@@ -401,10 +404,10 @@ interface ConfigPeriodos {
   jornadaSemanalMin: number; // 2400
   diasUteis: boolean[]; // [false,true,true,true,true,true,false] Dom→Sáb
   // Flexibilidade
-  toleranciaEntradaMin: number; // 15 — minutos de atraso na entrada não considerados falta
-  toleranciaSaidaMin: number; // 15 — minutos de saída antecipada não considerados falta
+  toleranciaEntradaMin: number; // 5 — janela simétrica ±N (entrada, saída e excesso de almoço)
+  toleranciaSaidaMin: number; // espelho de toleranciaEntradaMin (sempre iguais)
   toleranciaHoraExtraMin: number; // 10 — minutos além da saída não contados como hora extra
-  toleranciaCalculoMin: number; // 5  — margem geral do cálculo diário (±N min = jornada OK)
+  toleranciaCalculoMin: number; // legado (sempre 0; flexibilidade está na tolerância simétrica)
   tipoFlexibilidade: "FIXO" | "ELASTICO" | "BANCO_HORAS";
   // Intervalo de almoço
   almocoPodeIniciarA: string; // "11:30"
@@ -432,7 +435,20 @@ function patchPeriodos(
   prev: ConfigPeriodos | null,
   patch: Partial<ConfigPeriodos>
 ): ConfigPeriodos | null {
-  return prev ? { ...prev, ...patch } : prev;
+  if (!prev) return prev;
+  const next = { ...prev, ...patch };
+  /* Tolerância simétrica: entrada e saída sempre iguais. */
+  if (patch.toleranciaEntradaMin !== undefined) {
+    const n = Math.max(0, Number(patch.toleranciaEntradaMin) || 0);
+    next.toleranciaEntradaMin = n;
+    next.toleranciaSaidaMin = n;
+  } else if (patch.toleranciaSaidaMin !== undefined) {
+    const n = Math.max(0, Number(patch.toleranciaSaidaMin) || 0);
+    next.toleranciaEntradaMin = n;
+    next.toleranciaSaidaMin = n;
+  }
+  next.toleranciaCalculoMin = 0;
+  return next;
 }
 
 function horaParaMin(h: string): number {
@@ -1609,8 +1625,8 @@ export function ConfiguracoesPage() {
   const [novoProvedor, setNovoProvedor] = useState({ nome: "", ip: "", isPrincipal: false });
   // Nova subrede form
   const [novaSubrede, setNovaSubrede] = useState({ cidr: "", descricao: "" });
-  // Nova data marco do Banco de Horas
-  const [novoMarco, setNovoMarco] = useState({ data: "", descricao: "" });
+  // Nova data marco do Banco de Horas (dia/mês recorrente)
+  const [novoMarco, setNovoMarco] = useState({ dia: "", mes: "", descricao: "" });
   // Nova área
   const [novaArea, setNovaArea] = useState({ nome: "", descricao: "" });
 
@@ -1694,10 +1710,20 @@ export function ConfiguracoesPage() {
             jornadaDiariaMin: calcFallback.diaria,
             jornadaSemanalMin: calcFallback.semanal,
             diasUteis: diasUteisParsed,
-            toleranciaEntradaMin: sis.toleranciaEntradaMin,
-            toleranciaSaidaMin: sis.toleranciaSaidaMin,
+            toleranciaEntradaMin: (() => {
+              return Math.max(
+                0,
+                Number(sis.toleranciaEntradaMin ?? sis.toleranciaSaidaMin) || 5
+              );
+            })(),
+            toleranciaSaidaMin: (() => {
+              return Math.max(
+                0,
+                Number(sis.toleranciaEntradaMin ?? sis.toleranciaSaidaMin) || 5
+              );
+            })(),
             toleranciaHoraExtraMin: sis.toleranciaHoraExtraMin,
-            toleranciaCalculoMin: sis.toleranciaCalculoMin,
+            toleranciaCalculoMin: 0,
             tipoFlexibilidade: sis.tipoFlexibilidade as ConfigPeriodos["tipoFlexibilidade"],
             almocoPodeIniciarA: sis.almocoPodeIniciarA,
             almocoPodeIniciarAte: sis.almocoPodeIniciarAte,
@@ -1998,9 +2024,9 @@ export function ConfiguracoesPage() {
       jornadaSemanalMin: periodos.jornadaSemanalMin,
       diasUteis: JSON.stringify(periodos.diasUteis),
       toleranciaEntradaMin: periodos.toleranciaEntradaMin,
-      toleranciaSaidaMin: periodos.toleranciaSaidaMin,
+      toleranciaSaidaMin: periodos.toleranciaEntradaMin,
       toleranciaHoraExtraMin: periodos.toleranciaHoraExtraMin,
-      toleranciaCalculoMin: periodos.toleranciaCalculoMin,
+      toleranciaCalculoMin: 0,
       tipoFlexibilidade: periodos.tipoFlexibilidade,
       almocoPodeIniciarA: periodos.almocoPodeIniciarA,
       almocoPodeIniciarAte: periodos.almocoPodeIniciarAte,
@@ -2032,6 +2058,7 @@ export function ConfiguracoesPage() {
         typeof jp.diasUteis === "string" ? JSON.parse(jp.diasUteis) : jp.diasUteis;
       setJpDiasUteis(dias);
       const calc = calcJornadaEfetiva(jp.horaEntrada, jp.horaSaida, jp.almocoMinMin, dias);
+      const tol = Math.max(0, Number(jp.toleranciaEntradaMin ?? jp.toleranciaSaidaMin) || 5);
       setJpForm({
         nome: jp.nome,
         descricao: jp.descricao ?? "",
@@ -2041,10 +2068,10 @@ export function ConfiguracoesPage() {
         jornadaSemanalMin: calc.semanal,
         diasUteis: jp.diasUteis,
         tipoFlexibilidade: jp.tipoFlexibilidade,
-        toleranciaEntradaMin: jp.toleranciaEntradaMin,
-        toleranciaSaidaMin: jp.toleranciaSaidaMin,
+        toleranciaEntradaMin: tol,
+        toleranciaSaidaMin: tol,
         toleranciaHoraExtraMin: jp.toleranciaHoraExtraMin,
-        toleranciaCalculoMin: jp.toleranciaCalculoMin,
+        toleranciaCalculoMin: 0,
         almocoPodeIniciarA: jp.almocoPodeIniciarA,
         almocoPodeIniciarAte: jp.almocoPodeIniciarAte,
         almocoMinMin: jp.almocoMinMin,
@@ -2070,7 +2097,14 @@ export function ConfiguracoesPage() {
 
   async function salvarJornada() {
     if (!jpForm.nome.trim()) return;
-    const payload = { ...jpForm, diasUteis: JSON.stringify(jpDiasUteis) };
+    const tol = Math.max(0, Number(jpForm.toleranciaEntradaMin) || 0);
+    const payload = {
+      ...jpForm,
+      diasUteis: JSON.stringify(jpDiasUteis),
+      toleranciaEntradaMin: tol,
+      toleranciaSaidaMin: tol,
+      toleranciaCalculoMin: 0
+    };
     if (jpEditando) {
       const atualizado = await api.put<JornadaPeriodo>(
         `/ponto/config/jornadas/${jpEditando.id}`,
@@ -2126,17 +2160,20 @@ export function ConfiguracoesPage() {
     setSubredes((s) => s.filter((x) => x.id !== id));
   }
 
-  /* ── Banco de Horas: datas marco ── */
+  /* ── Banco de Horas: datas marco (dia/mês anual) ── */
   async function addMarcoBancoHoras() {
-    if (!novoMarco.data) return;
+    const dia = Number(novoMarco.dia);
+    const mes = Number(novoMarco.mes);
+    if (!dia || !mes) return;
     const novo = await api.post<MarcoBancoHoras>("/ponto/config/banco-horas/marcos", {
-      data: novoMarco.data,
+      dia,
+      mes,
       descricao: novoMarco.descricao || undefined
     });
     setMarcosBancoHoras((m) =>
-      [...m, novo].sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0))
+      [...m, novo].sort((a, b) => a.mes - b.mes || a.dia - b.dia || (a.ano ?? 0) - (b.ano ?? 0))
     );
-    setNovoMarco({ data: "", descricao: "" });
+    setNovoMarco({ dia: "", mes: "", descricao: "" });
   }
   async function removeMarcoBancoHoras(id: string) {
     await api.delete(`/ponto/config/banco-horas/marcos/${id}`);
@@ -3974,10 +4011,8 @@ export function ConfiguracoesPage() {
                   >
                     {(
                       [
-                        ["toleranciaEntradaMin", "Tolerância Entrada"],
-                        ["toleranciaSaidaMin", "Tolerância Saída"],
-                        ["toleranciaHoraExtraMin", "Tolerância Hora Extra"],
-                        ["toleranciaCalculoMin", "Margem Cálculo"]
+                        ["toleranciaEntradaMin", "Tolerância Entrada/Saída (±N)"],
+                        ["toleranciaHoraExtraMin", "Tolerância Hora Extra"]
                       ] as const
                     ).map(([k, l]) => (
                       <div key={k}>
@@ -3999,7 +4034,19 @@ export function ConfiguracoesPage() {
                           min={0}
                           max={60}
                           value={jpForm[k]}
-                          onChange={(e) => setJpForm((f) => ({ ...f, [k]: +e.target.value }))}
+                          onChange={(e) => {
+                            const v = +e.target.value;
+                            if (k === "toleranciaEntradaMin") {
+                              setJpForm((f) => ({
+                                ...f,
+                                toleranciaEntradaMin: v,
+                                toleranciaSaidaMin: v,
+                                toleranciaCalculoMin: 0
+                              }));
+                            } else {
+                              setJpForm((f) => ({ ...f, [k]: v }));
+                            }
+                          }}
                           style={{
                             width: "100%",
                             padding: "9px 11px",
@@ -4674,8 +4721,9 @@ export function ConfiguracoesPage() {
           {/* ── Flexibilidade ── */}
           <Secao titulo="Flexibilidade de Horário" icon={<InfoIcon size={18} />}>
             <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16, lineHeight: 1.6 }}>
-              Define a tolerância permitida para atrasos e saídas antecipadas sem comprometer a
-              jornada. Registros dentro da tolerância são tratados como horário regular.
+              Define a tolerância simétrica (±N) única para entrada e saída no cálculo do saldo, e o
+              mesmo N para excesso de almoço. Os dois campos de entrada/saída permanecem sempre
+              iguais. O horário real continua visível no histórico.
             </p>
             <div
               style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}
@@ -4714,11 +4762,12 @@ export function ConfiguracoesPage() {
                   }}
                 />
                 <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-                  Atraso até este limite <strong>não é registrado como falta</strong>. Ex: 15 min →
-                  entrada até 08:15 é OK
+                  Janela <strong>simétrica ±N</strong> em torno do horário de entrada no cálculo do
+                  saldo (o registro exibe o horário real). O mesmo N vale para a saída e absorve
+                  excesso de almoço até o mínimo + N (ex.: 60+5 → 1h05 conta como 1h).
                 </p>
               </div>
-              {/* Tolerância de saída antecipada */}
+              {/* Tolerância de saída — espelho da entrada (simetria) */}
               <div>
                 <label
                   style={{
@@ -4731,7 +4780,7 @@ export function ConfiguracoesPage() {
                     marginBottom: 5
                   }}
                 >
-                  Tolerância de Saída Antecipada (min)
+                  Tolerância de Saída (min)
                 </label>
                 <input
                   type="number"
@@ -4752,8 +4801,8 @@ export function ConfiguracoesPage() {
                   }}
                 />
                 <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-                  Saída antecipada até este limite <strong>não é registrada como falta</strong>. Ex:
-                  15 min → saída a partir das 16:45 é OK
+                  Sempre igual à Tolerância de Entrada (simetria ±N). Alterar um campo atualiza o
+                  outro automaticamente.
                 </p>
               </div>
               {/* Tolerância de hora extra — permanência ignorada */}
@@ -4838,44 +4887,6 @@ export function ConfiguracoesPage() {
                   aprovação pelo gestor e RH. Abaixo do limite, vai direto para o banco de horas.
                 </p>
               </div>
-              {/* Margem geral do cálculo diário */}
-              <div>
-                <label
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--ink-500)",
-                    display: "block",
-                    marginBottom: 5
-                  }}
-                >
-                  Margem do Cálculo Diário (min)
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={30}
-                  value={periodos.toleranciaCalculoMin}
-                  onChange={(e) =>
-                    setPeriodos((p) => patchPeriodos(p, { toleranciaCalculoMin: +e.target.value }))
-                  }
-                  style={{
-                    width: "100%",
-                    padding: "9px 11px",
-                    borderRadius: "var(--radius-md)",
-                    border: "1px solid rgba(122,30,38,0.14)",
-                    fontSize: 14,
-                    fontFamily: "var(--font-mono)",
-                    boxSizing: "border-box" as const
-                  }}
-                />
-                <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-                  Se o total trabalhado difere da jornada em até ±N min, o dia é considerado{" "}
-                  <strong>completo</strong> (sem saldo positivo ou negativo)
-                </p>
-              </div>
             </div>
 
             {/* Resumo visual das tolerâncias */}
@@ -4911,14 +4922,14 @@ export function ConfiguracoesPage() {
                   {
                     label: `Almoço`,
                     hora: periodos.almocoPodeIniciarA,
-                    tol: `${periodos.almocoMinMin}–${periodos.almocoMaxMin}min`,
+                    tol: `${periodos.almocoMinMin}min (+≤${periodos.toleranciaEntradaMin}min)`,
                     cor: "#8a6a00"
                   },
                   { sep: "→ trabalho →" },
                   {
                     label: `Saída`,
                     hora: periodos.horaSaida,
-                    tol: `±${periodos.toleranciaSaidaMin}min / extra≤${periodos.toleranciaHoraExtraMin}min`,
+                    tol: `±${periodos.toleranciaEntradaMin}min`,
                     cor: "var(--red)"
                   }
                 ].map(
@@ -5105,8 +5116,114 @@ export function ConfiguracoesPage() {
               </div>
             )}
 
-            {periodos.tipoFlexibilidade === "BANCO_HORAS" && (
-              <div style={{ marginTop: 20 }}>
+            <div style={{ marginTop: 20 }}>
+              <p
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--ink-500)",
+                  marginBottom: 10,
+                  letterSpacing: "0.05em",
+                  textTransform: "uppercase"
+                }}
+              >
+                Datas Marco (zeram o Banco de Horas)
+              </p>
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--ink-500)",
+                  marginBottom: 14,
+                  lineHeight: 1.6
+                }}
+              >
+                Informe apenas dia e mês. Em todo ano que atingir essa data, o ciclo do banco de
+                horas é encerrado e um novo ciclo começa no dia seguinte (saldo zera para todos os
+                funcionários).
+              </p>
+
+              {/* Lista */}
+              <div style={{ marginBottom: 16 }}>
+                {marcosBancoHoras.length === 0 && (
+                  <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 8 }}>
+                    Nenhuma data marco configurada.
+                  </p>
+                )}
+                {marcosBancoHoras.map((m) => (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "10px 14px",
+                      background: "var(--cream-50)",
+                      border: "1px solid rgba(122,30,38,0.08)",
+                      borderRadius: "var(--radius-md)",
+                      marginBottom: 8
+                    }}
+                  >
+                    <CalendarIcon size={16} style={{ color: "var(--burgundy-600)" }} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>
+                        {String(m.dia).padStart(2, "0")}/{String(m.mes).padStart(2, "0")}
+                        {m.ano == null ? (
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 500,
+                              color: "var(--ink-500)",
+                              marginLeft: 8
+                            }}
+                          >
+                            todos os anos
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 500,
+                              color: "var(--ink-500)",
+                              marginLeft: 8
+                            }}
+                          >
+                            apenas {m.ano}
+                          </span>
+                        )}
+                      </p>
+                      {m.descricao && (
+                        <p style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 2 }}>
+                          {m.descricao}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeMarcoBancoHoras(m.id)}
+                      style={{
+                        padding: 6,
+                        border: "1px solid rgba(200,57,63,0.20)",
+                        borderRadius: "var(--radius-sm)",
+                        background: "transparent",
+                        cursor: "pointer",
+                        color: "var(--red)",
+                        display: "flex"
+                      }}
+                    >
+                      <Trash2Icon size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Adicionar data marco */}
+              <div
+                style={{
+                  background: "var(--cream-50)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "14px",
+                  border: "1px dashed rgba(122,30,38,0.20)"
+                }}
+              >
                 <p
                   style={{
                     fontSize: 12,
@@ -5117,138 +5234,96 @@ export function ConfiguracoesPage() {
                     textTransform: "uppercase"
                   }}
                 >
-                  Datas Marco (zeram o Banco de Horas)
+                  Adicionar data marco (dia/mês)
                 </p>
-                <p
-                  style={{
-                    fontSize: 13,
-                    color: "var(--ink-500)",
-                    marginBottom: 14,
-                    lineHeight: 1.6
-                  }}
-                >
-                  Nas datas configuradas abaixo, o ciclo do banco de horas é encerrado e um novo
-                  ciclo é iniciado no dia seguinte (saldo zera para todos os funcionários).
-                </p>
-
-                {/* Lista */}
-                <div style={{ marginBottom: 16 }}>
-                  {marcosBancoHoras.length === 0 && (
-                    <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 8 }}>
-                      Nenhuma data marco configurada.
-                    </p>
-                  )}
-                  {marcosBancoHoras.map((m) => (
-                    <div
-                      key={m.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "10px 14px",
-                        background: "var(--cream-50)",
-                        border: "1px solid rgba(122,30,38,0.08)",
-                        borderRadius: "var(--radius-md)",
-                        marginBottom: 8
-                      }}
-                    >
-                      <CalendarIcon size={16} style={{ color: "var(--burgundy-600)" }} />
-                      <div style={{ flex: 1 }}>
-                        <p style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)" }}>
-                          {new Date(`${m.data}T00:00:00`).toLocaleDateString("pt-BR")}
-                        </p>
-                        {m.descricao && (
-                          <p style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 2 }}>
-                            {m.descricao}
-                          </p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => removeMarcoBancoHoras(m.id)}
-                        style={{
-                          padding: 6,
-                          border: "1px solid rgba(200,57,63,0.20)",
-                          borderRadius: "var(--radius-sm)",
-                          background: "transparent",
-                          cursor: "pointer",
-                          color: "var(--red)",
-                          display: "flex"
-                        }}
-                      >
-                        <Trash2Icon size={13} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Adicionar data marco */}
                 <div
                   style={{
-                    background: "var(--cream-50)",
-                    borderRadius: "var(--radius-md)",
-                    padding: "14px",
-                    border: "1px dashed rgba(122,30,38,0.20)"
+                    display: "grid",
+                    gridTemplateColumns: "80px 140px 1fr",
+                    gap: 10,
+                    marginBottom: 10
                   }}
                 >
-                  <p
+                  <input
+                    type="number"
+                    min={1}
+                    max={31}
+                    placeholder="Dia"
+                    value={novoMarco.dia}
+                    onChange={(e) => setNovoMarco((p) => ({ ...p, dia: e.target.value }))}
                     style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: "var(--ink-500)",
-                      marginBottom: 10,
-                      letterSpacing: "0.05em",
-                      textTransform: "uppercase"
+                      padding: "8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      background: "#fff",
+                      fontSize: 13,
+                      fontFamily: "var(--font-body)",
+                      outline: "none"
+                    }}
+                  />
+                  <select
+                    value={novoMarco.mes}
+                    onChange={(e) => setNovoMarco((p) => ({ ...p, mes: e.target.value }))}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      background: "#fff",
+                      fontSize: 13,
+                      fontFamily: "var(--font-body)",
+                      outline: "none"
                     }}
                   >
-                    Adicionar data marco
-                  </p>
-                  <div
+                    <option value="">Mês</option>
+                    {[
+                      "Janeiro",
+                      "Fevereiro",
+                      "Março",
+                      "Abril",
+                      "Maio",
+                      "Junho",
+                      "Julho",
+                      "Agosto",
+                      "Setembro",
+                      "Outubro",
+                      "Novembro",
+                      "Dezembro"
+                    ].map((nome, i) => (
+                      <option key={nome} value={String(i + 1)}>
+                        {nome}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={novoMarco.descricao}
+                    onChange={(e) => setNovoMarco((p) => ({ ...p, descricao: e.target.value }))}
+                    placeholder="Descrição (opcional)"
                     style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 2fr",
-                      gap: 10,
-                      marginBottom: 10
+                      padding: "8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      background: "#fff",
+                      fontSize: 13,
+                      fontFamily: "var(--font-body)",
+                      outline: "none"
                     }}
-                  >
-                    <input
-                      type="date"
-                      value={novoMarco.data}
-                      onChange={(e) => setNovoMarco((p) => ({ ...p, data: e.target.value }))}
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid rgba(122,30,38,0.14)",
-                        background: "#fff",
-                        fontSize: 13,
-                        fontFamily: "var(--font-body)",
-                        outline: "none"
-                      }}
-                    />
-                    <input
-                      value={novoMarco.descricao}
-                      onChange={(e) => setNovoMarco((p) => ({ ...p, descricao: e.target.value }))}
-                      placeholder="Descrição (opcional)"
-                      style={{
-                        padding: "8px 10px",
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid rgba(122,30,38,0.14)",
-                        background: "#fff",
-                        fontSize: 13,
-                        fontFamily: "var(--font-body)",
-                        outline: "none"
-                      }}
-                    />
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    onClick={addMarcoBancoHoras}
-                    style={{ gap: 6, fontSize: 13, padding: "7px 14px" }}
-                  >
-                    <PlusIcon size={14} /> Adicionar
-                  </button>
+                  />
                 </div>
+                <button
+                  className="btn btn-primary"
+                  onClick={addMarcoBancoHoras}
+                  disabled={!novoMarco.dia || !novoMarco.mes}
+                  style={{
+                    gap: 6,
+                    fontSize: 13,
+                    padding: "7px 14px",
+                    opacity: !novoMarco.dia || !novoMarco.mes ? 0.5 : 1
+                  }}
+                >
+                  <PlusIcon size={14} /> Adicionar
+                </button>
               </div>
-            )}
+            </div>
           </Secao>
 
           {/* ── Intervalo do Almoço ── */}

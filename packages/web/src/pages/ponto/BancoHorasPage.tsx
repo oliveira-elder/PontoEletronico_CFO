@@ -1,11 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import {
-  CalendarIcon,
-  AlertCircleIcon,
-  ArrowLeftIcon,
-  ArrowRightIcon
-} from "../../components/icons";
+import { CalendarIcon, ArrowLeftIcon, ArrowRightIcon } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -48,7 +43,6 @@ interface ApiBancoHoras {
   cicloInicio: string | null;
   inicioAtividades?: string;
   proximaZeragem: string | null;
-  limiteMinutos: number;
   tipoFlexibilidade: string;
   dias: DiaBanco[];
 }
@@ -95,7 +89,6 @@ export function BancoHorasPage() {
   }
 
   const saldo = dados?.saldoAtualMinutos ?? 0;
-  const excedeLimite = dados ? Math.abs(saldo) > dados.limiteMinutos : false;
 
   /* Meses disponíveis (ordenados) */
   const mesesDisponiveis = [...new Set(dados?.dias.map((d) => d.data.slice(0, 7)) ?? [])].sort();
@@ -124,6 +117,13 @@ export function BancoHorasPage() {
   const saldoMes = diasMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
   const saldoFinalMes = diasMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
 
+  /* Badges de resumo ~20% maiores que o .badge padrão (11px / 2×8) */
+  const badgeResumoStyle: React.CSSProperties = {
+    fontSize: 13.2,
+    padding: "2.4px 9.6px",
+    gap: 4.8
+  };
+
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* Cabeçalho */}
@@ -140,7 +140,7 @@ export function BancoHorasPage() {
             lineHeight: 1.1
           }}
         >
-          Banco de <em>Horas</em>
+          Evolução do Banco de <em>Horas</em>
         </h1>
       </div>
 
@@ -186,12 +186,6 @@ export function BancoHorasPage() {
               <span className={saldo >= 0 ? "badge badge-green" : "badge badge-red"}>
                 {saldo >= 0 ? "Positivo" : "Negativo"}
               </span>
-              {excedeLimite && (
-                <span className="badge badge-amber" style={{ display: "inline-flex", gap: 4 }}>
-                  <AlertCircleIcon size={12} />
-                  Excede o limite de {toHM(dados.limiteMinutos)}
-                </span>
-              )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--ink-700)" }}>
               <CalendarIcon size={14} style={{ color: "var(--burgundy-600)" }} />
@@ -206,9 +200,6 @@ export function BancoHorasPage() {
                   : " · sem data de zeragem configurada"}
               </p>
             </div>
-            <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 8 }}>
-              Limite tolerado: ±{toHM(dados.limiteMinutos)}
-            </p>
           </div>
 
           {/* Detalhamento mensal */}
@@ -276,14 +267,19 @@ export function BancoHorasPage() {
                     flexWrap: "wrap"
                   }}
                 >
-                  <span className="badge badge-gray">Trabalhado: {toHM(totalTrabalhado)}</span>
-                  <span className="badge badge-gray">
+                  <span className="badge badge-gray" style={badgeResumoStyle}>
+                    Trabalhado: {toHM(totalTrabalhado)}
+                  </span>
+                  <span className="badge badge-gray" style={badgeResumoStyle}>
                     Saldo do mês:{" "}
                     <strong style={{ color: saldoMes >= 0 ? "var(--green)" : "var(--red)" }}>
                       {toHM(saldoMes)}
                     </strong>
                   </span>
-                  <span className={saldoFinalMes >= 0 ? "badge badge-green" : "badge badge-red"}>
+                  <span
+                    className={saldoFinalMes >= 0 ? "badge badge-green" : "badge badge-red"}
+                    style={badgeResumoStyle}
+                  >
                     Acumulado: {toHM(saldoFinalMes)}
                   </span>
                 </div>
@@ -293,18 +289,28 @@ export function BancoHorasPage() {
             {/* Resumo mobile */}
             {isMobile && mesAtivo && (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-                <span className="badge badge-gray">Trab.: {toHM(totalTrabalhado)}</span>
-                <span className="badge badge-gray">Esp.: {toHM(totalEsperado)}</span>
-                <span className={saldoMes >= 0 ? "badge badge-green" : "badge badge-red"}>
+                <span className="badge badge-gray" style={badgeResumoStyle}>
+                  Trab.: {toHM(totalTrabalhado)}
+                </span>
+                <span className="badge badge-gray" style={badgeResumoStyle}>
+                  Esp.: {toHM(totalEsperado)}
+                </span>
+                <span
+                  className={saldoMes >= 0 ? "badge badge-green" : "badge badge-red"}
+                  style={badgeResumoStyle}
+                >
                   Mês: {toHM(saldoMes)}
                 </span>
-                <span className={saldoFinalMes >= 0 ? "badge badge-green" : "badge badge-red"}>
+                <span
+                  className={saldoFinalMes >= 0 ? "badge badge-green" : "badge badge-red"}
+                  style={badgeResumoStyle}
+                >
                   Acum.: {toHM(saldoFinalMes)}
                 </span>
               </div>
             )}
 
-            {/* Saldo transportado do mês anterior */}
+            {/* Acumulado do mês anterior */}
             {idxAtivo > 0 && (
               <div
                 style={{
@@ -318,13 +324,13 @@ export function BancoHorasPage() {
                   border: "1px dashed rgba(122,30,38,0.12)"
                 }}
               >
-                <span style={{ fontSize: 12, color: "var(--ink-500)" }}>
-                  Saldo transportado ({fmtMes(mesesDisponiveis[idxAtivo - 1])})
+                <span style={{ fontSize: 14.4, color: "var(--ink-500)" }}>
+                  Acumulado de {fmtMes(mesesDisponiveis[idxAtivo - 1])}
                 </span>
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",
-                    fontSize: 13,
+                    fontSize: 15.6,
                     fontWeight: 600,
                     color: saldoAnterior >= 0 ? "var(--green)" : "var(--red)"
                   }}

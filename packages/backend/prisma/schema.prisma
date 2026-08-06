@@ -343,11 +343,18 @@ enum CategoriaFuncional {
 
 model BancoHorasMarco {
   id        String   @id @default(cuid())
-  data      DateTime @db.Date
+  /// Dia do mês (1–31). Em meses curtos, aplica-se o último dia válido.
+  dia       Int
+  /// Mês (1–12).
+  mes       Int
+  /// null = recorrente todo ano; preenchido = ocorrência única naquele ano (ex.: start).
+  ano       Int?
+  /// Chave estável: "A-MM-DD" (anual) ou "U-YYYY-MM-DD" (única).
+  chave     String   @unique
   descricao String?
   createdAt DateTime @default(now())
 
-  @@unique([data])
+  @@index([mes, dia])
 }
 
 model ConfiguracaoSistema {
@@ -389,10 +396,10 @@ model ConfiguracaoSistema {
   diasUteis              String            @default("[false,true,true,true,true,true,false]")
   // Flexibilidade / tolerâncias
   tipoFlexibilidade      TipoFlexibilidade @default(FIXO)
-  toleranciaEntradaMin   Int               @default(15)
-  toleranciaSaidaMin     Int               @default(15)
+  toleranciaEntradaMin   Int               @default(5)
+  toleranciaSaidaMin     Int               @default(5)
   toleranciaHoraExtraMin Int               @default(10)
-  toleranciaCalculoMin   Int               @default(5)
+  toleranciaCalculoMin   Int               @default(0)
   // Intervalo do almoço
   almocoPodeIniciarA     String            @default("11:30")
   almocoPodeIniciarAte   String            @default("13:00")
@@ -575,10 +582,10 @@ model JornadaPeriodo {
   jornadaSemanalMin      Int               @default(2400)
   diasUteis              String            @default("[false,true,true,true,true,true,false]")
   tipoFlexibilidade      TipoFlexibilidade @default(FIXO)
-  toleranciaEntradaMin   Int               @default(15)
-  toleranciaSaidaMin     Int               @default(15)
+  toleranciaEntradaMin   Int               @default(5)
+  toleranciaSaidaMin     Int               @default(5)
   toleranciaHoraExtraMin Int               @default(10)
-  toleranciaCalculoMin   Int               @default(5)
+  toleranciaCalculoMin   Int               @default(0)
   almocoPodeIniciarA     String            @default("11:30")
   almocoPodeIniciarAte   String            @default("13:00")
   almocoMinMin           Int               @default(60)

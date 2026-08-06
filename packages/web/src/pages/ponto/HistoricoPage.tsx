@@ -32,6 +32,13 @@ import {
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoriaPonto";
 
+/* Badges de resumo/status ~15% maiores que o .badge padrão (11px / 2×8) */
+const BADGE_HISTORICO_STYLE: React.CSSProperties = {
+  fontSize: 12.65,
+  padding: "2.3px 9.2px",
+  gap: 4.6
+};
+
 /* ─── Tipos de Assinatura ─── */
 type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
 
@@ -241,7 +248,7 @@ function BannerAssinatura({
       >
         <AlertCircleIcon size={18} style={{ color: "#D97706", flexShrink: 0 }} />
         <span style={{ fontSize: 13.5, color: "#92400E", flex: 1 }}>
-          <strong>Quadro pendente de assinatura.</strong> Revise os registros acima e assine para
+          <strong>Quadro pendente de assinatura.</strong> Revise os registros abaixo e assine para
           confirmar.
         </span>
         <button
@@ -347,7 +354,7 @@ function StatusPill({
     const label = badgeLabelParcial(obs);
     const titulo = obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`;
     return (
-      <span className="badge badge-blue" title={titulo}>
+      <span className="badge badge-blue" style={BADGE_HISTORICO_STYLE} title={titulo}>
         {label}
       </span>
     );
@@ -375,7 +382,7 @@ function StatusPill({
       ? obs
       : undefined;
   return (
-    <span className={`badge ${cls}`} title={titulo}>
+    <span className={`badge ${cls}`} style={BADGE_HISTORICO_STYLE} title={titulo}>
       {status === "ISENTO"
         ? "Isento — Assessor/Gerente"
         : status === "AFASTAMENTO" && obs
@@ -1061,6 +1068,7 @@ export function HistoricoPage() {
   const [periodoTeste, setPeriodoTeste] = useState(false);
   const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
   const [saldoMesBanco, setSaldoMesBanco] = useState(0);
+  const [saldoAcumuladoMesAnterior, setSaldoAcumuladoMesAnterior] = useState(0);
   const [ocultarBancoHoras, setOcultarBancoHoras] = useState(false);
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1095,6 +1103,7 @@ export function HistoricoPage() {
           setPeriodoTeste(!!data?.periodoTeste);
           setBancoPorDia(data?.bancoPorDia ?? {});
           setSaldoMesBanco(data?.saldoMesBanco ?? 0);
+          setSaldoAcumuladoMesAnterior(data?.saldoAcumuladoMesAnterior ?? 0);
           setOcultarBancoHoras(
             !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria)
           );
@@ -1122,6 +1131,7 @@ export function HistoricoPage() {
           if (!silent) {
             setBancoPorDia({});
             setSaldoMesBanco(0);
+            setSaldoAcumuladoMesAnterior(0);
             setRegistros(transformarHistorico([], [], mes, ano));
           }
         })
@@ -1306,11 +1316,82 @@ export function HistoricoPage() {
     }
   }
 
+  /* Acumulado ao fim do mês anterior = saldo no início do 1º dia do mês no ciclo. */
+  const diasBancoOrdenados = Object.keys(bancoPorDia ?? {}).sort();
+  const saldoAcumuladoAnteriorExibido =
+    diasBancoOrdenados.length > 0
+      ? (() => {
+          const primeiro = bancoPorDia![diasBancoOrdenados[0]];
+          return primeiro.saldoAcumuladoMinutos - primeiro.saldoDiaMinutos;
+        })()
+      : saldoAcumuladoMesAnterior;
+
   const fmtSaldoBanco = (min: number) => {
     const h = Math.floor(Math.abs(min) / 60);
     const m = Math.abs(min) % 60;
     return `${min >= 0 ? "+" : "−"}${h}h${String(m).padStart(2, "0")}`;
   };
+
+  /* Badges de resumo (~15% maiores — BADGE_HISTORICO_STYLE) */
+  const mesAnterior = mes === 1 ? 12 : mes - 1;
+  const anoMesAnterior = mes === 1 ? ano - 1 : ano;
+  const labelMesAnterior = new Date(anoMesAnterior, mesAnterior - 1, 1).toLocaleDateString(
+    "pt-BR",
+    {
+      month: "short",
+      year: "numeric"
+    }
+  );
+
+  const badgesResumo = (
+    <>
+      <span className="badge badge-green" style={BADGE_HISTORICO_STYLE}>
+        {totalOK} dias OK
+      </span>
+      {totalFaltas > 0 && (
+        <span className="badge badge-red" style={BADGE_HISTORICO_STYLE}>
+          {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
+        </span>
+      )}
+      {totalAfastamentos > 0 && (
+        <span className="badge badge-blue" style={BADGE_HISTORICO_STYLE}>
+          {totalAfastamentos} afastamento{totalAfastamentos !== 1 ? "s" : ""}
+        </span>
+      )}
+      <span className="badge badge-gray" style={BADGE_HISTORICO_STYLE}>
+        {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")} trabalhadas
+      </span>
+      {!ocultarBancoHoras && (
+        <>
+          <span
+            className={saldoAcumuladoAnteriorExibido >= 0 ? "badge badge-green" : "badge badge-red"}
+            style={BADGE_HISTORICO_STYLE}
+            title={`Banco de horas acumulado ao fim de ${labelMesAnterior}`}
+          >
+            Acum. {labelMesAnterior}: {fmtSaldoBanco(saldoAcumuladoAnteriorExibido)}
+          </span>
+          <span
+            className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}
+            style={BADGE_HISTORICO_STYLE}
+            title="Saldo do mês (banco de horas)"
+          >
+            Saldo: {fmtSaldoBanco(saldoMesAjustado)}
+          </span>
+          <span
+            className={
+              saldoAcumuladoAnteriorExibido + saldoMesAjustado >= 0
+                ? "badge badge-green"
+                : "badge badge-red"
+            }
+            style={BADGE_HISTORICO_STYLE}
+            title={`Soma: acumulado de ${labelMesAnterior} + saldo do mês`}
+          >
+            Total: {fmtSaldoBanco(saldoAcumuladoAnteriorExibido + saldoMesAjustado)}
+          </span>
+        </>
+      )}
+    </>
+  );
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
@@ -1383,7 +1464,15 @@ export function HistoricoPage() {
       {/* Navegação mês */}
       <div style={{ marginBottom: 16 }}>
         <div
-          style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isMobile ? 10 : 0 }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 10,
+            maxWidth: 360,
+            marginLeft: "auto",
+            marginRight: "auto"
+          }}
         >
           <button
             className="btn-icon"
@@ -1472,58 +1561,18 @@ export function HistoricoPage() {
           >
             <ArrowRightIcon size={16} />
           </button>
-          {!isMobile && (
-            <div style={{ marginLeft: 8, display: "flex", gap: 8, flexShrink: 0 }}>
-              <span className="badge badge-green">{totalOK} dias OK</span>
-              {totalFaltas > 0 && (
-                <span className="badge badge-red">
-                  {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
-                </span>
-              )}
-              {totalAfastamentos > 0 && (
-                <span className="badge badge-blue">
-                  {totalAfastamentos} afastamento{totalAfastamentos !== 1 ? "s" : ""}
-                </span>
-              )}
-              <span className="badge badge-gray">
-                {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
-                trabalhadas
-              </span>
-              {!ocultarBancoHoras && (
-                <span
-                  className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}
-                  title="Saldo do mês (banco de horas)"
-                >
-                  Saldo: {fmtSaldoBanco(saldoMesAjustado)}
-                </span>
-              )}
-            </div>
-          )}
         </div>
-        {isMobile && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <span className="badge badge-green">{totalOK} dias OK</span>
-            {totalFaltas > 0 && (
-              <span className="badge badge-red">
-                {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
-              </span>
-            )}
-            {totalAfastamentos > 0 && (
-              <span className="badge badge-blue">
-                {totalAfastamentos} afastamento{totalAfastamentos !== 1 ? "s" : ""}
-              </span>
-            )}
-            <span className="badge badge-gray">
-              {Math.floor(totalTrabMin / 60)}h{String(totalTrabMin % 60).padStart(2, "0")}{" "}
-              trabalhadas
-            </span>
-            {!ocultarBancoHoras && (
-              <span className={saldoMesAjustado >= 0 ? "badge badge-green" : "badge badge-red"}>
-                Saldo: {fmtSaldoBanco(saldoMesAjustado)}
-              </span>
-            )}
-          </div>
-        )}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            justifyContent: "center",
+            alignItems: "center"
+          }}
+        >
+          {badgesResumo}
+        </div>
       </div>
 
       {/* Modal de assinatura */}

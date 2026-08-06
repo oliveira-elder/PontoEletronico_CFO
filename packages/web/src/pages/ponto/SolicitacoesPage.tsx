@@ -14,10 +14,7 @@ import {
   LinkDocumentoAnexado,
   textoCorrecaoPontoFuncionario
 } from "./solicitacaoUi";
-import {
-  categoriaSemRegistroPonto,
-  MSG_SOLICITACAO_APENAS_INFORMATIVA
-} from "../../utils/categoriaPonto";
+import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -3956,7 +3953,6 @@ export function SolicitacoesPage() {
   const [loading, setLoading] = useState(true);
   const [modalAberto, setModalAberto] = useState(false);
   const [alterandoFerias, setAlterandoFerias] = useState<Solicitacao | null>(null);
-  const [semRegistroPonto, setSemRegistroPonto] = useState(false);
   type FiltroView = StatusSolicitacao | "TODAS" | "FERIAS_TODAS";
   const [filtro, setFiltro] = useState<FiltroView>("TODAS");
   const [pagina, setPagina] = useState(1);
@@ -3978,17 +3974,6 @@ export function SolicitacoesPage() {
   useEffect(() => {
     carregar();
   }, [carregar]);
-
-  useEffect(() => {
-    api
-      .get<{ categoria?: string; semRegistroPonto?: boolean }>("/ponto/status")
-      .then((status) => {
-        setSemRegistroPonto(
-          !!status?.semRegistroPonto || categoriaSemRegistroPonto(status?.categoria)
-        );
-      })
-      .catch(() => {});
-  }, []);
 
   function mudarFiltro(v: FiltroView) {
     setFiltro(v);
@@ -4017,8 +4002,6 @@ export function SolicitacoesPage() {
     { v: "REJEITADA_GESTOR", l: "Rej. Gestor" },
     { v: "REJEITADA_RH", l: "Rej. RH" }
   ];
-
-  const mostrarAvisoInformativo = semRegistroPonto || solicitacoes.some((s) => s.apenasInformativo);
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
@@ -4077,33 +4060,6 @@ export function SolicitacoesPage() {
           </div>
         </div>
       </div>
-
-      {mostrarAvisoInformativo && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 10,
-            marginBottom: 16,
-            padding: "12px 14px",
-            background: "rgba(37,99,235,0.06)",
-            border: "1px solid rgba(37,99,235,0.20)",
-            borderRadius: "var(--radius-md)",
-            color: "#1e40af",
-            fontSize: 12.5,
-            lineHeight: 1.55
-          }}
-        >
-          <InfoIcon size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-          <div>
-            <strong style={{ display: "block", marginBottom: 2 }}>
-              Solicitações apenas informativas
-            </strong>
-            {MSG_SOLICITACAO_APENAS_INFORMATIVA} Após todas as aprovações, o registro permanece no
-            histórico somente para consulta.
-          </div>
-        </div>
-      )}
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         {filtros.map(({ v, l }) => {

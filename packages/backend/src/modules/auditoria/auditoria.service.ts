@@ -34,6 +34,7 @@ import {
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
+import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
 import {
   categoriaSemRegistroPonto,
   categoriaSemIntervaloAlmoco,
@@ -496,7 +497,7 @@ export class AuditoriaService {
       }
     });
     const horaEntradaPadrao = cfg?.horaEntrada ?? "08:00";
-    const toleranciaEntrada = cfg?.toleranciaEntradaMin ?? 15;
+    const toleranciaEntrada = cfg?.toleranciaEntradaMin ?? 5;
     const diasUteisCfg: boolean[] = JSON.parse(
       cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
     );
@@ -1040,6 +1041,8 @@ export class AuditoriaService {
               almocoMinMin: true,
               almocoPodeIniciarA: true,
               almocoPodeIniciarAte: true,
+              toleranciaEntradaMin: true,
+              toleranciaSaidaMin: true,
               toleranciaCalculoMin: true,
               horaExtraLimiteAuto: true
             }
@@ -1054,6 +1057,8 @@ export class AuditoriaService {
           almocoMinMin: true,
           almocoPodeIniciarA: true,
           almocoPodeIniciarAte: true,
+          toleranciaEntradaMin: true,
+          toleranciaSaidaMin: true,
           toleranciaCalculoMin: true,
           horaExtraLimiteAuto: true
         }
@@ -1082,6 +1087,8 @@ export class AuditoriaService {
         configuracaoAlmocoMinMin: cfgJornada?.almocoMinMin ?? null,
         configuracaoAlmocoPodeIniciarA: cfgJornada?.almocoPodeIniciarA ?? null,
         configuracaoAlmocoPodeIniciarAte: cfgJornada?.almocoPodeIniciarAte ?? null,
+        configuracaoToleranciaEntradaMin: cfgJornada?.toleranciaEntradaMin ?? null,
+        configuracaoToleranciaSaidaMin: cfgJornada?.toleranciaSaidaMin ?? null,
         configuracaoToleranciaCalculoMin: cfgJornada?.toleranciaCalculoMin ?? null,
         configuracaoHoraExtraLimiteAuto: cfgJornada?.horaExtraLimiteAuto ?? null
       })
@@ -2333,20 +2340,9 @@ export class AuditoriaService {
   /** Ciclo atual do banco de horas: começa no dia seguinte à última data marco
    *  já passada (ou desde sempre, se nenhuma marco passou ainda). */
   private async getCicloBancoHoras() {
-    const marcos = await this.prisma.bancoHorasMarco.findMany({ orderBy: { data: "asc" } });
+    const marcos = await this.prisma.bancoHorasMarco.findMany();
     const hojeIso = hojeBrasiliaISO();
-    const marcosIso = marcos.map((m) => dataBrasiliaISO(m.data));
-    const marcosPassados = marcosIso.filter((d) => d <= hojeIso);
-    const marcosFuturos = marcosIso.filter((d) => d > hojeIso);
-
-    let cicloInicio: string | null = null;
-    if (marcosPassados.length > 0) {
-      const ultimaMarco = marcosPassados[marcosPassados.length - 1];
-      const d = new Date(`${ultimaMarco}T00:00:00-03:00`);
-      d.setUTCDate(d.getUTCDate() + 1);
-      cicloInicio = dataBrasiliaISO(d);
-    }
-    const proximaZeragem = marcosFuturos.length > 0 ? marcosFuturos[0] : null;
+    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso);
     return { cicloInicio, proximaZeragem, hojeIso };
   }
 
@@ -2360,6 +2356,10 @@ export class AuditoriaService {
       almocoMinMin?: number;
       almocoPodeIniciarA?: string;
       almocoPodeIniciarAte?: string;
+      horaEntrada?: string;
+      horaSaida?: string;
+      toleranciaEntradaMin?: number;
+      toleranciaSaidaMin?: number;
     }
   ): number {
     const entrada = registros.find((r) => r.tipo === "ENTRADA");
@@ -2377,7 +2377,11 @@ export class AuditoriaService {
           opts?.exigirIntervalo ?? !observacaoTurnoSemIntervalo(entrada?.observacoes),
         almocoMinMin: opts?.almocoMinMin ?? 60,
         almocoPodeIniciarA: opts?.almocoPodeIniciarA ?? "11:30",
-        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00"
+        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00",
+        horaEntrada: opts?.horaEntrada,
+        horaSaida: opts?.horaSaida,
+        toleranciaEntradaMin: opts?.toleranciaEntradaMin,
+        toleranciaSaidaMin: opts?.toleranciaSaidaMin
       }
     );
   }
@@ -2405,6 +2409,8 @@ export class AuditoriaService {
             almocoMinMin: true,
             almocoPodeIniciarA: true,
             almocoPodeIniciarAte: true,
+            toleranciaEntradaMin: true,
+            toleranciaSaidaMin: true,
             toleranciaCalculoMin: true,
             horaExtraLimiteAuto: true
           }
@@ -2419,6 +2425,8 @@ export class AuditoriaService {
         horaEntrada: true,
         horaSaida: true,
         toleranciaCalculoMin: true,
+        toleranciaEntradaMin: true,
+        toleranciaSaidaMin: true,
         almocoMinMin: true,
         almocoPodeIniciarA: true,
         almocoPodeIniciarAte: true,
@@ -2432,6 +2440,8 @@ export class AuditoriaService {
       configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
       configuracaoAlmocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? null,
       configuracaoAlmocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? null,
+      configuracaoToleranciaEntradaMin: cfg?.toleranciaEntradaMin ?? null,
+      configuracaoToleranciaSaidaMin: cfg?.toleranciaSaidaMin ?? null,
       configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
       configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
     });
@@ -2440,7 +2450,7 @@ export class AuditoriaService {
     );
 
     // Preferência: tolerância do período do funcionário; senão Configuração → Períodos
-    let toleranciaCalculoMin = cfg?.toleranciaCalculoMin ?? 5;
+    let toleranciaCalculoMin = cfg?.toleranciaCalculoMin ?? 0;
     if (funcJornada?.jornadaPeriodoId) {
       const jp = await this.prisma.jornadaPeriodo.findUnique({
         where: { id: funcJornada.jornadaPeriodoId },
@@ -2575,7 +2585,11 @@ export class AuditoriaService {
           exigirIntervalo: !semAlmocoDia,
           almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+          horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+          horaSaida: jornadaCtx.horaSaida ?? "17:00",
+          toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
+          toleranciaSaidaMin: jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
         });
         let saldoDiaMinutos: number;
         let jornadaDia: number;
@@ -2618,7 +2632,12 @@ export class AuditoriaService {
             exigirIntervalo: !prep.semAlmoco,
             almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
             almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+            horaSaida: jornadaCtx.horaSaida ?? "17:00",
+            toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
+            toleranciaSaidaMin:
+              jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
           });
           saldoDiaMinutos = calcularSaldoAtestadoParcialPorExpediente({
             horarioInicioAtestado: afastamento.horarioInicio!,
@@ -2628,7 +2647,7 @@ export class AuditoriaService {
             fimTrabalhoMin: prep.fimTrabalhoMin,
             almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
             almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            toleranciaCalculoMin: toleranciaCalculoMin ?? 5,
+            toleranciaCalculoMin: toleranciaCalculoMin ?? 0,
             horaExtraLimiteMin: jornadaCtx.horaExtraLimiteAuto ?? 120
           });
           jornadaDia = jornadaMandatoria;
@@ -2690,7 +2709,11 @@ export class AuditoriaService {
             !semIntervaloCategoria && !observacaoTurnoSemIntervalo(entradaDia?.observacoes),
           almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
+          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+          horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
+          horaSaida: jornadaCtx.horaSaida ?? "17:00",
+          toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
+          toleranciaSaidaMin: jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
         });
         const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
         const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);

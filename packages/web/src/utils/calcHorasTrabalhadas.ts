@@ -1,12 +1,14 @@
 /**
  * (espelho da regra do backend/shared — sem CJS no Vite)
  *
- * Cálculo de minutos trabalhados com intervalo de almoço mínimo obrigatório.
+ * Cálculo de minutos trabalhados com intervalo de almoço mínimo obrigatório
+ * e tolerância simétrica de entrada/saída (apenas no cálculo; horário exibido permanece real).
  *
  * Regra: em jornadas com intervalo, o almoço tem duração mínima `almocoMinMin`
  * (padrão 60), contada a partir do INÍCIO_INTERVALO registrado. Se o funcionário
  * retornar antes (FIM_INTERVALO antecipado), o horário registrado é preservado
  * na tela, mas o cálculo retoma o expediente só em início + almocoMinMin.
+ * Excesso de almoço até `almocoMinMin + toleranciaEntradaMin` também conta como mínimo.
  */
 
 export type RegistroMinuto = { tipo: string; minuto: number };
@@ -25,6 +27,17 @@ export interface CalcHorasOpts {
   almocoPodeIniciarA?: string;
   /** Fim da janela de almoço (HH:MM). Padrão 13:00. */
   almocoPodeIniciarAte?: string;
+  /** Horário nominal de entrada (HH:MM) para snap simétrico. */
+  horaEntrada?: string;
+  /** Horário nominal de saída (HH:MM) para snap simétrico. */
+  horaSaida?: string;
+  /**
+   * Tolerância simétrica de entrada (±N) e excesso de almoço (até mín+N).
+   * INTERROMPER/REINICIAR não usam esta tolerância.
+   */
+  toleranciaEntradaMin?: number;
+  /** Tolerância simétrica de saída (±N em torno de horaSaida). */
+  toleranciaSaidaMin?: number;
 }
 
 export interface AlmocoCurtoInfo {
@@ -37,6 +50,18 @@ export interface AlmocoCurtoInfo {
 function horaParaMinutos(horario: string): number {
   const [h, m] = horario.split(":").map(Number);
   return (h || 0) * 60 + (m || 0);
+}
+
+/** Se |minuto - nominal| ≤ tolerância, retorna o nominal; senão o minuto real. */
+function snapDentroTolerancia(
+  minuto: number,
+  nominalHhMm: string | undefined,
+  toleranciaMin: number | undefined
+): number {
+  const tol = Math.max(0, Number(toleranciaMin) || 0);
+  if (!nominalHhMm || tol <= 0) return minuto;
+  const nominal = horaParaMinutos(nominalHhMm);
+  return Math.abs(minuto - nominal) <= tol ? nominal : minuto;
 }
 
 /**
@@ -84,6 +109,8 @@ export function calcHorasTrabalhadasMinutos(
   const exigirIntervalo = opts.exigirIntervalo !== false;
   const janelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarA ?? "11:30");
   const fimJanelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarAte ?? "13:00");
+  const tolEntrada = Math.max(0, Number(opts.toleranciaEntradaMin) || 0);
+  const almocoTolMax = almocoMinMin + tolEntrada;
 
   let total = 0;
   let entradaMin: number | null = null;
@@ -98,7 +125,13 @@ export function calcHorasTrabalhadasMinutos(
 
   for (const r of registros) {
     const ts = r.minuto;
-    if (r.tipo === "ENTRADA" || r.tipo === "REINICIAR_EXPEDIENTE") {
+    if (r.tipo === "ENTRADA") {
+      houveEntrada = true;
+      /* Snap simétrico só na ENTRADA (início de jornada), não em REINICIAR. */
+      entradaMin = snapDentroTolerancia(ts, opts.horaEntrada, opts.toleranciaEntradaMin);
+      emAlmocoDesde = null;
+      marcarJanela(ts);
+    } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
       houveEntrada = true;
       entradaMin = ts;
       emAlmocoDesde = null;
@@ -119,6 +152,15 @@ export function calcHorasTrabalhadasMinutos(
           /* Fim antecipado: mantém horário na tela, mas o cálculo usa início+mínimo. */
           minutosAlmocoRegistrados += almocoMinMin;
           entradaMin = emAlmocoDesde + almocoMinMin;
+        } else if (
+          exigirIntervalo &&
+          almocoMinMin > 0 &&
+          tolEntrada > 0 &&
+          duracaoReg <= almocoTolMax
+        ) {
+          /* Excesso dentro da tolerância de entrada (mesmo N): conta como mínimo. */
+          minutosAlmocoRegistrados += almocoMinMin;
+          entradaMin = emAlmocoDesde + almocoMinMin;
         } else {
           minutosAlmocoRegistrados += duracaoReg;
           entradaMin = ts;
@@ -129,15 +171,16 @@ export function calcHorasTrabalhadasMinutos(
       }
       marcarJanela(ts);
     } else if (r.tipo === "SAIDA") {
+      const saidaCalc = snapDentroTolerancia(ts, opts.horaSaida, opts.toleranciaSaidaMin);
       marcarJanela(ts);
       if (emAlmocoDesde !== null) {
         const retornoPresumido = emAlmocoDesde + almocoMinMin;
         minutosAlmocoRegistrados += almocoMinMin;
-        if (ts > retornoPresumido) total += ts - retornoPresumido;
+        if (saidaCalc > retornoPresumido) total += saidaCalc - retornoPresumido;
         emAlmocoDesde = null;
         entradaMin = null;
       } else if (entradaMin !== null) {
-        total += Math.max(0, ts - entradaMin);
+        total += Math.max(0, saidaCalc - entradaMin);
         entradaMin = null;
       }
     }

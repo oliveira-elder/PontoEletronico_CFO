@@ -124,7 +124,11 @@ function calcHorasMinutosDia(
       exigirIntervalo: !forcarSemIntervalo && !observacaoTurnoSemIntervalo(entrada?.observacoes),
       almocoMinMin: jornada?.almocoMinMin ?? 60,
       almocoPodeIniciarA: jornada?.almocoPodeIniciarA ?? "11:30",
-      almocoPodeIniciarAte: jornada?.almocoPodeIniciarAte ?? "13:00"
+      almocoPodeIniciarAte: jornada?.almocoPodeIniciarAte ?? "13:00",
+      horaEntrada: jornada?.horaEntrada ?? "08:00",
+      horaSaida: jornada?.horaSaida ?? "17:00",
+      toleranciaEntradaMin: jornada?.toleranciaEntradaMin ?? 5,
+      toleranciaSaidaMin: jornada?.toleranciaEntradaMin ?? jornada?.toleranciaSaidaMin ?? 5
     }
   );
 }
@@ -518,7 +522,11 @@ export function montarRelatorioQuadro(
         exigirIntervalo: !prep.semAlmoco,
         almocoMinMin: jornada.almocoMinMin ?? 60,
         almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+        horaEntrada: jornada.horaEntrada ?? "08:00",
+        horaSaida: jornada.horaSaida ?? "17:00",
+        toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+        toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
       });
       saldoMin = calcularSaldoAtestadoParcialPorExpediente({
         horarioInicioAtestado: parcial.horarioInicio!,
@@ -529,7 +537,7 @@ export function montarRelatorioQuadro(
         almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
         almocoMinMin: jornada.almocoMinMin ?? 60,
         toleranciaCalculoMin:
-          (jornada as { toleranciaCalculoMin?: number }).toleranciaCalculoMin ?? 5,
+          (jornada as { toleranciaCalculoMin?: number }).toleranciaCalculoMin ?? 0,
         horaExtraLimiteMin: 120
       });
     } else if (statusInterno === "FALTA") {

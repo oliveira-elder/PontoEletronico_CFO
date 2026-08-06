@@ -69,6 +69,19 @@ export interface AssinaturaPdf {
   bancoHorasSaldoTotalMinutos: number;
 }
 
+/** Resumo equivalente aos badges da página Histórico. */
+export interface ResumoBadgesPdf {
+  diasOk: number;
+  faltas: number;
+  afastamentos: number;
+  horasTrabalhadasMinutos: number;
+  ocultarBancoHoras: boolean;
+  saldoAcumuladoMesAnteriorMinutos: number;
+  labelMesAnterior: string;
+  saldoMesMinutos: number;
+  totalAcumuladoMinutos: number;
+}
+
 export interface QuadroPdfInput {
   mes: number;
   ano: number;
@@ -77,6 +90,7 @@ export interface QuadroPdfInput {
   relatorio: RelatorioMensalPdf;
   logoBase64: string | null;
   certificadoBase64: string | null;
+  resumoBadges?: ResumoBadgesPdf;
 }
 
 interface PausaPar {
@@ -108,6 +122,18 @@ function formatBancoHoras(min: number): string {
   const sign = min < 0 ? "-" : "+";
   const abs = Math.abs(min);
   return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}min`;
+}
+
+/** Formato dos badges do Histórico (sem sufixo "min"). */
+function formatBadgeHoras(min: number): string {
+  const sign = min < 0 ? "-" : min > 0 ? "+" : "+";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}`;
+}
+
+function formatHorasNeutro(min: number): string {
+  const abs = Math.abs(min);
+  return `${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}`;
 }
 
 function formatDateTime(d: Date | null | undefined): string {
@@ -404,8 +430,98 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
 }
 
 function buildTotais(input: QuadroPdfInput): unknown {
-  const { relatorio, assinatura, funcionario } = input;
-  const ocultarBh = categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
+  const { relatorio, assinatura, funcionario, resumoBadges } = input;
+  const ocultarBh =
+    resumoBadges?.ocultarBancoHoras ?? categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
+
+  if (resumoBadges) {
+    const b = resumoBadges;
+    const linhas: { label: string; valor: string; color?: string }[] = [
+      { label: "Dias OK", valor: String(b.diasOk) },
+      ...(b.faltas > 0
+        ? [{ label: b.faltas === 1 ? "Falta" : "Faltas", valor: String(b.faltas) }]
+        : []),
+      ...(b.afastamentos > 0
+        ? [
+            {
+              label: b.afastamentos === 1 ? "Afastamento" : "Afastamentos",
+              valor: String(b.afastamentos)
+            }
+          ]
+        : []),
+      { label: "Horas trabalhadas", valor: formatHorasNeutro(b.horasTrabalhadasMinutos) }
+    ];
+    if (!ocultarBh) {
+      linhas.push(
+        {
+          label: `Acumulado (${b.labelMesAnterior})`,
+          valor: formatBadgeHoras(b.saldoAcumuladoMesAnteriorMinutos),
+          color: b.saldoAcumuladoMesAnteriorMinutos >= 0 ? "#15803D" : "#B91C1C"
+        },
+        {
+          label: "Saldo do mês",
+          valor: formatBadgeHoras(b.saldoMesMinutos),
+          color: b.saldoMesMinutos >= 0 ? "#15803D" : "#B91C1C"
+        },
+        {
+          label: "Total (acumulado + saldo)",
+          valor: formatBadgeHoras(b.totalAcumuladoMinutos),
+          color: b.totalAcumuladoMinutos >= 0 ? "#15803D" : "#B91C1C"
+        }
+      );
+    }
+
+    const half = Math.ceil(linhas.length / 2);
+    const colEsq = linhas.slice(0, half);
+    const colDir = linhas.slice(half);
+
+    const cellLabel = (t: string) => ({
+      text: t,
+      style: "totalLabel",
+      alignment: "left" as const
+    });
+    const cellValor = (t: string, color?: string) => ({
+      text: t,
+      style: "totalValue",
+      alignment: "right" as const,
+      ...(color ? { color } : {})
+    });
+
+    const maxRows = Math.max(colEsq.length, colDir.length);
+    const body: unknown[][] = [];
+    for (let i = 0; i < maxRows; i++) {
+      const e = colEsq[i];
+      const d = colDir[i];
+      body.push([
+        e ? cellLabel(e.label) : { text: "", border: [false, false, false, false] },
+        e ? cellValor(e.valor, e.color) : { text: "", border: [false, false, false, false] },
+        d ? cellLabel(d.label) : { text: "", border: [false, false, false, false] },
+        d ? cellValor(d.valor, d.color) : { text: "", border: [false, false, false, false] }
+      ]);
+    }
+
+    return {
+      stack: [
+        { text: "Resumo do Período", style: "sectionTitle", margin: [0, 4, 0, 2] },
+        {
+          table: {
+            widths: ["*", 70, "*", 70],
+            body
+          },
+          layout: {
+            hLineWidth: () => 0.4,
+            vLineWidth: () => 0,
+            hLineColor: () => "#E5E7EB",
+            paddingTop: () => 3,
+            paddingBottom: () => 3,
+            paddingLeft: () => 4,
+            paddingRight: () => 4
+          },
+          margin: [0, 0, 0, 6]
+        }
+      ]
+    };
+  }
 
   if (ocultarBh) {
     return {

@@ -1,5 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { chaveMarcoAnual } from "../../utils/banco-horas-marco";
 
 @Injectable()
 export class ConfigService {
@@ -37,9 +38,12 @@ export class ConfigService {
   }
 
   async updateSistema(data: Record<string, unknown>) {
-    /* dataInicioProducao só é definida pelo fluxo Start do Sistema (Super Admin). */
-    const safe = { ...(data as Record<string, unknown>) };
+    /* Tolerância simétrica: entrada e saída sempre iguais; margem diária desligada. */
+    const safe = this.normalizarToleranciasSimetricas({
+      ...(data as Record<string, unknown>)
+    });
     delete safe.dataInicioProducao;
+
     const updated = await this.prisma.configuracaoSistema.upsert({
       where: { id: "singleton" },
       create: { id: "singleton", ...safe },
@@ -160,6 +164,25 @@ export class ConfigService {
 
   /* ─── JornadaPeriodo ─── */
 
+  /** Entrada/saída sempre iguais; margem diária desligada. */
+  private normalizarToleranciasSimetricas<T extends Record<string, unknown>>(data: T): T {
+    const out = { ...data };
+    if (out.toleranciaEntradaMin !== undefined || out.toleranciaSaidaMin !== undefined) {
+      const n = Math.max(
+        0,
+        Number(
+          out.toleranciaEntradaMin !== undefined ? out.toleranciaEntradaMin : out.toleranciaSaidaMin
+        ) || 0
+      );
+      out.toleranciaEntradaMin = n;
+      out.toleranciaSaidaMin = n;
+    }
+    if ("toleranciaCalculoMin" in out || "toleranciaEntradaMin" in out) {
+      out.toleranciaCalculoMin = 0;
+    }
+    return out;
+  }
+
   listJornadas() {
     return this.prisma.jornadaPeriodo.findMany({ orderBy: { createdAt: "asc" } });
   }
@@ -187,11 +210,13 @@ export class ConfigService {
       horaExtraLimiteAuto: number;
     }>
   ) {
-    return this.prisma.jornadaPeriodo.create({ data: data as never });
+    const normalized = this.normalizarToleranciasSimetricas({ ...data } as Record<string, unknown>);
+    return this.prisma.jornadaPeriodo.create({ data: normalized as never });
   }
 
   async updateJornada(id: string, data: Record<string, unknown>) {
-    return this.prisma.jornadaPeriodo.update({ where: { id }, data: data as never });
+    const normalized = this.normalizarToleranciasSimetricas(data);
+    return this.prisma.jornadaPeriodo.update({ where: { id }, data: normalized as never });
   }
 
   async deleteJornada(id: string) {
@@ -207,15 +232,36 @@ export class ConfigService {
     return this.prisma.jornadaPeriodo.update({ where: { id }, data: { ePadrao: true } });
   }
 
-  /* ─── Banco de Horas: datas marco ─── */
+  /* ─── Banco de Horas: datas marco (dia/mês recorrente) ─── */
 
   listMarcosBancoHoras() {
-    return this.prisma.bancoHorasMarco.findMany({ orderBy: { data: "desc" } });
+    return this.prisma.bancoHorasMarco.findMany({
+      orderBy: [{ mes: "asc" }, { dia: "asc" }, { ano: "asc" }]
+    });
   }
 
-  createMarcoBancoHoras(data: { data: string; descricao?: string }) {
+  async createMarcoBancoHoras(body: { dia: number; mes: number; descricao?: string }) {
+    const dia = Math.trunc(Number(body.dia));
+    const mes = Math.trunc(Number(body.mes));
+    if (!Number.isFinite(dia) || dia < 1 || dia > 31) {
+      throw new BadRequestException("Dia inválido (use 1–31).");
+    }
+    if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
+      throw new BadRequestException("Mês inválido (use 1–12).");
+    }
+    const chave = chaveMarcoAnual(mes, dia);
+    const existente = await this.prisma.bancoHorasMarco.findUnique({ where: { chave } });
+    if (existente) {
+      throw new BadRequestException("Já existe uma data marco para esse dia e mês.");
+    }
     return this.prisma.bancoHorasMarco.create({
-      data: { data: new Date(data.data), descricao: data.descricao }
+      data: {
+        dia,
+        mes,
+        ano: null,
+        chave,
+        descricao: body.descricao?.trim() || null
+      }
     });
   }
 

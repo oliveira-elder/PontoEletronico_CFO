@@ -110,6 +110,8 @@ export interface JornadaHistorico {
   almocoMinMin?: number;
   almocoPodeIniciarA?: string;
   almocoPodeIniciarAte?: string;
+  toleranciaEntradaMin?: number;
+  toleranciaSaidaMin?: number;
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
 }
@@ -143,6 +145,8 @@ export interface HistoricoApiResponse {
   >;
   saldoMesBanco?: number;
   saldoAcumuladoMes?: number;
+  /** Acumulado do ciclo ao fim do mês anterior ao consultado. */
+  saldoAcumuladoMesAnterior?: number;
   /** True quando a categoria do funcionário não deve ver banco de horas. */
   ocultarBancoHoras?: boolean;
   registros: ApiRegistro[];
@@ -172,7 +176,9 @@ export const JORNADA_PADRAO: JornadaHistorico = {
   almocoMinMin: 60,
   almocoPodeIniciarA: "11:30",
   almocoPodeIniciarAte: "13:00",
-  toleranciaCalculoMin: 5,
+  toleranciaEntradaMin: 5,
+  toleranciaSaidaMin: 5,
+  toleranciaCalculoMin: 0,
   horaExtraLimiteAuto: 120
 };
 
@@ -240,10 +246,9 @@ function calcularJornadaComAtestadoParcial(
 
 function aplicarMargemCalculo(
   saldoMinutos: number,
-  toleranciaCalculoMin: number | null | undefined
+  _toleranciaCalculoMin?: number | null | undefined
 ): number {
-  const margem = Math.max(0, Number(toleranciaCalculoMin) || 0);
-  if (margem > 0 && Math.abs(saldoMinutos) <= margem) return 0;
+  void _toleranciaCalculoMin;
   return saldoMinutos;
 }
 
@@ -524,6 +529,10 @@ function calcHorasMinutosDia(
     almocoMinMin?: number;
     almocoPodeIniciarA?: string;
     almocoPodeIniciarAte?: string;
+    horaEntrada?: string;
+    horaSaida?: string;
+    toleranciaEntradaMin?: number;
+    toleranciaSaidaMin?: number;
   }
 ): number {
   return calcHorasTrabalhadasMinutos(
@@ -533,7 +542,11 @@ function calcHorasMinutosDia(
       exigirIntervalo: opts?.exigirIntervalo,
       almocoMinMin: opts?.almocoMinMin,
       almocoPodeIniciarA: opts?.almocoPodeIniciarA,
-      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte
+      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte,
+      horaEntrada: opts?.horaEntrada,
+      horaSaida: opts?.horaSaida,
+      toleranciaEntradaMin: opts?.toleranciaEntradaMin,
+      toleranciaSaidaMin: opts?.toleranciaSaidaMin
     }
   );
 }
@@ -921,7 +934,11 @@ export function transformarHistorico(
       exigirIntervalo: exigirIntervaloGlobal && !obsTurnoEarly && !semAlmocoAtestado,
       almocoMinMin: jornada.almocoMinMin ?? 60,
       almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+      horaEntrada: jornada.horaEntrada ?? "08:00",
+      horaSaida: jornada.horaSaida ?? "17:00",
+      toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+      toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
     };
 
     // Atestado parcial (matutino ou vespertino): bloqueia colunas de intervalo
@@ -1010,7 +1027,7 @@ export function transformarHistorico(
           fimTrabalhoMin: prepAtestado.fimTrabalhoMin,
           almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
           almocoMinMin: jornada.almocoMinMin ?? 60,
-          toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 5,
+          toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 0,
           horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
         });
         /* SaldoCell usa horas − jornada: alinha para refletir saldo por expediente */

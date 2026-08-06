@@ -2579,7 +2579,7 @@ function TabFuncionarios({
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [busca, setBusca] = useState("");
-  const [filtroAtivo, setFiltroAtivo] = useState("");
+  const [filtroAtivo, setFiltroAtivo] = useState("true");
   const [filtroStatusPonto, setFiltroStatusPonto] = useState(initialStatusPonto);
   const [dataInicio, setDataInicio] = useState(primeiroDiaMes);
   const [dataFim, setDataFim] = useState(hojeIso);
@@ -5200,6 +5200,8 @@ interface JornadaHistorico {
   almocoMinMin?: number;
   almocoPodeIniciarA?: string;
   almocoPodeIniciarAte?: string;
+  toleranciaEntradaMin?: number;
+  toleranciaSaidaMin?: number;
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
   vigenciaDesde: string | null;
@@ -5214,7 +5216,9 @@ const JORNADA_PADRAO_AUD: JornadaHistorico = {
   almocoMinMin: 60,
   almocoPodeIniciarA: "11:30",
   almocoPodeIniciarAte: "13:00",
-  toleranciaCalculoMin: 5,
+  toleranciaEntradaMin: 5,
+  toleranciaSaidaMin: 5,
+  toleranciaCalculoMin: 0,
   horaExtraLimiteAuto: 120
 };
 
@@ -5344,6 +5348,10 @@ function calcHorasH(
     almocoMinMin?: number;
     almocoPodeIniciarA?: string;
     almocoPodeIniciarAte?: string;
+    horaEntrada?: string;
+    horaSaida?: string;
+    toleranciaEntradaMin?: number;
+    toleranciaSaidaMin?: number;
   }
 ): number {
   const entrada = regs.find((r) => r.tipo === "ENTRADA");
@@ -5357,7 +5365,11 @@ function calcHorasH(
       exigirIntervalo: opts?.exigirIntervalo !== false && !obsSemIntervalo,
       almocoMinMin: opts?.almocoMinMin ?? 60,
       almocoPodeIniciarA: opts?.almocoPodeIniciarA ?? "11:30",
-      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00"
+      almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00",
+      horaEntrada: opts?.horaEntrada,
+      horaSaida: opts?.horaSaida,
+      toleranciaEntradaMin: opts?.toleranciaEntradaMin,
+      toleranciaSaidaMin: opts?.toleranciaSaidaMin
     }
   );
 }
@@ -5380,9 +5392,8 @@ function atestadoEhMatutinoH(horarioFim: string, jornada: JornadaHistorico): boo
   const duracao = Math.max(0, jornada.almocoMinMin ?? 60);
   return toMinH(horarioFim) <= inicioAlmoco + duracao;
 }
-function aplicarMargemH(saldo: number, tolerancia?: number | null): number {
-  const margem = Math.max(0, Number(tolerancia) || 0);
-  if (margem > 0 && Math.abs(saldo) <= margem) return 0;
+function aplicarMargemH(saldo: number, _tolerancia?: number | null): number {
+  void _tolerancia;
   return saldo;
 }
 function saldoAtestadoExpedienteH(opts: {
@@ -5398,7 +5409,7 @@ function saldoAtestadoExpedienteH(opts: {
   let delta = opts.fimTrabalhoMin - marco;
   const limiteHe = Math.max(0, opts.jornada.horaExtraLimiteAuto ?? 120);
   if (delta > 0) delta = Math.min(delta, limiteHe);
-  return aplicarMargemH(delta, opts.jornada.toleranciaCalculoMin ?? 5);
+  return aplicarMargemH(delta, opts.jornada.toleranciaCalculoMin ?? 0);
 }
 function marcoAtestadoH(
   hi: string,
@@ -5805,17 +5816,18 @@ function buildHistorico(
       exigirIntervalo: exigirIntervaloDia,
       almocoMinMin: jornada.almocoMinMin ?? 60,
       almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+      horaEntrada: jornada.horaEntrada ?? "08:00",
+      horaSaida: jornada.horaSaida ?? "17:00",
+      toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+      toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
     };
     const dispensaSaida =
       !!atestadoParcial &&
       atestadoDispensaSaida(atestadoParcial.horarioInicio!, atestadoParcial.horarioFim!, jornada);
     if (prepAtestado) {
       horasMin = calcHorasTrabalhadasMinutos(prepAtestado.registros, {
-        exigirIntervalo: calcOptsH.exigirIntervalo,
-        almocoMinMin: calcOptsH.almocoMinMin,
-        almocoPodeIniciarA: calcOptsH.almocoPodeIniciarA,
-        almocoPodeIniciarAte: calcOptsH.almocoPodeIniciarAte,
+        ...calcOptsH,
         agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
       });
       if (!entrada) status = "PENDENTE";

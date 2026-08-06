@@ -56,6 +56,7 @@ import {
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
+import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
    anexados pelo funcionário não podem mais ser editados/substituídos. */
@@ -234,6 +235,8 @@ export class PontoService {
             almocoMinMin: true,
             almocoPodeIniciarA: true,
             almocoPodeIniciarAte: true,
+            toleranciaEntradaMin: true,
+            toleranciaSaidaMin: true,
             toleranciaCalculoMin: true,
             horaExtraLimiteAuto: true
           }
@@ -248,6 +251,8 @@ export class PontoService {
         almocoMinMin: true,
         almocoPodeIniciarA: true,
         almocoPodeIniciarAte: true,
+        toleranciaEntradaMin: true,
+        toleranciaSaidaMin: true,
         toleranciaCalculoMin: true,
         horaExtraLimiteAuto: true
       }
@@ -259,6 +264,8 @@ export class PontoService {
       configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
       configuracaoAlmocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? null,
       configuracaoAlmocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? null,
+      configuracaoToleranciaEntradaMin: cfg?.toleranciaEntradaMin ?? null,
+      configuracaoToleranciaSaidaMin: cfg?.toleranciaSaidaMin ?? null,
       configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
       configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
     });
@@ -301,10 +308,10 @@ export class PontoService {
       tipoFlexibilidade: cfg?.tipoFlexibilidade ?? "FIXO",
       horaEntrada: cfg?.horaEntrada ?? "08:00",
       horaSaida: cfg?.horaSaida ?? "17:00",
-      toleranciaEntradaMin: cfg?.toleranciaEntradaMin ?? 15,
-      toleranciaSaidaMin: cfg?.toleranciaSaidaMin ?? 15,
+      toleranciaEntradaMin: cfg?.toleranciaEntradaMin ?? 5,
+      toleranciaSaidaMin: cfg?.toleranciaEntradaMin ?? cfg?.toleranciaSaidaMin ?? 5,
       toleranciaHoraExtraMin: cfg?.toleranciaHoraExtraMin ?? 10,
-      toleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? 5,
+      toleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? 0,
       almocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? "11:30",
       almocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? "13:00",
       almocoMinMin: cfg?.almocoMinMin ?? 60,
@@ -550,7 +557,11 @@ export class PontoService {
           jornadaDiariaMin: jornada.jornadaDiariaMin,
           almocoMinMin: jornada.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+          toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
         }
       );
     }
@@ -578,7 +589,11 @@ export class PontoService {
       exigirIntervalo: !semIntervalo,
       almocoMinMin: jornada.almocoMinMin ?? 60,
       almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+      almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+      horaEntrada: jornada.horaEntrada ?? "08:00",
+      horaSaida: jornada.horaSaida ?? "17:00",
+      toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+      toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
     });
 
     return {
@@ -668,6 +683,10 @@ export class PontoService {
       almocoMinMin?: number;
       almocoPodeIniciarA?: string;
       almocoPodeIniciarAte?: string;
+      horaEntrada?: string;
+      horaSaida?: string;
+      toleranciaEntradaMin?: number;
+      toleranciaSaidaMin?: number;
     }
   ) {
     return calcHorasTrabalhadasMinutos(
@@ -683,7 +702,11 @@ export class PontoService {
         exigirIntervalo: opts?.exigirIntervalo,
         almocoMinMin: opts?.almocoMinMin,
         almocoPodeIniciarA: opts?.almocoPodeIniciarA,
-        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte
+        almocoPodeIniciarAte: opts?.almocoPodeIniciarAte,
+        horaEntrada: opts?.horaEntrada,
+        horaSaida: opts?.horaSaida,
+        toleranciaEntradaMin: opts?.toleranciaEntradaMin,
+        toleranciaSaidaMin: opts?.toleranciaSaidaMin
       }
     );
   }
@@ -1235,6 +1258,17 @@ export class PontoService {
     }
     const saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
     const saldoAcumuladoMes = bancoMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
+    const mesPrefixInicio = `${mesPrefix}-01`;
+    const diasAntesDoMes = banco.dias
+      .filter((d) => d.data < mesPrefixInicio)
+      .sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
+    /* Fim do mês anterior no ciclo; se o ciclo começa no mês atual, deriva do 1º dia. */
+    const saldoAcumuladoMesAnterior =
+      diasAntesDoMes.length > 0
+        ? (diasAntesDoMes.at(-1)?.saldoAcumuladoMinutos ?? 0)
+        : bancoMes.length > 0
+          ? bancoMes[0].saldoAcumuladoMinutos - bancoMes[0].saldoDiaMinutos
+          : 0;
 
     const pontoObrigatorioDesde = func.pontoObrigatorioDesde
       ? dataBrasiliaISO(func.pontoObrigatorioDesde)
@@ -1264,6 +1298,7 @@ export class PontoService {
       bancoPorDia: exporBancoHoras ? bancoPorDia : {},
       saldoMesBanco: exporBancoHoras ? saldoMesBanco : 0,
       saldoAcumuladoMes: exporBancoHoras ? saldoAcumuladoMes : 0,
+      saldoAcumuladoMesAnterior: exporBancoHoras ? saldoAcumuladoMesAnterior : 0,
       ocultarBancoHoras,
       registros,
       afastamentos,
@@ -1390,20 +1425,9 @@ export class PontoService {
         : "[false,true,true,true,true,true,false]"
     );
 
-    const marcos = await this.prisma.bancoHorasMarco.findMany({ orderBy: { data: "asc" } });
+    const marcos = await this.prisma.bancoHorasMarco.findMany();
     const hojeIso = hojeBrasiliaISO();
-    const marcosIso = marcos.map((m) => dataBrasiliaISO(m.data));
-    const marcosPassados = marcosIso.filter((d) => d <= hojeIso);
-    const marcosFuturos = marcosIso.filter((d) => d > hojeIso);
-
-    let cicloInicio: string | null = null;
-    if (marcosPassados.length > 0) {
-      const ultimaMarco = marcosPassados[marcosPassados.length - 1];
-      const d = new Date(`${ultimaMarco}T00:00:00-03:00`);
-      d.setUTCDate(d.getUTCDate() + 1);
-      cicloInicio = dataBrasiliaISO(d);
-    }
-    const proximaZeragem = marcosFuturos.length > 0 ? marcosFuturos[0] : null;
+    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso);
 
     let inicioLogin = inicioAtividades;
     if (!inicioLogin) {
@@ -1576,7 +1600,11 @@ export class PontoService {
           exigirIntervalo: !semAlmocoDia,
           almocoMinMin: jornada.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+          toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
         });
         let saldoDiaMinutos: number;
         let jornadaDia: number;
@@ -1620,7 +1648,11 @@ export class PontoService {
             exigirIntervalo: !prep.semAlmoco,
             almocoMinMin: jornada.almocoMinMin ?? 60,
             almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+            horaEntrada: jornada.horaEntrada ?? "08:00",
+            horaSaida: jornada.horaSaida ?? "17:00",
+            toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+            toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
           });
           saldoDiaMinutos = calcularSaldoAtestadoParcialPorExpediente({
             horarioInicioAtestado: afastamento.horarioInicio!,
@@ -1630,7 +1662,7 @@ export class PontoService {
             fimTrabalhoMin: prep.fimTrabalhoMin,
             almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
             almocoMinMin: jornada.almocoMinMin ?? 60,
-            toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 5,
+            toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 0,
             horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
           });
           jornadaDia = jornadaMandatoria;
@@ -1697,7 +1729,11 @@ export class PontoService {
           exigirIntervalo,
           almocoMinMin: jornada.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+          horaEntrada: jornada.horaEntrada ?? "08:00",
+          horaSaida: jornada.horaSaida ?? "17:00",
+          toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+          toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
         });
         const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
         const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
@@ -1728,7 +1764,8 @@ export class PontoService {
       cicloInicio,
       inicioAtividades: inicioLogin,
       proximaZeragem,
-      limiteMinutos: jornada.bancoHorasLimiteMin,
+      /** Limite diário de HE positiva sem aprovação do gestor (não é teto do saldo acumulado). */
+      horaExtraLimiteMinutos: jornada.horaExtraLimiteAuto,
       tipoFlexibilidade: jornada.tipoFlexibilidade,
       dias
     };
@@ -1817,7 +1854,11 @@ export class PontoService {
         exigirIntervalo,
         almocoMinMin: jornada.almocoMinMin ?? 60,
         almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
-        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+        horaEntrada: jornada.horaEntrada ?? "08:00",
+        horaSaida: jornada.horaSaida ?? "17:00",
+        toleranciaEntradaMin: jornada.toleranciaEntradaMin ?? 5,
+        toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
       }) - jornadaMandatoria;
     const overtime = aplicarMargemCalculoDiario(overtimeRaw, jornada.toleranciaCalculoMin);
     // Permanência residual dentro da tolerância de HE também não dispara solicitação

@@ -14,6 +14,7 @@ import {
 import { findGerenciaRh } from "../../common/gerencia-rh.util";
 import { isSuperAdminIdentity, superAdminUsernamesFromEnv } from "../../utils/super-admin";
 import { dataBrasiliaISO } from "../../utils/horario-brasilia";
+import { chaveMarcoUnico } from "../../utils/banco-horas-marco";
 
 const SUPER_ADMINS_ENV = superAdminUsernamesFromEnv(process.env.SUPER_ADMIN_USERNAMES);
 
@@ -627,15 +628,23 @@ export class SistemaService {
     const diaMarco = this.diaAnteriorAoMes(sol.mesReferencia);
     const dataInicio = this.primeiroDiaMes(sol.mesReferencia);
     const descricao = `Start do sistema — go-live ${sol.mesReferencia}`;
+    const [anoM, mesM, diaM] = diaMarco.split("-").map(Number);
+    const chave = chaveMarcoUnico(anoM, mesM, diaM);
 
     const result = await this.prisma.$transaction(async (tx) => {
       const existente = await tx.bancoHorasMarco.findUnique({
-        where: { data: new Date(diaMarco) }
+        where: { chave }
       });
       const marco =
         existente ??
         (await tx.bancoHorasMarco.create({
-          data: { data: new Date(diaMarco), descricao }
+          data: {
+            dia: diaM,
+            mes: mesM,
+            ano: anoM,
+            chave,
+            descricao
+          }
         }));
 
       await tx.configuracaoSistema.upsert({

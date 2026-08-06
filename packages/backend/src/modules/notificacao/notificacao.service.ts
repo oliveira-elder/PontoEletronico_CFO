@@ -24,7 +24,11 @@ import {
   dispensarAlmocoPorAtestadoParcial
 } from "../../utils/jornada-historico";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
-import { anexarAtalhoAoCorpo, corpoParaHtmlEmail, getAppBaseUrl } from "./atalhos-evento";
+import {
+  anexarAtalhoEmailAoCorpo,
+  anexarAtalhoNotificacaoAoCorpo,
+  corpoParaHtmlEmail
+} from "./atalhos-evento";
 
 export interface DestinatarioNotificacao {
   externalId: string | null;
@@ -904,7 +908,7 @@ export class NotificacaoService {
       return;
     }
 
-    const corpo = anexarAtalhoAoCorpo(body, eventoId);
+    const corpo = anexarAtalhoEmailAoCorpo(body, eventoId);
 
     try {
       const transporter = this.buildTransporter(cfg as EmailConfigDto);
@@ -930,7 +934,8 @@ export class NotificacaoService {
     corpo?: string,
     tipo?: string
   ) {
-    const corpoFinal = corpo != null && corpo !== "" ? anexarAtalhoAoCorpo(corpo, tipo) : corpo;
+    const corpoFinal =
+      corpo != null && corpo !== "" ? anexarAtalhoNotificacaoAoCorpo(corpo, tipo) : corpo;
     return this.prisma.notificacao.create({
       data: { userExternalId, titulo, corpo: corpoFinal, tipo }
     });
@@ -1189,7 +1194,6 @@ export class NotificacaoService {
       select: { atestadoPrazoEnvioDias: true }
     });
     const prazoAtestadoDias = cfgSol?.atestadoPrazoEnvioDias ?? 2;
-    const urlSolicitacoes = `${getAppBaseUrl()}/ponto/solicitacoes`;
 
     for (const func of funcionarios) {
       if (categoriaSemRegistroPonto(func.categoria)) continue;
@@ -1278,9 +1282,7 @@ export class NotificacaoService {
         `Identificamos registros de ponto incompletos ou ausentes em ${dataFmt} ` +
         `(faltando: ${listaFaltantes || "ciclo completo"}). ` +
         `Por favor, abra uma solicitação de correção de ponto no sistema para regularizar o dia.\n\n` +
-        `Caso a ausência seja por atestado médico, você terá até ${prazoAtestadoDias} dias para enviar o atestado pelo sistema.\n\n` +
-        `Atalho — Solicitações — Correção de ponto:\n${urlSolicitacoes}\n\n` +
-        `Atalho — Solicitações — Envio de atestado médico:\n${urlSolicitacoes}`;
+        `Caso a ausência seja por atestado médico, você terá até ${prazoAtestadoDias} dias para enviar o atestado pelo sistema.`;
 
       const dest = {
         externalId: func.user.externalId,

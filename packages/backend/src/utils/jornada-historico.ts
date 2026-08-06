@@ -9,6 +9,8 @@ export interface JornadaHistoricoContext {
   almocoMinMin?: number;
   almocoPodeIniciarA?: string;
   almocoPodeIniciarAte?: string;
+  toleranciaEntradaMin?: number;
+  toleranciaSaidaMin?: number;
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
 }
@@ -25,6 +27,8 @@ export interface FuncionarioJornadaInput {
     almocoMinMin?: number;
     almocoPodeIniciarA?: string;
     almocoPodeIniciarAte?: string;
+    toleranciaEntradaMin?: number;
+    toleranciaSaidaMin?: number;
     toleranciaCalculoMin?: number;
     horaExtraLimiteAuto?: number;
   } | null;
@@ -33,6 +37,8 @@ export interface FuncionarioJornadaInput {
   configuracaoAlmocoMinMin?: number | null;
   configuracaoAlmocoPodeIniciarA?: string | null;
   configuracaoAlmocoPodeIniciarAte?: string | null;
+  configuracaoToleranciaEntradaMin?: number | null;
+  configuracaoToleranciaSaidaMin?: number | null;
   configuracaoToleranciaCalculoMin?: number | null;
   configuracaoHoraExtraLimiteAuto?: number | null;
 }
@@ -60,8 +66,11 @@ export function resolverJornadaHistoricoContexto(
     func?.jornadaPeriodo?.almocoPodeIniciarA ?? func?.configuracaoAlmocoPodeIniciarA ?? "11:30";
   const almocoPodeIniciarAte =
     func?.jornadaPeriodo?.almocoPodeIniciarAte ?? func?.configuracaoAlmocoPodeIniciarAte ?? "13:00";
-  const toleranciaCalculoMin =
-    func?.jornadaPeriodo?.toleranciaCalculoMin ?? func?.configuracaoToleranciaCalculoMin ?? 5;
+  const toleranciaEntradaMin =
+    func?.jornadaPeriodo?.toleranciaEntradaMin ?? func?.configuracaoToleranciaEntradaMin ?? 5;
+  /* Saída sempre espelha a entrada (simetria única N). */
+  const toleranciaSaidaMin = toleranciaEntradaMin;
+  const toleranciaCalculoMin = 0;
   const horaExtraLimiteAuto =
     func?.jornadaPeriodo?.horaExtraLimiteAuto ?? func?.configuracaoHoraExtraLimiteAuto ?? 120;
 
@@ -74,6 +83,8 @@ export function resolverJornadaHistoricoContexto(
     almocoMinMin,
     almocoPodeIniciarA,
     almocoPodeIniciarAte,
+    toleranciaEntradaMin,
+    toleranciaSaidaMin,
     toleranciaCalculoMin,
     horaExtraLimiteAuto
   };
@@ -448,15 +459,14 @@ export function jornadaEsperadaMin(isoDate: string, ctx: JornadaHistoricoContext
 }
 
 /**
- * Margem do cálculo diário (Configurações → Períodos → toleranciaCalculoMin).
- * Se |saldo| ≤ N minutos, o dia é completo (saldo 0).
- * Se |saldo| > N, conta o delta integral (ex.: N=5 e +6 min → +6, não +1).
+ * Margem do cálculo diário — descontinuada.
+ * Mantida como no-op para compatibilidade de call sites.
+ * A flexibilidade passa pela tolerância simétrica de entrada/saída/almoço.
  */
 export function aplicarMargemCalculoDiario(
   saldoMinutos: number,
-  toleranciaCalculoMin: number | null | undefined
+  _toleranciaCalculoMin?: number | null | undefined
 ): number {
-  const margem = Math.max(0, Number(toleranciaCalculoMin) || 0);
-  if (margem > 0 && Math.abs(saldoMinutos) <= margem) return 0;
+  void _toleranciaCalculoMin;
   return saldoMinutos;
 }
