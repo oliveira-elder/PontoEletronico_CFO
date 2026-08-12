@@ -5356,8 +5356,8 @@ function calcHorasH(
 ): number {
   const entrada = regs.find((r) => r.tipo === "ENTRADA");
   const obsSemIntervalo = (
-    entrada as { observacoes?: Array<{ tipo?: string }> } | undefined
-  )?.observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO");
+    entrada as { observacoes?: Array<{ tipo?: string; motivo?: string }> } | undefined
+  )?.observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO" && o.motivo !== "DURANTE_JANELA");
   return calcHorasTrabalhadasMinutos(
     regs.map((r) => ({ tipo: r.tipo, minuto: toMinH(fmtHoraH(r.dataHora)) })),
     {
@@ -5445,8 +5445,14 @@ function prepararRegsAtestadoH(opts: {
 } {
   const hiM = toMinH(opts.hi);
   const hfM = toMinH(opts.hf);
+  const fechaNoLimite = (tipo: string) =>
+    tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE" || tipo === "INICIO_INTERVALO";
   const fora =
-    hfM > hiM ? opts.registros.filter((r) => r.minuto < hiM || r.minuto > hfM) : opts.registros;
+    hfM > hiM
+      ? opts.registros.filter(
+          (r) => r.minuto < hiM || r.minuto > hfM || (r.minuto === hiM && fechaNoLimite(r.tipo))
+        )
+      : opts.registros;
   const matutino = atestadoEhMatutinoH(opts.hf, opts.jornada);
   const semAlmoco = matutino || !fora.some((r) => r.tipo === "INICIO_INTERVALO");
   let registros = semAlmoco ? normalizarRegsSemAlmocoH(fora) : fora;
@@ -5466,12 +5472,92 @@ function prepararRegsAtestadoH(opts: {
 function fimTrabalhoMinH(regs: Array<{ tipo: string; minuto: number }>): number | null {
   const saida = [...regs].reverse().find((r) => r.tipo === "SAIDA");
   if (saida) return saida.minuto;
+  let pausaAberta: number | null = null;
+  for (const r of regs) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") pausaAberta = r.minuto;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") pausaAberta = null;
+  }
+  if (pausaAberta != null) return pausaAberta;
   if (!regs.some((r) => r.tipo === "FIM_INTERVALO")) {
     const ini = [...regs].reverse().find((r) => r.tipo === "INICIO_INTERVALO");
     if (ini) return ini.minuto;
   }
   const fim = [...regs].reverse().find((r) => r.tipo === "FIM_INTERVALO");
   return fim ? fim.minuto : null;
+}
+function temPausaAbertaH(registros: Array<{ tipo: string }>): boolean {
+  let aberta = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = false;
+  }
+  return aberta;
+}
+function temIntervaloAbertoH(registros: Array<{ tipo: string }>): boolean {
+  let emIntervalo = false;
+  for (const r of registros) {
+    if (r.tipo === "INICIO_INTERVALO") emIntervalo = true;
+    else if (
+      r.tipo === "FIM_INTERVALO" ||
+      r.tipo === "SAIDA" ||
+      r.tipo === "ENTRADA" ||
+      r.tipo === "REINICIAR_EXPEDIENTE"
+    ) {
+      emIntervalo = false;
+    }
+  }
+  return emIntervalo;
+}
+function temSaidaParcialSemRetornoH(registros: Array<{ tipo: string }>): boolean {
+  return temPausaAbertaH(registros) || temIntervaloAbertoH(registros);
+}
+function creditoAlmocoPausaAtestadoH(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+}): number {
+  if (!opts.horarioInicioAtestado || !opts.horarioFimAtestado) return 0;
+  if (!temSaidaParcialSemRetornoH(opts.registros)) return 0;
+  const hi = toMinH(opts.horarioInicioAtestado);
+  const hf = toMinH(opts.horarioFimAtestado);
+  if (hf <= hi) return 0;
+  const janelaIni = toMinH(opts.almocoPodeIniciarA ?? "11:30");
+  const janelaFim = toMinH(opts.almocoPodeIniciarAte ?? "13:00");
+  if (janelaFim <= janelaIni) return 0;
+  if (Math.min(hf, janelaFim) <= Math.max(hi, janelaIni)) return 0;
+  return Math.max(0, opts.almocoMinMin ?? 60);
+}
+function temPausaReiniciadaH(registros: Array<{ tipo: string }>): boolean {
+  let interrompeu = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") interrompeu = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE" && interrompeu) return true;
+  }
+  return false;
+}
+function creditoAlmocoDireitoDoDiaH(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  agoraMin?: number;
+  exigirIntervalo?: boolean;
+}): number {
+  const viaAtestado = creditoAlmocoPausaAtestadoH(opts);
+  if (viaAtestado > 0) return viaAtestado;
+  if (opts.exigirIntervalo === false) return 0;
+  if (!opts.registros.some((r) => r.tipo === "ENTRADA")) return 0;
+  if (opts.registros.some((r) => r.tipo === "INICIO_INTERVALO")) return 0;
+  if (!temPausaReiniciadaH(opts.registros)) return 0;
+  const fimJanela = toMinH(opts.almocoPodeIniciarAte ?? "13:00");
+  const agora = opts.agoraMin ?? 24 * 60;
+  if (agora <= fimJanela) return 0;
+  return Math.max(0, opts.almocoMinMin ?? 60);
 }
 function afastDoDia(key: string, lista: ApiAfast[]) {
   return lista.find((a) => key >= dtKeyH(a.dataInicio) && key <= dtKeyH(a.dataFim));
@@ -5769,7 +5855,10 @@ function buildHistorico(
       : null;
     const semAlmocoDia =
       atestadoMatutino ||
-      !!(eR?.observacoes ?? []).some((o) => o.tipo === "TURNO_SEM_INTERVALO") ||
+      !!(eR?.observacoes ?? []).some(
+        (o) =>
+          o.tipo === "TURNO_SEM_INTERVALO" && (o as { motivo?: string }).motivo !== "DURANTE_JANELA"
+      ) ||
       (!!atestadoParcial &&
         !(prepAtestado
           ? prepAtestado.registros.some((r) => r.tipo === "INICIO_INTERVALO")
@@ -5782,7 +5871,11 @@ function buildHistorico(
                 const m = toMinH(fmtHoraH(r.dataHora));
                 const hi = toMinH(atestadoParcial.horarioInicio!);
                 const hf = toMinH(atestadoParcial.horarioFim!);
-                return m < hi || m > hf;
+                const fechaNoLimite =
+                  r.tipo === "SAIDA" ||
+                  r.tipo === "INTERROMPER_EXPEDIENTE" ||
+                  r.tipo === "INICIO_INTERVALO";
+                return m < hi || m > hf || (m === hi && fechaNoLimite);
               })
             : dayRegs
         )
@@ -5791,7 +5884,11 @@ function buildHistorico(
             const m = toMinH(fmtHoraH(r.dataHora));
             const hi = toMinH(atestadoParcial.horarioInicio!);
             const hf = toMinH(atestadoParcial.horarioFim!);
-            return m < hi || m > hf;
+            const fechaNoLimite =
+              r.tipo === "SAIDA" ||
+              r.tipo === "INTERROMPER_EXPEDIENTE" ||
+              r.tipo === "INICIO_INTERVALO";
+            return m < hi || m > hf || (m === hi && fechaNoLimite);
           })
         : dayRegs;
     const eRh = dayRegs.find((r) => r.tipo === "ENTRADA");
@@ -5830,9 +5927,12 @@ function buildHistorico(
         ...calcOptsH,
         agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
       });
+      const pausaSemRetorno = temSaidaParcialSemRetornoH(
+        dayRegsHoras.length ? dayRegsHoras : dayRegs
+      );
       if (!entrada) status = "PENDENTE";
       else if (dispensaSaida) status = isHoje ? "PENDENTE" : "OK";
-      else if (saida) status = "OK";
+      else if (saida || pausaSemRetorno) status = isHoje && !saida ? "PENDENTE" : "OK";
       else if (isHoje) status = "PENDENTE";
       else status = "FALTA";
       if (!obs) {
@@ -5848,9 +5948,13 @@ function buildHistorico(
     } else if (entrada && isHoje) {
       horasMin = calcHorasH(dayRegsHoras, hoje.getHours() * 60 + hoje.getMinutes(), calcOptsH);
       status = "PENDENTE";
-    } else if (entrada && inicioIntervalo) {
+    } else if (
+      entrada &&
+      (inicioIntervalo || temPausaAbertaH(dayRegsHoras.length ? dayRegsHoras : dayRegs))
+    ) {
       horasMin = calcHorasH(dayRegsHoras, undefined, calcOptsH);
       status = "PENDENTE";
+      if (!inicioIntervalo) obs = "Pausa sem retorno — saldo até o interromper expediente";
     } else if (entrada) {
       horasMin = 0;
       status = "FALTA";
@@ -5885,7 +5989,17 @@ function buildHistorico(
           fimTrabalhoMin: prepAtestado.fimTrabalhoMin,
           jornada
         });
-        jornadaMin = Math.max(0, horasMin - saldoExp);
+        const creditoAlmoco = creditoAlmocoDireitoDoDiaH({
+          registros: dayRegsHoras.length ? dayRegsHoras : dayRegs,
+          horarioInicioAtestado: atestadoParcial.horarioInicio,
+          horarioFimAtestado: atestadoParcial.horarioFim,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+          agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined,
+          exigirIntervalo: exigirIntervaloDia
+        });
+        jornadaMin = Math.max(0, horasMin - (saldoExp + creditoAlmoco));
       }
       if (!obs) {
         obs = labelParcialAfast(
@@ -5925,7 +6039,9 @@ function buildHistorico(
     if (aberta) pausas.push({ inicio: aberta, fim: null });
     const observacoes = dayRegs.flatMap((r) => r.observacoes ?? []);
     const obsTurno = (eR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
-    const bloquearIntervalo = !!atestadoParcial || !!obsTurno || semAlmocoDia;
+    const obsForca =
+      obsTurno && (obsTurno as { motivo?: string }).motivo !== "DURANTE_JANELA" ? obsTurno : null;
+    const bloquearIntervalo = !!atestadoParcial || !!obsForca || semAlmocoDia;
     const almocoCurtoDetect = !bloquearIntervalo
       ? analisarAlmocoCurto(
           dayRegs.map((r) => ({
@@ -5962,7 +6078,11 @@ function buildHistorico(
       saidaEditada: !!sDisplay?.ajustado || !!sR?.ajustado,
       semIntervalo: bloquearIntervalo,
       turno: obsTurno?.turno ?? (atestadoParcial ? "ATESTADO_PARCIAL" : undefined),
-      motivoSemIntervalo: atestadoParcial ? "ATESTADO_PARCIAL" : obsTurno?.motivo,
+      motivoSemIntervalo: atestadoParcial
+        ? "ATESTADO_PARCIAL"
+        : obsForca
+          ? (obsForca as { motivo?: string }).motivo
+          : undefined,
       janelaAlmoco: obsTurno?.janelaAlmoco,
       atestadoParcial: !!atestadoParcial,
       atestadoParcialHorario: atestadoParcial
@@ -6200,11 +6320,12 @@ function PausaCellH({ pausas }: { pausas?: { inicio: string; fim: string | null 
         fontSize: 12,
         display: "flex",
         flexDirection: "column",
-        gap: 2
+        gap: 2,
+        alignItems: "flex-start"
       }}
     >
       {pausas.map((p, i) => (
-        <span key={i}>
+        <span key={i} style={{ whiteSpace: "nowrap" }}>
           {p.inicio}–{p.fim ?? "…"}
         </span>
       ))}
@@ -6465,16 +6586,42 @@ function ModalCorrecaoRH({
 }) {
   const { dia, isoKey, regsNoDia } = state;
 
-  const getH = (tipo: string) => regsNoDia.find((r) => r.tipo === tipo);
+  const getH = (tipo: string) => {
+    if (tipo === "REINICIAR_EXPEDIENTE") {
+      return [...regsNoDia].reverse().find((r) => r.tipo === tipo);
+    }
+    return regsNoDia.find((r) => r.tipo === tipo);
+  };
   const fmtAtual = (tipo: string) => {
     const r = getH(tipo);
     return r ? fmtHoraH(r.dataHora) : "";
   };
 
+  const temPausaAbertaDia = (() => {
+    let aberta = false;
+    for (const r of regsNoDia) {
+      if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = true;
+      else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = false;
+    }
+    return aberta;
+  })();
+  const hojeIso = (() => {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(new Date());
+  })();
+  const diaFechado = isoKey < hojeIso;
+  const podeCorrigirRetornoPausa =
+    diaFechado && (temPausaAbertaDia || regsNoDia.some((r) => r.tipo === "REINICIAR_EXPEDIENTE"));
+
   const [entrada, setEntrada] = useState(fmtAtual("ENTRADA"));
   const [inicioIntervalo, setInicioIntervalo] = useState(fmtAtual("INICIO_INTERVALO"));
   const [fimIntervalo, setFimIntervalo] = useState(fmtAtual("FIM_INTERVALO"));
   const [saida, setSaida] = useState(fmtAtual("SAIDA"));
+  const [retornoPausa, setRetornoPausa] = useState(fmtAtual("REINICIAR_EXPEDIENTE"));
   const [justificativa, setJustificativa] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
@@ -6491,6 +6638,9 @@ function ModalCorrecaoRH({
       ["FIM_INTERVALO", fimIntervalo, fmtAtual("FIM_INTERVALO")],
       ["SAIDA", saida, fmtAtual("SAIDA")]
     ];
+    if (podeCorrigirRetornoPausa) {
+      pares.push(["REINICIAR_EXPEDIENTE", retornoPausa, fmtAtual("REINICIAR_EXPEDIENTE")]);
+    }
 
     const correcoes: Array<{
       acao: "CORRIGIR" | "INCLUIR" | "EXCLUIR";
@@ -6515,6 +6665,8 @@ function ModalCorrecaoRH({
             : { acao: "INCLUIR", tipoRegistro: tipo, horario: novo }
         );
       } else if (!novo && atual && reg) {
+        /* Retorno da pausa não pode ser excluído por esta via — só ajustar horário. */
+        if (tipo === "REINICIAR_EXPEDIENTE") continue;
         correcoes.push({ acao: "EXCLUIR", tipoRegistro: tipo, horario: "", registroId: reg.id });
       }
     }
@@ -6624,6 +6776,24 @@ function ModalCorrecaoRH({
             histórico só será alterado após aprovação.
           </div>
 
+          {podeCorrigirRetornoPausa && (
+            <div
+              style={{
+                background: "rgba(122,30,38,0.04)",
+                border: "1px solid rgba(122,30,38,0.12)",
+                borderRadius: "var(--radius-md)",
+                padding: "10px 13px",
+                fontSize: 12.5,
+                color: "var(--ink-600)",
+                lineHeight: 1.5
+              }}
+            >
+              {temPausaAbertaDia
+                ? "Há pausa sem retorno neste dia. É possível incluir apenas o retorno da pausa. O início (Interromper) não pode ser criado ou alterado por correção."
+                : "É possível ajustar o horário de retorno da pausa. O início (Interromper) não pode ser alterado por correção."}
+            </div>
+          )}
+
           {/* Campos de horário */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             {(
@@ -6631,8 +6801,11 @@ function ModalCorrecaoRH({
                 ["Entrada", entrada, setEntrada, "ENTRADA"],
                 ["Início Intervalo", inicioIntervalo, setInicioIntervalo, "INICIO_INTERVALO"],
                 ["Fim Intervalo", fimIntervalo, setFimIntervalo, "FIM_INTERVALO"],
-                ["Saída", saida, setSaida, "SAIDA"]
-              ] as const
+                ["Saída", saida, setSaida, "SAIDA"],
+                ...(podeCorrigirRetornoPausa
+                  ? [["Retorno da pausa", retornoPausa, setRetornoPausa, "REINICIAR_EXPEDIENTE"]]
+                  : [])
+              ] as Array<[string, string, (v: string) => void, string]>
             ).map(([lbl, val, setter, tipo]) => {
               const original = fmtAtual(tipo);
               const mudou = val !== original;
@@ -6649,7 +6822,7 @@ function ModalCorrecaoRH({
                   <input
                     type="time"
                     value={val}
-                    onChange={(e) => (setter as (v: string) => void)(e.target.value)}
+                    onChange={(e) => setter(e.target.value)}
                     style={{
                       ...inputStyle,
                       borderColor: mudou ? "rgba(37,99,235,0.50)" : "rgba(122,30,38,0.14)"

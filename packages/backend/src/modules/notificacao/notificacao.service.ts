@@ -17,7 +17,7 @@ import {
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 import { cicloPontoIncompleto, faltantesCicloPonto } from "../../utils/calc-horas-trabalhadas";
-import { observacaoTurnoSemIntervalo } from "../../utils/turno-entrada";
+import { observacaoForcaSemIntervalo } from "../../utils/turno-entrada";
 import {
   isAfastamentoParcial,
   atestadoParcialDispensaSaida,
@@ -1263,7 +1263,7 @@ export class NotificacaoService {
       const parcial = afastamentoDia && isAfastamentoParcial(afastamentoDia);
       const exigirIntervalo =
         !categoriaSemIntervaloAlmoco(func.categoria) &&
-        !observacaoTurnoSemIntervalo(entrada?.observacoes) &&
+        !observacaoForcaSemIntervalo(entrada?.observacoes) &&
         !dispensarAlmocoPorAtestadoParcial(!!parcial, registros, {
           horarioInicio: afastamentoDia?.horarioInicio,
           horarioFim: afastamentoDia?.horarioFim,

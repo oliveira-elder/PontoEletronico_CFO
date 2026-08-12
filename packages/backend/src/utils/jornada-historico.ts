@@ -161,8 +161,10 @@ export function minutosLiquidosCobertosAtestado(
 /**
  * Descarta batidas cujo horário cai na janela do atestado parcial
  * (não geram hora trabalhada nem HE).
+ * Mantém fechamentos (SAÍDA / INTERROMPER / INÍCIO intervalo) exatamente no início
+ * do atestado — fecham o trecho trabalhado antes do afastamento.
  */
-export function filtrarRegistrosForaAtestadoParcial<T extends { minuto: number }>(
+export function filtrarRegistrosForaAtestadoParcial<T extends { tipo: string; minuto: number }>(
   registros: T[],
   horarioInicio: string,
   horarioFim: string
@@ -170,7 +172,11 @@ export function filtrarRegistrosForaAtestadoParcial<T extends { minuto: number }
   const hi = horaParaMin(horarioInicio);
   const hf = horaParaMin(horarioFim);
   if (hf <= hi) return registros;
-  return registros.filter((r) => r.minuto < hi || r.minuto > hf);
+  const fechaNoLimite = (tipo: string) =>
+    tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE" || tipo === "INICIO_INTERVALO";
+  return registros.filter(
+    (r) => r.minuto < hi || r.minuto > hf || (r.minuto === hi && fechaNoLimite(r.tipo))
+  );
 }
 
 /** Marco de expediente do atestado parcial (matutino = saída; vespertino = início/almoço). */
@@ -306,12 +312,173 @@ export function calcularSaldoAtestadoParcialPorExpediente(opts: {
   return aplicarMargemCalculoDiario(delta, opts.toleranciaCalculoMin);
 }
 
-/** Último minuto de trabalho no dia (SAÍDA, ou INÍCIO de intervalo órfão tratado como fim). */
+/**
+ * Há INTERROMPER_EXPEDIENTE sem REINICIAR correspondente (pausa aberta).
+ * Usado para creditar o trecho entrada→pausa em vez de zerar o dia como falta.
+ */
+export function temPausaAberta(registros: Array<{ tipo: string }>): boolean {
+  let aberta = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = false;
+  }
+  return aberta;
+}
+
+/**
+ * INÍCIO_INTERVALO sem FIM/SAÍDA posterior (almoço/intervalo aberto sem retorno).
+ */
+export function temIntervaloAberto(registros: Array<{ tipo: string }>): boolean {
+  let emIntervalo = false;
+  for (const r of registros) {
+    if (r.tipo === "INICIO_INTERVALO") emIntervalo = true;
+    else if (
+      r.tipo === "FIM_INTERVALO" ||
+      r.tipo === "SAIDA" ||
+      r.tipo === "ENTRADA" ||
+      r.tipo === "REINICIAR_EXPEDIENTE"
+    ) {
+      emIntervalo = false;
+    }
+  }
+  return emIntervalo;
+}
+
+/** Pausa (INTERROMPER) ou intervalo de almoço iniciado sem retorno. */
+export function temSaidaParcialSemRetorno(registros: Array<{ tipo: string }>): boolean {
+  return temPausaAberta(registros) || temIntervaloAberto(registros);
+}
+
+/** Minuto do INTERROMPER ainda aberto (sem REINICIAR depois); null se não houver. */
+export function minutoPausaAberta(
+  registros: Array<{ tipo: string; minuto: number }>
+): number | null {
+  let aberta: number | null = null;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = r.minuto;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = null;
+  }
+  return aberta;
+}
+
+/**
+ * Atestado parcial cujo intervalo intersecta a janela de almoço configurada
+ * (almocoPodeIniciarA … almocoPodeIniciarAte). Nessas situações o colaborador
+ * mantém o direito à 1h de almoço no saldo.
+ */
+export function atestadoParcialIntersectaJanelaAlmoco(
+  horarioInicio: string,
+  horarioFim: string,
+  opts: {
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  } = {}
+): boolean {
+  const hi = horaParaMin(horarioInicio);
+  const hf = horaParaMin(horarioFim);
+  if (hf <= hi) return false;
+  const janelaIni = horaParaMin(opts.almocoPodeIniciarA ?? "11:30");
+  const janelaFim = horaParaMin(opts.almocoPodeIniciarAte ?? "13:00");
+  if (janelaFim <= janelaIni) return false;
+  return Math.min(hf, janelaFim) > Math.max(hi, janelaIni);
+}
+
+/**
+ * Crédito positivo de almoço (padrão 60 min) quando há pausa/intervalo sem retorno e
+ * atestado parcial na janela de almoço — o funcionário tem direito à 1h nesse intervalo.
+ */
+export function creditoAlmocoPausaComAtestado(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+}): number {
+  if (!opts.horarioInicioAtestado || !opts.horarioFimAtestado) return 0;
+  if (!temSaidaParcialSemRetorno(opts.registros)) return 0;
+  if (
+    !atestadoParcialIntersectaJanelaAlmoco(opts.horarioInicioAtestado, opts.horarioFimAtestado, {
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+    })
+  ) {
+    return 0;
+  }
+  return Math.max(0, opts.almocoMinMin ?? 60);
+}
+
+/** Houve INTERROMPER seguido de REINICIAR (retornou da pausa). */
+export function temPausaReiniciada(registros: Array<{ tipo: string }>): boolean {
+  let interrompeu = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") interrompeu = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE" && interrompeu) return true;
+  }
+  return false;
+}
+
+/**
+ * Retornou da pausa, esqueceu de bater o almoço e a janela já passou:
+ * credita 1h (almocoMinMin) no saldo — mesmo direito do caso com atestado.
+ */
+export function creditoAlmocoEsquecidoAposPausa(opts: {
+  registros: Array<{ tipo: string }>;
+  almocoMinMin?: number;
+  almocoPodeIniciarAte?: string;
+  /** Minuto atual (0–1439). Omitir em dia passado = janela considerada encerrada. */
+  agoraMin?: number;
+  exigirIntervalo?: boolean;
+}): number {
+  if (opts.exigirIntervalo === false) return 0;
+  if (!opts.registros.some((r) => r.tipo === "ENTRADA")) return 0;
+  if (opts.registros.some((r) => r.tipo === "INICIO_INTERVALO")) return 0;
+  if (!temPausaReiniciada(opts.registros)) return 0;
+  const fimJanela = horaParaMin(opts.almocoPodeIniciarAte ?? "13:00");
+  const agora = opts.agoraMin ?? 24 * 60;
+  if (agora <= fimJanela) return 0;
+  return Math.max(0, opts.almocoMinMin ?? 60);
+}
+
+/**
+ * Direito à 1h de almoço no saldo (não acumula atestado + esquecimento).
+ */
+export function creditoAlmocoDireitoDoDia(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  agoraMin?: number;
+  exigirIntervalo?: boolean;
+}): number {
+  const viaAtestado = creditoAlmocoPausaComAtestado({
+    registros: opts.registros,
+    horarioInicioAtestado: opts.horarioInicioAtestado,
+    horarioFimAtestado: opts.horarioFimAtestado,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+  });
+  if (viaAtestado > 0) return viaAtestado;
+  return creditoAlmocoEsquecidoAposPausa({
+    registros: opts.registros,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte,
+    agoraMin: opts.agoraMin,
+    exigirIntervalo: opts.exigirIntervalo
+  });
+}
+
+/** Último minuto de trabalho no dia (SAÍDA, pausa aberta, ou INÍCIO de intervalo órfão). */
 export function fimTrabalhoMinutosDoDia(
   registros: Array<{ tipo: string; minuto: number }>
 ): number | null {
   const saida = [...registros].reverse().find((r) => r.tipo === "SAIDA");
   if (saida) return saida.minuto;
+  const pausa = minutoPausaAberta(registros);
+  if (pausa != null) return pausa;
   const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
   if (!temFim) {
     const ini = [...registros].reverse().find((r) => r.tipo === "INICIO_INTERVALO");

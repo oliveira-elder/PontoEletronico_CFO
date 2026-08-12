@@ -29,7 +29,8 @@ import {
   isAfastamentoParcial,
   dispensarAlmocoPorAtestadoParcial,
   normalizarRegsAtestadoSemAlmoco,
-  aplicarMargemCalculoDiario
+  aplicarMargemCalculoDiario,
+  creditoAlmocoDireitoDoDia
 } from "../../utils/jornada-historico";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { DocumentoService } from "../ponto/documento.service";
@@ -43,8 +44,12 @@ import {
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
-import { observacaoTurnoSemIntervalo } from "../../utils/turno-entrada";
+import { observacaoForcaSemIntervalo } from "../../utils/turno-entrada";
 import { codigoCienciaGestorExibido } from "../../utils/assinatura-codigo";
+import {
+  validarItensCorrecaoPontoPausa,
+  type ItemCorrecaoPonto
+} from "../../utils/correcao-ponto-pausa";
 
 /** Metadados de autenticidade da ciência/assinatura do gestor no atestado */
 export interface GestorCienciaMeta {
@@ -1753,6 +1758,21 @@ export class AuditoriaService {
     });
     const apenasInformativo = categoriaSemRegistroPonto(funcCat?.categoria);
 
+    const dataRefIso = dataBrasiliaISO(new Date(body.dataReferencia));
+    const { inicio, fim } = intervaloDiaBrasilia(dataRefIso);
+    const registrosDoDia = await this.prisma.registroPonto.findMany({
+      where: { funcionarioId, dataHora: { gte: inicio, lt: fim } },
+      select: { tipo: true, dataHora: true },
+      orderBy: { dataHora: "asc" }
+    });
+    const erroPausa = validarItensCorrecaoPontoPausa({
+      correcoes: body.correcoes as ItemCorrecaoPonto[],
+      dataRefIso,
+      hojeIso: hojeBrasiliaISO(),
+      registrosDoDia
+    });
+    if (erroPausa) throw new BadRequestException(erroPausa);
+
     return this.prisma.solicitacao.create({
       data: {
         funcionarioId,
@@ -2374,7 +2394,7 @@ export class AuditoriaService {
             ? horarioParaMinutos(horarioDeDataBrasilia(new Date(capMs)))
             : undefined,
         exigirIntervalo:
-          opts?.exigirIntervalo ?? !observacaoTurnoSemIntervalo(entrada?.observacoes),
+          opts?.exigirIntervalo ?? !observacaoForcaSemIntervalo(entrada?.observacoes),
         almocoMinMin: opts?.almocoMinMin ?? 60,
         almocoPodeIniciarA: opts?.almocoPodeIniciarA ?? "11:30",
         almocoPodeIniciarAte: opts?.almocoPodeIniciarAte ?? "13:00",
@@ -2578,7 +2598,7 @@ export class AuditoriaService {
         };
         const semAlmocoDia =
           semIntervaloCategoria ||
-          !!observacaoTurnoSemIntervalo(entradaDia?.observacoes) ||
+          !!observacaoForcaSemIntervalo(entradaDia?.observacoes) ||
           dispensarAlmocoPorAtestadoParcial(afastamentoParcial, regsDodia, optsDispAlmocoDia);
         const regsCalcDia = semAlmocoDia ? normalizarRegsAtestadoSemAlmoco(regsDodia) : regsDodia;
         let horasTrabalhadasMinutos = this.calcHorasMinutos(regsCalcDia, capMs, {
@@ -2650,6 +2670,18 @@ export class AuditoriaService {
             toleranciaCalculoMin: toleranciaCalculoMin ?? 0,
             horaExtraLimiteMin: jornadaCtx.horaExtraLimiteAuto ?? 120
           });
+          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
+            registros: regsDodia,
+            horarioInicioAtestado: afastamento.horarioInicio,
+            horarioFimAtestado: afastamento.horarioFim,
+            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+            agoraMin: eHoje
+              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
+              : undefined,
+            exigirIntervalo: !semAlmocoDia
+          });
           jornadaDia = jornadaMandatoria;
           obs =
             afastamento.tipo === "ABONO"
@@ -2688,6 +2720,16 @@ export class AuditoriaService {
             horasTrabalhadasMinutos - jornadaDiaMin,
             toleranciaCalculoMin
           );
+          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
+            registros: regsDodia,
+            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
+            agoraMin: eHoje
+              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
+              : undefined,
+            exigirIntervalo: !semAlmocoDia
+          });
           jornadaDia = jornadaDiaMin;
           obs = undefined;
         }
@@ -2706,7 +2748,7 @@ export class AuditoriaService {
         const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
         const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {
           exigirIntervalo:
-            !semIntervaloCategoria && !observacaoTurnoSemIntervalo(entradaDia?.observacoes),
+            !semIntervaloCategoria && !observacaoForcaSemIntervalo(entradaDia?.observacoes),
           almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
           almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
           almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",

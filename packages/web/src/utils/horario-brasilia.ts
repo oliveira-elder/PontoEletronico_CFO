@@ -1,6 +1,16 @@
 export const FUSO_BRASILIA = "America/Sao_Paulo";
 const OFFSET_BRASILIA = "-03:00";
 
+/** YYYY-MM-DD de hoje no fuso de Brasília. */
+export function hojeBrasiliaISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: FUSO_BRASILIA,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
 type DateInput = string | Date | null | undefined;
 
 function toDate(value: DateInput): Date | null {

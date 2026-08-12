@@ -35,14 +35,16 @@ import {
   atestadoParcialEhMatutino,
   normalizarRegsAtestadoSemAlmoco,
   horarioNoPeriodoAfastamento,
-  aplicarMargemCalculoDiario
+  aplicarMargemCalculoDiario,
+  creditoAlmocoDireitoDoDia
 } from "../../utils/jornada-historico";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import {
   classificarTurnoEntrada,
   criarObservacaoCategoriaSemIntervalo,
   criarObservacaoTurnoSemIntervalo,
-  observacaoTurnoSemIntervalo
+  observacaoTurnoSemIntervalo,
+  observacaoForcaSemIntervalo
 } from "../../utils/turno-entrada";
 import {
   categoriaSemIntervaloAlmoco,
@@ -57,6 +59,10 @@ import {
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
 import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
 import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
+import {
+  validarItensCorrecaoPontoPausa,
+  type ItemCorrecaoPonto
+} from "../../utils/correcao-ponto-pausa";
 
 /* Status que encerram a análise da solicitação — a partir daqui, documentos
    anexados pelo funcionário não podem mais ser editados/substituídos. */
@@ -188,7 +194,8 @@ type FaseJornada =
 const ACOES_POR_FASE: Record<FaseJornada, string[]> = {
   NENHUMA: ["ENTRADA"],
   MANHA: ["INICIO_INTERVALO", "INTERROMPER_EXPEDIENTE", "SAIDA"],
-  PAUSA_MANHA: ["REINICIAR_EXPEDIENTE", "INICIO_INTERVALO"],
+  /* Pausa: só reiniciar — depois, na manhã, pode iniciar o almoço. */
+  PAUSA_MANHA: ["REINICIAR_EXPEDIENTE"],
   ALMOCO: ["FIM_INTERVALO"],
   TARDE: ["INTERROMPER_EXPEDIENTE", "SAIDA"],
   PAUSA_TARDE: ["REINICIAR_EXPEDIENTE"],
@@ -431,7 +438,7 @@ export class PontoService {
       switch (r.tipo) {
         case "ENTRADA":
           fase =
-            forcarSemIntervalo || observacaoTurnoSemIntervalo(r.observacoes) ? "TARDE" : "MANHA";
+            forcarSemIntervalo || observacaoForcaSemIntervalo(r.observacoes) ? "TARDE" : "MANHA";
           break;
         case "INICIO_INTERVALO":
           fase = "ALMOCO";
@@ -568,6 +575,9 @@ export class PontoService {
 
     const entradaHoje = registros.find((r) => r.tipo === "ENTRADA");
     const obsTurno = entradaHoje ? observacaoTurnoSemIntervalo(entradaHoje.observacoes) : undefined;
+    const obsForcaSemIntervalo = entradaHoje
+      ? observacaoForcaSemIntervalo(entradaHoje.observacoes)
+      : undefined;
     const optsDispAlmoco = {
       horarioInicio: afastamento?.horarioInicio,
       horarioFim: afastamento?.horarioFim,
@@ -576,7 +586,7 @@ export class PontoService {
       almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
     };
     const semIntervalo =
-      !!obsTurno ||
+      !!obsForcaSemIntervalo ||
       semIntervaloCategoria ||
       dispensarAlmocoPorAtestadoParcial(
         isAfastamentoParcial(afastamento ?? {}),
@@ -614,7 +624,7 @@ export class PontoService {
       semIntervalo,
       turno: obsTurno?.turno ?? (atestadoMatutino ? "VESPERTINO" : entradaHoje ? "MATUTINO" : null),
       motivoSemIntervalo:
-        obsTurno?.motivo ??
+        obsForcaSemIntervalo?.motivo ??
         (semIntervaloCategoria
           ? "CATEGORIA_CARGA_CORRIDA"
           : dispensarAlmocoPorAtestadoParcial(
@@ -803,25 +813,6 @@ export class PontoService {
     const sysConfig = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" }
     });
-
-    /* Pulo direto de "pausado de manhã" para "início do almoço": só permitido
-       dentro da janela de almoço configurada (defesa em profundidade — o
-       frontend já só exibe esse botão dentro da janela). */
-    if (dto.tipo === "INICIO_INTERVALO" && status.fase === "PAUSA_MANHA") {
-      const jornada = await this.getJornadaEfetiva(func.id);
-      const agora = horarioDeDataBrasilia(new Date());
-      const validacao = validarHorarioPermitido(
-        agora,
-        jornada.almocoPodeIniciarA,
-        jornada.almocoPodeIniciarAte
-      );
-      if (!validacao.ok) {
-        throw new BadRequestException(
-          `Início do almoço só é permitido entre ${jornada.almocoPodeIniciarA} e ${jornada.almocoPodeIniciarAte}. ` +
-            `Use "Reiniciar Expediente" para retomar o trabalho.`
-        );
-      }
-    }
 
     let dentroPerimetro = false;
     let modoRegistroEfetivo = (dto.modoRegistro ?? dto.origem ?? "MOBILE") as string;
@@ -1593,7 +1584,7 @@ export class PontoService {
         };
         const semAlmocoDia =
           semIntervaloCategoria ||
-          !!observacaoTurnoSemIntervalo(entradaDia?.observacoes) ||
+          !!observacaoForcaSemIntervalo(entradaDia?.observacoes) ||
           dispensarAlmocoPorAtestadoParcial(afastamentoParcial, regsDodia, optsDispAlmocoDia);
         const regsCalcDia = semAlmocoDia ? normalizarRegsAtestadoSemAlmoco(regsDodia) : regsDodia;
         let horasTrabalhadasMinutos = this.calcHorasMinutos(regsCalcDia, capMs, {
@@ -1665,6 +1656,18 @@ export class PontoService {
             toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 0,
             horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
           });
+          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
+            registros: regsDodia,
+            horarioInicioAtestado: afastamento.horarioInicio,
+            horarioFimAtestado: afastamento.horarioFim,
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+            agoraMin: eHoje
+              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
+              : undefined,
+            exigirIntervalo: !semAlmocoDia
+          });
           jornadaDia = jornadaMandatoria;
           obs =
             afastamento.tipo === "ABONO"
@@ -1707,6 +1710,16 @@ export class PontoService {
             horasTrabalhadasMinutos - jornadaDiaMin,
             jornada.toleranciaCalculoMin
           );
+          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
+            registros: regsDodia,
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+            agoraMin: eHoje
+              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
+              : undefined,
+            exigirIntervalo: !semAlmocoDia
+          });
           jornadaDia = jornadaDiaMin;
           obs = undefined;
         }
@@ -1724,7 +1737,7 @@ export class PontoService {
         // Fim de semana COM registros: aplica multiplicador
         const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
         const exigirIntervalo =
-          !semIntervaloCategoria && !observacaoTurnoSemIntervalo(entradaDia?.observacoes);
+          !semIntervaloCategoria && !observacaoForcaSemIntervalo(entradaDia?.observacoes);
         const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {
           exigirIntervalo,
           almocoMinMin: jornada.almocoMinMin ?? 60,
@@ -1848,7 +1861,7 @@ export class PontoService {
     const entradaHoje = registros.find((r) => r.tipo === "ENTRADA");
     const exigirIntervalo =
       !categoriaSemIntervaloAlmoco(funcMeta?.categoria) &&
-      !observacaoTurnoSemIntervalo(entradaHoje?.observacoes);
+      !observacaoForcaSemIntervalo(entradaHoje?.observacoes);
     const overtimeRaw =
       this.calcHorasMinutos(registros, undefined, {
         exigirIntervalo,
@@ -1941,6 +1954,29 @@ export class PontoService {
           `${label} realiza carga horária corrida e não pode solicitar correção de intervalo de almoço.`
         );
       }
+
+      const correcoesDia = Array.isArray(
+        (body.metadados as { correcoesDia?: ItemCorrecaoPonto[] } | undefined)?.correcoesDia
+      )
+        ? (body.metadados as { correcoesDia: ItemCorrecaoPonto[] }).correcoesDia
+        : [];
+      if (correcoesDia.length > 0) {
+        const dataRefIso = dataBrasiliaISO(new Date(body.dataReferencia));
+        const { inicio, fim } = intervaloDiaBrasilia(dataRefIso);
+        const registrosDoDia = await this.prisma.registroPonto.findMany({
+          where: { funcionarioId: func.id, dataHora: { gte: inicio, lt: fim } },
+          select: { tipo: true, dataHora: true },
+          orderBy: { dataHora: "asc" }
+        });
+        const erroPausa = validarItensCorrecaoPontoPausa({
+          correcoes: correcoesDia,
+          dataRefIso,
+          hojeIso: hojeBrasiliaISO(),
+          registrosDoDia
+        });
+        if (erroPausa) throw new BadRequestException(erroPausa);
+      }
+
       if (novosTipos.size > 0) {
         const correcoesExistentes = await this.prisma.solicitacao.findMany({
           where: {
@@ -1992,7 +2028,9 @@ export class PontoService {
         }
       }
     } else if (body.tipo !== "ENVIO_DOCUMENTO_RH") {
-      /* Envio de documento ao RH pode ocorrer várias vezes no mesmo dia. */
+      /* Envio de documento ao RH pode ocorrer várias vezes no mesmo dia.
+         Estagiário pode ter várias solicitações de férias no mesmo ciclo (saldo residual),
+         desde que as datas não se sobreponham. */
       const conflito = aprovadas.find((s) => {
         if (alteracaoDeId && s.id === alteracaoDeId) return false;
         if (s.tipo === "ENVIO_DOCUMENTO_RH") return false;
@@ -2097,7 +2135,23 @@ export class PontoService {
           ? saldo.ciclos.find((c) => c.numero === cicloNumero)
           : saldo.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0);
 
-      if (ciclo) {
+      /* Estagiário: sem regras de fracionamento/antecedência/igualar o ciclo;
+         só não pode exceder o saldo nem vender dias (já bloqueado acima). */
+      if (func.categoria === "ESTAGIARIO") {
+        const disponivel = ciclo?.diasDisponiveis ?? saldo.diasDisponiveis;
+        if (total <= 0) {
+          throw new BadRequestException("Informe ao menos um período de gozo.");
+        }
+        if (total > disponivel) {
+          throw new BadRequestException(
+            `Total de dias (${total}) excede os ${disponivel} dias disponíveis neste ciclo.`
+          );
+        }
+        if (ciclo) {
+          body.metadados = { ...meta, cicloNumero: ciclo.numero };
+          metadados = body.metadados;
+        }
+      } else if (ciclo) {
         if (ciclo.status !== "DISPONIVEL" || ciclo.diasDisponiveis <= 0) {
           throw new BadRequestException(
             `O ciclo ${ciclo.numero} já está configurado ou em análise. Solicite uma mudança, não uma nova solicitação.`
@@ -2367,7 +2421,7 @@ export class PontoService {
 
     const isEstagiario = func.categoria === "ESTAGIARIO";
     const duracaoCicloMeses = isEstagiario ? 6 : 12;
-    const diasPorCiclo = isEstagiario ? 15 : 30;
+    const diasPorCiclo = 30; // Estagiário e CLT: 30 dias por ciclo (única regra do estagiário)
     // Estagiário não acumula ciclos; demais funcionários acumulam até 2
     const maxAcumulo = isEstagiario ? 1 : 2;
 

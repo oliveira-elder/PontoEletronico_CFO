@@ -453,11 +453,12 @@ function PausaCell({ pausas }: { pausas?: Pausa[] }) {
         fontSize: 12,
         display: "flex",
         flexDirection: "column",
-        gap: 2
+        gap: 2,
+        alignItems: "flex-start"
       }}
     >
       {pausas.map((p, i) => (
-        <span key={i} title="Interromper → Reiniciar Expediente">
+        <span key={i} title="Interromper → Reiniciar Expediente" style={{ whiteSpace: "nowrap" }}>
           {p.inicio}–{p.fim ?? "…"}
         </span>
       ))}

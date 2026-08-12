@@ -58,11 +58,19 @@ interface ObservacaoRegistro {
 }
 
 function temTurnoSemIntervalo(observacoes?: ObservacaoRegistro[]): boolean {
-  return !!observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO");
+  return !!obsForcaSemIntervalo(observacoes);
 }
 
 function obsTurnoSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoRegistro | undefined {
   return observacoes?.find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+}
+
+/** Só força dispensa de almoço após a janela ou por categoria — nunca por pausa/DURANTE_JANELA. */
+function obsForcaSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoRegistro | undefined {
+  const obs = obsTurnoSemIntervalo(observacoes);
+  if (!obs) return undefined;
+  if (obs.motivo === "DURANTE_JANELA") return undefined;
+  return obs;
 }
 
 /** Estagiário / menor aprendiz: carga horária corrida — sem intervalo de almoço. */
@@ -271,23 +279,9 @@ function getLayout(
         { tipo: "INICIO_INTERVALO", width: 80 },
         { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
       ];
-    case "PAUSA_MANHA": {
-      if (semIntervalo) {
-        return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
-      }
-      const dentroJanela = horarioDentroFaixa(
-        horarioBrasiliaAgora(),
-        cfg.almocoPodeIniciarA ?? "11:30",
-        cfg.almocoPodeIniciarAte ?? "13:00"
-      );
-      if (dentroJanela) {
-        return [
-          { tipo: "INICIO_INTERVALO", width: 50 },
-          { tipo: "REINICIAR_EXPEDIENTE", width: 50 }
-        ];
-      }
+    case "PAUSA_MANHA":
+      /* Precisa reiniciar a pausa antes de bater o almoço. */
       return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
-    }
     case "ALMOCO":
       /* Com semIntervalo a fase é remapeada; se restar, não oferecer fim de almoço. */
       if (semIntervalo) {
@@ -915,7 +909,7 @@ export function RegistroPontoPage() {
   const fase = getFase(registros, { forcarSemIntervalo });
   const entradaReg = registros.find((r) => r.tipo === "ENTRADA");
   const obsTurno = obsTurnoSemIntervalo(entradaReg?.observacoes);
-  const semIntervalo = !!obsTurno || forcarSemIntervalo;
+  const semIntervalo = !!obsForcaSemIntervalo(entradaReg?.observacoes) || forcarSemIntervalo;
   const turno = obsTurno?.turno ?? null;
   const faseInfo = labelFaseInfo(fase, turno, semIntervalo);
   const slots = cfg ? getLayout(fase, cfg, { semIntervalo }) : [];

@@ -14,7 +14,10 @@ export interface ClassificacaoTurnoEntrada {
   janelaAlmoco: string;
 }
 
-/** Classifica o turno da ENTRADA pelo horário vs janela de almoço configurada. */
+/** Classifica o turno da ENTRADA pelo horário vs janela de almoço configurada.
+ *  — Antes da janela: matutino (almoço aplicável).
+ *  — Durante a janela: ainda pode registrar intervalo de almoço (pausas não dispensam).
+ *  — Após a janela: vespertino/noturno sem exigência de almoço. */
 export function classificarTurnoEntrada(
   horaHHMM: string,
   almocoPodeIniciarA: string,
@@ -30,9 +33,19 @@ export function classificarTurnoEntrada(
     return { turno: "MATUTINO", semIntervalo: false, janelaAlmoco };
   }
 
-  const motivo: MotivoSemIntervalo = hora <= fimAlmoco ? "DURANTE_JANELA" : "APOS_JANELA";
+  if (hora <= fimAlmoco) {
+    /* Entrada na janela de almoço: jornada pode seguir com intervalo — pausas
+       (INTERROMPER) nunca dispensam o almoço. */
+    return {
+      turno: "VESPERTINO",
+      semIntervalo: false,
+      motivo: "DURANTE_JANELA",
+      janelaAlmoco
+    };
+  }
+
   const turno: TurnoEntrada = hora >= limiarNoturno ? "NOTURNO" : "VESPERTINO";
-  return { turno, semIntervalo: true, motivo, janelaAlmoco };
+  return { turno, semIntervalo: true, motivo: "APOS_JANELA", janelaAlmoco };
 }
 
 export function labelTurno(turno: TurnoEntrada): string {
@@ -46,7 +59,7 @@ export function textoObservacaoTurnoSemIntervalo(c: ClassificacaoTurnoEntrada): 
   if (c.motivo === "DURANTE_JANELA") {
     return (
       `Entrada em turno ${t} durante a janela de almoço vigente (${c.janelaAlmoco}). ` +
-      `Intervalo de almoço não se aplica a esta jornada — o expediente iniciou após o horário usual de entrada.`
+      `O intervalo de almoço permanece disponível — pausas não substituem o almoço.`
     );
   }
   return (
@@ -86,4 +99,16 @@ export function criarObservacaoCategoriaSemIntervalo(
 export function observacaoTurnoSemIntervalo(observacoes: unknown): ObservacaoRegistro | undefined {
   if (!Array.isArray(observacoes)) return undefined;
   return (observacoes as ObservacaoRegistro[]).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+}
+
+/**
+ * Observação que de fato dispensa o almoço no fluxo/cálculo.
+ * Entrada DURANTE_JANELA não dispensa — o colaborador ainda pode registrar intervalo
+ * (pausas antes/durante a janela não influenciam o direito ao almoço).
+ */
+export function observacaoForcaSemIntervalo(observacoes: unknown): ObservacaoRegistro | undefined {
+  const obs = observacaoTurnoSemIntervalo(observacoes);
+  if (!obs) return undefined;
+  if (obs.motivo === "DURANTE_JANELA") return undefined;
+  return obs;
 }

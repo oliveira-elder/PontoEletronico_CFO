@@ -8,10 +8,13 @@ import {
   calcularSaldoAtestadoParcialPorExpediente,
   prepararRegsCalculoAtestadoParcial,
   isAfastamentoParcial,
-  dispensarAlmocoPorAtestadoParcial
+  dispensarAlmocoPorAtestadoParcial,
+  temPausaAberta,
+  temSaidaParcialSemRetorno,
+  creditoAlmocoDireitoDoDia
 } from "./jornada-historico";
 import { calcHorasTrabalhadasMinutos } from "./calc-horas-trabalhadas";
-import { observacaoTurnoSemIntervalo } from "./turno-entrada";
+import { observacaoForcaSemIntervalo } from "./turno-entrada";
 import { horarioParaMinutos } from "./horario-brasilia";
 
 export type { JornadaHistoricoContext };
@@ -121,7 +124,7 @@ function calcHorasMinutosDia(
     })),
     {
       agoraMin,
-      exigirIntervalo: !forcarSemIntervalo && !observacaoTurnoSemIntervalo(entrada?.observacoes),
+      exigirIntervalo: !forcarSemIntervalo && !observacaoForcaSemIntervalo(entrada?.observacoes),
       almocoMinMin: jornada?.almocoMinMin ?? 60,
       almocoPodeIniciarA: jornada?.almocoPodeIniciarA ?? "11:30",
       almocoPodeIniciarAte: jornada?.almocoPodeIniciarAte ?? "13:00",
@@ -458,7 +461,7 @@ export function montarRelatorioQuadro(
     } else if (entrada && isHoje) {
       horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia(), jornada, forcarSemIntervaloDia);
       statusInterno = "PENDENTE";
-    } else if (entrada && inicioIntervalo) {
+    } else if (entrada && (inicioIntervalo || temPausaAberta(dayRegs))) {
       horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
       statusInterno = "PENDENTE";
     } else if (entrada) {
@@ -540,10 +543,31 @@ export function montarRelatorioQuadro(
           (jornada as { toleranciaCalculoMin?: number }).toleranciaCalculoMin ?? 0,
         horaExtraLimiteMin: 120
       });
+      saldoMin += creditoAlmocoDireitoDoDia({
+        registros: dayRegs,
+        horarioInicioAtestado: parcial.horarioInicio,
+        horarioFimAtestado: parcial.horarioFim,
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+        agoraMin: isHoje ? agoraMinBrasilia() : undefined,
+        exigirIntervalo: !forcarSemIntervaloDia
+      });
+      if (statusInterno !== "OK" && (saida || temSaidaParcialSemRetorno(dayRegs)) && !isHoje) {
+        statusInterno = "OK";
+      }
     } else if (statusInterno === "FALTA") {
       saldoMin = -jornadaMin;
     } else {
       saldoMin = horasMin - jornadaMin;
+      saldoMin += creditoAlmocoDireitoDoDia({
+        registros: dayRegs,
+        almocoMinMin: jornada.almocoMinMin ?? 60,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+        almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+        agoraMin: isHoje ? agoraMinBrasilia() : undefined,
+        exigirIntervalo: !forcarSemIntervaloDia
+      });
     }
 
     dias.push({

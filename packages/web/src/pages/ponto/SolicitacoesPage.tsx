@@ -15,6 +15,7 @@ import {
   textoCorrecaoPontoFuncionario
 } from "./solicitacaoUi";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
+import { hojeBrasiliaISO } from "../../utils/horario-brasilia";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -288,14 +289,30 @@ function horarioDentroFaixa(horario: string, min: string, max: string): boolean 
 }
 
 /* Tipos de registro exibidos no formulário de correção */
-const TIPOS_CORRECAO_TODOS = [
+const TIPOS_CORRECAO_BASE = [
   { tipo: "ENTRADA", label: "Entrada", emoji: "🟢" },
   { tipo: "INICIO_INTERVALO", label: "Início Intervalo", emoji: "🟡" },
   { tipo: "FIM_INTERVALO", label: "Fim Intervalo", emoji: "🔵" },
   { tipo: "SAIDA", label: "Saída", emoji: "🔴" }
 ] as const;
 
+const TIPO_RETORNO_PAUSA = {
+  tipo: "REINICIAR_EXPEDIENTE",
+  label: "Retorno da pausa",
+  emoji: "↩️"
+} as const;
+
 const TIPOS_INTERVALO_ALMOCO = new Set(["INICIO_INTERVALO", "FIM_INTERVALO"]);
+
+/** Pausa (INTERROMPER) sem REINICIAR correspondente. */
+function temPausaAberta(regs: Array<{ tipo: string }>): boolean {
+  let aberta = false;
+  for (const r of regs) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = false;
+  }
+  return aberta;
+}
 
 function FormCorrecaoPonto({
   onSubmit,
@@ -311,18 +328,29 @@ function FormCorrecaoPonto({
   const [horarioMin, setHorarioMin] = useState("06:00");
   const [horarioMax, setHorarioMax] = useState("23:59");
   const [semIntervaloAlmoco, setSemIntervaloAlmoco] = useState(false);
+  const hojeIso = hojeBrasiliaISO();
 
   /* Horários desejados para cada tipo — "" = sem alteração */
   const [horarios, setHorarios] = useState<Record<string, string>>({
     ENTRADA: "",
     INICIO_INTERVALO: "",
     FIM_INTERVALO: "",
-    SAIDA: ""
+    SAIDA: "",
+    REINICIAR_EXPEDIENTE: ""
   });
 
-  const tiposCorrecao = semIntervaloAlmoco
-    ? TIPOS_CORRECAO_TODOS.filter((t) => !TIPOS_INTERVALO_ALMOCO.has(t.tipo))
-    : TIPOS_CORRECAO_TODOS;
+  const diaFechado = !!dataRef && dataRef < hojeIso;
+  const podeCorrigirRetornoPausa =
+    diaFechado &&
+    (temPausaAberta(registros) || registros.some((r) => r.tipo === "REINICIAR_EXPEDIENTE"));
+
+  const tiposCorrecao = (() => {
+    const base = semIntervaloAlmoco
+      ? TIPOS_CORRECAO_BASE.filter((t) => !TIPOS_INTERVALO_ALMOCO.has(t.tipo))
+      : [...TIPOS_CORRECAO_BASE];
+    if (podeCorrigirRetornoPausa) return [...base, TIPO_RETORNO_PAUSA];
+    return base;
+  })();
 
   useEffect(() => {
     api
@@ -344,7 +372,13 @@ function FormCorrecaoPonto({
   const carregarRegistros = useCallback(async (data: string) => {
     if (!data) return;
     setLoadingRegistros(true);
-    setHorarios({ ENTRADA: "", INICIO_INTERVALO: "", FIM_INTERVALO: "", SAIDA: "" });
+    setHorarios({
+      ENTRADA: "",
+      INICIO_INTERVALO: "",
+      FIM_INTERVALO: "",
+      SAIDA: "",
+      REINICIAR_EXPEDIENTE: ""
+    });
     try {
       const lista = await api.get<RegistroDoDia[]>(`/ponto/registros-do-dia?data=${data}`);
       setRegistros(lista ?? []);
@@ -359,8 +393,13 @@ function FormCorrecaoPonto({
     if (dataRef) carregarRegistros(dataRef);
   }, [dataRef, carregarRegistros]);
 
-  /* Retorna o registro existente para um tipo */
-  const regDoTipo = (tipo: string) => registros.find((r) => r.tipo === tipo);
+  /* Retorna o registro existente para um tipo (último REINICIAR, se houver vários) */
+  const regDoTipo = (tipo: string) => {
+    if (tipo === "REINICIAR_EXPEDIENTE") {
+      return [...registros].reverse().find((r) => r.tipo === tipo);
+    }
+    return registros.find((r) => r.tipo === tipo);
+  };
 
   /* Valida todos os horários preenchidos */
   const erros: Record<string, string> = {};
@@ -428,7 +467,7 @@ function FormCorrecaoPonto({
           style={{ ...input, maxWidth: 200 }}
           value={dataRef}
           onChange={(e) => setDataRef(e.target.value)}
-          max={new Date().toISOString().slice(0, 10)}
+          max={hojeIso}
         />
       </div>
 
@@ -462,6 +501,21 @@ function FormCorrecaoPonto({
             >
               Carga horária corrida: correção de intervalo de almoço não se aplica. Use Entrada e
               Saída (pausas via Interromper/Reiniciar no registro do dia).
+            </p>
+          )}
+
+          {podeCorrigirRetornoPausa && (
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                margin: "0 0 10px",
+                lineHeight: 1.45
+              }}
+            >
+              {temPausaAberta(registros)
+                ? "Há pausa sem retorno neste dia. Você pode incluir apenas o horário de retorno da pausa (Reiniciar). O início da pausa não pode ser criado por correção."
+                : "Você pode ajustar o horário de retorno da pausa. O início da pausa (Interromper) não pode ser alterado por correção."}
             </p>
           )}
 
@@ -1200,7 +1254,7 @@ function FormFerias({
   }, []);
 
   const isEstagiario = saldo?.isEstagiario ?? false;
-  const diasPorCiclo = saldo?.diasPorCiclo ?? (isEstagiario ? 15 : 30);
+  const diasPorCiclo = saldo?.diasPorCiclo ?? 30;
   const cicloAtual = saldo?.ciclos?.find((c) => c.numero === cicloSelecionado) ?? null;
 
   const solicitacaoDoCiclo = (() => {
@@ -1221,6 +1275,9 @@ function FormFerias({
       return "indisponivel";
     }
     if (cicloAtual.status === "EM_ANALISE") return "em_analise";
+    /* Estagiário pode abrir nova solicitação enquanto houver saldo residual no ciclo
+       (desconta o que já foi gozado). CLT: ciclo completo → só alteração. */
+    if (isEstagiario && cicloAtual.diasDisponiveis > 0) return "nova";
     if (cicloAtual.status === "CONFIGURADO" && solicitacaoDoCiclo?.status === "APROVADA")
       return "alteracao";
     if (cicloAtual.diasDisponiveis > 0) return "nova";
@@ -1229,17 +1286,27 @@ function FormFerias({
 
   const diasDisponiveisCiclo =
     modo === "nova" ? (cicloAtual?.diasDisponiveis ?? saldo?.diasDisponiveis ?? 0) : 0;
+  const diasJaGozadosCiclo = cicloAtual?.diasGozo ?? 0;
 
   // Garante que estagiário não tenha diasVenda > 0
   useEffect(() => {
     if (isEstagiario && diasVenda > 0) setDiasVenda(0);
   }, [isEstagiario, diasVenda]);
 
-  // Ao mudar venda ou ciclo em modo nova: ajusta quantidade de slots (3 sem venda, 2 com venda)
+  /* CLT: mantém 3 slots (ou 2 com venda). Estagiário: só 1 obrigatório; extras via “Adicionar”. */
   useEffect(() => {
     if (modo !== "nova") return;
-    const maxGozo =
-      !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
+    if (isEstagiario) {
+      setPeriodos((prev) => {
+        const todosVazios = prev.every((p) => !p.dataInicio && !p.dataFim);
+        if (prev.length === 0 || (todosVazios && prev.length !== 1)) {
+          return slotsPeriodosIniciais(1);
+        }
+        return prev;
+      });
+      return;
+    }
+    const maxGozo = diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
     setPeriodos((prev) => {
       if (prev.length === maxGozo) return prev;
       if (prev.length > maxGozo) return prev.slice(0, maxGozo);
@@ -1254,7 +1321,7 @@ function FormFerias({
     setDescricao("");
     setPeriodos(
       slotsPeriodosIniciais(
-        !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos
+        isEstagiario ? 1 : diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos
       )
     );
     // Reset proposital ao trocar ciclo (deps incompletas de propósito).
@@ -1262,7 +1329,9 @@ function FormFerias({
 
   const hoje = new Date();
   const minData = new Date(hoje);
-  minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
+  if (!isEstagiario) {
+    minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
+  }
   const minDataStr = minData.toISOString().slice(0, 10);
 
   const periodosPreenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
@@ -1271,8 +1340,12 @@ function FormFerias({
   const totalDiasUtilizados = totalDiasGozo + diasVendaEfetivo;
   const diasRestantes = diasDisponiveisCiclo - totalDiasUtilizados;
   const maxVenda = isEstagiario ? 0 : Math.min(cfg.feriasMaxDiasVenda, diasDisponiveisCiclo);
-  const maxPeriodosGozo =
-    !isEstagiario && diasVenda > 0 ? cfg.feriasMaxPeriodos - 1 : cfg.feriasMaxPeriodos;
+  /** Estagiário: N períodos (só o 1º obrigatório). CLT: limite da config. */
+  const maxPeriodosGozo = isEstagiario
+    ? 20
+    : diasVenda > 0
+      ? cfg.feriasMaxPeriodos - 1
+      : cfg.feriasMaxPeriodos;
 
   function calcDias(ini: string, fim: string) {
     return diffDias(ini, fim);
@@ -1296,6 +1369,7 @@ function FormFerias({
   }
 
   function removePeriodo(idx: number) {
+    if (isEstagiario && idx === 0) return; // 1º período obrigatório
     if (periodos.length > 1) setPeriodos((p) => p.filter((_, i) => i !== idx));
   }
 
@@ -1307,7 +1381,40 @@ function FormFerias({
     const errs: string[] = [];
     const preenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
 
-    if (!isEstagiario && diasVenda > 0 && periodos.length > maxPeriodosGozo) {
+    // Períodos parcialmente preenchidos (válido para todos)
+    periodos.forEach((p, i) => {
+      if ((p.dataInicio && !p.dataFim) || (!p.dataInicio && p.dataFim))
+        errs.push(`Período ${i + 1}: informe início e fim.`);
+    });
+
+    if (diasDisponiveisCiclo <= 0) {
+      errs.push("Não há dias disponíveis neste ciclo para uma nova solicitação.");
+    }
+
+    /* Estagiário: 1º período obrigatório; demais opcionais; sem zerar saldo. */
+    if (isEstagiario) {
+      const p0 = periodos[0];
+      if (!p0?.dataInicio || !p0?.dataFim) {
+        errs.push("O 1º período é obrigatório.");
+      } else if (p0.dias <= 0) {
+        errs.push("Período 1: a data fim deve ser igual ou posterior ao início.");
+      }
+      preenchidos.forEach((p) => {
+        const i = periodos.indexOf(p);
+        if (i === 0) return;
+        if (p.dias <= 0)
+          errs.push(`Período ${i + 1}: a data fim deve ser igual ou posterior ao início.`);
+      });
+      if (diasDisponiveisCiclo > 0 && preenchidos.length > 0 && diasRestantes < 0) {
+        errs.push(
+          `Total excede os ${diasDisponiveisCiclo} dias disponíveis neste ciclo (Restam = ${diasRestantes}d).`
+        );
+      }
+      setErros(errs);
+      return;
+    }
+
+    if (diasVenda > 0 && periodos.length > maxPeriodosGozo) {
       errs.push(`Com venda de dias, o máximo é ${maxPeriodosGozo} período(s) de gozo.`);
     }
 
@@ -1321,12 +1428,6 @@ function FormFerias({
         errs.push(`Período ${i + 1}: mínimo de ${cfg.feriasMinimoOutrosPeriodos} dias.`);
     });
 
-    // Períodos parcialmente preenchidos
-    periodos.forEach((p, i) => {
-      if ((p.dataInicio && !p.dataFim) || (!p.dataInicio && p.dataFim))
-        errs.push(`Período ${i + 1}: informe início e fim.`);
-    });
-
     if (
       preenchidos.length > 0 &&
       !preenchidos.some((p) => p.dias >= cfg.feriasMinimoGrandePeriodo)
@@ -1336,18 +1437,14 @@ function FormFerias({
       );
     }
 
-    if (!isEstagiario && diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
+    if (diasVenda > maxVenda) errs.push(`Venda máxima de ${maxVenda} dias.`);
 
     if (diasDisponiveisCiclo > 0 && preenchidos.length > 0 && diasRestantes !== 0) {
       errs.push(
         diasRestantes > 0
-          ? `${isEstagiario ? "Gozo" : "Gozo + venda"} deve igualar os ${diasDisponiveisCiclo} dias do ciclo (Restam deve ser 0; faltam ${diasRestantes} dias).`
+          ? `Gozo + venda deve igualar os ${diasDisponiveisCiclo} dias do ciclo (Restam deve ser 0; faltam ${diasRestantes} dias).`
           : `Total excede os ${diasDisponiveisCiclo} dias do ciclo (Restam = ${diasRestantes}d).`
       );
-    }
-
-    if (diasDisponiveisCiclo <= 0) {
-      errs.push("Não há dias disponíveis neste ciclo para uma nova solicitação.");
     }
 
     setErros(errs);
@@ -1372,7 +1469,7 @@ function FormFerias({
     ) &&
     erros.length === 0 &&
     totalDiasUtilizados > 0 &&
-    diasRestantes === 0;
+    (isEstagiario ? diasRestantes >= 0 : diasRestantes === 0);
 
   const handleSubmit = () => {
     if (!podeEnviar) return;
@@ -1437,6 +1534,7 @@ function FormFerias({
           onSubmit={onSubmit}
           enviando={enviando}
           cicloNumero={cicloAtual?.numero}
+          isEstagiario={isEstagiario}
         />
       </div>
     );
@@ -1508,7 +1606,9 @@ function FormFerias({
           >
             {saldoLoading
               ? "Carregando saldo de férias…"
-              : "Não há dias disponíveis para nova solicitação neste ciclo. Se já configurou as férias, use a opção de mudança nos períodos ainda elegíveis (antecedência mínima)."}
+              : isEstagiario
+                ? "Não há dias disponíveis neste ciclo. O saldo já foi totalmente gozado ou há solicitação em análise."
+                : "Não há dias disponíveis para nova solicitação neste ciclo. Se já configurou as férias, use a opção de mudança nos períodos ainda elegíveis (antecedência mínima)."}
           </div>
         )}
       </div>
@@ -1531,7 +1631,7 @@ function FormFerias({
         >
           {saldo.isEstagiario && (
             <p style={{ fontSize: 11.5, fontWeight: 700, color: "#1e40af", margin: "0 0 6px" }}>
-              Estagiário — ciclo de 6 meses · 15 dias por ciclo · sem acúmulo · sem venda de dias
+              Estagiário — 30 dias de férias por ciclo
             </p>
           )}
           {saldo.obrigatorio && (
@@ -1625,8 +1725,24 @@ function FormFerias({
             color: "#166534"
           }}
         >
-          Configurando <strong>ciclo {cicloAtual.numero}</strong> ({diasDisponiveisCiclo} dias a
-          programar). Na primeira solicitação, informe todos os períodos até Restam = 0.
+          {isEstagiario ? (
+            <>
+              Configurando <strong>ciclo {cicloAtual.numero}</strong> —{" "}
+              <strong>{diasDisponiveisCiclo}</strong> dia
+              {diasDisponiveisCiclo !== 1 ? "s" : ""} disponível
+              {diasDisponiveisCiclo !== 1 ? "eis" : ""}
+              {diasJaGozadosCiclo > 0
+                ? ` (${diasJaGozadosCiclo} já gozado${diasJaGozadosCiclo !== 1 ? "s" : ""} neste ciclo)`
+                : ""}
+              . Obrigatório apenas o <strong>1º período</strong>; use “Adicionar período” para
+              quantos quiser. Não é necessário zerar o saldo.
+            </>
+          ) : (
+            <>
+              Configurando <strong>ciclo {cicloAtual.numero}</strong> ({diasDisponiveisCiclo} dias a
+              programar). Na primeira solicitação, informe todos os períodos até Restam = 0.
+            </>
+          )}
         </div>
       )}
 
@@ -1644,11 +1760,9 @@ function FormFerias({
       >
         {isEstagiario ? (
           <>
-            <strong>Regras (estagiário):</strong> ciclo de 6 meses · 15 dias de gozo por ciclo · sem
-            acúmulo de ciclos · sem venda de dias · todos os períodos mín.{" "}
-            {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
-            {cfg.feriasMinimoGrandePeriodo} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias}{" "}
-            dias · agendar até o 5º mês do ciclo · Restam deve ser 0 para enviar.
+            <strong>Estagiário:</strong> única regra — 30 dias de férias por ciclo. Apenas o 1º
+            período é obrigatório; demais períodos são opcionais (botão “Adicionar período”).
+            Solicitações posteriores descontam automaticamente o que já foi gozado.
           </>
         ) : (
           <>
@@ -1685,7 +1799,7 @@ function FormFerias({
         </div>
       )}
 
-      {/* Períodos — pré-exibidos (3 sem venda / 2 com venda) */}
+      {/* Períodos — CLT: 3 pré-exibidos; estagiário: 1 obrigatório + N via botão */}
       {periodos.map((p, idx) => (
         <div
           key={idx}
@@ -1705,9 +1819,14 @@ function FormFerias({
             }}
           >
             <p style={{ fontSize: 12, fontWeight: 700, color: "var(--burgundy-600)", margin: 0 }}>
-              {idx + 1}º Período (mín. {cfg.feriasMinimoOutrosPeriodos} dias)
+              {idx + 1}º Período
+              {isEstagiario
+                ? idx === 0
+                  ? " (obrigatório)"
+                  : " (opcional)"
+                : ` (mín. ${cfg.feriasMinimoOutrosPeriodos} dias)`}
             </p>
-            {periodos.length > 1 && (
+            {periodos.length > 1 && !(isEstagiario && idx === 0) && (
               <button
                 onClick={() => removePeriodo(idx)}
                 style={{
@@ -1733,7 +1852,8 @@ function FormFerias({
           >
             <div>
               <label style={labelBase}>
-                Início <span style={{ color: "var(--red)" }}>*</span>
+                Início
+                {(!isEstagiario || idx === 0) && <span style={{ color: "var(--red)" }}> *</span>}
               </label>
               <input
                 type="date"
@@ -1745,7 +1865,8 @@ function FormFerias({
             </div>
             <div>
               <label style={labelBase}>
-                Fim <span style={{ color: "var(--red)" }}>*</span>
+                Fim
+                {(!isEstagiario || idx === 0) && <span style={{ color: "var(--red)" }}> *</span>}
               </label>
               <input
                 type="date"
@@ -1774,7 +1895,7 @@ function FormFerias({
         </div>
       ))}
 
-      {periodos.length < maxPeriodosGozo && diasRestantes > 0 && (
+      {periodos.length < maxPeriodosGozo && (isEstagiario || diasRestantes > 0) && (
         <button
           onClick={addPeriodo}
           style={{
@@ -1829,9 +1950,11 @@ function FormFerias({
                     fontWeight: 700,
                     color:
                       l === "Restam"
-                        ? Number(v) === 0
-                          ? "var(--green)"
-                          : "var(--red)"
+                        ? Number(v) < 0
+                          ? "var(--red)"
+                          : Number(v) === 0 || isEstagiario
+                            ? "var(--green)"
+                            : "var(--red)"
                         : Number(v) === 0
                           ? "var(--ink-400)"
                           : "var(--ink-900)",
@@ -1843,9 +1966,14 @@ function FormFerias({
               </div>
             ))}
           </div>
-          {diasRestantes !== 0 && (
+          {!isEstagiario && diasRestantes !== 0 && (
             <p style={{ fontSize: 11.5, color: "var(--red)", margin: "8px 0 0" }}>
               Para enviar a primeira solicitação, Restam deve ser igual a 0.
+            </p>
+          )}
+          {isEstagiario && diasRestantes < 0 && (
+            <p style={{ fontSize: 11.5, color: "var(--red)", margin: "8px 0 0" }}>
+              O total não pode ultrapassar os dias disponíveis do ciclo.
             </p>
           )}
         </div>
@@ -2043,13 +2171,15 @@ function FormFeriasAlteracao({
   config,
   onSubmit,
   enviando,
-  cicloNumero
+  cicloNumero,
+  isEstagiario = false
 }: {
   solicitacaoOriginal: Solicitacao;
   config: ConfigSolicitacoes | null;
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
   cicloNumero?: number | null;
+  isEstagiario?: boolean;
 }) {
   const cfg = config ?? {
     feriasAntecedenciaMinDias: 30,
@@ -2070,7 +2200,9 @@ function FormFeriasAlteracao({
 
   const hoje = new Date();
   const minAlteracao = new Date(hoje);
-  minAlteracao.setDate(minAlteracao.getDate() + cfg.feriasAntecedenciaMinDias);
+  if (!isEstagiario) {
+    minAlteracao.setDate(minAlteracao.getDate() + cfg.feriasAntecedenciaMinDias);
+  }
   const minDataStr = minAlteracao.toISOString().slice(0, 10);
 
   type PeriodoAlt = { dataInicio: string; dataFim: string; dias: number; bloqueado: boolean };
@@ -2079,7 +2211,8 @@ function FormFeriasAlteracao({
       dataInicio: p.dataInicio.slice(0, 10),
       dataFim: p.dataFim.slice(0, 10),
       dias: p.dias,
-      bloqueado: new Date(p.dataInicio) <= minAlteracao
+      /* Estagiário: única regra é o saldo de 30 dias/ciclo — períodos sempre editáveis */
+      bloqueado: isEstagiario ? false : new Date(p.dataInicio) <= minAlteracao
     }))
   );
   const [descricao, setDescricao] = useState("");
@@ -2098,6 +2231,19 @@ function FormFeriasAlteracao({
   useEffect(() => {
     const errs: string[] = [];
     const editaveis = periodos.filter((p) => !p.bloqueado);
+
+    if (isEstagiario) {
+      editaveis.forEach((p) => {
+        if (!p.dataInicio || !p.dataFim) return;
+        if (p.dias <= 0)
+          errs.push(
+            `Período ${periodos.indexOf(p) + 1}: a data fim deve ser igual ou posterior ao início.`
+          );
+      });
+      setErros(errs);
+      return;
+    }
+
     editaveis.forEach((p) => {
       if (!p.dataInicio || !p.dataFim) return;
       if (new Date(p.dataInicio) <= minAlteracao)
@@ -2120,7 +2266,7 @@ function FormFeriasAlteracao({
       );
     }
     setErros(errs);
-  }, [periodos, cfg, minAlteracao]);
+  }, [periodos, cfg, minAlteracao, isEstagiario]);
 
   const podeEnviar =
     periodos.some((p) => !p.bloqueado) &&
@@ -2194,12 +2340,22 @@ function FormFeriasAlteracao({
         }}
       >
         Solicitação de <strong>mudança de férias</strong>
-        {cicloOriginal != null ? ` (ciclo ${cicloOriginal})` : ""}. Períodos bloqueados (início em
-        menos de {cfg.feriasAntecedenciaMinDias} dias) não podem ser alterados. A venda de dias da
-        solicitação original permanece inalterada.
+        {cicloOriginal != null ? ` (ciclo ${cicloOriginal})` : ""}.
+        {isEstagiario ? (
+          <>
+            {" "}
+            Estagiário: única regra é o saldo de 30 dias por ciclo — períodos livres para ajuste.
+          </>
+        ) : (
+          <>
+            {" "}
+            Períodos bloqueados (início em menos de {cfg.feriasAntecedenciaMinDias} dias) não podem
+            ser alterados. A venda de dias da solicitação original permanece inalterada.
+          </>
+        )}
       </div>
 
-      {!algumEditavel && (
+      {!algumEditavel && !isEstagiario && (
         <div
           style={{
             padding: "10px 14px",
@@ -2237,7 +2393,9 @@ function FormFeriasAlteracao({
             {idx + 1}º Período{" "}
             {p.bloqueado
               ? "(bloqueado — menos de 30 dias)"
-              : `(mín. ${cfg.feriasMinimoOutrosPeriodos} dias)`}
+              : isEstagiario
+                ? ""
+                : `(mín. ${cfg.feriasMinimoOutrosPeriodos} dias)`}
           </p>
           <div
             style={{
@@ -3036,6 +3194,7 @@ function AlterarFeriasModal({
   onCriada: (s: Solicitacao) => void;
 }) {
   const [config, setConfig] = useState<ConfigSolicitacoes | null>(null);
+  const [isEstagiario, setIsEstagiario] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [ok, setOk] = useState(false);
   const [erro, setErro] = useState("");
@@ -3046,6 +3205,10 @@ function AlterarFeriasModal({
       .then((c) => {
         if (c) setConfig(c);
       })
+      .catch(() => {});
+    api
+      .get<{ isEstagiario?: boolean }>("/ponto/ferias/saldo")
+      .then((s) => setIsEstagiario(!!s?.isEstagiario))
       .catch(() => {});
   }, []);
 
@@ -3145,6 +3308,7 @@ function AlterarFeriasModal({
                   config={config}
                   onSubmit={handleSubmit}
                   enviando={enviando}
+                  isEstagiario={isEstagiario}
                 />
               </div>
             </div>

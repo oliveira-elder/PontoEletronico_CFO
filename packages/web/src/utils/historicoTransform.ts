@@ -24,6 +24,15 @@ export interface ObservacaoRegistro {
   janelaAlmoco?: string;
 }
 
+/** TURNO_SEM_INTERVALO só dispensa almoço após a janela ou por categoria — não em DURANTE_JANELA. */
+function obsForcaSemIntervalo(
+  observacoes?: ObservacaoRegistro[] | null
+): ObservacaoRegistro | undefined {
+  const obs = observacoes?.find((o) => o.tipo === "TURNO_SEM_INTERVALO");
+  if (!obs || obs.motivo === "DURANTE_JANELA") return undefined;
+  return obs;
+}
+
 export interface Pausa {
   inicio: string;
   fim: string | null;
@@ -310,7 +319,11 @@ function filtrarRegsForaAtestadoParcial(
   const hi = toMin(horarioInicio);
   const hf = toMin(horarioFim);
   if (hf <= hi) return registros;
-  return registros.filter((r) => r.minuto < hi || r.minuto > hf);
+  const fechaNoLimite = (tipo: string) =>
+    tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE" || tipo === "INICIO_INTERVALO";
+  return registros.filter(
+    (r) => r.minuto < hi || r.minuto > hf || (r.minuto === hi && fechaNoLimite(r.tipo))
+  );
 }
 
 function prepararRegsCalculoAtestadoParcial(opts: {
@@ -361,11 +374,140 @@ function prepararRegsCalculoAtestadoParcial(opts: {
   return { registros, marcoMin, fimTrabalhoMin, semAlmoco };
 }
 
+function temPausaAberta(registros: Array<{ tipo: string }>): boolean {
+  let aberta = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = false;
+  }
+  return aberta;
+}
+
+function temIntervaloAberto(registros: Array<{ tipo: string }>): boolean {
+  let emIntervalo = false;
+  for (const r of registros) {
+    if (r.tipo === "INICIO_INTERVALO") emIntervalo = true;
+    else if (
+      r.tipo === "FIM_INTERVALO" ||
+      r.tipo === "SAIDA" ||
+      r.tipo === "ENTRADA" ||
+      r.tipo === "REINICIAR_EXPEDIENTE"
+    ) {
+      emIntervalo = false;
+    }
+  }
+  return emIntervalo;
+}
+
+function temSaidaParcialSemRetorno(registros: Array<{ tipo: string }>): boolean {
+  return temPausaAberta(registros) || temIntervaloAberto(registros);
+}
+
+function minutoPausaAberta(registros: Array<{ tipo: string; minuto: number }>): number | null {
+  let aberta: number | null = null;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") aberta = r.minuto;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE") aberta = null;
+  }
+  return aberta;
+}
+
+function atestadoParcialIntersectaJanelaAlmoco(
+  horarioInicio: string,
+  horarioFim: string,
+  opts: { almocoPodeIniciarA?: string; almocoPodeIniciarAte?: string } = {}
+): boolean {
+  const hi = toMin(horarioInicio);
+  const hf = toMin(horarioFim);
+  if (hf <= hi) return false;
+  const janelaIni = toMin(opts.almocoPodeIniciarA ?? "11:30");
+  const janelaFim = toMin(opts.almocoPodeIniciarAte ?? "13:00");
+  if (janelaFim <= janelaIni) return false;
+  return Math.min(hf, janelaFim) > Math.max(hi, janelaIni);
+}
+
+function creditoAlmocoPausaComAtestado(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+}): number {
+  if (!opts.horarioInicioAtestado || !opts.horarioFimAtestado) return 0;
+  if (!temSaidaParcialSemRetorno(opts.registros)) return 0;
+  if (
+    !atestadoParcialIntersectaJanelaAlmoco(opts.horarioInicioAtestado, opts.horarioFimAtestado, {
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+    })
+  ) {
+    return 0;
+  }
+  return Math.max(0, opts.almocoMinMin ?? 60);
+}
+
+function temPausaReiniciada(registros: Array<{ tipo: string }>): boolean {
+  let interrompeu = false;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") interrompeu = true;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE" && interrompeu) return true;
+  }
+  return false;
+}
+
+function creditoAlmocoEsquecidoAposPausa(opts: {
+  registros: Array<{ tipo: string }>;
+  almocoMinMin?: number;
+  almocoPodeIniciarAte?: string;
+  agoraMin?: number;
+  exigirIntervalo?: boolean;
+}): number {
+  if (opts.exigirIntervalo === false) return 0;
+  if (!opts.registros.some((r) => r.tipo === "ENTRADA")) return 0;
+  if (opts.registros.some((r) => r.tipo === "INICIO_INTERVALO")) return 0;
+  if (!temPausaReiniciada(opts.registros)) return 0;
+  const fimJanela = toMin(opts.almocoPodeIniciarAte ?? "13:00");
+  const agora = opts.agoraMin ?? 24 * 60;
+  if (agora <= fimJanela) return 0;
+  return Math.max(0, opts.almocoMinMin ?? 60);
+}
+
+function creditoAlmocoDireitoDoDia(opts: {
+  registros: Array<{ tipo: string }>;
+  horarioInicioAtestado?: string | null;
+  horarioFimAtestado?: string | null;
+  almocoMinMin?: number;
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+  agoraMin?: number;
+  exigirIntervalo?: boolean;
+}): number {
+  const viaAtestado = creditoAlmocoPausaComAtestado({
+    registros: opts.registros,
+    horarioInicioAtestado: opts.horarioInicioAtestado,
+    horarioFimAtestado: opts.horarioFimAtestado,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarA: opts.almocoPodeIniciarA,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+  });
+  if (viaAtestado > 0) return viaAtestado;
+  return creditoAlmocoEsquecidoAposPausa({
+    registros: opts.registros,
+    almocoMinMin: opts.almocoMinMin,
+    almocoPodeIniciarAte: opts.almocoPodeIniciarAte,
+    agoraMin: opts.agoraMin,
+    exigirIntervalo: opts.exigirIntervalo
+  });
+}
+
 function fimTrabalhoMinutosDoDia(
   registros: Array<{ tipo: string; minuto: number }>
 ): number | null {
   const saida = [...registros].reverse().find((r) => r.tipo === "SAIDA");
   if (saida) return saida.minuto;
+  const pausa = minutoPausaAberta(registros);
+  if (pausa != null) return pausa;
   const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
   if (!temFim) {
     const ini = [...registros].reverse().find((r) => r.tipo === "INICIO_INTERVALO");
@@ -886,15 +1028,18 @@ export function transformarHistorico(
         ...optsAlmocoAtestado
       });
     const dayRegsHoras =
-      semAlmocoAtestado ||
-      !!dayRegsCalc.find((r) => (r.observacoes ?? []).some((o) => o.tipo === "TURNO_SEM_INTERVALO"))
+      semAlmocoAtestado || !!dayRegsCalc.find((r) => !!obsForcaSemIntervalo(r.observacoes))
         ? normalizarRegsAtestadoSemAlmoco(
             atestadoParcial
               ? dayRegsCalc.filter((r) => {
                   const m = toMin(fmtHora(r.dataHora));
                   const hi = toMin(atestadoParcial.horarioInicio!);
                   const hf = toMin(atestadoParcial.horarioFim!);
-                  return m < hi || m > hf;
+                  const fechaNoLimite =
+                    r.tipo === "SAIDA" ||
+                    r.tipo === "INTERROMPER_EXPEDIENTE" ||
+                    r.tipo === "INICIO_INTERVALO";
+                  return m < hi || m > hf || (m === hi && fechaNoLimite);
                 })
               : dayRegsCalc
           )
@@ -903,7 +1048,11 @@ export function transformarHistorico(
               const m = toMin(fmtHora(r.dataHora));
               const hi = toMin(atestadoParcial.horarioInicio!);
               const hf = toMin(atestadoParcial.horarioFim!);
-              return m < hi || m > hf;
+              const fechaNoLimite =
+                r.tipo === "SAIDA" ||
+                r.tipo === "INTERROMPER_EXPEDIENTE" ||
+                r.tipo === "INICIO_INTERVALO";
+              return m < hi || m > hf || (m === hi && fechaNoLimite);
             })
           : dayRegsCalc;
 
@@ -927,9 +1076,7 @@ export function transformarHistorico(
     let status: StatusDia;
     let obs: string | undefined;
 
-    const obsTurnoEarly = (entradaR?.observacoes ?? []).find(
-      (o) => o.tipo === "TURNO_SEM_INTERVALO"
-    );
+    const obsTurnoEarly = obsForcaSemIntervalo(entradaR?.observacoes);
     const calcOpts = {
       exigirIntervalo: exigirIntervaloGlobal && !obsTurnoEarly && !semAlmocoAtestado,
       almocoMinMin: jornada.almocoMinMin ?? 60,
@@ -956,12 +1103,14 @@ export function transformarHistorico(
         ...calcOpts,
         agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
       });
+      const pausaSemRetorno = temSaidaParcialSemRetorno(dayRegsCalc.length ? dayRegsCalc : dayRegs);
       if (!entrada) {
         status = "PENDENTE";
       } else if (dispensaSaida) {
         status = isHoje ? "PENDENTE" : "OK";
-      } else if (saida) {
-        status = "OK";
+      } else if (saida || pausaSemRetorno) {
+        /* Pausa/intervalo sem retorno fecha o trecho trabalhado (saldo até o fechamento). */
+        status = isHoje && !saida ? "PENDENTE" : "OK";
       } else if (isHoje) {
         status = "PENDENTE";
       } else {
@@ -985,13 +1134,25 @@ export function transformarHistorico(
       const now = hoje.getHours() * 60 + hoje.getMinutes();
       horasMin = calcHorasMinutosDia(dayRegsHoras.length ? dayRegsHoras : dayRegs, now, calcOpts);
       status = "PENDENTE";
-    } else if (entrada && inicioIntervalo) {
+    } else if (
+      entrada &&
+      (inicioIntervalo || temPausaAberta(dayRegsCalc.length ? dayRegsCalc : dayRegs))
+    ) {
+      /* Almoço aberto ou pausa (INTERROMPER) sem retorno: credita entrada→fechamento. */
       horasMin = calcHorasMinutosDia(
         dayRegsHoras.length ? dayRegsHoras : dayRegs,
         undefined,
         calcOpts
       );
       status = "PENDENTE";
+      if (!inicioIntervalo && temPausaAberta(dayRegsCalc.length ? dayRegsCalc : dayRegs)) {
+        obs = "Pausa sem retorno — saldo até o interromper expediente";
+      } else if (
+        inicioIntervalo &&
+        temIntervaloAberto(dayRegsCalc.length ? dayRegsCalc : dayRegs)
+      ) {
+        obs = "Intervalo sem retorno — saldo até o início do intervalo";
+      }
     } else if (entrada) {
       horasMin = 0;
       status = "FALTA";
@@ -1030,8 +1191,18 @@ export function transformarHistorico(
           toleranciaCalculoMin: jornada.toleranciaCalculoMin ?? 0,
           horaExtraLimiteMin: jornada.horaExtraLimiteAuto ?? 120
         });
-        /* SaldoCell usa horas − jornada: alinha para refletir saldo por expediente */
-        jornadaMin = Math.max(0, horasMin - saldoExpediente);
+        const creditoAlmoco = creditoAlmocoDireitoDoDia({
+          registros: dayRegsCalc.length ? dayRegsCalc : dayRegs,
+          horarioInicioAtestado: atestadoParcial.horarioInicio,
+          horarioFimAtestado: atestadoParcial.horarioFim,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00",
+          agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined,
+          exigirIntervalo: exigirIntervaloGlobal && !obsTurnoEarly && !semAlmocoAtestado
+        });
+        /* SaldoCell usa horas − jornada: alinha para refletir saldo por expediente + crédito almoço */
+        jornadaMin = Math.max(0, horasMin - (saldoExpediente + creditoAlmoco));
       }
       if (!obs) {
         obs = labelAtestadoParcial(
@@ -1113,7 +1284,7 @@ export function transformarHistorico(
       saidaEditada: !!saidaR?.ajustado,
       semIntervalo: bloquearIntervalo,
       turno: obsTurno?.turno ?? (atestadoParcial ? "ATESTADO_PARCIAL" : undefined),
-      motivoSemIntervalo: atestadoParcial ? "ATESTADO_PARCIAL" : obsTurno?.motivo,
+      motivoSemIntervalo: atestadoParcial ? "ATESTADO_PARCIAL" : obsTurnoEarly?.motivo,
       janelaAlmoco: obsTurno?.janelaAlmoco,
       atestadoParcial: !!atestadoParcial,
       atestadoParcialHorario: atestadoParcial
