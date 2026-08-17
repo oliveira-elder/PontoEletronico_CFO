@@ -73,6 +73,18 @@ export const EVENTOS_NOTIFICACAO = [
     gatilho: "Automático — 1º dia de cada mês"
   },
   {
+    id: "FOLHA_PONTO_CORRECAO_PENDENTE",
+    titulo: "Folha de Ponto — Correções Pendentes para Assinatura",
+    descricao:
+      "Notifica o funcionário, todos os dias, de que é necessário regularizar a folha de ponto " +
+      "(correção de ponto ou atestado) para poder fechá-la e assiná-la. " +
+      "O envio cessa quando não houver mais pendências de cálculo e a folha for assinada.",
+    destinatario: "Funcionário",
+    gatilho:
+      "Automático — diário às 00:10 (Brasília), enquanto a folha estiver pendente de assinatura " +
+      "e houver registros de saldo não regularizados"
+  },
+  {
     id: "ASSINAR_QUADRO_GESTOR",
     titulo: "Quadro Aguardando Assinatura do Gestor",
     descricao:

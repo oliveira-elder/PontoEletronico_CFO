@@ -764,12 +764,31 @@ export class GestaoService {
   }
 
   async setJornadaPeriodo(funcionarioId: string, jornadaPeriodoId: string | null) {
+    const atual = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { jornadaPeriodoId: true }
+    });
+    if (!jornadaPeriodoId) {
+      return this.prisma.funcionario.update({
+        where: { id: funcionarioId },
+        data: {
+          jornadaPeriodoId: null,
+          jornadaPeriodoAssociadoEm: null,
+          jornadaPeriodoDesde: null
+        }
+      });
+    }
+    const mesma = atual?.jornadaPeriodoId === jornadaPeriodoId;
     return this.prisma.funcionario.update({
       where: { id: funcionarioId },
       data: {
         jornadaPeriodoId,
-        jornadaPeriodoAssociadoEm: jornadaPeriodoId ? new Date() : null,
-        jornadaPeriodoDesde: jornadaPeriodoId ? new Date() : null
+        ...(mesma
+          ? {}
+          : {
+              jornadaPeriodoAssociadoEm: new Date(),
+              jornadaPeriodoDesde: null
+            })
       }
     });
   }

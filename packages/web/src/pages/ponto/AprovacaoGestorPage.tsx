@@ -12,7 +12,9 @@ import {
   UserIcon,
   DownloadIcon,
   InfoIcon,
-  Edit2Icon
+  Edit2Icon,
+  SetaAlteracaoHorario,
+  TextoComSetaHorario
 } from "../../components/icons";
 import {
   FeriasDetalheBlock,
@@ -322,7 +324,7 @@ function ModalDecisao({
               Solicitação
             </p>
             <p style={{ margin: 0, fontSize: 13, color: "var(--ink-800)", lineHeight: 1.5 }}>
-              {resumo}
+              <TextoComSetaHorario texto={resumo} />
             </p>
             {solicitacao.tipo === "FERIAS" && <FeriasDetalheBlock meta={solicitacao.metadados} />}
             {solicitacao.descricao && (
@@ -593,7 +595,7 @@ function SolicitacaoCard({
             fontWeight: 500
           }}
         >
-          {resumo}
+          <TextoComSetaHorario texto={resumo} />
         </p>
 
         {/* ── Log discreto (tipo + datas) ── */}
@@ -2247,9 +2249,7 @@ function CardCorrecaoRH({
                       {c.horarioOriginal}
                     </span>
                   )}
-                  {c.acao === "CORRIGIR" && (
-                    <span style={{ margin: "0 4px", color: "var(--ink-400)" }}>→</span>
-                  )}
+                  {c.acao === "CORRIGIR" && <SetaAlteracaoHorario />}
                   {(c.acao === "CORRIGIR" || c.acao === "INCLUIR") && (
                     <strong style={{ fontFamily: "var(--font-mono)", color: "#2f7d4f" }}>
                       {c.horario}
@@ -2462,8 +2462,16 @@ function ModalDecisaoAdmin({
                     {c.acao === "CORRIGIR" ? "✏️" : c.acao === "INCLUIR" ? "➕" : "🗑️"}{" "}
                     <strong>{tipoLabel[c.tipoRegistro] ?? c.tipoRegistro}</strong>
                     {c.acao === "CORRIGIR" && c.horarioOriginal && (
-                      <span style={{ color: "var(--ink-500)", margin: "0 4px" }}>
-                        {c.horarioOriginal} →
+                      <span
+                        style={{
+                          color: "var(--ink-500)",
+                          margin: "0 4px",
+                          display: "inline-flex",
+                          alignItems: "center"
+                        }}
+                      >
+                        {c.horarioOriginal}
+                        <SetaAlteracaoHorario />
                       </span>
                     )}
                     {(c.acao === "CORRIGIR" || c.acao === "INCLUIR") && (

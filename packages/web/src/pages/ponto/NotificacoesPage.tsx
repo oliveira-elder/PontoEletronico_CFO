@@ -40,40 +40,117 @@ function dataCompleta(iso: string): string {
 }
 
 function CorpoNotificacao({ corpo, expandido }: { corpo: string; expandido: boolean }) {
-  const segmentos = segmentosComLinks(corpo);
+  if (!expandido) {
+    const segmentos = segmentosComLinks(corpo);
+    return (
+      <p
+        style={{
+          fontSize: 12.5,
+          color: "var(--ink-500)",
+          margin: "0 0 6px",
+          lineHeight: 1.55,
+          whiteSpace: "normal",
+          overflow: "hidden",
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical"
+        }}
+      >
+        {segmentos.map((s, i) =>
+          s.tipo === "link" ? (
+            <a
+              key={i}
+              href={s.valor}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                color: "var(--burgundy-600)",
+                textDecoration: "underline",
+                wordBreak: "break-all"
+              }}
+            >
+              {s.valor}
+            </a>
+          ) : (
+            <React.Fragment key={i}>{s.valor}</React.Fragment>
+          )
+        )}
+      </p>
+    );
+  }
+
+  const linhas = corpo.split("\n");
+  const blocos: Array<{ tipo: "texto" | "atencao"; valor: string }> = [];
+  let acc: string[] = [];
+  const flush = () => {
+    if (acc.length) {
+      blocos.push({ tipo: "texto", valor: acc.join("\n") });
+      acc = [];
+    }
+  };
+  for (const linha of linhas) {
+    if (linha.startsWith("ATENÇÃO:")) {
+      flush();
+      blocos.push({ tipo: "atencao", valor: linha });
+    } else {
+      acc.push(linha);
+    }
+  }
+  flush();
+
   return (
-    <p
-      style={{
-        fontSize: expandido ? 13.5 : 12.5,
-        color: "var(--ink-500)",
-        margin: "0 0 6px",
-        lineHeight: 1.55,
-        whiteSpace: expandido ? "pre-wrap" : "normal",
-        overflow: expandido ? "visible" : "hidden",
-        display: expandido ? "block" : "-webkit-box",
-        WebkitLineClamp: expandido ? undefined : 2,
-        WebkitBoxOrient: expandido ? undefined : "vertical"
-      }}
-    >
-      {segmentos.map((s, i) =>
-        s.tipo === "link" ? (
-          <a
-            key={i}
-            href={s.valor}
-            onClick={(e) => e.stopPropagation()}
+    <div style={{ margin: "0 0 6px" }}>
+      {blocos.map((bloco, idx) =>
+        bloco.tipo === "atencao" ? (
+          <div
+            key={idx}
             style={{
-              color: "var(--burgundy-600)",
-              textDecoration: "underline",
-              wordBreak: "break-all"
+              margin: "10px 0",
+              padding: "10px 12px",
+              background: "#FEF3C7",
+              border: "1px solid #D97706",
+              borderLeft: "4px solid #B45309",
+              borderRadius: 8,
+              color: "#92400E",
+              fontSize: 13,
+              fontWeight: 700,
+              lineHeight: 1.45
             }}
           >
-            {s.valor}
-          </a>
+            {bloco.valor}
+          </div>
         ) : (
-          <React.Fragment key={i}>{s.valor}</React.Fragment>
+          <p
+            key={idx}
+            style={{
+              fontSize: 13.5,
+              color: "var(--ink-500)",
+              margin: 0,
+              lineHeight: 1.55,
+              whiteSpace: "pre-wrap"
+            }}
+          >
+            {segmentosComLinks(bloco.valor).map((s, i) =>
+              s.tipo === "link" ? (
+                <a
+                  key={i}
+                  href={s.valor}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    color: "var(--burgundy-600)",
+                    textDecoration: "underline",
+                    wordBreak: "break-all"
+                  }}
+                >
+                  {s.valor}
+                </a>
+              ) : (
+                <React.Fragment key={i}>{s.valor}</React.Fragment>
+              )
+            )}
+          </p>
         )
       )}
-    </p>
+    </div>
   );
 }
 

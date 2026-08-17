@@ -24,27 +24,128 @@ import {
   SistemaConfig,
   ModoRegistro
 } from "../../hooks/usePontoRegistration";
+import { formatarDataExtensoPt } from "../../utils/horario-brasilia";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
 const fmt = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 const fmtShort = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
-function horarioBrasiliaAgora(): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).format(new Date());
+function horarioParaMinutosLocal(horario: string): number {
+  const digits = String(horario).replace(/\D/g, "");
+  if (!digits) return 0;
+  if (digits.length <= 2) return (Number(digits) || 0) * 60;
+  const hhmm = digits.length >= 4 ? digits.slice(0, 4) : digits.padStart(4, "0");
+  return (Number(hhmm.slice(0, 2)) || 0) * 60 + (Number(hhmm.slice(2, 4)) || 0);
+}
+
+function minutosParaHorarioLocal(minutos: number): string {
+  const n = ((Math.round(minutos) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(n / 60))}:${pad(n % 60)}`;
+}
+
+function somarMinutosHorario(horario: string, minutos: number): string {
+  return minutosParaHorarioLocal(horarioParaMinutosLocal(horario) + minutos);
+}
+
+function horaPausaAberta(registros: { tipo: TipoRegistro; hora: string }[]): string | null {
+  let pausaHora: string | null = null;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") pausaHora = r.hora;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE" || r.tipo === "INICIO_INTERVALO") pausaHora = null;
+  }
+  return pausaHora;
+}
+
+/** Próximos marcos ainda não batidos. Só após o registro de Iniciar Jornada. */
+function previsaoProximosMarcos(opts: {
+  registros: { tipo: TipoRegistro; hora: string }[];
+  semIntervalo: boolean;
+  horaSaida: string;
+  inicioAlmocoPrevisto: string;
+  almocoMinMin: number;
+  pausaComoAlmoco: boolean;
+}): { tipo: TipoRegistro; hora: string }[] {
+  const {
+    registros,
+    semIntervalo,
+    horaSaida,
+    inicioAlmocoPrevisto,
+    almocoMinMin,
+    pausaComoAlmoco
+  } = opts;
+  const feitos = new Set(registros.map((r) => r.tipo));
+  if (!feitos.has("ENTRADA")) return [];
+
+  const pred: { tipo: TipoRegistro; hora: string }[] = [];
+
+  if (!semIntervalo) {
+    const inicioReg = registros.find((r) => r.tipo === "INICIO_INTERVALO");
+    const pausaHora = horaPausaAberta(registros);
+    const inicioAlmocoHora = inicioReg
+      ? inicioReg.hora
+      : pausaComoAlmoco && pausaHora
+        ? pausaHora
+        : inicioAlmocoPrevisto;
+
+    if (!feitos.has("INICIO_INTERVALO") && !pausaComoAlmoco) {
+      pred.push({ tipo: "INICIO_INTERVALO", hora: inicioAlmocoPrevisto });
+    }
+    if (!feitos.has("FIM_INTERVALO")) {
+      pred.push({
+        tipo: "FIM_INTERVALO",
+        hora: somarMinutosHorario(inicioAlmocoHora, almocoMinMin)
+      });
+    }
+  }
+
+  if (!feitos.has("SAIDA")) {
+    pred.push({ tipo: "SAIDA", hora: horaSaida });
+  }
+  return pred;
+}
+
+/** Pausa da manhã que já cruzou o início da janela conta como almoço até o retorno. */
+function pausaManhaContaComoAlmoco(
+  registros: { tipo: TipoRegistro; hora: string }[],
+  agoraHora: string,
+  janelaInicio?: string,
+  janelaFim?: string
+): boolean {
+  if (!janelaInicio || !janelaFim) return false;
+  const pausaHora = horaPausaAberta(registros);
+  if (!pausaHora) return false;
+  return (
+    horarioParaMinutosLocal(pausaHora) <= horarioParaMinutosLocal(janelaFim) &&
+    horarioParaMinutosLocal(agoraHora) >= horarioParaMinutosLocal(janelaInicio)
+  );
 }
 
 function horarioDentroFaixa(horario: string, min: string, max: string): boolean {
-  const [h, m] = horario.split(":").map(Number);
-  const [hMin, mMin] = min.split(":").map(Number);
-  const [hMax, mMax] = max.split(":").map(Number);
-  const atual = h * 60 + m;
-  return atual >= hMin * 60 + mMin && atual <= hMax * 60 + mMax;
+  const atual = horarioParaMinutosLocal(horario);
+  return atual >= horarioParaMinutosLocal(min) && atual <= horarioParaMinutosLocal(max);
+}
+
+function minutosDoRelogio(d: Date): number {
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Janela efetiva: início mais cedo e fim mais tarde entre jornada, config e o padrão 11:30–13:00. */
+function escolherJanelaAlmoco(
+  jornada?: { inicio: string; fim: string } | null,
+  cfg?: { almocoPodeIniciarA?: string; almocoPodeIniciarAte?: string } | null
+): { inicio: string; fim: string } {
+  const inicios = [jornada?.inicio, cfg?.almocoPodeIniciarA, "11:30"].filter(
+    (h): h is string => !!h
+  );
+  const fins = [jornada?.fim, cfg?.almocoPodeIniciarAte, "13:00"].filter((h): h is string => !!h);
+  const inicio = inicios.reduce((a, b) =>
+    horarioParaMinutosLocal(a) <= horarioParaMinutosLocal(b) ? a : b
+  );
+  const fim = fins.reduce((a, b) =>
+    horarioParaMinutosLocal(a) >= horarioParaMinutosLocal(b) ? a : b
+  );
+  return { inicio, fim };
 }
 
 /* ─── Observações (anotações automáticas de ajuste) ─── */
@@ -65,17 +166,18 @@ function obsTurnoSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoReg
   return observacoes?.find((o) => o.tipo === "TURNO_SEM_INTERVALO");
 }
 
-/** Só força dispensa de almoço após a janela ou por categoria — nunca por pausa/DURANTE_JANELA. */
+/** Só força dispensa de almoço após a janela — nunca por pausa/DURANTE_JANELA
+ *  nem pelo carimbo de carga corrida (isso vale só para estagiário, via categoria). */
 function obsForcaSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoRegistro | undefined {
   const obs = obsTurnoSemIntervalo(observacoes);
   if (!obs) return undefined;
-  if (obs.motivo === "DURANTE_JANELA") return undefined;
+  if (obs.motivo === "DURANTE_JANELA" || obs.motivo === "CATEGORIA_CARGA_CORRIDA") return undefined;
   return obs;
 }
 
-/** Estagiário / menor aprendiz: carga horária corrida — sem intervalo de almoço. */
+/** Estagiário: carga horária corrida — sem intervalo de almoço. */
 function categoriaSemIntervaloAlmoco(categoria: string | null | undefined): boolean {
-  return categoria === "ESTAGIARIO" || categoria === "MENOR_APRENDIZ";
+  return categoria === "ESTAGIARIO";
 }
 
 /* ─── Informações visuais de cada tipo de registro ─── */
@@ -197,9 +299,14 @@ function getFase(
 function labelFaseInfo(
   fase: FaseJornada,
   turno?: string | null,
-  semIntervalo?: boolean
+  semIntervalo?: boolean,
+  naJanelaAlmoco?: boolean,
+  pausaComoAlmoco?: boolean
 ): { label: string; cor: string; bg: string; pulse?: boolean } {
   const base = FASE_INFO[fase];
+  if ((naJanelaAlmoco || pausaComoAlmoco) && fase === "PAUSA_MANHA" && !semIntervalo) {
+    return FASE_INFO.ALMOCO;
+  }
   if (semIntervalo && fase === "TARDE") {
     if (turno === "NOTURNO") return { ...base, label: "Trabalhando (turno noturno)" };
     if (turno === "VESPERTINO") return { ...base, label: "Trabalhando (turno vespertino)" };
@@ -214,14 +321,65 @@ function labelFaseInfo(
   return base;
 }
 
-function descFase(fase: FaseJornada, semIntervalo: boolean): string {
+function descFase(
+  fase: FaseJornada,
+  semIntervalo: boolean,
+  naJanelaAlmoco?: boolean,
+  pausaComoAlmoco?: boolean,
+  janela?: { inicio: string; fim: string }
+): string {
   if (semIntervalo && fase === "TARDE") {
     return "Intervalo de almoço não aplicável — encerre a jornada ou interrompa o expediente, se necessário";
   }
   if (semIntervalo && fase === "PAUSA_TARDE") {
     return "Retome o expediente para continuar trabalhando";
   }
+  if (naJanelaAlmoco && fase === "MANHA") {
+    const faixa = janela ? ` (${janela.inicio}–${janela.fim})` : "";
+    return `Janela de almoço${faixa} — registre só o início do intervalo`;
+  }
+  if ((naJanelaAlmoco || pausaComoAlmoco) && fase === "PAUSA_MANHA") {
+    return "A pausa já conta como início do intervalo. Encerre o almoço ao retornar";
+  }
   return FASE_DESC[fase];
+}
+
+function estiloBadgeSobreEscuro(cor: string): {
+  texto: string;
+  fundo: string;
+  borda: string;
+  ponto: string;
+} {
+  if (cor === "var(--green)") {
+    return {
+      texto: "#bbf7d0",
+      fundo: "rgba(74, 222, 128, 0.24)",
+      borda: "rgba(134, 239, 172, 0.65)",
+      ponto: "#4ade80"
+    };
+  }
+  if (cor === "#8a6a00") {
+    return {
+      texto: "#fde68a",
+      fundo: "rgba(251, 191, 36, 0.26)",
+      borda: "rgba(253, 224, 71, 0.6)",
+      ponto: "#facc15"
+    };
+  }
+  if (cor === "var(--blue-ink)") {
+    return {
+      texto: "#bfdbfe",
+      fundo: "rgba(96, 165, 250, 0.24)",
+      borda: "rgba(147, 197, 253, 0.55)",
+      ponto: "#60a5fa"
+    };
+  }
+  return {
+    texto: "#f3f4f6",
+    fundo: "rgba(255, 255, 255, 0.16)",
+    borda: "rgba(255, 255, 255, 0.4)",
+    ponto: "#e5e7eb"
+  };
 }
 
 const FASE_INFO: Record<FaseJornada, { label: string; cor: string; bg: string; pulse?: boolean }> =
@@ -261,26 +419,33 @@ interface AcaoSlot {
 function getLayout(
   fase: FaseJornada,
   cfg: SistemaConfig,
-  opts?: { semIntervalo?: boolean }
+  opts?: { semIntervalo?: boolean; naJanelaAlmoco?: boolean; pausaComoAlmoco?: boolean }
 ): AcaoSlot[] {
   const semIntervalo = !!opts?.semIntervalo;
+  const naJanelaAlmoco = !!opts?.naJanelaAlmoco && !semIntervalo;
+  const pausaComoAlmoco = !!opts?.pausaComoAlmoco && !semIntervalo;
   switch (fase) {
     case "NENHUMA":
       return [{ tipo: "ENTRADA", width: 100 }];
     case "MANHA":
-      /* Carga corrida (estagiário/aprendiz) ou turno sem intervalo: só pausa + encerrar. */
+      /* Carga corrida (estagiário) ou turno sem intervalo: só pausa + encerrar. */
       if (semIntervalo) {
         return [
           { tipo: "SAIDA", width: 80 },
           { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
         ];
       }
+      if (naJanelaAlmoco) {
+        return [{ tipo: "INICIO_INTERVALO", width: 100 }];
+      }
       return [
         { tipo: "INICIO_INTERVALO", width: 80 },
         { tipo: "INTERROMPER_EXPEDIENTE", width: 20, iconOnly: true }
       ];
     case "PAUSA_MANHA":
-      /* Precisa reiniciar a pausa antes de bater o almoço. */
+      if (naJanelaAlmoco || pausaComoAlmoco) {
+        return [{ tipo: "FIM_INTERVALO", width: 100 }];
+      }
       return [{ tipo: "REINICIAR_EXPEDIENTE", width: 100 }];
     case "ALMOCO":
       /* Com semIntervalo a fase é remapeada; se restar, não oferecer fim de almoço. */
@@ -778,6 +943,18 @@ export function RegistroPontoPage() {
 
   const [cfg, setCfg] = useState<SistemaConfig | null>(null);
   const [erroCfg, setErroCfg] = useState(false);
+  const [janelaJornada, setJanelaJornada] = useState<{ inicio: string; fim: string }>({
+    inicio: "11:30",
+    fim: "13:00"
+  });
+  const [acoesPermitidasApi, setAcoesPermitidasApi] = useState<string[] | null>(null);
+  const [horariosJornada, setHorariosJornada] = useState<{
+    horaEntrada: string;
+    horaSaida: string;
+    almocoMinMin: number;
+    previsaoInicioAlmoco?: string;
+  } | null>(null);
+  const [statusCarregado, setStatusCarregado] = useState(false);
 
   /* ── Feriado hoje ── */
   const [feriadoHoje, setFeriadoHoje] = useState<{ bloqueado: boolean; nome?: string } | null>(
@@ -812,7 +989,20 @@ export function RegistroPontoPage() {
         .catch(() => [])
     ])
       .then(([data, areas]) => {
-        if (data) setCfg({ ...data, areasViagem: (areas ?? []).filter((a) => a.ativa) });
+        if (data)
+          setCfg((prev) => ({
+            ...data,
+            areasViagem: (areas ?? []).filter((a) => a.ativa),
+            /* Não sobrescreve o período efetivo do usuário já vindo de /ponto/status. */
+            horaEntrada: prev?.horaEntrada ?? data.horaEntrada,
+            horaSaida: prev?.horaSaida ?? data.horaSaida,
+            almocoMinMin: prev?.almocoMinMin ?? data.almocoMinMin,
+            almocoPodeIniciarA: prev?.almocoPodeIniciarA ?? data.almocoPodeIniciarA,
+            almocoPodeIniciarAte: prev?.almocoPodeIniciarAte ?? data.almocoPodeIniciarAte,
+            modoHomeOffice: prev?.modoHomeOffice ?? data.modoHomeOffice,
+            modoHibridoLocal: prev?.modoHibridoLocal ?? data.modoHibridoLocal,
+            enderecoResidencial: prev?.enderecoResidencial ?? data.enderecoResidencial
+          }));
         else setErroCfg(true);
       })
       .catch(() => setErroCfg(true));
@@ -859,8 +1049,17 @@ export function RegistroPontoPage() {
         modoHomeOffice?: boolean;
         modoHibridoLocal?: boolean;
         enderecoResidencial?: { lat: number | null; lng: number | null; raioMetros: number } | null;
+        almocoPodeIniciarA?: string;
+        almocoPodeIniciarAte?: string;
+        horaEntrada?: string;
+        horaSaida?: string;
+        almocoMinMin?: number;
+        previsaoInicioAlmoco?: string | null;
+        acoesPermitidas?: string[];
       }>("/ponto/status", tk)
       .then((status) => {
+        setStatusCarregado(true);
+        if (status?.acoesPermitidas) setAcoesPermitidasApi(status.acoesPermitidas);
         setAfastamentoHoje(status?.afastamentoHoje ?? null);
         if (status?.categoria) setCategoriaFuncional(status.categoria);
         setSemRegistroPontoHoje(
@@ -869,15 +1068,43 @@ export function RegistroPontoPage() {
             status?.categoria === "ASSESSOR" ||
             status?.categoria === "GERENTE"
         );
-        // Mescla dados de home office/híbrido no cfg para o hook usePontoRegistration
-        if (status?.modoHomeOffice !== undefined || status?.modoHibridoLocal !== undefined) {
+        setJanelaJornada({
+          inicio: status?.almocoPodeIniciarA || "11:30",
+          fim: status?.almocoPodeIniciarAte || "13:00"
+        });
+        if (status?.horaEntrada || status?.horaSaida || status?.almocoMinMin != null) {
+          setHorariosJornada({
+            horaEntrada: status.horaEntrada ?? "08:00",
+            horaSaida: status.horaSaida ?? "17:00",
+            almocoMinMin: status.almocoMinMin ?? 60,
+            previsaoInicioAlmoco: status.previsaoInicioAlmoco ?? undefined
+          });
+        }
+        // Mescla dados de home office/híbrido e janela de almoço da jornada efetiva
+        if (
+          status?.modoHomeOffice !== undefined ||
+          status?.modoHibridoLocal !== undefined ||
+          status?.almocoPodeIniciarA ||
+          status?.almocoPodeIniciarAte ||
+          status?.horaEntrada ||
+          status?.horaSaida ||
+          status?.almocoMinMin != null
+        ) {
           setCfg((prev) =>
             prev
               ? {
                   ...prev,
-                  modoHomeOffice: status.modoHomeOffice ?? false,
-                  modoHibridoLocal: status.modoHibridoLocal ?? false,
-                  enderecoResidencial: status.enderecoResidencial ?? null
+                  modoHomeOffice: status.modoHomeOffice ?? prev.modoHomeOffice ?? false,
+                  modoHibridoLocal: status.modoHibridoLocal ?? prev.modoHibridoLocal ?? false,
+                  enderecoResidencial:
+                    status.enderecoResidencial !== undefined
+                      ? status.enderecoResidencial
+                      : (prev.enderecoResidencial ?? null),
+                  almocoPodeIniciarA: status.almocoPodeIniciarA ?? prev.almocoPodeIniciarA,
+                  almocoPodeIniciarAte: status.almocoPodeIniciarAte ?? prev.almocoPodeIniciarAte,
+                  horaEntrada: status.horaEntrada ?? prev.horaEntrada,
+                  horaSaida: status.horaSaida ?? prev.horaSaida,
+                  almocoMinMin: status.almocoMinMin ?? prev.almocoMinMin
                 }
               : prev
           );
@@ -901,7 +1128,9 @@ export function RegistroPontoPage() {
         });
         setRegistros(regs);
       })
-      .catch(() => {});
+      .catch(() => {
+        setStatusCarregado(true);
+      });
   }, []);
 
   /* ── Derivações ── */
@@ -911,8 +1140,40 @@ export function RegistroPontoPage() {
   const obsTurno = obsTurnoSemIntervalo(entradaReg?.observacoes);
   const semIntervalo = !!obsForcaSemIntervalo(entradaReg?.observacoes) || forcarSemIntervalo;
   const turno = obsTurno?.turno ?? null;
-  const faseInfo = labelFaseInfo(fase, turno, semIntervalo);
-  const slots = cfg ? getLayout(fase, cfg, { semIntervalo }) : [];
+  const agoraHora = fmtShort(now);
+  const { inicio: janelaInicio, fim: janelaFim } = escolherJanelaAlmoco(janelaJornada, cfg);
+  const agoraMin = minutosDoRelogio(now);
+  const naJanelaPeloRelogio =
+    agoraMin >= horarioParaMinutosLocal(janelaInicio) &&
+    agoraMin <= horarioParaMinutosLocal(janelaFim);
+  const naJanelaPelaApi =
+    !!acoesPermitidasApi &&
+    acoesPermitidasApi.length === 1 &&
+    (acoesPermitidasApi[0] === "INICIO_INTERVALO" || acoesPermitidasApi[0] === "FIM_INTERVALO");
+  const naJanelaAlmoco = !semIntervalo && (naJanelaPeloRelogio || naJanelaPelaApi);
+  const pausaComoAlmoco =
+    !semIntervalo &&
+    fase === "PAUSA_MANHA" &&
+    pausaManhaContaComoAlmoco(registros, agoraHora, janelaInicio, janelaFim);
+  const faseInfo = labelFaseInfo(fase, turno, semIntervalo, naJanelaAlmoco, pausaComoAlmoco);
+  const badgeEscuro = estiloBadgeSobreEscuro(faseInfo.cor);
+  const slotsApi: AcaoSlot[] | null =
+    !semIntervalo &&
+    acoesPermitidasApi?.length === 1 &&
+    acoesPermitidasApi[0] === "INICIO_INTERVALO"
+      ? [{ tipo: "INICIO_INTERVALO", width: 100 }]
+      : !semIntervalo &&
+          acoesPermitidasApi?.length === 1 &&
+          acoesPermitidasApi[0] === "FIM_INTERVALO"
+        ? [{ tipo: "FIM_INTERVALO", width: 100 }]
+        : null;
+  const slots =
+    slotsApi ??
+    getLayout(fase, (cfg ?? {}) as SistemaConfig, {
+      semIntervalo,
+      naJanelaAlmoco,
+      pausaComoAlmoco
+    });
   const marcosFeitos = semIntervalo
     ? registros.some((r) => r.tipo === "SAIDA")
       ? 2
@@ -921,6 +1182,18 @@ export function RegistroPontoPage() {
         : 0
     : registros.filter((r) => MARCOS.includes(r.tipo)).length;
   const totalMarcos = semIntervalo ? 2 : 4;
+  const previsoes = horariosJornada
+    ? previsaoProximosMarcos({
+        registros,
+        semIntervalo,
+        horaSaida: horariosJornada.horaSaida,
+        inicioAlmocoPrevisto: horariosJornada.previsaoInicioAlmoco ?? janelaInicio ?? "11:30",
+        almocoMinMin: horariosJornada.almocoMinMin,
+        pausaComoAlmoco
+      })
+    : [];
+  const mostrarTimelineHoje =
+    !semRegistroPontoHoje && (registros.length > 0 || (statusCarregado && previsoes.length > 0));
 
   /* ── Validações panel items ── */
   const validacoes: ValidacaoItem[] = [
@@ -979,7 +1252,7 @@ export function RegistroPontoPage() {
         latitude: resultado.latitude,
         longitude: resultado.longitude,
         modo,
-        /* Espelha a observação do backend para estagiário/aprendiz até o próximo reload. */
+        /* Espelha a observação do backend para estagiário até o próximo reload. */
         observacoes:
           tipo === "ENTRADA" && categoriaSemIntervaloAlmoco(categoriaFuncional)
             ? [
@@ -999,7 +1272,32 @@ export function RegistroPontoPage() {
         setGeoStatus(resultado.dentroPerimetro ? "ok" : "fora");
       }
 
-      setRegistros((prev) => [...prev, novoReg]);
+      setRegistros((prev) => {
+        const extra: RegistroDia[] = [];
+        if (tipo === "FIM_INTERVALO") {
+          const temInicio = prev.some((r) => r.tipo === "INICIO_INTERVALO");
+          if (!temInicio) {
+            const pausa = [...prev].reverse().find((r) => r.tipo === "INTERROMPER_EXPEDIENTE");
+            extra.push({
+              tipo: "INICIO_INTERVALO",
+              hora: pausa?.hora ?? fmtShort(agora),
+              dataCompleta: pausa?.dataCompleta ?? novoReg.dataCompleta,
+              timestamp: pausa?.timestamp ?? agora.getTime() - 1,
+              modo,
+              observacoes: [
+                {
+                  data: agora.toISOString(),
+                  tipo: "AJUSTE_AUTOMATICO",
+                  texto: pausa
+                    ? `Almoço iniciado na pausa às ${pausa.hora} — o retorno encerra o intervalo.`
+                    : "Almoço considerado em conjunto com a pausa em andamento."
+                }
+              ]
+            });
+          }
+        }
+        return [...prev, ...extra, novoReg];
+      });
       setFotoCapturada(null);
       setPendingTipo(null);
       setConfirmado(resultado);
@@ -1015,11 +1313,9 @@ export function RegistroPontoPage() {
     setErro(null);
     const min = cfg?.pontoHorarioMinimo ?? "06:00";
     const max = cfg?.pontoHorarioMaximo ?? "23:59";
-    const agora = horarioBrasiliaAgora();
+    const agora = fmtShort(new Date());
     if (!horarioDentroFaixa(agora, min, max)) {
-      setErro(
-        `Registro permitido apenas entre ${min} e ${max} (horário de Brasília). Agora: ${agora}.`
-      );
+      setErro(`Registro permitido apenas entre ${min} e ${max}. Agora: ${agora}.`);
       return;
     }
     if (exigirFoto && !fotoCapturada) {
@@ -1155,8 +1451,16 @@ export function RegistroPontoPage() {
           }}
         />
 
-        <p className="eyebrow" style={{ color: "var(--gold-500)", marginBottom: 6, fontSize: 10 }}>
-          {now.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" })}
+        <p
+          style={{
+            color: "var(--gold-500)",
+            marginBottom: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: "0.04em"
+          }}
+        >
+          {formatarDataExtensoPt(now, { weekday: "long", day: "numeric", month: "long" })}
         </p>
         <p
           style={{
@@ -1186,10 +1490,11 @@ export function RegistroPontoPage() {
               display: "inline-flex",
               alignItems: "center",
               gap: 7,
-              padding: "5px 14px",
+              padding: "6px 14px",
               borderRadius: "var(--radius-full)",
-              background: faseInfo.bg,
-              border: `1px solid ${faseInfo.cor}40`
+              background: badgeEscuro.fundo,
+              border: `1px solid ${badgeEscuro.borda}`,
+              boxShadow: "0 0 0 1px rgba(0,0,0,0.12)"
             }}
           >
             <span
@@ -1197,12 +1502,12 @@ export function RegistroPontoPage() {
                 width: 8,
                 height: 8,
                 borderRadius: "50%",
-                background: faseInfo.cor,
+                background: badgeEscuro.ponto,
                 flexShrink: 0,
                 animation: faseInfo.pulse ? "pulse-dot 2s ease-in-out infinite" : "none"
               }}
             />
-            <span style={{ fontSize: 12, fontWeight: 600, color: faseInfo.cor }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: badgeEscuro.texto }}>
               {faseInfo.label}
             </span>
           </div>
@@ -1212,14 +1517,15 @@ export function RegistroPontoPage() {
                 display: "inline-flex",
                 alignItems: "center",
                 gap: 5,
-                padding: "5px 12px",
+                padding: "6px 12px",
                 borderRadius: "var(--radius-full)",
-                background: "rgba(255,255,255,0.10)",
-                border: "1px solid rgba(255,255,255,0.18)"
+                background: "rgba(255,255,255,0.18)",
+                border: "1px solid rgba(255,255,255,0.42)",
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.12)"
               }}
             >
               <span style={{ fontSize: 11 }}>{modo === "MOBILE" ? "📱" : "🖥"}</span>
-              <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.80)" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: "#fff" }}>
                 {modo === "MOBILE" ? "Mobile" : "Desktop"}
               </span>
             </div>
@@ -1287,7 +1593,10 @@ export function RegistroPontoPage() {
                 {slots.map((s) => ACAO_INFO[s.tipo].label).join(" ou ")}
               </p>
               <p style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
-                {descFase(fase, semIntervalo)}
+                {descFase(fase, semIntervalo, naJanelaAlmoco, pausaComoAlmoco, {
+                  inicio: janelaInicio,
+                  fim: janelaFim
+                })}
               </p>
             </>
           ) : (
@@ -1704,7 +2013,7 @@ export function RegistroPontoPage() {
       )}
 
       {/* ── Timeline de registros do dia ── */}
-      {registros.length > 0 && (
+      {mostrarTimelineHoje && (
         <div
           style={{
             background: "#fff",
@@ -1719,11 +2028,24 @@ export function RegistroPontoPage() {
               fontStyle: "italic",
               color: "var(--burgundy-600)",
               fontSize: 15,
-              marginBottom: 14
+              marginBottom: previsoes.length > 0 ? 4 : 14
             }}
           >
             Registros de Hoje ({marcosFeitos}/{totalMarcos})
           </p>
+          {previsoes.length > 0 && (
+            <p
+              style={{
+                fontSize: 11,
+                color: "var(--ink-500)",
+                marginBottom: 14,
+                lineHeight: 1.4
+              }}
+            >
+              Almoço previsto pela média dos seus registros; encerramento conforme o período da sua
+              jornada.
+            </p>
+          )}
           {registros.map((r, i) => {
             const info = ACAO_INFO[r.tipo];
             const cor = info?.cor ?? "var(--burgundy-600)";
@@ -1735,8 +2057,10 @@ export function RegistroPontoPage() {
                   : null;
             const ajusteAutomatico = r.observacoes?.find((o) => o.tipo === "AJUSTE_AUTOMATICO");
             const turnoObs = r.tipo === "ENTRADA" ? obsTurnoSemIntervalo(r.observacoes) : undefined;
+            const temProximo = i < registros.length - 1 || previsoes.length > 0;
+            const ligaPrevisao = i === registros.length - 1 && previsoes.length > 0;
             return (
-              <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <div key={`reg-${i}`} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                 <div
                   style={{
                     display: "flex",
@@ -1755,19 +2079,22 @@ export function RegistroPontoPage() {
                       boxShadow: `0 0 0 3px ${cor}20`
                     }}
                   />
-                  {i < registros.length - 1 && (
+                  {temProximo && (
                     <div
                       style={{
                         width: 1,
                         flex: 1,
                         minHeight: 22,
-                        background: "rgba(122,30,38,0.10)",
+                        background: ligaPrevisao ? "transparent" : "rgba(122,30,38,0.10)",
+                        backgroundImage: ligaPrevisao
+                          ? "repeating-linear-gradient(to bottom, rgba(122,30,38,0.22) 0 4px, transparent 4px 8px)"
+                          : undefined,
                         margin: "4px 0"
                       }}
                     />
                   )}
                 </div>
-                <div style={{ paddingBottom: i < registros.length - 1 ? 12 : 0 }}>
+                <div style={{ paddingBottom: temProximo ? 12 : 0 }}>
                   <p
                     style={{
                       fontSize: 13,
@@ -1826,6 +2153,94 @@ export function RegistroPontoPage() {
               </div>
             );
           })}
+          {previsoes.map((p, i) => {
+            const info = ACAO_INFO[p.tipo];
+            const cor = info?.cor ?? "var(--burgundy-600)";
+            const isProximo = i === 0;
+            const temProximo = i < previsoes.length - 1;
+            return (
+              <div
+                key={`prev-${p.tipo}`}
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  alignItems: "flex-start",
+                  opacity: isProximo ? 0.85 : 0.62
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    flexShrink: 0
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: "50%",
+                      background: "transparent",
+                      border: `2px dashed ${cor}`,
+                      marginTop: 3,
+                      boxSizing: "border-box"
+                    }}
+                  />
+                  {temProximo && (
+                    <div
+                      style={{
+                        width: 1,
+                        flex: 1,
+                        minHeight: 22,
+                        backgroundImage:
+                          "repeating-linear-gradient(to bottom, rgba(122,30,38,0.22) 0 4px, transparent 4px 8px)",
+                        margin: "4px 0"
+                      }}
+                    />
+                  )}
+                </div>
+                <div style={{ paddingBottom: temProximo ? 12 : 0 }}>
+                  <p
+                    style={{
+                      fontSize: 13,
+                      fontWeight: isProximo ? 600 : 500,
+                      color: "var(--ink-500)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6
+                    }}
+                  >
+                    {TIPO_LABEL[p.tipo]}
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: "0.04em",
+                        textTransform: "uppercase",
+                        color: "var(--ink-400)",
+                        border: "1px solid rgba(109,110,113,0.28)",
+                        borderRadius: 999,
+                        padding: "1px 7px"
+                      }}
+                    >
+                      previsto
+                    </span>
+                  </p>
+                  <p
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                      color: "var(--ink-400)",
+                      marginTop: 1
+                    }}
+                  >
+                    {p.hora}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1835,9 +2250,9 @@ export function RegistroPontoPage() {
         <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1.6 }}>
           {forcarSemIntervalo ? (
             <>
-              Estagiário e menor aprendiz seguem <strong>carga horária corrida</strong> (sem
-              intervalo de almoço no ponto). Fluxo: <strong>Iniciar → Encerrar</strong>, com pausas
-              via <strong>Interromper/Reiniciar Expediente</strong> — o tempo pausado não conta como
+              Estagiário segue <strong>carga horária corrida</strong> (sem intervalo de almoço no
+              ponto). Fluxo: <strong>Iniciar → Encerrar</strong>, com pausas via{" "}
+              <strong>Interromper/Reiniciar Expediente</strong> — o tempo pausado não conta como
               trabalhado. Inconsistências via{" "}
             </>
           ) : (

@@ -79,7 +79,7 @@ export function criarObservacaoTurnoSemIntervalo(c: ClassificacaoTurnoEntrada): 
   };
 }
 
-/** Estagiário / menor aprendiz: carga horária corrida, sem almoço no ponto. */
+/** Estagiário: carga horária corrida, sem almoço no ponto. */
 export function criarObservacaoCategoriaSemIntervalo(
   categoria: CategoriaSemIntervaloAlmoco,
   turno: TurnoEntrada = "MATUTINO"
@@ -109,6 +109,8 @@ export function observacaoTurnoSemIntervalo(observacoes: unknown): ObservacaoReg
 export function observacaoForcaSemIntervalo(observacoes: unknown): ObservacaoRegistro | undefined {
   const obs = observacaoTurnoSemIntervalo(observacoes);
   if (!obs) return undefined;
-  if (obs.motivo === "DURANTE_JANELA") return undefined;
+  /* Carga corrida de categoria é decidida pela categoria vigente (só estagiário),
+     não pelo carimbo antigo em MENOR_APRENDIZ. */
+  if (obs.motivo === "DURANTE_JANELA" || obs.motivo === "CATEGORIA_CARGA_CORRIDA") return undefined;
   return obs;
 }

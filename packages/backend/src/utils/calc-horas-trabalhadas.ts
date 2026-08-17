@@ -75,9 +75,13 @@ export function analisarAlmocoCurto(
   if (almocoMinMin <= 0) return null;
 
   let emAlmocoDesde: number | null = null;
+  let pausaDesde: number | null = null;
   for (const r of registros) {
-    if (r.tipo === "INICIO_INTERVALO") {
-      emAlmocoDesde = r.minuto;
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") {
+      pausaDesde = r.minuto;
+    } else if (r.tipo === "INICIO_INTERVALO") {
+      emAlmocoDesde = pausaDesde ?? r.minuto;
+      pausaDesde = null;
     } else if (r.tipo === "FIM_INTERVALO" && emAlmocoDesde !== null) {
       const duracao = r.minuto - emAlmocoDesde;
       if (duracao >= 0 && duracao < almocoMinMin) {
@@ -91,6 +95,7 @@ export function analisarAlmocoCurto(
       emAlmocoDesde = null;
     } else if (r.tipo === "ENTRADA" || r.tipo === "SAIDA" || r.tipo === "REINICIAR_EXPEDIENTE") {
       emAlmocoDesde = null;
+      pausaDesde = null;
     }
   }
   return null;
@@ -113,6 +118,7 @@ export function calcHorasTrabalhadasMinutos(
   let total = 0;
   let entradaMin: number | null = null;
   let emAlmocoDesde: number | null = null;
+  let pausaDesde: number | null = null;
   let minutosAlmocoRegistrados = 0;
   let ultrapassouJanelaAlmoco = false;
   let houveEntrada = false;
@@ -128,20 +134,29 @@ export function calcHorasTrabalhadasMinutos(
       /* Snap simétrico só na ENTRADA (início de jornada), não em REINICIAR. */
       entradaMin = snapDentroTolerancia(ts, opts.horaEntrada, opts.toleranciaEntradaMin);
       emAlmocoDesde = null;
+      pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
       houveEntrada = true;
       entradaMin = ts;
       emAlmocoDesde = null;
+      pausaDesde = null;
       marcarJanela(ts);
-    } else if (r.tipo === "INICIO_INTERVALO" && entradaMin !== null) {
-      total += ts - entradaMin;
-      entradaMin = null;
-      emAlmocoDesde = ts;
+    } else if (r.tipo === "INICIO_INTERVALO") {
+      if (entradaMin !== null) {
+        total += ts - entradaMin;
+        entradaMin = null;
+        emAlmocoDesde = ts;
+      } else {
+        /* Pausa aberta: o almoço conta desde a interrupção. */
+        emAlmocoDesde = pausaDesde ?? ts;
+      }
+      pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "INTERROMPER_EXPEDIENTE" && entradaMin !== null) {
       total += ts - entradaMin;
       entradaMin = null;
+      pausaDesde = ts;
       marcarJanela(ts);
     } else if (r.tipo === "FIM_INTERVALO") {
       if (emAlmocoDesde !== null) {

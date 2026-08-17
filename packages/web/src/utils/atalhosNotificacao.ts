@@ -16,6 +16,11 @@ export const ATALHOS_NOTIFICACAO: Record<string, AtalhoNotificacao> = {
     label: "Histórico — Assinar quadro",
     caminho: "Histórico → Assinar quadro do mês"
   },
+  FOLHA_PONTO_CORRECAO_PENDENTE: {
+    path: "/ponto/historico",
+    label: "Histórico — Folha de ponto",
+    caminho: "Histórico → localize o mês da folha"
+  },
   ASSINAR_QUADRO_GESTOR: {
     path: "/ponto/aprovacoes?etapa=assinaturas",
     label: "Aprovações — Assinaturas de quadro",

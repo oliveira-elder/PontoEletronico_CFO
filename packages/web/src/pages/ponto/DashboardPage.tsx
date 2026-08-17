@@ -18,17 +18,12 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
+import { formatarDataExtensoPt } from "../../utils/horario-brasilia";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
 const fmt = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-const fmtDate = (d: Date) =>
-  d.toLocaleDateString("pt-BR", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric"
-  });
+const fmtDate = (d: Date) => formatarDataExtensoPt(d);
 const toHM = (m: number) => {
   const sign = m < 0 ? "-" : "";
   const abs = Math.abs(m);
@@ -138,18 +133,6 @@ function progressoQuinzena(quinzena: DiaQuinzena[]) {
 }
 
 /* ─── Config visual de estado ─── */
-const ESTADO_COR = {
-  TRABALHANDO: "var(--green)",
-  INTERVALO: "#8a6a00",
-  PAUSADO: "#8a6a00",
-  FORA: "var(--gray-cfo)"
-};
-const ESTADO_BG = {
-  TRABALHANDO: "rgba(47,125,79,0.12)",
-  INTERVALO: "rgba(247,196,55,0.14)",
-  PAUSADO: "rgba(247,196,55,0.14)",
-  FORA: "rgba(109,110,113,0.12)"
-};
 const ESTADO_LABEL = {
   TRABALHANDO: "Trabalhando",
   INTERVALO: "Em intervalo",
@@ -828,8 +811,7 @@ export function DashboardPage() {
               style={{
                 fontSize: 11,
                 color: "var(--ink-500)",
-                marginTop: 2,
-                textTransform: "capitalize"
+                marginTop: 2
               }}
             >
               {fmtDate(now)}
@@ -895,10 +877,20 @@ export function DashboardPage() {
               display: "inline-flex",
               alignItems: "center",
               gap: 7,
-              padding: "5px 14px",
+              padding: "6px 14px",
               borderRadius: "var(--radius-full)",
-              background: ESTADO_BG[estado],
-              border: `1px solid ${ESTADO_COR[estado]}40`
+              background:
+                estado === "TRABALHANDO"
+                  ? "rgba(74, 222, 128, 0.24)"
+                  : estado === "INTERVALO" || estado === "PAUSADO"
+                    ? "rgba(251, 191, 36, 0.26)"
+                    : "rgba(255, 255, 255, 0.16)",
+              border:
+                estado === "TRABALHANDO"
+                  ? "1px solid rgba(134, 239, 172, 0.65)"
+                  : estado === "INTERVALO" || estado === "PAUSADO"
+                    ? "1px solid rgba(253, 224, 71, 0.6)"
+                    : "1px solid rgba(255, 255, 255, 0.4)"
             }}
           >
             <span
@@ -906,11 +898,27 @@ export function DashboardPage() {
                 width: 7,
                 height: 7,
                 borderRadius: "50%",
-                background: ESTADO_COR[estado],
+                background:
+                  estado === "TRABALHANDO"
+                    ? "#4ade80"
+                    : estado === "INTERVALO" || estado === "PAUSADO"
+                      ? "#facc15"
+                      : "#e5e7eb",
                 flexShrink: 0
               }}
             />
-            <span style={{ fontSize: 13, fontWeight: 600, color: ESTADO_COR[estado] }}>
+            <span
+              style={{
+                fontSize: 13,
+                fontWeight: 700,
+                color:
+                  estado === "TRABALHANDO"
+                    ? "#bbf7d0"
+                    : estado === "INTERVALO" || estado === "PAUSADO"
+                      ? "#fde68a"
+                      : "#f3f4f6"
+              }}
+            >
               {ESTADO_LABEL[estado]}
             </span>
           </div>
@@ -1238,8 +1246,7 @@ export function DashboardPage() {
               style={{
                 color: "var(--ink-500)",
                 marginTop: 4,
-                fontSize: 14,
-                textTransform: "capitalize"
+                fontSize: 14
               }}
             >
               {fmtDate(now)}
@@ -1247,12 +1254,10 @@ export function DashboardPage() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
             <span
-              className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
-              style={{ fontSize: 12, padding: "4px 10px" }}
+              className={`badge badge-destaque badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
             >
               <span
                 className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
-                style={{ width: 6, height: 6 }}
               />
               {ESTADO_LABEL[estado]}
             </span>
@@ -1304,8 +1309,8 @@ export function DashboardPage() {
             {fmt(now)}
           </p>
           <span
-            className={`badge badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
-            style={{ fontSize: 12 }}
+            className={`badge badge-on-dark badge-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
+            style={{ fontSize: 12, padding: "5px 12px" }}
           >
             <span
               className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}

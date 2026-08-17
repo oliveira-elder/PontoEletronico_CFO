@@ -22,6 +22,7 @@ import {
 } from "../../utils/horario-brasilia";
 import { appendObservacao } from "../../utils/registro-observacoes";
 import { montarRelatorioQuadro } from "../../utils/historico-quadro";
+import { previsaoInicioAlmoco } from "../../utils/previsao-registros";
 import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
 import {
   jornadaEsperadaMin,
@@ -194,13 +195,53 @@ type FaseJornada =
 const ACOES_POR_FASE: Record<FaseJornada, string[]> = {
   NENHUMA: ["ENTRADA"],
   MANHA: ["INICIO_INTERVALO", "INTERROMPER_EXPEDIENTE", "SAIDA"],
-  /* Pausa: só reiniciar — depois, na manhã, pode iniciar o almoço. */
+  /* Pausa: só reiniciar — na janela de almoço vira FIM_INTERVALO (pausa já é o início). */
   PAUSA_MANHA: ["REINICIAR_EXPEDIENTE"],
   ALMOCO: ["FIM_INTERVALO"],
   TARDE: ["INTERROMPER_EXPEDIENTE", "SAIDA"],
   PAUSA_TARDE: ["REINICIAR_EXPEDIENTE"],
   ENCERRADA: []
 };
+
+const ACOES_BLOQUEADAS_NA_JANELA_ALMOCO = [
+  "INTERROMPER_EXPEDIENTE",
+  "REINICIAR_EXPEDIENTE",
+  "SAIDA"
+];
+
+function horarioNaJanelaAlmoco(
+  horaHHMM: string,
+  almocoPodeIniciarA: string,
+  almocoPodeIniciarAte: string
+): boolean {
+  const atual = horarioParaMinutos(horaHHMM);
+  const ini = horarioParaMinutos(almocoPodeIniciarA);
+  const fim = horarioParaMinutos(almocoPodeIniciarAte);
+  return atual >= ini && atual <= fim;
+}
+
+/** Pausa da manhã que já cruzou o início da janela: conta como almoço até o retorno,
+ *  inclusive depois do fim da janela. Pausa só depois da janela continua pausa. */
+function pausaManhaContaComoAlmoco(
+  registros: { tipo: string; dataHora?: Date | string }[],
+  agoraHHMM: string,
+  almocoPodeIniciarA: string,
+  almocoPodeIniciarAte: string
+): boolean {
+  let pausaEm: Date | string | undefined;
+  for (const r of registros) {
+    if (r.tipo === "INTERROMPER_EXPEDIENTE") pausaEm = r.dataHora;
+    else if (r.tipo === "REINICIAR_EXPEDIENTE" || r.tipo === "INICIO_INTERVALO")
+      pausaEm = undefined;
+  }
+  if (!pausaEm) return false;
+  const pausaHH = horarioDeDataBrasilia(new Date(pausaEm)).substring(0, 5);
+  const pausaMin = horarioParaMinutos(pausaHH);
+  const agoraMin = horarioParaMinutos(agoraHHMM.substring(0, 5));
+  const ini = horarioParaMinutos(almocoPodeIniciarA);
+  const fim = horarioParaMinutos(almocoPodeIniciarAte);
+  return pausaMin <= fim && agoraMin >= ini;
+}
 
 const ESTADO_POR_FASE: Record<FaseJornada, "FORA" | "TRABALHANDO" | "INTERVALO" | "PAUSADO"> = {
   NENHUMA: "FORA",
@@ -236,6 +277,7 @@ export class PontoService {
         jornadaPeriodoAssociadoEm: true,
         jornadaPeriodo: {
           select: {
+            nome: true,
             jornadaDiariaMin: true,
             horaEntrada: true,
             horaSaida: true,
@@ -264,8 +306,28 @@ export class PontoService {
         horaExtraLimiteAuto: true
       }
     });
+    let periodo = func?.jornadaPeriodo ?? null;
+    if (!periodo) {
+      periodo = await this.prisma.jornadaPeriodo.findFirst({
+        where: { ePadrao: true, ativo: true },
+        select: {
+          nome: true,
+          jornadaDiariaMin: true,
+          horaEntrada: true,
+          horaSaida: true,
+          almocoMinMin: true,
+          almocoPodeIniciarA: true,
+          almocoPodeIniciarAte: true,
+          toleranciaEntradaMin: true,
+          toleranciaSaidaMin: true,
+          toleranciaCalculoMin: true,
+          horaExtraLimiteAuto: true
+        }
+      });
+    }
     return resolverJornadaHistoricoContexto({
       ...func,
+      jornadaPeriodo: periodo,
       configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
       configuracaoHoraSaida: cfg?.horaSaida ?? null,
       configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
@@ -327,6 +389,36 @@ export class PontoService {
       bancoHorasVigenciaDias: cfg?.bancoHorasVigenciaDias ?? 30,
       horaExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? 120
     };
+  }
+
+  /** Média dos inícios de almoço do colaborador (últimos 90 dias, até 40 registros). */
+  private async mediaInicioAlmocoHistorico(
+    funcionarioId: string,
+    hojeIso: string,
+    janelaInicio: string,
+    janelaFim: string
+  ): Promise<string> {
+    const { inicio: inicioHoje } = intervaloDiaBrasilia(hojeIso);
+    const desde = new Date(inicioHoje);
+    desde.setUTCDate(desde.getUTCDate() - 90);
+    const regs = await this.prisma.registroPonto.findMany({
+      where: {
+        funcionarioId,
+        tipo: "INICIO_INTERVALO",
+        apenasInformativo: false,
+        dataHora: { gte: desde, lt: inicioHoje }
+      },
+      select: { dataHora: true },
+      orderBy: { dataHora: "desc" },
+      take: 40
+    });
+    const historicoHHMM = regs.map((r) => horarioDeDataBrasilia(r.dataHora).substring(0, 5));
+    return previsaoInicioAlmoco({
+      historicoHHMM,
+      janelaInicio,
+      janelaFim,
+      fallback: janelaInicio
+    });
   }
 
   /* Resolve Keycloak sub → User (via externalId) → Funcionario.
@@ -426,13 +518,20 @@ export class PontoService {
      ENTRADA com observação TURNO_SEM_INTERVALO (ou categoria carga corrida)
      pula o almoço e vai para TARDE. */
   private getFaseEAcoes(
-    registros: { tipo: string; observacoes?: unknown }[],
-    opts?: { forcarSemIntervalo?: boolean }
+    registros: { tipo: string; observacoes?: unknown; dataHora?: Date | string }[],
+    opts?: {
+      forcarSemIntervalo?: boolean;
+      naJanelaAlmoco?: boolean;
+      agoraHora?: string;
+      almocoPodeIniciarA?: string;
+      almocoPodeIniciarAte?: string;
+    }
   ): {
     fase: FaseJornada;
     acoesPermitidas: string[];
   } {
     const forcarSemIntervalo = !!opts?.forcarSemIntervalo;
+    const naJanelaAlmoco = !!opts?.naJanelaAlmoco;
     let fase: FaseJornada = "NENHUMA";
     for (const r of registros) {
       switch (r.tipo) {
@@ -460,7 +559,7 @@ export class PontoService {
       }
     }
 
-    /* Estagiário / menor aprendiz: nunca ficam em fases de almoço — pausa vira PAUSA_TARDE. */
+    /* Estagiário: nunca fica em fases de almoço — pausa vira PAUSA_TARDE. */
     if (forcarSemIntervalo) {
       if (fase === "MANHA") fase = "TARDE";
       else if (fase === "PAUSA_MANHA") fase = "PAUSA_TARDE";
@@ -472,6 +571,22 @@ export class PontoService {
       acoesPermitidas = acoesPermitidas.filter(
         (a) => a !== "INICIO_INTERVALO" && a !== "FIM_INTERVALO"
       );
+    } else if (naJanelaAlmoco && fase === "MANHA") {
+      acoesPermitidas = ["INICIO_INTERVALO"];
+    } else if (
+      fase === "PAUSA_MANHA" &&
+      opts?.agoraHora &&
+      opts.almocoPodeIniciarA &&
+      opts.almocoPodeIniciarAte &&
+      pausaManhaContaComoAlmoco(
+        registros,
+        opts.agoraHora,
+        opts.almocoPodeIniciarA,
+        opts.almocoPodeIniciarAte
+      )
+    ) {
+      /* Pausa que cruzou a janela já é almoço — Fim do Almoço vale também depois da janela. */
+      acoesPermitidas = ["FIM_INTERVALO"];
     }
     return { fase, acoesPermitidas };
   }
@@ -532,6 +647,21 @@ export class PontoService {
 
     const semIntervaloCategoria = categoriaSemIntervaloAlmoco(func.categoria);
     const jornada = await this.getJornadaEfetiva(func.id);
+    const almocoPodeIniciarA = jornada.almocoPodeIniciarA ?? "11:30";
+    const almocoPodeIniciarAte = jornada.almocoPodeIniciarAte ?? "13:00";
+    const previsaoInicioAlmocoHora = semIntervaloCategoria
+      ? null
+      : await this.mediaInicioAlmocoHistorico(
+          func.id,
+          hojeIso,
+          almocoPodeIniciarA,
+          almocoPodeIniciarAte
+        );
+    const naJanelaAlmoco = horarioNaJanelaAlmoco(
+      agoraHora,
+      almocoPodeIniciarA,
+      almocoPodeIniciarAte
+    );
     const atestadoMatutino =
       !!afastamento &&
       isAfastamentoParcial(afastamento) &&
@@ -543,7 +673,11 @@ export class PontoService {
         almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? "13:00"
       });
     const { fase, acoesPermitidas: acoesPorFase } = this.getFaseEAcoes(registros, {
-      forcarSemIntervalo: semIntervaloCategoria || atestadoMatutino
+      forcarSemIntervalo: semIntervaloCategoria || atestadoMatutino,
+      naJanelaAlmoco,
+      agoraHora,
+      almocoPodeIniciarA,
+      almocoPodeIniciarAte
     });
     const acoesPermitidas = afastamentoHoje || isentoHoje ? [] : acoesPorFase;
     const estado = afastamentoHoje || isentoHoje ? "FORA" : ESTADO_POR_FASE[fase];
@@ -634,6 +768,12 @@ export class PontoService {
               )
             ? "ATESTADO_PARCIAL_SEM_ALMOCO"
             : null),
+      almocoPodeIniciarA,
+      almocoPodeIniciarAte,
+      horaEntrada: jornada.horaEntrada ?? "08:00",
+      horaSaida: jornada.horaSaida ?? "17:00",
+      almocoMinMin: jornada.almocoMinMin ?? 60,
+      previsaoInicioAlmoco: previsaoInicioAlmocoHora,
       enderecoResidencial: func.enderecoResidencial
         ? {
             lat: func.enderecoResidencial.lat,
@@ -786,7 +926,7 @@ export class PontoService {
       );
     }
 
-    /* Estagiário / menor aprendiz: carga horária corrida — sem início/fim de almoço. */
+    /* Estagiário: carga horária corrida — sem início/fim de almoço. */
     if (
       (dto.tipo === "INICIO_INTERVALO" || dto.tipo === "FIM_INTERVALO") &&
       categoriaSemIntervaloAlmoco(func.categoria)
@@ -801,6 +941,17 @@ export class PontoService {
     /* Validação de sequência */
     const permitidas = status.acoesPermitidas;
     if (!permitidas.includes(dto.tipo)) {
+      const janelaIni = status.almocoPodeIniciarA ?? "11:30";
+      const janelaFim = status.almocoPodeIniciarAte ?? "13:00";
+      if (
+        ACOES_BLOQUEADAS_NA_JANELA_ALMOCO.includes(dto.tipo) &&
+        (permitidas.includes("INICIO_INTERVALO") || permitidas.includes("FIM_INTERVALO"))
+      ) {
+        throw new BadRequestException(
+          `Neste horário (${janelaIni}–${janelaFim}) registre o intervalo de almoço. ` +
+            `Pausa e encerramento não estão disponíveis durante a janela.`
+        );
+      }
       throw new BadRequestException(
         permitidas.length
           ? `Sequência inválida. Próxima ação esperada: ${permitidas.join(" ou ")}. Recebido: ${dto.tipo}`
@@ -987,7 +1138,7 @@ export class PontoService {
     }
 
     /* Entrada sem intervalo de almoço:
-       - Estagiário / menor aprendiz (carga horária corrida), ou
+       - Estagiário (carga horária corrida), ou
        - Turno vespertino/noturno (durante ou após a janela de almoço).
        Anota observação na própria ENTRADA — sem criar registros de intervalo. */
     let observacoesEntrada: Prisma.InputJsonValue | undefined;
@@ -1043,6 +1194,34 @@ export class PontoService {
           ) as unknown as Prisma.InputJsonValue;
         }
       }
+    }
+
+    let observacoesAlmoco: Prisma.InputJsonValue | undefined;
+    if (dto.tipo === "FIM_INTERVALO" && status.fase === "PAUSA_MANHA") {
+      const pausa = [...status.registrosHoje]
+        .reverse()
+        .find((r) => r.tipo === "INTERROMPER_EXPEDIENTE");
+      const horaPausa = pausa ? horarioDeDataBrasilia(pausa.dataHora).substring(0, 5) : null;
+      const inicioAlmocoEm = pausa
+        ? new Date(new Date(pausa.dataHora).getTime() + 1)
+        : new Date(agora.getTime() - 1);
+      observacoesAlmoco = appendObservacao([], {
+        data: agora.toISOString(),
+        tipo: "AJUSTE_AUTOMATICO",
+        texto: horaPausa
+          ? `Almoço iniciado na pausa às ${horaPausa} — o retorno encerra o intervalo.`
+          : "Almoço considerado em conjunto com a pausa em andamento."
+      }) as unknown as Prisma.InputJsonValue;
+      await this.prisma.registroPonto.create({
+        data: {
+          funcionarioId: func.id,
+          tipo: "INICIO_INTERVALO",
+          dataHora: inicioAlmocoEm,
+          origem: (dto.origem ?? "WEB") as OrigemPonto,
+          modoRegistro: modoRegistroEfetivo as import("@prisma/client").ModoRegistro,
+          observacoes: observacoesAlmoco
+        }
+      });
     }
 
     const registro = await this.prisma.registroPonto.create({
@@ -1944,6 +2123,21 @@ export class PontoService {
     }
 
     if (body.tipo === "CORRECAO_PONTO") {
+      const dataRefIsoAssin = dataBrasiliaISO(new Date(body.dataReferencia));
+      const [anoAssin, mesAssin] = dataRefIsoAssin.split("-").map(Number);
+      const periodoAssin = await this.prisma.periodoPonto.findUnique({
+        where: {
+          funcionarioId_mes_ano: { funcionarioId: func.id, mes: mesAssin, ano: anoAssin }
+        },
+        include: { assinatura: { select: { status: true } } }
+      });
+      const statusAssin = periodoAssin?.assinatura?.status;
+      if (statusAssin === "PENDENTE_GESTOR" || statusAssin === "CONCLUIDA") {
+        throw new BadRequestException(
+          "Este período já foi assinado. Não é mais possível solicitar correção da folha de ponto."
+        );
+      }
+
       const novosTipos = new Set(extrairTiposCorrecaoPonto(body.metadados));
       if (
         categoriaSemIntervaloAlmoco(func.categoria) &&

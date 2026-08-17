@@ -19,6 +19,11 @@ export const ATALHOS_EVENTO: Record<string, AtalhoEvento> = {
     label: "Histórico — Assinar quadro",
     caminho: "Histórico → Assinar quadro do mês"
   },
+  FOLHA_PONTO_CORRECAO_PENDENTE: {
+    path: "/ponto/historico",
+    label: "Histórico — Folha de ponto",
+    caminho: "Histórico → localize o mês da folha"
+  },
   ASSINAR_QUADRO_GESTOR: {
     path: "/ponto/aprovacoes?etapa=assinaturas",
     label: "Aprovações — Assinaturas de quadro",
@@ -205,11 +210,14 @@ export function anexarAtalhoAoCorpo(corpo: string, eventoId?: string | null): st
 
 /** Converte corpo plain text em HTML, transformando URLs em links clicáveis. */
 export function corpoParaHtmlEmail(corpo: string): string {
-  const comQuebras = corpo
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>");
+  const escaped = corpo.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const comDestaque = escaped.replace(
+    /(^|\n)(ATENÇÃO:[^\n]*)/g,
+    `$1<div style="margin:16px 0;padding:12px 14px;background:#FEF3C7;border:1px solid #D97706;border-left:4px solid #B45309;border-radius:8px;color:#92400E;font-weight:700;line-height:1.45;">$2</div>`
+  );
+
+  const comQuebras = comDestaque.replace(/\n/g, "<br>");
 
   return comQuebras.replace(
     /(https?:\/\/[^\s<]+)/g,

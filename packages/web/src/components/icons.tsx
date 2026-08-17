@@ -195,6 +195,33 @@ export const ArrowRightIcon = mkIcon(
   </>
 );
 
+/** Ligação visual de horário antigo para o novo (ex.: 16:02 para 13:40). */
+export function SetaAlteracaoHorario({
+  style
+}: {
+  size?: number;
+  title?: string;
+  style?: React.CSSProperties;
+}) {
+  return <span style={{ margin: "0 4px", ...style }}>para</span>;
+}
+
+/** Substitui a seta → pelo texto “para” em correções de horário. */
+export function TextoComSetaHorario({ texto }: { texto: string; size?: number }) {
+  const partes = texto.split(" → ");
+  if (partes.length < 2) return <>{texto}</>;
+  return (
+    <>
+      {partes.map((parte, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <SetaAlteracaoHorario />}
+          {parte}
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
+
 export const PlusIcon = mkIcon(
   <>
     <line x1="12" y1="5" x2="12" y2="19" />
@@ -310,6 +337,22 @@ export const SunsetIcon = mkIcon(
     <line x1="18.36" y1="11.64" x2="19.78" y2="10.22" />
     <line x1="23" y1="22" x2="1" y2="22" />
     <polyline points="16 5 12 9 8 5" />
+  </>
+);
+
+export const MoonIcon = mkIcon(
+  <>
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+  </>
+);
+
+export const SunIcon = mkIcon(
+  <>
+    <circle cx="12" cy="12" r="5" fill="currentColor" stroke="none" />
+    <line x1="12" y1="1.5" x2="12" y2="4.5" />
+    <line x1="12" y1="19.5" x2="12" y2="22.5" />
+    <line x1="1.5" y1="12" x2="4.5" y2="12" />
+    <line x1="19.5" y1="12" x2="22.5" y2="12" />
   </>
 );
 

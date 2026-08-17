@@ -10,12 +10,17 @@ import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
-import { dataBrasiliaISO, intervaloDiaBrasilia } from "../../utils/horario-brasilia";
+import {
+  dataBrasiliaISO,
+  hojeBrasiliaISO,
+  intervaloDiaBrasilia
+} from "../../utils/horario-brasilia";
 import {
   montarRelatorioQuadro,
   resolverJornadaHistoricoContexto
 } from "../../utils/historico-quadro";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
+import { urlHomeSistema } from "../notificacao/atalhos-evento";
 import {
   codigoAssinaturaCoincide,
   codigoCienciaGestorExibido,
@@ -30,7 +35,47 @@ import {
   type ResumoBadgesPdf
 } from "./quadro-registro-pdf.builder";
 import { getPdfFonts } from "./pdf-fonts";
-import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
+import {
+  categoriaSemIntervaloAlmoco,
+  categoriaSemRegistroPonto,
+  categoriaSemVisibilidadeBancoHoras
+} from "../../utils/categoria-jornada";
+
+const STATUS_SOLICITACAO_EM_ANDAMENTO = [
+  "PENDENTE",
+  "AGUARDANDO_RH",
+  "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+  "AGUARDANDO_GESTOR_RH"
+] as const;
+
+function montarMensagemCorrecaoPendenteFolha(
+  mes: number,
+  ano: number
+): { titulo: string; corpo: string } {
+  const mesNome = new Date(ano, mes - 1).toLocaleString("pt-BR", { month: "long" });
+  const periodo = `${mesNome}/${ano}`;
+  const titulo = `Folha de ponto de ${periodo} — regularize os registros para assinar`;
+  const corpo =
+    `Olá,\n\n` +
+    `A folha de ponto de ${periodo} ainda não pode ser fechada nem assinada. ` +
+    `Há dias com cálculo de saldo irregular (status Falta ou Pendente) ou solicitações de correção em andamento.\n\n` +
+    `Regularize esses registros para liberar a assinatura.\n\n` +
+    `ATENÇÃO: depois de assinar, não será mais possível solicitar correção deste período.\n\n` +
+    `Como regularizar\n\n` +
+    `1. Acesse o sistema: ${urlHomeSistema()}\n` +
+    `2. Abra Histórico e localize o mês da folha que precisa ser assinada (${periodo}).\n` +
+    `3. Identifique os dias com status Falta ou Pendente.\n` +
+    `4. Para ajustar batidas (entrada, intervalo, saída ou retorno de pausa):\n` +
+    `   Solicitações → Nova solicitação → Correção de ponto\n` +
+    `   Selecione a data, informe os horários corretos e envie. A solicitação segue para o gestor.\n` +
+    `5. Se a ausência for por atestado médico:\n` +
+    `   Solicitações → Nova solicitação → Atestado médico\n` +
+    `   Anexe o documento e informe o período.\n` +
+    `6. Acompanhe em Solicitações → Minhas solicitações até a aprovação.\n` +
+    `7. Volte ao Histórico, no mesmo mês. Quando todos os dias estiverem regularizados, o botão Assinar Quadro será liberado.\n\n` +
+    `Regularize o quanto antes para não atrasar o fechamento da folha.`;
+  return { titulo, corpo };
+}
 
 /** Metadados de autenticidade capturados no momento da assinatura. */
 export interface SignatureMeta {
@@ -191,11 +236,22 @@ export class AssinaturaService {
       };
     }
 
-    return this.prisma.assinaturaQuadro.findMany({
+    const lista = await this.prisma.assinaturaQuadro.findMany({
       where,
       include: { periodo: true },
       orderBy: { criadoEm: "desc" }
     });
+
+    return Promise.all(
+      lista.map(async (item) => {
+        const avaliacao = await this.avaliarSaldoFolha(
+          item.periodo.funcionarioId,
+          item.periodo.mes,
+          item.periodo.ano
+        );
+        return { ...item, saldoRegularizado: avaliacao.saldoRegularizado };
+      })
+    );
   }
 
   /* ─── Funcionário assina ─── */
@@ -219,6 +275,18 @@ export class AssinaturaService {
       throw new BadRequestException(
         `Status atual (${assinatura.status}) não permite assinatura do funcionário`
       );
+
+    const avaliacao = await this.avaliarSaldoFolha(
+      func.id,
+      assinatura.periodo.mes,
+      assinatura.periodo.ano
+    );
+    if (!avaliacao.saldoRegularizado) {
+      throw new BadRequestException(
+        "Há correções pendentes na folha de ponto. Regularize os dias com status Falta ou Pendente " +
+          "antes de assinar. Depois de assinar, não será mais possível solicitar correção deste período."
+      );
+    }
 
     const atualizada = await this.prisma.assinaturaQuadro.update({
       where: { id: assinaturaId },
@@ -636,8 +704,11 @@ export class AssinaturaService {
         jornadaHorasDia: true,
         jornadaPeriodoDesde: true,
         jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: { select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true } },
-        user: { select: { createdAt: true } }
+        jornadaPeriodo: {
+          select: { nome: true, jornadaDiariaMin: true, horaEntrada: true, horaSaida: true }
+        },
+        user: { select: { createdAt: true } },
+        categoria: true
       }
     });
     const cfgJornada = await this.prisma.configuracaoSistema.findUnique({
@@ -687,10 +758,132 @@ export class AssinaturaService {
         cfg?.bancoHorasSabadoPct ?? 100,
         cfg?.bancoHorasDomingoPct ?? 200,
         cfg?.bancoHorasFeriadoPct ?? 200,
-        funcJornada?.user?.createdAt ? dataBrasiliaISO(funcJornada.user.createdAt) : null
+        funcJornada?.user?.createdAt ? dataBrasiliaISO(funcJornada.user.createdAt) : null,
+        { forcarSemIntervalo: categoriaSemIntervaloAlmoco(funcJornada?.categoria) }
       ),
       jornada
     };
+  }
+
+  /**
+   * Dias Falta/Pendente (exceto o dia corrente) ou solicitações de correção/atestado
+   * em andamento impedem a assinatura da folha.
+   */
+  private async avaliarSaldoFolha(
+    funcionarioId: string,
+    mes: number,
+    ano: number
+  ): Promise<{
+    saldoRegularizado: boolean;
+    temDiasIrregulares: boolean;
+    temSolicitacoesPendentes: boolean;
+  }> {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true }
+    });
+    if (!func || categoriaSemRegistroPonto(func.categoria)) {
+      return {
+        saldoRegularizado: true,
+        temDiasIrregulares: false,
+        temSolicitacoesPendentes: false
+      };
+    }
+
+    let temDiasIrregulares = false;
+    try {
+      const { relatorio } = await this.montarRelatorioParaPdf(funcionarioId, mes, ano);
+      const hojeIso = hojeBrasiliaISO();
+      temDiasIrregulares = relatorio.dias.some(
+        (d) => (d.statusInterno === "FALTA" || d.statusInterno === "PENDENTE") && d.iso !== hojeIso
+      );
+    } catch (err) {
+      this.logger.warn(
+        `avaliarSaldoFolha: falha ao montar relatório ${mes}/${ano} func ${funcionarioId}: ${String(err)}`
+      );
+      temDiasIrregulares = true;
+    }
+
+    const mm = String(mes).padStart(2, "0");
+    const ultimoDia = new Date(ano, mes, 0).getDate();
+    const { inicio } = intervaloDiaBrasilia(`${ano}-${mm}-01`);
+    const { fim } = intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`);
+
+    const solPendente = await this.prisma.solicitacao.findFirst({
+      where: {
+        funcionarioId,
+        tipo: { in: ["CORRECAO_PONTO", "ATESTADO"] },
+        status: { in: [...STATUS_SOLICITACAO_EM_ANDAMENTO] },
+        OR: [
+          { dataReferencia: { gte: inicio, lte: fim } },
+          { dataInicio: { lte: fim }, dataFim: { gte: inicio } }
+        ]
+      },
+      select: { id: true }
+    });
+
+    const temSolicitacoesPendentes = !!solPendente;
+    return {
+      temDiasIrregulares,
+      temSolicitacoesPendentes,
+      saldoRegularizado: !temDiasIrregulares && !temSolicitacoesPendentes
+    };
+  }
+
+  /* ─── Cron diário: correções pendentes para assinar a folha ─── */
+
+  @Cron("10 0 * * *", { timeZone: "America/Sao_Paulo" })
+  async cronFolhaPontoCorrecaoPendente() {
+    const eventoId = "FOLHA_PONTO_CORRECAO_PENDENTE";
+    const [emailAtivo, sistemaAtivo] = await Promise.all([
+      this.notificacaoService.isEmailAtivoParaEvento(eventoId),
+      this.notificacaoService.isSistemaAtivoParaEvento(eventoId)
+    ]);
+    if (!emailAtivo && !sistemaAtivo) return;
+
+    const pendentes = await this.prisma.assinaturaQuadro.findMany({
+      where: { status: "PENDENTE_FUNCIONARIO" },
+      include: {
+        periodo: {
+          include: {
+            funcionario: {
+              select: {
+                id: true,
+                categoria: true,
+                user: { select: { externalId: true, email: true, emailReal: true } }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    let enviados = 0;
+    for (const ass of pendentes) {
+      const func = ass.periodo.funcionario;
+      if (categoriaSemRegistroPonto(func.categoria)) continue;
+
+      const avaliacao = await this.avaliarSaldoFolha(func.id, ass.periodo.mes, ass.periodo.ano);
+      if (avaliacao.saldoRegularizado) continue;
+
+      const { titulo, corpo } = montarMensagemCorrecaoPendenteFolha(
+        ass.periodo.mes,
+        ass.periodo.ano
+      );
+      await this.notificacaoService.dispararEvento(eventoId, titulo, corpo, [
+        {
+          externalId: func.user?.externalId ?? null,
+          email: func.user?.email ?? null,
+          emailReal: func.user?.emailReal ?? null
+        }
+      ]);
+      enviados++;
+    }
+
+    this.logger.log(
+      `Cron FOLHA_PONTO_CORRECAO_PENDENTE: ${enviados} notificações disparadas ` +
+        `(${pendentes.length} folhas pendentes de assinatura).`
+    );
   }
 
   /** Monta o resumo equivalente aos badges da página Histórico para o PDF. */

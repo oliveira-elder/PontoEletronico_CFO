@@ -2423,6 +2423,7 @@ export class AuditoriaService {
         jornadaPeriodoAssociadoEm: true,
         jornadaPeriodo: {
           select: {
+            nome: true,
             jornadaDiariaMin: true,
             horaEntrada: true,
             horaSaida: true,
@@ -2453,8 +2454,28 @@ export class AuditoriaService {
         horaExtraLimiteAuto: true
       }
     });
+    let periodoJornada = funcJornada?.jornadaPeriodo ?? null;
+    if (!periodoJornada) {
+      periodoJornada = await this.prisma.jornadaPeriodo.findFirst({
+        where: { ePadrao: true, ativo: true },
+        select: {
+          nome: true,
+          jornadaDiariaMin: true,
+          horaEntrada: true,
+          horaSaida: true,
+          almocoMinMin: true,
+          almocoPodeIniciarA: true,
+          almocoPodeIniciarAte: true,
+          toleranciaEntradaMin: true,
+          toleranciaSaidaMin: true,
+          toleranciaCalculoMin: true,
+          horaExtraLimiteAuto: true
+        }
+      });
+    }
     const jornadaCtx = resolverJornadaHistoricoContexto({
       ...funcJornada,
+      jornadaPeriodo: periodoJornada,
       configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
       configuracaoHoraSaida: cfg?.horaSaida ?? null,
       configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,

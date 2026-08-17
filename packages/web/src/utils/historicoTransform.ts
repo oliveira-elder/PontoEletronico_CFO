@@ -24,12 +24,15 @@ export interface ObservacaoRegistro {
   janelaAlmoco?: string;
 }
 
-/** TURNO_SEM_INTERVALO só dispensa almoço após a janela ou por categoria — não em DURANTE_JANELA. */
+/** TURNO_SEM_INTERVALO só dispensa almoço após a janela — não em DURANTE_JANELA
+ *  nem pelo carimbo de carga corrida (estagiário é tratado pela categoria). */
 function obsForcaSemIntervalo(
   observacoes?: ObservacaoRegistro[] | null
 ): ObservacaoRegistro | undefined {
   const obs = observacoes?.find((o) => o.tipo === "TURNO_SEM_INTERVALO");
-  if (!obs || obs.motivo === "DURANTE_JANELA") return undefined;
+  if (!obs || obs.motivo === "DURANTE_JANELA" || obs.motivo === "CATEGORIA_CARGA_CORRIDA") {
+    return undefined;
+  }
   return obs;
 }
 
@@ -114,6 +117,7 @@ export interface JornadaHistorico {
   anteriorMin: number;
   atualMin: number;
   vigenciaDesde: string | null;
+  periodoNome?: string | null;
   horaEntrada?: string;
   horaSaida?: string;
   almocoMinMin?: number;
@@ -202,8 +206,8 @@ const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
 };
 
 function jornadaEsperadaMin(isoKey: string, jornada: JornadaHistorico): number {
-  if (jornada.vigenciaDesde && isoKey >= jornada.vigenciaDesde) return jornada.atualMin;
-  return jornada.anteriorMin;
+  if (jornada.vigenciaDesde && isoKey < jornada.vigenciaDesde) return jornada.anteriorMin;
+  return jornada.atualMin;
 }
 
 function calcularJornadaParcialFeriado(
@@ -1067,7 +1071,7 @@ export function transformarHistorico(
     const saidaR = getDisplay("SAIDA");
 
     const entrada = entradaR ? fmtHora(entradaR.dataHora) : null;
-    const inicioIntervalo = iniAlmR ? fmtHora(iniAlmR.dataHora) : null;
+    let inicioIntervalo = iniAlmR ? fmtHora(iniAlmR.dataHora) : null;
     const fimIntervalo = fimAlmR ? fmtHora(fimAlmR.dataHora) : null;
     const saida = saidaR ? fmtHora(saidaR.dataHora) : null;
     const saidaParaStatus = saida;
@@ -1246,6 +1250,10 @@ export function transformarHistorico(
         pausaAberta = fmtHora(r.dataHora);
       } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
         pausas.push({ inicio: pausaAberta ?? "—", fim: fmtHora(r.dataHora) });
+        pausaAberta = null;
+      } else if (r.tipo === "INICIO_INTERVALO") {
+        /* Pausa aberta vira início do almoço — não permanece como pausa avulsa. */
+        if (pausaAberta && iniAlmR) inicioIntervalo = pausaAberta;
         pausaAberta = null;
       }
     }

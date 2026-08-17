@@ -1,5 +1,5 @@
 /** Categorias com carga horária corrida — sem intervalo de almoço no ponto. */
-export const CATEGORIAS_SEM_INTERVALO_ALMOCO = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+export const CATEGORIAS_SEM_INTERVALO_ALMOCO = ["ESTAGIARIO"] as const;
 
 export type CategoriaSemIntervaloAlmoco = (typeof CATEGORIAS_SEM_INTERVALO_ALMOCO)[number];
 
@@ -20,7 +20,8 @@ export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | un
 }
 
 export function labelCategoriaSemIntervalo(categoria: string): string {
-  return categoria === "MENOR_APRENDIZ" ? "Menor Aprendiz" : "Estagiário";
+  void categoria;
+  return "Estagiário";
 }
 
 /** Categorias sem obrigação de bater ponto (mantêm solicitações e demais fluxos). */

@@ -36,6 +36,9 @@ export interface SistemaConfig {
   pontoHorarioMaximo?: string;
   almocoPodeIniciarA?: string;
   almocoPodeIniciarAte?: string;
+  horaEntrada?: string;
+  horaSaida?: string;
+  almocoMinMin?: number;
   // Por usuário — retornados pelo endpoint /ponto/status
   modoHomeOffice?: boolean;
   modoHibridoLocal?: boolean;

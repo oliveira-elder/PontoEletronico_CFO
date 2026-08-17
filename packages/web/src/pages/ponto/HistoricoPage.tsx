@@ -23,6 +23,7 @@ import {
   type Pausa,
   type DiaRegistro,
   type HistoricoApiResponse,
+  type JornadaHistorico,
   JORNADA_PADRAO,
   transformarHistorico,
   badgeLabelParcial
@@ -31,6 +32,7 @@ import {
   MSG_SOLICITACAO_APENAS_INFORMATIVA,
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoriaPonto";
+import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
 
 /* Badges de resumo/status ~15% maiores que o .badge padrão (11px / 2×8) */
 const BADGE_HISTORICO_STYLE: React.CSSProperties = {
@@ -49,6 +51,7 @@ interface AssinaturaQuadro {
   assinadoFuncionarioEm: string | null;
   assinadoGestorEm: string | null;
   assinadoGestorNome: string | null;
+  saldoRegularizado?: boolean;
   periodo: {
     mes: number;
     ano: number;
@@ -57,6 +60,12 @@ interface AssinaturaQuadro {
     horasFaltaMinutos: number;
     diasTrabalhados: number;
   };
+}
+
+function fmtJornadaDia(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m === 0 ? `${h}h/dia` : `${h}h${String(m).padStart(2, "0")}/dia`;
 }
 
 function fmtBH(min: number): string {
@@ -193,10 +202,26 @@ function ModalAssinarQuadro({
           )}
         </div>
 
-        <p style={{ fontSize: 12.5, color: "var(--ink-600)", marginBottom: 24, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 12.5, color: "var(--ink-600)", marginBottom: 12, lineHeight: 1.6 }}>
           Ao assinar, confirmo que li e estou de acordo com os registros de ponto acima referentes
           ao período indicado.
         </p>
+        <div
+          style={{
+            marginBottom: 24,
+            padding: "10px 12px",
+            background: "#FEF3C7",
+            border: "1px solid #D97706",
+            borderLeft: "4px solid #B45309",
+            borderRadius: 8,
+            color: "#92400E",
+            fontSize: 13,
+            fontWeight: 700,
+            lineHeight: 1.45
+          }}
+        >
+          Atenção: depois de assinar, não será mais possível solicitar correção deste período.
+        </div>
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={loading}>
@@ -221,17 +246,85 @@ function ModalAssinarQuadro({
   );
 }
 
+function DestaqueAtencaoAssinatura() {
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: "10px 12px",
+        background: "#FFFBEB",
+        border: "1px solid #D97706",
+        borderLeft: "4px solid #B45309",
+        borderRadius: 8,
+        color: "#92400E",
+        fontSize: 13,
+        fontWeight: 700,
+        lineHeight: 1.45,
+        width: "100%"
+      }}
+    >
+      Atenção: depois de assinar, não será mais possível solicitar correção deste período.
+    </div>
+  );
+}
+
 /* ─── Banner de Assinatura ─── */
 function BannerAssinatura({
   assinatura,
+  saldoOk,
   onAssinar
 }: {
   assinatura: AssinaturaQuadro;
+  saldoOk: boolean;
   onAssinar: () => void;
 }) {
   const fmtDt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("pt-BR") : "—");
 
   if (assinatura.status === "PENDENTE_FUNCIONARIO") {
+    if (!saldoOk) {
+      return (
+        <div
+          style={{
+            background: "#FEF2F2",
+            border: "1px solid #FECACA",
+            borderRadius: 8,
+            padding: "12px 16px",
+            marginBottom: 16
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+            <AlertCircleIcon size={18} style={{ color: "#B91C1C", flexShrink: 0, marginTop: 2 }} />
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <p style={{ fontSize: 13.5, color: "#7F1D1D", margin: 0, lineHeight: 1.55 }}>
+                <strong>Assinatura bloqueada — há correções pendentes.</strong> Há dias com cálculo
+                de saldo irregular (Falta ou Pendente) ou solicitações de correção em andamento.
+                Abra <strong>Histórico</strong>, localize o mês da folha e regularize em{" "}
+                <strong>Solicitações → Nova solicitação → Correção de ponto</strong> (ou{" "}
+                <strong>Atestado médico</strong>, se for o caso).
+              </p>
+            </div>
+            <button
+              className="btn btn-sm"
+              disabled
+              title="Regularize os registros de saldo para habilitar a assinatura"
+              style={{
+                background: "#D1D5DB",
+                color: "#6B7280",
+                border: "none",
+                gap: 6,
+                flexShrink: 0,
+                cursor: "not-allowed"
+              }}
+            >
+              <Edit2Icon size={13} />
+              Assinar Quadro
+            </button>
+          </div>
+          <DestaqueAtencaoAssinatura />
+        </div>
+      );
+    }
+
     return (
       <div
         style={{
@@ -239,26 +332,25 @@ function BannerAssinatura({
           border: "1px solid #F59E0B",
           borderRadius: 8,
           padding: "12px 16px",
-          marginBottom: 16,
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          flexWrap: "wrap"
+          marginBottom: 16
         }}
       >
-        <AlertCircleIcon size={18} style={{ color: "#D97706", flexShrink: 0 }} />
-        <span style={{ fontSize: 13.5, color: "#92400E", flex: 1 }}>
-          <strong>Quadro pendente de assinatura.</strong> Revise os registros abaixo e assine para
-          confirmar.
-        </span>
-        <button
-          className="btn btn-sm"
-          onClick={onAssinar}
-          style={{ background: "#D97706", color: "white", border: "none", gap: 6, flexShrink: 0 }}
-        >
-          <Edit2Icon size={13} />
-          Assinar Quadro
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <AlertCircleIcon size={18} style={{ color: "#D97706", flexShrink: 0 }} />
+          <span style={{ fontSize: 13.5, color: "#92400E", flex: 1 }}>
+            <strong>Quadro pronto para assinatura.</strong> Revise os registros abaixo e assine para
+            confirmar.
+          </span>
+          <button
+            className="btn btn-sm"
+            onClick={onAssinar}
+            style={{ background: "#D97706", color: "white", border: "none", gap: 6, flexShrink: 0 }}
+          >
+            <Edit2Icon size={13} />
+            Assinar Quadro
+          </button>
+        </div>
+        <DestaqueAtencaoAssinatura />
       </div>
     );
   }
@@ -501,6 +593,7 @@ function HoraCell({
       }}
     >
       {hora}
+      <IconePeriodoPonto hora={hora} />
       {turnoSemIntervalo && (
         <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
           <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
@@ -1090,6 +1183,7 @@ export function HistoricoPage() {
   const [assinatura, setAssinatura] = useState<AssinaturaQuadro | null>(null);
   const [modalAssinar, setModalAssinar] = useState(false);
   const [loadingAssinar, setLoadingAssinar] = useState(false);
+  const [jornadaInfo, setJornadaInfo] = useState<JornadaHistorico | null>(null);
 
   const fetchHistorico = useCallback(
     (silent = false) => {
@@ -1108,6 +1202,7 @@ export function HistoricoPage() {
           setOcultarBancoHoras(
             !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria)
           );
+          setJornadaInfo(data?.jornada ?? JORNADA_PADRAO);
           setRegistros(
             transformarHistorico(
               data?.registros ?? [],
@@ -1122,8 +1217,7 @@ export function HistoricoPage() {
                 pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
                 semRegistroPonto: !!data?.semRegistroPonto,
                 periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
-                exigirIntervalo:
-                  data?.categoria !== "ESTAGIARIO" && data?.categoria !== "MENOR_APRENDIZ"
+                exigirIntervalo: data?.categoria !== "ESTAGIARIO"
               }
             )
           );
@@ -1133,6 +1227,7 @@ export function HistoricoPage() {
             setBancoPorDia({});
             setSaldoMesBanco(0);
             setSaldoAcumuladoMesAnterior(0);
+            setJornadaInfo(JORNADA_PADRAO);
             setRegistros(transformarHistorico([], [], mes, ano));
           }
         })
@@ -1278,6 +1373,14 @@ export function HistoricoPage() {
       return s + minutosDiaExibidos(r, `${a}-${m}-${d}`).trab;
     }, 0);
   const totalFaltas = registros.filter((r) => !r.apenasInformativo && r.status === "FALTA").length;
+  const hojeIsoAssin = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-${String(hoje.getDate()).padStart(2, "0")}`;
+  const temDiasIrregularesAssin = registros.some((r) => {
+    if (r.apenasInformativo) return false;
+    if (r.status !== "FALTA" && r.status !== "PENDENTE") return false;
+    const [d, m, a] = r.data.split("/");
+    return `${a}-${m}-${d}` !== hojeIsoAssin;
+  });
+  const saldoOkAssinatura = assinatura?.saldoRegularizado !== false && !temDiasIrregularesAssin;
   const totalOK = registros.filter((r) => !r.apenasInformativo && r.status === "OK").length;
   const totalAfastamentos = registros.filter(
     (r) => !r.apenasInformativo && r.status === "AFASTAMENTO"
@@ -1346,6 +1449,17 @@ export function HistoricoPage() {
 
   const badgesResumo = (
     <>
+      {jornadaInfo && (
+        <span
+          className="badge badge-gray"
+          style={BADGE_HISTORICO_STYLE}
+          title="Jornada diária do período configurado para o funcionário"
+        >
+          {jornadaInfo.periodoNome
+            ? `${jornadaInfo.periodoNome} · ${fmtJornadaDia(jornadaInfo.atualMin)}`
+            : `Período ${fmtJornadaDia(jornadaInfo.atualMin)}`}
+        </span>
+      )}
       <span className="badge badge-green" style={BADGE_HISTORICO_STYLE}>
         {totalOK} dias OK
       </span>
@@ -1577,7 +1691,7 @@ export function HistoricoPage() {
       </div>
 
       {/* Modal de assinatura */}
-      {modalAssinar && assinatura && (
+      {modalAssinar && assinatura && saldoOkAssinatura && (
         <ModalAssinarQuadro
           assinatura={assinatura}
           totalTrabMin={totalTrabMin}
@@ -1591,7 +1705,13 @@ export function HistoricoPage() {
 
       {/* Banner de assinatura */}
       {assinatura && !loading && (
-        <BannerAssinatura assinatura={assinatura} onAssinar={() => setModalAssinar(true)} />
+        <BannerAssinatura
+          assinatura={assinatura}
+          saldoOk={saldoOkAssinatura}
+          onAssinar={() => {
+            if (saldoOkAssinatura) setModalAssinar(true);
+          }}
+        />
       )}
 
       {/* Tabela */}
@@ -1920,6 +2040,7 @@ export function HistoricoPage() {
           <CoffeeIcon size={13} style={{ color: "#B45309" }} />
           Almoço &lt; mínimo configurado (cálculo usa referência de 1h)
         </span>
+        <LegendaPeriodosPonto />
       </div>
     </div>
   );

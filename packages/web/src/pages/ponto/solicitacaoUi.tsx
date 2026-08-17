@@ -4,7 +4,8 @@ import {
   XCircleIcon,
   UserIcon,
   InfoIcon,
-  FileTextIcon
+  FileTextIcon,
+  TextoComSetaHorario
 } from "../../components/icons";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 
@@ -759,7 +760,7 @@ export function SolicitacaoCardRH({
             fontWeight: 500
           }}
         >
-          {resumo}
+          <TextoComSetaHorario texto={resumo} />
         </p>
 
         <div
@@ -1113,7 +1114,7 @@ export function ModalDecisaoRH({
               Solicitação
             </p>
             <p style={{ margin: 0, fontSize: 13, color: "var(--ink-800)", lineHeight: 1.5 }}>
-              {resumo}
+              <TextoComSetaHorario texto={resumo} />
             </p>
             {solicitacao.descricao && (
               <p
@@ -1375,7 +1376,7 @@ export function ModalEnviarGuia({
               Solicitação
             </p>
             <p style={{ margin: 0, fontSize: 13, color: "var(--ink-800)", lineHeight: 1.5 }}>
-              {resumo}
+              <TextoComSetaHorario texto={resumo} />
             </p>
           </div>
 

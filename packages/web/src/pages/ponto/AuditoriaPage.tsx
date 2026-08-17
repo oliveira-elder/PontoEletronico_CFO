@@ -34,7 +34,9 @@ import {
   DatabaseIcon,
   InfoIcon,
   Trash2Icon,
-  CoffeeIcon
+  CoffeeIcon,
+  SetaAlteracaoHorario,
+  TextoComSetaHorario
 } from "../../components/icons";
 import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "../../utils/calcHorasTrabalhadas";
 import {
@@ -44,6 +46,9 @@ import {
   SolicitacaoResumo,
   textoResumo
 } from "./solicitacaoUi";
+import { InputHorario } from "../../components/ponto/InputHorario";
+import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
+import { normalizarHorarioParcial } from "../../utils/horario-brasilia";
 
 /* ═══════════════════════════════════════════════
    TIPOS
@@ -4061,10 +4066,14 @@ function DiaRow({
                       fontSize: 11.5,
                       fontWeight: 700,
                       color: "var(--ink-800)",
-                      fontFamily: "var(--font-mono)"
+                      fontFamily: "var(--font-mono)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 3
                     }}
                   >
                     {item.hora}
+                    <IconePeriodoPonto hora={item.hora} size={11} />
                   </span>
                   <span
                     style={{
@@ -4923,7 +4932,7 @@ function TabelaSolicitacoes({
                   fontWeight: 500
                 }}
               >
-                {resumo}
+                <TextoComSetaHorario texto={resumo} />
               </p>
               {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
               {(s.tipo === "ATESTADO" || s.tipo === "ENVIO_DOCUMENTO_RH") &&
@@ -4969,14 +4978,30 @@ function TabelaSolicitacoes({
                     {meta?.criadoPorNome ? `(${meta.criadoPorNome as string})` : ""}
                   </p>
                   {correcoesDia.map((c, i) => (
-                    <p key={i} style={{ margin: "0 0 2px", fontSize: 12, color: "var(--ink-700)" }}>
+                    <p
+                      key={i}
+                      style={{
+                        margin: "0 0 2px",
+                        fontSize: 12,
+                        color: "var(--ink-700)",
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap"
+                      }}
+                    >
                       {c.acao === "CORRIGIR" ? "✏️" : c.acao === "INCLUIR" ? "➕" : "🗑️"}{" "}
                       <strong>{c.tipoRegistro.replace(/_/g, " ")}</strong>
-                      {c.acao === "CORRIGIR" && c.horarioOriginal
-                        ? `: ${c.horarioOriginal} → ${c.horario}`
-                        : c.acao === "INCLUIR"
-                          ? `: ${c.horario}`
-                          : " (excluir)"}
+                      {c.acao === "CORRIGIR" && c.horarioOriginal ? (
+                        <>
+                          : {c.horarioOriginal}
+                          <SetaAlteracaoHorario />
+                          {c.horario}
+                        </>
+                      ) : c.acao === "INCLUIR" ? (
+                        `: ${c.horario}`
+                      ) : (
+                        " (excluir)"
+                      )}
                     </p>
                   ))}
                 </div>
@@ -5223,8 +5248,8 @@ const JORNADA_PADRAO_AUD: JornadaHistorico = {
 };
 
 function jornadaMinDia(isoKey: string, jornada: JornadaHistorico): number {
-  if (jornada.vigenciaDesde && isoKey >= jornada.vigenciaDesde) return jornada.atualMin;
-  return jornada.anteriorMin;
+  if (jornada.vigenciaDesde && isoKey < jornada.vigenciaDesde) return jornada.anteriorMin;
+  return jornada.atualMin;
 }
 
 interface DiaHist {
@@ -5357,7 +5382,12 @@ function calcHorasH(
   const entrada = regs.find((r) => r.tipo === "ENTRADA");
   const obsSemIntervalo = (
     entrada as { observacoes?: Array<{ tipo?: string; motivo?: string }> } | undefined
-  )?.observacoes?.some((o) => o.tipo === "TURNO_SEM_INTERVALO" && o.motivo !== "DURANTE_JANELA");
+  )?.observacoes?.some(
+    (o) =>
+      o.tipo === "TURNO_SEM_INTERVALO" &&
+      o.motivo !== "DURANTE_JANELA" &&
+      o.motivo !== "CATEGORIA_CARGA_CORRIDA"
+  );
   return calcHorasTrabalhadasMinutos(
     regs.map((r) => ({ tipo: r.tipo, minuto: toMinH(fmtHoraH(r.dataHora)) })),
     {
@@ -5857,7 +5887,9 @@ function buildHistorico(
       atestadoMatutino ||
       !!(eR?.observacoes ?? []).some(
         (o) =>
-          o.tipo === "TURNO_SEM_INTERVALO" && (o as { motivo?: string }).motivo !== "DURANTE_JANELA"
+          o.tipo === "TURNO_SEM_INTERVALO" &&
+          (o as { motivo?: string }).motivo !== "DURANTE_JANELA" &&
+          (o as { motivo?: string }).motivo !== "CATEGORIA_CARGA_CORRIDA"
       ) ||
       (!!atestadoParcial &&
         !(prepAtestado
@@ -5896,7 +5928,8 @@ function buildHistorico(
     const fiDisplay = dayRegs.find((r) => r.tipo === "FIM_INTERVALO");
     const sDisplay = dayRegs.find((r) => r.tipo === "SAIDA");
     const entrada = eRh ? fmtHoraH(eRh.dataHora) : eR ? fmtHoraH(eR.dataHora) : null;
-    const inicioIntervalo = iiDisplay ? fmtHoraH(iiDisplay.dataHora) : null;
+    const inicioIntervaloDisplay = iiDisplay ? fmtHoraH(iiDisplay.dataHora) : null;
+    let inicioIntervalo = inicioIntervaloDisplay;
     const fimIntervalo = fiDisplay ? fmtHoraH(fiDisplay.dataHora) : null;
     const saida = sDisplay ? fmtHoraH(sDisplay.dataHora) : null;
     const isHoje = dt.toDateString() === hoje.toDateString();
@@ -6034,13 +6067,20 @@ function buildHistorico(
       } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
         pausas.push({ inicio: aberta ?? "—", fim: fmtHoraH(r.dataHora) });
         aberta = null;
+      } else if (r.tipo === "INICIO_INTERVALO") {
+        if (aberta && iiDisplay) inicioIntervalo = aberta;
+        aberta = null;
       }
     }
     if (aberta) pausas.push({ inicio: aberta, fim: null });
     const observacoes = dayRegs.flatMap((r) => r.observacoes ?? []);
     const obsTurno = (eR?.observacoes ?? []).find((o) => o.tipo === "TURNO_SEM_INTERVALO");
     const obsForca =
-      obsTurno && (obsTurno as { motivo?: string }).motivo !== "DURANTE_JANELA" ? obsTurno : null;
+      obsTurno &&
+      (obsTurno as { motivo?: string }).motivo !== "DURANTE_JANELA" &&
+      (obsTurno as { motivo?: string }).motivo !== "CATEGORIA_CARGA_CORRIDA"
+        ? obsTurno
+        : null;
     const bloquearIntervalo = !!atestadoParcial || !!obsForca || semAlmocoDia;
     const almocoCurtoDetect = !bloquearIntervalo
       ? analisarAlmocoCurto(
@@ -6185,6 +6225,7 @@ function HoraCellH({
       }}
     >
       {hora}
+      <IconePeriodoPonto hora={hora} />
       {turnoSemIntervalo && (
         <span title={tituloTurno} style={{ display: "inline-flex", lineHeight: 0 }}>
           <CheckCircleIcon size={11} style={{ color: "var(--green)", flexShrink: 0 }} />
@@ -6650,7 +6691,8 @@ function ModalCorrecaoRH({
       horarioOriginal?: string;
     }> = [];
 
-    for (const [tipo, novo, atual] of pares) {
+    for (const [tipo, novoRaw, atual] of pares) {
+      const novo = normalizarHorarioParcial(novoRaw) || novoRaw;
       const reg = getH(tipo);
       if (novo && novo !== atual) {
         correcoes.push(
@@ -6819,18 +6861,28 @@ function ModalCorrecaoRH({
                       </span>
                     )}
                   </label>
-                  <input
-                    type="time"
+                  <InputHorario
                     value={val}
-                    onChange={(e) => setter(e.target.value)}
+                    onChange={setter}
                     style={{
                       ...inputStyle,
                       borderColor: mudou ? "rgba(37,99,235,0.50)" : "rgba(122,30,38,0.14)"
                     }}
                   />
                   {mudou && original && (
-                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "#1e40af" }}>
-                      Corrigir: {original} → {val || "excluir"}
+                    <p
+                      style={{
+                        margin: "2px 0 0",
+                        fontSize: 10.5,
+                        color: "#1e40af",
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap"
+                      }}
+                    >
+                      Corrigir: {original}
+                      <SetaAlteracaoHorario />
+                      {val || "excluir"}
                     </p>
                   )}
                   {mudou && !original && val && (
@@ -6962,8 +7014,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       const regs = regsRaw?.registros ?? [];
       const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
       const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
-      const exigirIntervalo =
-        regsRaw?.categoria !== "ESTAGIARIO" && regsRaw?.categoria !== "MENOR_APRENDIZ";
+      const exigirIntervalo = regsRaw?.categoria !== "ESTAGIARIO";
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
       const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
         ? feriadosRaw
@@ -7503,6 +7554,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
             {item.l}
           </span>
         ))}
+        <LegendaPeriodosPonto />
       </div>
     </div>
   );

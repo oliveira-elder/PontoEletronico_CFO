@@ -1,9 +1,10 @@
-import { dataBrasiliaISO, hojeBrasiliaISO } from "./horario-brasilia";
+import { dataBrasiliaISO } from "./horario-brasilia";
 
 export interface JornadaHistoricoContext {
   anteriorMin: number;
   atualMin: number;
   vigenciaDesde: string | null;
+  periodoNome?: string | null;
   horaEntrada?: string;
   horaSaida?: string;
   almocoMinMin?: number;
@@ -21,6 +22,7 @@ export interface FuncionarioJornadaInput {
   jornadaPeriodoDesde?: Date | null;
   jornadaPeriodoAssociadoEm?: Date | null;
   jornadaPeriodo?: {
+    nome?: string;
     jornadaDiariaMin: number;
     horaEntrada?: string;
     horaSaida?: string;
@@ -43,7 +45,7 @@ export interface FuncionarioJornadaInput {
   configuracaoHoraExtraLimiteAuto?: number | null;
 }
 
-/** Resolve jornada anterior (padrão) vs atual (período) e data de vigência. */
+/** Resolve jornada anterior (legado) vs atual (período configurado) e data de vigência. */
 export function resolverJornadaHistoricoContexto(
   func: FuncionarioJornadaInput | null | undefined
 ): JornadaHistoricoContext {
@@ -52,11 +54,15 @@ export function resolverJornadaHistoricoContexto(
 
   let vigenciaDesde: string | null = null;
   if (func?.jornadaPeriodoDesde) {
-    vigenciaDesde = dataBrasiliaISO(func.jornadaPeriodoDesde);
-  } else if (func?.jornadaPeriodoAssociadoEm) {
-    vigenciaDesde = dataBrasiliaISO(func.jornadaPeriodoAssociadoEm);
-  } else if (func?.jornadaPeriodoId) {
-    vigenciaDesde = hojeBrasiliaISO();
+    const desde = dataBrasiliaISO(func.jornadaPeriodoDesde);
+    const associado = func.jornadaPeriodoAssociadoEm
+      ? dataBrasiliaISO(func.jornadaPeriodoAssociadoEm)
+      : null;
+    /* Associar o período grava desde=hoje. Isso não é mudança de jornada — o período
+       configurado vale para o histórico. Só respeita vigencia quando as datas diferem. */
+    if (!associado || desde !== associado) {
+      vigenciaDesde = desde;
+    }
   }
 
   const horaEntrada = func?.jornadaPeriodo?.horaEntrada ?? func?.configuracaoHoraEntrada ?? "08:00";
@@ -78,6 +84,7 @@ export function resolverJornadaHistoricoContexto(
     anteriorMin,
     atualMin,
     vigenciaDesde,
+    periodoNome: func?.jornadaPeriodo?.nome ?? null,
     horaEntrada,
     horaSaida,
     almocoMinMin,
@@ -621,8 +628,8 @@ export function horarioNoPeriodoAfastamento(
 
 /** Jornada diária esperada (min) para um dia civil YYYY-MM-DD. */
 export function jornadaEsperadaMin(isoDate: string, ctx: JornadaHistoricoContext): number {
-  if (ctx.vigenciaDesde && isoDate >= ctx.vigenciaDesde) return ctx.atualMin;
-  return ctx.anteriorMin;
+  if (ctx.vigenciaDesde && isoDate < ctx.vigenciaDesde) return ctx.anteriorMin;
+  return ctx.atualMin;
 }
 
 /**

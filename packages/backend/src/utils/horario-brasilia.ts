@@ -45,7 +45,8 @@ export function intervaloDiaBrasilia(dataYYYYMMDD: string) {
  * Evita o deslocamento de 3h quando o servidor roda em UTC.
  */
 export function aplicarHorarioBrasilia(dataBase: Date, horario: string): Date {
-  const [h, m] = horario.split(":").map(Number);
+  const norm = normalizarHorarioParcial(horario) || horario;
+  const [h, m] = norm.split(":").map(Number);
   const { year, month, day } = dataBrasiliaParaPartes(dataBase);
   const hh = String(h).padStart(2, "0");
   const mm = String(m).padStart(2, "0");
@@ -61,17 +62,70 @@ export function formatDateTimeBrasilia(
 }
 
 export function horarioDeDataBrasilia(data: Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: FUSO_BRASILIA,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(data);
+  const hRaw = parts.find((p) => p.type === "hour")?.value;
+  const mRaw = parts.find((p) => p.type === "minute")?.value;
+  if (hRaw != null && mRaw != null) {
+    const h = Number(hRaw) % 24;
+    const m = Number(mRaw);
+    if (!Number.isNaN(h) && !Number.isNaN(m)) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: FUSO_BRASILIA,
     hour: "2-digit",
     minute: "2-digit",
     hour12: false
-  }).format(data);
+  })
+    .format(data)
+    .replace(/[^\d]/g, "")
+    .replace(/^(\d{2})(\d{2}).*/, "$1:$2");
+}
+
+/**
+ * Completa horário parcial: minutos omitidos viram 00.
+ * "16" / "16:" → "16:00".
+ */
+export function normalizarHorarioParcial(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "";
+  const comDoisPontos = t.match(/^(\d{1,2}):(\d{0,2})$/);
+  if (comDoisPontos) {
+    const h = Number(comDoisPontos[1]);
+    const m = comDoisPontos[2] === "" ? 0 : Number(comDoisPontos[2]);
+    if (h > 23 || m > 59 || Number.isNaN(h) || Number.isNaN(m)) return "";
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
+  const digits = t.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length <= 2) {
+    const h = Number(digits);
+    if (h > 23) return "";
+    return `${String(h).padStart(2, "0")}:00`;
+  }
+  const h = Number(digits.slice(0, 2));
+  const m = Number(digits.slice(2, 4).padEnd(2, "0"));
+  if (h > 23 || m > 59) return "";
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 export function horarioParaMinutos(horario: string): number {
-  const [h, m] = horario.split(":").map(Number);
-  return h * 60 + m;
+  const norm = normalizarHorarioParcial(horario) || horario;
+  const [h, m] = norm.split(":");
+  return (Number(h) || 0) * 60 + (Number(m) || 0);
+}
+
+export function minutosParaHorario(minutos: number): string {
+  const n = ((Math.round(minutos) % 1440) + 1440) % 1440;
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 export function validarHorarioPermitido(

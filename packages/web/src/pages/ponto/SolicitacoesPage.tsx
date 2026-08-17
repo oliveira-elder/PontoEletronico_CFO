@@ -4,7 +4,9 @@ import {
   CheckCircleIcon,
   CalendarIcon,
   RefreshCwIcon,
-  InfoIcon
+  InfoIcon,
+  SetaAlteracaoHorario,
+  TextoComSetaHorario
 } from "../../components/icons";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -15,7 +17,8 @@ import {
   textoCorrecaoPontoFuncionario
 } from "./solicitacaoUi";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
-import { hojeBrasiliaISO } from "../../utils/horario-brasilia";
+import { hojeBrasiliaISO, normalizarHorarioParcial } from "../../utils/horario-brasilia";
+import { InputHorario } from "../../components/ponto/InputHorario";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -281,10 +284,11 @@ function TipoSeletor({
 ══════════════════════════════════════════ */
 
 function horarioDentroFaixa(horario: string, min: string, max: string): boolean {
-  const [h, m] = horario.split(":").map(Number);
+  const h = normalizarHorarioParcial(horario) || horario;
+  const [hh, mm] = h.split(":").map(Number);
   const [hMin, mMin] = min.split(":").map(Number);
   const [hMax, mMax] = max.split(":").map(Number);
-  const atual = h * 60 + m;
+  const atual = (hh || 0) * 60 + (mm || 0);
   return atual >= hMin * 60 + mMin && atual <= hMax * 60 + mMax;
 }
 
@@ -364,7 +368,7 @@ function FormCorrecaoPonto({
       .get<{ categoria?: string }>("/ponto/status")
       .then((status) => {
         const cat = status?.categoria;
-        setSemIntervaloAlmoco(cat === "ESTAGIARIO" || cat === "MENOR_APRENDIZ");
+        setSemIntervaloAlmoco(cat === "ESTAGIARIO");
       })
       .catch(() => {});
   }, []);
@@ -404,7 +408,7 @@ function FormCorrecaoPonto({
   /* Valida todos os horários preenchidos */
   const erros: Record<string, string> = {};
   for (const { tipo } of tiposCorrecao) {
-    const h = horarios[tipo];
+    const h = normalizarHorarioParcial(horarios[tipo]) || horarios[tipo];
     if (h && !horarioDentroFaixa(h, horarioMin, horarioMax)) {
       erros[tipo] = `Fora da faixa ${horarioMin}–${horarioMax}`;
     }
@@ -413,7 +417,7 @@ function FormCorrecaoPonto({
   /* Constrói a lista de correções apenas dos campos alterados */
   const correcoesDia = tiposCorrecao
     .map(({ tipo }) => {
-      const novoHorario = horarios[tipo];
+      const novoHorario = normalizarHorarioParcial(horarios[tipo]) || horarios[tipo];
       if (!novoHorario) return null;
       const reg = regDoTipo(tipo);
       const atual = reg ? fmtTime(reg.dataHora) : null;
@@ -587,10 +591,9 @@ function FormCorrecaoPonto({
 
                 {/* Novo horário */}
                 <div>
-                  <input
-                    type="time"
+                  <InputHorario
                     value={novo}
-                    onChange={(e) => setHorarios((h) => ({ ...h, [tipo]: e.target.value }))}
+                    onChange={(v) => setHorarios((h) => ({ ...h, [tipo]: v }))}
                     style={{
                       width: "100%",
                       padding: "6px 8px",
@@ -606,8 +609,25 @@ function FormCorrecaoPonto({
                     <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--red)" }}>{erro}</p>
                   )}
                   {mudou && !erro && (
-                    <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "#1e40af" }}>
-                      {reg ? `${atual} → ${novo}` : `Incluir ${novo}`}
+                    <p
+                      style={{
+                        margin: "2px 0 0",
+                        fontSize: 10.5,
+                        color: "#1e40af",
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap"
+                      }}
+                    >
+                      {reg ? (
+                        <>
+                          {atual}
+                          <SetaAlteracaoHorario />
+                          {novo}
+                        </>
+                      ) : (
+                        `Incluir ${novo}`
+                      )}
                     </p>
                   )}
                 </div>
@@ -883,8 +903,8 @@ function FormAtestado({
       dataFim: new Date((dataFim || dataInicio) + "T23:59:59").toISOString(),
       descricao,
       metadados: {
-        horarioInicio: diaUnico ? horaInicio || null : null,
-        horarioFim: diaUnico ? horaFim || null : null,
+        horarioInicio: diaUnico ? normalizarHorarioParcial(horaInicio) || horaInicio || null : null,
+        horarioFim: diaUnico ? normalizarHorarioParcial(horaFim) || horaFim || null : null,
         diasDuracao: dias,
         requerHomologacao: dias > limite && dias < limiteInss,
         requerInss: dias >= limiteInss,
@@ -985,20 +1005,18 @@ function FormAtestado({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
               <label style={labelBase}>Horário inicial</label>
-              <input
-                type="time"
+              <InputHorario
                 style={{ ...input, maxWidth: 140 }}
                 value={horaInicio}
-                onChange={(e) => setHoraInicio(e.target.value)}
+                onChange={setHoraInicio}
               />
             </div>
             <div>
               <label style={labelBase}>Horário final</label>
-              <input
-                type="time"
+              <InputHorario
                 style={{ ...input, maxWidth: 140 }}
                 value={horaFim}
-                onChange={(e) => setHoraFim(e.target.value)}
+                onChange={setHoraFim}
               />
             </div>
           </div>
@@ -2536,8 +2554,10 @@ function FormSimples({
       tipo === "ABONO"
         ? {
             tipoAbono: new Date(dataInicio) < new Date() ? "PASSADO" : "FUTURO",
-            horarioInicio: diaUnico ? horaInicio || null : null,
-            horarioFim: diaUnico ? horaFim || null : null
+            horarioInicio: diaUnico
+              ? normalizarHorarioParcial(horaInicio) || horaInicio || null
+              : null,
+            horarioFim: diaUnico ? normalizarHorarioParcial(horaFim) || horaFim || null : null
           }
         : {};
     onSubmit({
@@ -2639,20 +2659,18 @@ function FormSimples({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
               <label style={labelBase}>Horário inicial</label>
-              <input
-                type="time"
+              <InputHorario
                 style={{ ...input, maxWidth: 140 }}
                 value={horaInicio}
-                onChange={(e) => setHoraInicio(e.target.value)}
+                onChange={setHoraInicio}
               />
             </div>
             <div>
               <label style={labelBase}>Horário final</label>
-              <input
-                type="time"
+              <InputHorario
                 style={{ ...input, maxWidth: 140 }}
                 value={horaFim}
-                onChange={(e) => setHoraFim(e.target.value)}
+                onChange={setHoraFim}
               />
             </div>
           </div>
@@ -3989,7 +4007,7 @@ function SolicitacaoCard({
               fontWeight: 500
             }}
           >
-            {textoCorrecaoPontoFuncionario(s)}
+            <TextoComSetaHorario texto={textoCorrecaoPontoFuncionario(s)} />
           </p>
           {statusInfo && (
             <p
