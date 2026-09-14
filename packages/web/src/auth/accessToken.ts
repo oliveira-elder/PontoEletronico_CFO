@@ -27,7 +27,11 @@ export async function resolveAccessToken(explicit?: string): Promise<string | un
 
   if (!keycloak.authenticated) return candidate;
 
-  if (candidate && !keycloak.isTokenExpired(30)) return candidate;
+  try {
+    if (candidate && !keycloak.isTokenExpired(30)) return candidate;
+  } catch {
+    return candidate;
+  }
 
   try {
     await refreshKeycloakToken(30);

@@ -37,6 +37,12 @@ export class LogsController {
     return this.logs.listEntries(filter);
   }
 
+  @Get("catalog")
+  catalog(@Req() req: AuthRequest) {
+    assertSuperAdmin(req);
+    return this.logs.getCatalog();
+  }
+
   @Get("dashboard")
   async dashboard(@Req() req: AuthRequest) {
     assertSuperAdmin(req);

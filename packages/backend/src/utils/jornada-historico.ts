@@ -1,4 +1,4 @@
-import { dataBrasiliaISO } from "./horario-brasilia";
+import { dataBrasiliaISO, dataCivilISO } from "./horario-brasilia";
 
 export interface JornadaHistoricoContext {
   anteriorMin: number;
@@ -14,6 +14,7 @@ export interface JornadaHistoricoContext {
   toleranciaSaidaMin?: number;
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
+  atestadoTempoRetornoMin?: number;
 }
 
 export interface FuncionarioJornadaInput {
@@ -54,7 +55,7 @@ export function resolverJornadaHistoricoContexto(
 
   let vigenciaDesde: string | null = null;
   if (func?.jornadaPeriodoDesde) {
-    const desde = dataBrasiliaISO(func.jornadaPeriodoDesde);
+    const desde = dataCivilISO(func.jornadaPeriodoDesde);
     const associado = func.jornadaPeriodoAssociadoEm
       ? dataBrasiliaISO(func.jornadaPeriodoAssociadoEm)
       : null;
@@ -165,11 +166,23 @@ export function minutosLiquidosCobertosAtestado(
   return overlap(hi, hf, entr, lunchStart) + overlap(hi, hf, lunchEnd, sai);
 }
 
+function fechaExpedienteAtestado(tipo: string): boolean {
+  return tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE";
+}
+
+function fechaNoLimiteAtestado(tipo: string): boolean {
+  return fechaExpedienteAtestado(tipo) || tipo === "INICIO_INTERVALO";
+}
+
 /**
  * Descarta batidas cujo horário cai na janela do atestado parcial
  * (não geram hora trabalhada nem HE).
- * Mantém fechamentos (SAÍDA / INTERROMPER / INÍCIO intervalo) exatamente no início
- * do atestado — fecham o trecho trabalhado antes do afastamento.
+ * Janela half-open [inicio, fim): batida exatamente no fim do atestado conta
+ * (retorno ao trabalho). Mantém fechamentos (SAÍDA / INTERROMPER / INÍCIO
+ * intervalo) exatamente no início do atestado.
+ * SAÍDA/INTERROMPER (e INÍCIO de intervalo órfão) dentro da janela
+ * (ex.: saiu 14:52 com atestado 14:50–16:00) fecha o expediente no início
+ * do atestado — não some do cálculo.
  */
 export function filtrarRegistrosForaAtestadoParcial<T extends { tipo: string; minuto: number }>(
   registros: T[],
@@ -179,11 +192,22 @@ export function filtrarRegistrosForaAtestadoParcial<T extends { tipo: string; mi
   const hi = horaParaMin(horarioInicio);
   const hf = horaParaMin(horarioFim);
   if (hf <= hi) return registros;
-  const fechaNoLimite = (tipo: string) =>
-    tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE" || tipo === "INICIO_INTERVALO";
-  return registros.filter(
-    (r) => r.minuto < hi || r.minuto > hf || (r.minuto === hi && fechaNoLimite(r.tipo))
-  );
+  const temFechaReal = registros.some((x) => fechaExpedienteAtestado(x.tipo));
+  const temFimAlmoco = registros.some((x) => x.tipo === "FIM_INTERVALO");
+  const out: T[] = [];
+  for (const r of registros) {
+    if (r.minuto < hi || r.minuto >= hf || (r.minuto === hi && fechaNoLimiteAtestado(r.tipo))) {
+      out.push(r);
+      continue;
+    }
+    if (fechaExpedienteAtestado(r.tipo) && r.minuto > hi) {
+      out.push({ ...r, minuto: hi });
+    } else if (r.tipo === "INICIO_INTERVALO" && r.minuto > hi && !temFechaReal && !temFimAlmoco) {
+      /* Saiu para o atestado batendo intervalo: fecha no início da janela. */
+      out.push({ ...r, tipo: "SAIDA", minuto: hi });
+    }
+  }
+  return out;
 }
 
 /** Marco de expediente do atestado parcial (matutino = saída; vespertino = início/almoço). */
@@ -512,13 +536,165 @@ export function calcularJornadaComAtestadoParcial(
     almocoPodeIniciarAte?: string;
   }
 ): number {
-  const cobertos = minutosLiquidosCobertosAtestado(horarioInicio, horarioFim, {
-    horaEntrada: jornada.horaEntrada,
-    horaSaida: jornada.horaSaida,
-    almocoMinMin: jornada.almocoMinMin,
-    almocoPodeIniciarA: jornada.almocoPodeIniciarA
-  });
+  return calcularJornadaComAtestadosParciais([{ horarioInicio, horarioFim }], jornada);
+}
+
+export type JanelaAtestadoParcial = {
+  horarioInicio: string;
+  horarioFim: string;
+};
+
+function minParaHorario(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Une janelas sobrepostas/adjacentes para não contar cobertura em dobro. */
+export function fundirJanelasAtestadoParcial(
+  janelas: JanelaAtestadoParcial[]
+): JanelaAtestadoParcial[] {
+  const sorted = janelas
+    .map((j) => ({
+      horarioInicio: j.horarioInicio,
+      horarioFim: j.horarioFim,
+      a: horaParaMin(j.horarioInicio),
+      b: horaParaMin(j.horarioFim)
+    }))
+    .filter((j) => j.b > j.a)
+    .sort((x, y) => x.a - y.a);
+  const out: Array<{ horarioInicio: string; horarioFim: string; a: number; b: number }> = [];
+  for (const j of sorted) {
+    const last = out[out.length - 1];
+    if (last && j.a <= last.b) {
+      last.b = Math.max(last.b, j.b);
+      last.horarioFim = minParaHorario(last.b);
+    } else {
+      out.push({ ...j });
+    }
+  }
+  return out.map(({ horarioInicio, horarioFim }) => ({ horarioInicio, horarioFim }));
+}
+
+/** Descarta batidas que caem em qualquer janela de atestado parcial. */
+export function filtrarRegistrosForaAtestadosParciais<T extends { tipo: string; minuto: number }>(
+  registros: T[],
+  janelas: JanelaAtestadoParcial[]
+): T[] {
+  const fundidas = fundirJanelasAtestadoParcial(janelas);
+  if (!fundidas.length) return registros;
+  let out = registros;
+  for (const j of fundidas) {
+    out = filtrarRegistrosForaAtestadoParcial(out, j.horarioInicio, j.horarioFim);
+  }
+  return out;
+}
+
+/**
+ * Jornada obrigatória com um ou mais atestados parciais no mesmo dia
+ * (cobertura = união das janelas).
+ */
+export function calcularJornadaComAtestadosParciais(
+  janelas: JanelaAtestadoParcial[],
+  jornada: {
+    horaEntrada: string;
+    horaSaida: string;
+    jornadaDiariaMin: number;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
+): number {
+  const fundidas = fundirJanelasAtestadoParcial(janelas);
+  const cobertos = fundidas.reduce(
+    (s, j) =>
+      s +
+      minutosLiquidosCobertosAtestado(j.horarioInicio, j.horarioFim, {
+        horaEntrada: jornada.horaEntrada,
+        horaSaida: jornada.horaSaida,
+        almocoMinMin: jornada.almocoMinMin,
+        almocoPodeIniciarA: jornada.almocoPodeIniciarA
+      }),
+    0
+  );
   return Math.max(0, jornada.jornadaDiariaMin - cobertos);
+}
+
+/**
+ * Prepara registros com uma ou mais janelas de atestado parcial.
+ * Com janela única, reutiliza a lógica existente (marco vespertino etc.).
+ */
+export function prepararRegsCalculoAtestadosParciais(opts: {
+  registros: Array<{ tipo: string; minuto: number }>;
+  janelas: JanelaAtestadoParcial[];
+  horaEntrada: string;
+  horaSaida: string;
+  almocoPodeIniciarA?: string;
+  almocoMinMin?: number;
+  almocoPodeIniciarAte?: string;
+  fecharVespertinoNoMarco?: boolean;
+}): {
+  registros: Array<{ tipo: string; minuto: number }>;
+  marcoMin: number;
+  fimTrabalhoMin: number | null;
+  semAlmoco: boolean;
+} {
+  const fundidas = fundirJanelasAtestadoParcial(opts.janelas);
+  if (fundidas.length === 1) {
+    return prepararRegsCalculoAtestadoParcial({
+      registros: opts.registros,
+      horarioInicio: fundidas[0].horarioInicio,
+      horarioFim: fundidas[0].horarioFim,
+      horaEntrada: opts.horaEntrada,
+      horaSaida: opts.horaSaida,
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoMinMin: opts.almocoMinMin,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte,
+      fecharVespertinoNoMarco: opts.fecharVespertinoNoMarco
+    });
+  }
+  const fora = filtrarRegistrosForaAtestadosParciais(opts.registros, fundidas);
+  const temMatutino = fundidas.some((j) =>
+    atestadoParcialEhMatutino(j.horarioInicio, j.horarioFim, {
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoMinMin: opts.almocoMinMin,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+    })
+  );
+  const semAlmoco =
+    dispensarAlmocoPorAtestadoParcial(true, fora, {
+      horarioInicio: fundidas[0]?.horarioInicio,
+      horarioFim: fundidas[0]?.horarioFim,
+      almocoPodeIniciarA: opts.almocoPodeIniciarA,
+      almocoMinMin: opts.almocoMinMin,
+      almocoPodeIniciarAte: opts.almocoPodeIniciarAte
+    }) || temMatutino;
+  const registros = semAlmoco ? normalizarRegsAtestadoSemAlmoco(fora) : fora;
+  const marcoMin = horaParaMin(opts.horaSaida);
+  return {
+    registros,
+    marcoMin,
+    fimTrabalhoMin: fimTrabalhoMinutosDoDia(registros),
+    semAlmoco
+  };
+}
+
+export function labelAtestadosParciais(
+  parciais: Array<{
+    tipo?: string | null;
+    horarioInicio?: string | null;
+    horarioFim?: string | null;
+  }>
+): string {
+  if (!parciais.length) return "Atestado parcial";
+  const soAbono = parciais.every((p) => p.tipo === "ABONO");
+  const soAtestado = parciais.every((p) => p.tipo === "ATESTADO" || !p.tipo);
+  const nome = soAbono ? "Abono parcial" : soAtestado ? "Atestado parcial" : "Afastamento parcial";
+  const periodos = parciais
+    .filter((p) => p.horarioInicio && p.horarioFim)
+    .map((p) => `${p.horarioInicio}–${p.horarioFim}`)
+    .join(" + ");
+  return periodos ? `${nome} ${periodos}` : nome;
 }
 
 /**
@@ -553,7 +729,10 @@ export function atestadoParcialEhMatutino(
 /**
  * Em atestado de um período apenas, se o funcionário não registrou almoço,
  * não se aplica a dedução mínima de 1h.
- * Atestado matutino: retorno à tarde segue regra do turno vespertino (sem intervalo).
+ * Ciclo completo (INÍCIO + FIM) conta sempre — inclusive após atestado matutino
+ * curto (ex.: 08:00–09:30 com retorno ainda de manhã).
+ * Atestado matutino sem almoço encerrado: intervalo não aplicável (INÍCIO órfão
+ * segue tratado como saída).
  */
 export function dispensarAlmocoPorAtestadoParcial(
   afastamentoParcial: boolean,
@@ -567,6 +746,9 @@ export function dispensarAlmocoPorAtestadoParcial(
   }
 ): boolean {
   if (!afastamentoParcial) return false;
+  const temInicio = registros.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temFim = registros.some((r) => r.tipo === "FIM_INTERVALO");
+  if (temInicio && temFim) return false;
   if (
     opts?.horarioInicio &&
     opts?.horarioFim &&
@@ -576,10 +758,9 @@ export function dispensarAlmocoPorAtestadoParcial(
       almocoPodeIniciarAte: opts.almocoPodeIniciarAte
     })
   ) {
-    // Retorno após atestado matutino = fluxo vespertino (intervalo não aplicável)
     return true;
   }
-  return !registros.some((r) => r.tipo === "INICIO_INTERVALO");
+  return !temInicio;
 }
 
 /**
@@ -624,6 +805,79 @@ export function horarioNoPeriodoAfastamento(
 ): boolean {
   const agora = horaParaMin(horarioHHMM);
   return agora >= horaParaMin(horarioInicio) && agora <= horaParaMin(horarioFim);
+}
+
+/** Tipos de registro que representam retomar o trabalho (candidatos a "retorno" após atestado). */
+const TIPOS_RETORNO_TRABALHO = new Set(["ENTRADA", "FIM_INTERVALO", "REINICIAR_EXPEDIENTE"]);
+
+/**
+ * Crédito de tempo de deslocamento (min) tolerado quando o retorno ao trabalho
+ * ocorre depois do horarioFim de um atestado parcial. gap = 1º registro de
+ * retorno (ENTRADA/FIM_INTERVALO/REINICIAR_EXPEDIENTE) após horarioFim, menos
+ * horarioFim; crédito = min(gap, toleranciaMin). Zero se não houver retorno
+ * após horarioFim ou toleranciaMin <= 0.
+ */
+/**
+ * Primeira atividade do dia (de qualquer tipo) que ocorre depois do horarioFim
+ * de um atestado parcial — é o evento que efetivamente encerra o período do
+ * atestado. Só conta como "retorno" (candidata a crédito de deslocamento) se
+ * ela própria for um tipo de retomada de trabalho (ENTRADA/FIM_INTERVALO/
+ * REINICIAR_EXPEDIENTE): uma pausa/almoço comum que só aconteça bem depois
+ * (ex.: retorno já feito no horário certo, almoço normal horas mais tarde) não
+ * pode ser confundida com o retorno do atestado.
+ */
+export function encontrarRetornoAposAtestado(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioFim: string
+): { tipo: string; minuto: number } | null {
+  const hf = horaParaMin(horarioFim);
+  const primeiraAposFim = registros
+    .filter((r) => r.minuto > hf)
+    .sort((a, b) => a.minuto - b.minuto)[0];
+  if (!primeiraAposFim || !TIPOS_RETORNO_TRABALHO.has(primeiraAposFim.tipo)) return null;
+  return primeiraAposFim;
+}
+
+export function calcularCreditoDeslocamentoAtestado(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioFim: string,
+  toleranciaMin: number
+): number {
+  if (toleranciaMin <= 0) return 0;
+  const retorno = encontrarRetornoAposAtestado(registros, horarioFim);
+  if (!retorno) return 0;
+  const hf = horaParaMin(horarioFim);
+  return Math.max(0, Math.min(retorno.minuto - hf, toleranciaMin));
+}
+
+/**
+ * Janelas de atestado parcial (já fundidas) com o horarioFim da última janela
+ * estendido pelo crédito de deslocamento tolerado — uso exclusivo no cálculo da
+ * jornada mandatória (calcularJornadaComAtestadosParciais/calcularJornadaComAtestadoParcial).
+ * NÃO usar para filtrar registros reais: prepararRegsCalculoAtestadosParciais deve
+ * continuar recebendo as janelas originais, senão o próprio registro de retorno
+ * seria descartado do cálculo de horas trabalhadas.
+ */
+export function calcularJanelasEfetivasComCreditoDeslocamento(
+  janelas: JanelaAtestadoParcial[],
+  registros: Array<{ tipo: string; minuto: number }>,
+  toleranciaRetornoMin: number
+): JanelaAtestadoParcial[] {
+  const fundidas = fundirJanelasAtestadoParcial(janelas);
+  if (!fundidas.length || toleranciaRetornoMin <= 0) return fundidas;
+  const idx = fundidas.length - 1;
+  const credito = calcularCreditoDeslocamentoAtestado(
+    registros,
+    fundidas[idx].horarioFim,
+    toleranciaRetornoMin
+  );
+  if (credito <= 0) return fundidas;
+  const novas = [...fundidas];
+  novas[idx] = {
+    ...novas[idx],
+    horarioFim: minParaHorario(horaParaMin(novas[idx].horarioFim) + credito)
+  };
+  return novas;
 }
 
 /** Jornada diária esperada (min) para um dia civil YYYY-MM-DD. */

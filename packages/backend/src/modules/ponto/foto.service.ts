@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { join } from "path";
 import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
+import { FUSO_BRASILIA, hojeBrasiliaISO } from "../../utils/horario-brasilia";
 
 /* sharp usa bindings nativos (libvips). Carregado de forma lazy para que uma
    falha de instalação/plataforma não impeça o backend de inicializar. */
@@ -59,7 +60,7 @@ export class FotoService {
     const inputBuffer = Buffer.from(base64Data, "base64");
 
     const agora = new Date();
-    const dateStr = agora.toISOString().slice(0, 10); // YYYY-MM-DD
+    const dateStr = hojeBrasiliaISO();
     const dirPath = join(this.baseDir, matricula, dateStr);
 
     if (!existsSync(dirPath)) {
@@ -67,11 +68,20 @@ export class FotoService {
       this.logger.log(`Diretório criado: ${dirPath}`);
     }
 
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: FUSO_BRASILIA,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).formatToParts(agora);
+    const pick = (t: Intl.DateTimeFormatPartTypes) =>
+      parts.find((p) => p.type === t)?.value ?? "00";
     const p = (n: number, d = 2) => String(n).padStart(d, "0");
     const timeStr = [
-      p(agora.getHours()),
-      p(agora.getMinutes()),
-      p(agora.getSeconds()),
+      pick("hour").padStart(2, "0"),
+      pick("minute").padStart(2, "0"),
+      pick("second").padStart(2, "0"),
       p(agora.getMilliseconds(), 3)
     ].join("-");
     const filename = `${timeStr}_${tipo}.jpg`;

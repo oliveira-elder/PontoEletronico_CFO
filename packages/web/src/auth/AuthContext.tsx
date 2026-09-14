@@ -85,6 +85,7 @@ interface AuthContextType {
   initialized: boolean;
   authenticated: boolean;
   contaDesativada: boolean;
+  semMatricula: boolean;
   user: AuthUser | null;
   initError: string | null;
   token: () => string | undefined;
@@ -192,6 +193,35 @@ function urlHasAuthCallback(): boolean {
   return q.includes("code=") || q.includes("state=") || q.includes("error=");
 }
 
+function tokenEstaExpirado(minValidity: number): boolean {
+  try {
+    return keycloak.isTokenExpired(minValidity);
+  } catch {
+    /* keycloak-js lança "Not authenticated" se tokenParsed/timeSkew ainda não existe. */
+    return !keycloak.token;
+  }
+}
+
+/** Remove code/state do retorno OAuth para o F5 não reprocessar o authorization code. */
+function stripOauthParamsFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    let changed = false;
+    for (const key of ["code", "state", "session_state", "iss", "error", "error_description"]) {
+      if (url.searchParams.has(key)) {
+        url.searchParams.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      const next = url.pathname + url.search + url.hash;
+      window.history.replaceState(window.history.state, "", next);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Garante access token válido; limpa sessão se refresh falhar (evita 400/401 silencioso). */
 async function ensureValidKeycloakSession(): Promise<boolean> {
   if (!keycloak.authenticated || !keycloak.token) return false;
@@ -201,7 +231,7 @@ async function ensureValidKeycloakSession(): Promise<boolean> {
     clearKcSession();
     return false;
   }
-  if (!keycloak.token || keycloak.isTokenExpired(5)) {
+  if (!keycloak.token || tokenEstaExpirado(5)) {
     clearKcSession();
     return false;
   }
@@ -218,6 +248,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [contaDesativada, setContaDesativada] = useState(false);
+  const [semMatricula, setSemMatricula] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
 
@@ -254,6 +285,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           auth = await ensureValidKeycloakSession();
           if (auth) {
             saveKcSession();
+            stripOauthParamsFromUrl();
             setUser(parseUser());
             startTokenRefresh();
           } else {
@@ -286,6 +318,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ok = await ensureValidKeycloakSession();
           if (ok) {
             saveKcSession();
+            stripOauthParamsFromUrl();
             setUser(parseUser());
             startTokenRefresh();
           } else {
@@ -320,7 +353,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        if (!devTokenRef.current && keycloak.authenticated && keycloak.isTokenExpired(30)) {
+        if (!devTokenRef.current && keycloak.authenticated && tokenEstaExpirado(30)) {
           await keycloak.updateToken(30);
           saveKcSession();
         }
@@ -343,6 +376,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const msg = e instanceof Error ? e.message : "";
           if (msg === "CONTA_DESATIVADA" && !cancelled) {
             setContaDesativada(true);
+            return;
+          }
+          if (msg === "SEM_MATRICULA" && !cancelled) {
+            setSemMatricula(true);
             return;
           }
           if (msg.includes("401") && !cancelled) {
@@ -433,7 +470,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   function token() {
     if (devTokenRef.current) return devTokenRef.current;
-    if (!keycloak.token || keycloak.isTokenExpired(5)) return undefined;
+    if (!keycloak.token) return undefined;
+    if (tokenEstaExpirado(5)) return undefined;
     return keycloak.token;
   }
 
@@ -448,6 +486,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "";
       if (msg === "CONTA_DESATIVADA") setContaDesativada(true);
+      if (msg === "SEM_MATRICULA") setSemMatricula(true);
     }
   }
 
@@ -485,6 +524,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         initialized,
         authenticated,
         contaDesativada,
+        semMatricula,
         user,
         initError,
         token,

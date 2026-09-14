@@ -25,6 +25,8 @@ export interface SolicitacaoResumo {
   gestorObservacao?: string | null;
   gestorResolvidoEm?: string | null;
   gestorUser?: { name: string } | null;
+  rhObservacao?: string | null;
+  rhResolvidoEm?: string | null;
   guiaMedicoUrl?: string | null;
   guiaMedicoEnviadaEm?: string | null;
   guiaMedicoObservacao?: string | null;
@@ -460,7 +462,7 @@ export function LogTimelineGestorHistorico({
     observacaoGestor?: string | null;
   };
 }) {
-  const gestorNome = s.gestorUser?.name ?? "Gestor";
+  const chefeNome = s.gestorUser?.name ?? "Chefe";
   const gestorRejeitou = s.status === "REJEITADA_GESTOR";
   const gestorObs = s.gestorObservacao ?? s.observacaoGestor;
   const gestorData = s.gestorResolvidoEm;
@@ -488,7 +490,7 @@ export function LogTimelineGestorHistorico({
           color: "var(--ink-400)"
         }}
       >
-        Etapa do gestor
+        Etapa do chefe
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
@@ -504,7 +506,7 @@ export function LogTimelineGestorHistorico({
             }}
           >
             {gestorRejeitou ? "❌" : s.tipo === "ATESTADO" ? "✍️" : "✅"}{" "}
-            <strong>Gestor {gestorNome}</strong>{" "}
+            <strong>Chefe {chefeNome}</strong>{" "}
             {gestorRejeitou
               ? "rejeitou"
               : s.tipo === "ATESTADO"
@@ -527,7 +529,7 @@ export function LogTimelineGestorHistorico({
           </p>
         ) : gestorObs ? (
           <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-600)", lineHeight: 1.45 }}>
-            💬 <strong>Gestor {gestorNome}</strong>: "{gestorObs}"
+            💬 <strong>Chefe {chefeNome}</strong>: "{gestorObs}"
           </p>
         ) : null}
         {!gestorRejeitou && s.status === "AGUARDANDO_RH" && (
@@ -535,9 +537,15 @@ export function LogTimelineGestorHistorico({
             ⏳ <strong>Encaminhada ao RH</strong> — aguardando análise final
           </p>
         )}
-        {!gestorRejeitou && s.status === "APROVADA" && s.rhResolvidoEm && (
+        {!gestorRejeitou && s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" && (
+          <p style={{ margin: 0, fontSize: 11.5, color: "#d97706" }}>
+            ⏳ <strong>Aguardando documento do funcionário</strong>
+          </p>
+        )}
+        {!gestorRejeitou && s.status === "APROVADA" && (
           <p style={{ margin: 0, fontSize: 11.5, color: "#16a34a", lineHeight: 1.45 }}>
-            ✅ <strong>RH aprovou</strong> em {fmtDateTime(s.rhResolvidoEm)}
+            ✅ <strong>RH aprovou</strong>
+            {s.rhResolvidoEm ? ` em ${fmtDateTime(s.rhResolvidoEm)}` : ""}
             {s.rhObservacao ? (
               <span
                 style={{
@@ -553,9 +561,10 @@ export function LogTimelineGestorHistorico({
             ) : null}
           </p>
         )}
-        {!gestorRejeitou && s.status === "REJEITADA_RH" && s.rhResolvidoEm && (
+        {!gestorRejeitou && s.status === "REJEITADA_RH" && (
           <p style={{ margin: 0, fontSize: 11.5, color: "#dc2626", lineHeight: 1.45 }}>
-            ❌ <strong>RH rejeitou</strong> em {fmtDateTime(s.rhResolvidoEm)}
+            ❌ <strong>RH rejeitou</strong>
+            {s.rhResolvidoEm ? ` em ${fmtDateTime(s.rhResolvidoEm)}` : ""}
             {s.rhObservacao ? (
               <span
                 style={{
@@ -577,7 +586,9 @@ export function LogTimelineGestorHistorico({
 }
 
 export function LogTimelineGestor({ s }: { s: SolicitacaoResumo }) {
-  const gestorNome = s.gestorUser?.name ?? "Gestor";
+  const chefeNome = s.gestorUser?.name ?? "Chefe";
+  const statusFinal =
+    s.status === "APROVADA" || s.status === "REJEITADA_RH" || s.status === "REJEITADA_GESTOR";
 
   return (
     <div
@@ -610,7 +621,7 @@ export function LogTimelineGestor({ s }: { s: SolicitacaoResumo }) {
         </p>
         {s.gestorResolvidoEm && (
           <p style={{ margin: 0, fontSize: 11.5, color: "#2563eb", lineHeight: 1.45 }}>
-            {s.tipo === "ATESTADO" ? "✍️" : "✅"} <strong>Gestor {gestorNome}</strong>{" "}
+            {s.tipo === "ATESTADO" ? "✍️" : "✅"} <strong>Chefe {chefeNome}</strong>{" "}
             {s.tipo === "ATESTADO" ? "deu ciência (assinatura digital)" : "aprovou"} em{" "}
             {fmtDateTime(s.gestorResolvidoEm)}
             {s.gestorObservacao ? (
@@ -628,9 +639,51 @@ export function LogTimelineGestor({ s }: { s: SolicitacaoResumo }) {
             ) : null}
           </p>
         )}
-        <p style={{ margin: 0, fontSize: 11.5, color: "#7c3aed" }}>
-          ⏳ <strong>Aguardando análise do RH</strong>
-        </p>
+        {s.status === "APROVADA" ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: "#16a34a", lineHeight: 1.45 }}>
+            ✅ <strong>RH aprovou</strong>
+            {s.rhResolvidoEm ? ` em ${fmtDateTime(s.rhResolvidoEm)}` : ""}
+            {s.rhObservacao ? (
+              <span
+                style={{
+                  display: "block",
+                  marginTop: 3,
+                  fontStyle: "italic",
+                  color: "var(--ink-600)",
+                  paddingLeft: 18
+                }}
+              >
+                "{s.rhObservacao}"
+              </span>
+            ) : null}
+          </p>
+        ) : s.status === "REJEITADA_RH" ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: "#dc2626", lineHeight: 1.45 }}>
+            ❌ <strong>RH rejeitou</strong>
+            {s.rhResolvidoEm ? ` em ${fmtDateTime(s.rhResolvidoEm)}` : ""}
+            {s.rhObservacao ? (
+              <span
+                style={{
+                  display: "block",
+                  marginTop: 3,
+                  fontStyle: "italic",
+                  color: "var(--ink-600)",
+                  paddingLeft: 18
+                }}
+              >
+                "{s.rhObservacao}"
+              </span>
+            ) : null}
+          </p>
+        ) : s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: "#d97706" }}>
+            ⏳ <strong>Aguardando documento do funcionário</strong>
+          </p>
+        ) : !statusFinal ? (
+          <p style={{ margin: 0, fontSize: 11.5, color: "#7c3aed" }}>
+            ⏳ <strong>Aguardando análise do RH</strong>
+          </p>
+        ) : null}
       </div>
     </div>
   );

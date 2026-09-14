@@ -19,7 +19,7 @@ export interface ExtensionsConfigResponse {
 
 const DEFAULT_URL =
   process.env.SECTIONS_INTEGRATION_URL ??
-  "https://192.168.161.50:11010/api/sections/integration/users";
+  "http://192.168.161.50:11010/api/sections/integration/users";
 
 @Injectable()
 export class ExtensionsConfigService {

@@ -82,13 +82,13 @@ if command -v git >/dev/null 2>&1 && [ -d .git ]; then
   rm -f .git/gc.log 2>/dev/null || true
 fi
 
-# Docker (opcional)
-if [ "$DOCKER_PRUNE" -eq 1 ] && command -v docker >/dev/null 2>&1; then
-  echo "Prune Docker (imagens/containers não usados)..."
+# Docker (opcional) — só lixo ocioso; nunca volumes nem containers em execução
+if [ "$DOCKER_PRUNE" -eq 1 ] && [ -x "$ROOT/scripts/docker-prune-safe.sh" ]; then
+  echo "Prune Docker seguro (sem volumes, sem parar sistemas)..."
   if [ "$DRY_RUN" -eq 0 ]; then
-    docker system prune -f 2>/dev/null || echo "AVISO: docker prune falhou (rodar como root?)" >&2
+    "$ROOT/scripts/docker-prune-safe.sh" || echo "AVISO: docker prune falhou (rodar como root?)" >&2
   else
-    echo "[dry-run] docker system prune -f"
+    echo "[dry-run] $ROOT/scripts/docker-prune-safe.sh"
   fi
 fi
 

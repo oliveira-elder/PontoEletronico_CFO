@@ -165,8 +165,8 @@ export class ConfigService {
   /* ─── JornadaPeriodo ─── */
 
   /** Entrada/saída sempre iguais; margem diária desligada. */
-  private normalizarToleranciasSimetricas<T extends Record<string, unknown>>(data: T): T {
-    const out = { ...data };
+  private normalizarToleranciasSimetricas(data: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = { ...data };
     if (out.toleranciaEntradaMin !== undefined || out.toleranciaSaidaMin !== undefined) {
       const n = Math.max(
         0,

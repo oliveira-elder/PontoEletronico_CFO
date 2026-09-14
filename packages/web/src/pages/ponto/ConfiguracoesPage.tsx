@@ -316,6 +316,7 @@ interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
   atestadoDiasLimiteInss: number;
   atestadoPrazoEnvioDias: number;
+  atestadoTempoRetornoMin: number;
   atestadoMensagemOriginais: string;
   feriasAntecedenciaMinDias: number;
   feriasMinimoGrandePeriodo: number;
@@ -513,11 +514,11 @@ const EVENTOS_NOTIFICACAO = [
   },
   {
     id: "ASSINAR_QUADRO_GESTOR",
-    titulo: "Quadro Aguardando Assinatura do Gestor",
+    titulo: "Quadro Aguardando Assinatura do Chefe",
     descricao:
       "Notifica o gestor quando um funcionário da sua equipe assinou o quadro de pontos " +
       "e está aguardando aprovação.",
-    destinatario: "Gestor",
+    destinatario: "Chefe",
     gatilho: "Automático — ao funcionário assinar o quadro"
   },
   {
@@ -563,15 +564,15 @@ const EVENTOS_NOTIFICACAO = [
       "Notifica o funcionário quando o gestor assinou o quadro de pontos e o processo " +
       "de assinatura foi concluído.",
     destinatario: "Funcionário",
-    gatilho: "Automático — ao gestor concluir a assinatura"
+    gatilho: "Automático — ao chefe concluir a assinatura"
   },
   {
     id: "SOLICITACAO_NOVA_GESTOR",
-    titulo: "Nova Solicitação — Aviso ao Gestor",
+    titulo: "Nova Solicitação — Aviso ao Chefe",
     descricao:
       "Notifica o gestor quando um funcionário da equipe abre uma nova solicitação " +
       "(férias, atestado, licença, correção de ponto etc.).",
-    destinatario: "Gestor",
+    destinatario: "Chefe",
     gatilho: "Automático — ao funcionário criar solicitação"
   },
   {
@@ -581,7 +582,7 @@ const EVENTOS_NOTIFICACAO = [
       "Notifica a equipe de RH quando o gestor aprova uma solicitação e ela passa " +
       "para análise do RH.",
     destinatario: "RH",
-    gatilho: "Automático — ao gestor encaminhar para o RH"
+    gatilho: "Automático — ao chefe encaminhar para o RH"
   },
   {
     id: "RH_DOCUMENTO_ENVIADO",
@@ -607,7 +608,7 @@ const EVENTOS_NOTIFICACAO = [
     descricao:
       "Notifica o gestor quando um funcionário da equipe registra entrada ou saída " +
       "no ponto eletrônico.",
-    destinatario: "Gestor",
+    destinatario: "Chefe",
     gatilho: "Automático — ao registrar entrada ou saída"
   },
   {
@@ -637,10 +638,10 @@ const EVENTOS_NOTIFICACAO = [
   },
   {
     id: "PAPEL_CRITICO_DESATIVADO",
-    titulo: "Supervisor ou Gerente Substituto Desativado",
+    titulo: "Supervisor ou Chefe Substituto Desativado",
     descricao:
-      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/menor aprendiz) " +
-      "ou um Gerente Substituto em exercício é desativado, para providenciar substituição imediata.",
+      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/jovem aprendiz) " +
+      "ou um Chefe Substituto em exercício é desativado, para providenciar substituição imediata.",
     destinatario: "RH",
     gatilho: "Automático — ao desativar funcionário com papel crítico ativo"
   }
@@ -3639,7 +3640,7 @@ export function ConfiguracoesPage() {
                       type="text"
                       value={jpForm.descricao ?? ""}
                       onChange={(e) => setJpForm((f) => ({ ...f, descricao: e.target.value }))}
-                      placeholder="Opcional — ex: Concursados com carga horária de 40h semanais"
+                      placeholder="Opcional — ex: Efetivos com carga horária de 40h semanais"
                       style={{
                         width: "100%",
                         padding: "9px 12px",
@@ -4890,7 +4891,7 @@ export function ConfiguracoesPage() {
                 />
                 <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
                   Hora extra além deste limite gera <strong>solicitação automática</strong> de
-                  aprovação pelo gestor e RH. Abaixo do limite, vai direto para o banco de horas.
+                  aprovação pelo chefe e RH. Abaixo do limite, vai direto para o banco de horas.
                 </p>
               </div>
             </div>
@@ -5143,9 +5144,9 @@ export function ConfiguracoesPage() {
                   lineHeight: 1.6
                 }}
               >
-                Informe apenas dia e mês. Em todo ano que atingir essa data, o ciclo do banco de
-                horas é encerrado e um novo ciclo começa no dia seguinte (saldo zera para todos os
-                funcionários).
+                Informe apenas dia e mês. Nessa data o saldo zera e um novo ciclo começa, já
+                incluindo as horas do próprio dia da virada (o ciclo anterior vai até o dia
+                anterior).
               </p>
 
               {/* Lista */}
@@ -5533,7 +5534,7 @@ export function ConfiguracoesPage() {
             <Toggle
               value={periodos.hibridoExigeAprovacao}
               onChange={(v) => setPeriodos((p) => patchPeriodos(p, { hibridoExigeAprovacao: v }))}
-              label="Exigir aprovação prévia do gestor"
+              label="Exigir aprovação prévia do chefe"
               desc="O funcionário deve ter o dia híbrido aprovado antes de registrar o ponto de casa"
             />
           </Secao>
@@ -5586,7 +5587,7 @@ export function ConfiguracoesPage() {
               value={periodos.viagemExigeAprovacao}
               onChange={(v) => setPeriodos((p) => patchPeriodos(p, { viagemExigeAprovacao: v }))}
               label="Exigir aprovação prévia de viagem"
-              desc="O gestor deve autorizar o modo viagem antes do registro ser aceito"
+              desc="O chefe deve autorizar o modo viagem antes do registro ser aceito"
             />
           </Secao>
         </>
@@ -5650,7 +5651,7 @@ export function ConfiguracoesPage() {
                   key: "tipoAtivoHoraExtra",
                   emoji: "⏱️",
                   label: "Hora Extra",
-                  desc: "Solicitação antecipada de hora extra (≥ limite configurado) — aprovação do gestor e RH"
+                  desc: "Solicitação antecipada de hora extra (≥ limite configurado) — aprovação do chefe e RH"
                 },
                 {
                   key: "tipoAtivoEnvioDocumentoRh",
@@ -5728,7 +5729,7 @@ export function ConfiguracoesPage() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
+                gridTemplateColumns: "1fr 1fr 1fr 1fr",
                 gap: 16,
                 alignItems: "stretch"
               }}
@@ -5828,6 +5829,42 @@ export function ConfiguracoesPage() {
                   onChange={(e) =>
                     setConfigSol((c) =>
                       c ? { ...c, atestadoPrazoEnvioDias: parseInt(e.target.value) || 2 } : c
+                    )
+                  }
+                  style={{
+                    width: 80,
+                    padding: "7px 10px",
+                    border: "1px solid rgba(122,30,38,0.14)",
+                    borderRadius: "var(--radius-md)",
+                    fontSize: 14,
+                    fontFamily: "var(--font-mono)",
+                    marginTop: "auto"
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                <label
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-700)",
+                    display: "block",
+                    marginBottom: 4
+                  }}
+                >
+                  Tempo de retorno tolerado (minutos)
+                </label>
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "0 0 6px", flex: 1 }}>
+                  Tolerância máxima de deslocamento creditada quando o retorno ao trabalho ocorre
+                  após o horário final do atestado
+                </p>
+                <input
+                  type="number"
+                  min={0}
+                  value={configSol.atestadoTempoRetornoMin ?? 60}
+                  onChange={(e) =>
+                    setConfigSol((c) =>
+                      c ? { ...c, atestadoTempoRetornoMin: parseInt(e.target.value) || 60 } : c
                     )
                   }
                   style={{

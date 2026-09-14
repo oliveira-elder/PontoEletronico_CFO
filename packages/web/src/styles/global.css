@@ -9,9 +9,16 @@
 
 html {
   font-size: 15px;
+  zoom: var(--intranet-a11y-font-scale, 1);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   scroll-behavior: smooth;
+}
+
+@supports not (zoom: 1) {
+  html {
+    font-size: calc(15px * var(--intranet-a11y-font-scale, 1));
+  }
 }
 
 body {
@@ -73,6 +80,8 @@ a:hover { color: var(--burgundy-700); }
 }
 .btn:focus-visible {
   box-shadow: 0 0 0 3px rgba(122, 30, 38, 0.12);
+  outline: 2px solid var(--intranet-a11y-focus, var(--burgundy-600));
+  outline-offset: 2px;
 }
 .btn-primary {
   background: var(--burgundy-600);
@@ -118,7 +127,7 @@ a:hover { color: var(--burgundy-700); }
 
 /* ─── Cards ─── */
 .card {
-  background: #ffffff;
+  background: var(--intranet-a11y-surface, #ffffff);
   border: 1px solid rgba(122, 30, 38, 0.10);
   border-radius: var(--radius-lg);
   padding: var(--space-4);
@@ -130,10 +139,35 @@ a:hover { color: var(--burgundy-700); }
   box-shadow: 0 12px 28px -14px rgba(122, 30, 38, 0.18);
 }
 .card-flat {
-  background: #ffffff;
+  background: var(--intranet-a11y-surface, #ffffff);
   border: 1px solid rgba(122, 30, 38, 0.10);
   border-radius: var(--radius-lg);
   padding: var(--space-4);
+}
+a.card-flat,
+button.card-flat {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+a.card-flat:hover,
+button.card-flat:hover:not(:disabled) {
+  border-color: rgba(122, 30, 38, 0.22);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -14px rgba(122, 30, 38, 0.18);
+}
+a.card-flat:focus-visible,
+button.card-flat:focus-visible {
+  outline: 2px solid var(--burgundy-600);
+  outline-offset: 2px;
+}
+button.card-flat:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 /* ─── Chips / Badges ─── */
@@ -305,6 +339,32 @@ select.input {
 }
 .table-cfo tr:last-child td { border-bottom: none; }
 .table-cfo tbody tr:hover td { background: var(--cream-50); }
+
+/* Histórico de frequência (auditoria): cabe na largura do card, sem scroll-x */
+.table-cfo-freq {
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+.table-cfo-freq th,
+.table-cfo-freq td {
+  padding: 8px 6px;
+  vertical-align: middle;
+  overflow: hidden;
+}
+.table-cfo-freq th {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.table-cfo-freq td.cell-status {
+  overflow: visible;
+}
+.table-cfo-freq td.cell-status .badge {
+  white-space: normal;
+  line-height: 1.25;
+  max-width: 100%;
+  text-align: left;
+}
 
 /* ─── Divider ─── */
 .divider {

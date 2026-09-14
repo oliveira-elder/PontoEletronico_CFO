@@ -13,7 +13,7 @@ import {
 } from "../../common/gerencia-gerti.util";
 import { findGerenciaRh } from "../../common/gerencia-rh.util";
 import { isSuperAdminIdentity, superAdminUsernamesFromEnv } from "../../utils/super-admin";
-import { dataBrasiliaISO } from "../../utils/horario-brasilia";
+import { dataCivilISO } from "../../utils/horario-brasilia";
 import { chaveMarcoUnico } from "../../utils/banco-horas-marco";
 
 const SUPER_ADMINS_ENV = superAdminUsernamesFromEnv(process.env.SUPER_ADMIN_USERNAMES);
@@ -38,7 +38,7 @@ export class SistemaService {
       where: { id: "singleton" },
       select: { dataInicioProducao: true }
     });
-    return cfg?.dataInicioProducao ? dataBrasiliaISO(cfg.dataInicioProducao) : null;
+    return cfg?.dataInicioProducao ? dataCivilISO(cfg.dataInicioProducao) : null;
   }
 
   private async findGerenciaByKind(kind: "gerti" | "rh") {
@@ -201,16 +201,6 @@ export class SistemaService {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) {
       throw new BadRequestException("Mês de referência inválido. Use o formato YYYY-MM.");
     }
-  }
-
-  private diaAnteriorAoMes(mesReferencia: string): string {
-    const [y, m] = mesReferencia.split("-").map(Number);
-    const d = new Date(Date.UTC(y, m - 1, 1));
-    d.setUTCDate(d.getUTCDate() - 1);
-    const yy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const dd = String(d.getUTCDate()).padStart(2, "0");
-    return `${yy}-${mm}-${dd}`;
   }
 
   private primeiroDiaMes(mesReferencia: string): Date {
@@ -625,7 +615,8 @@ export class SistemaService {
     aprovadorRhUserId: string,
     observacao?: string
   ) {
-    const diaMarco = this.diaAnteriorAoMes(sol.mesReferencia);
+    /* Marco no 1º dia do mês: o ciclo novo começa nessa data (horas do dia entram no ciclo). */
+    const diaMarco = `${sol.mesReferencia}-01`;
     const dataInicio = this.primeiroDiaMes(sol.mesReferencia);
     const descricao = `Start do sistema — go-live ${sol.mesReferencia}`;
     const [anoM, mesM, diaM] = diaMarco.split("-").map(Number);

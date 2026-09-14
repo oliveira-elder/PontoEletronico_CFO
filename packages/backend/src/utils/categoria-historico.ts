@@ -1,10 +1,11 @@
 import { CategoriaFuncional, Prisma } from "@prisma/client";
-import { dataBrasiliaISO, hojeBrasiliaISO } from "./horario-brasilia";
+import { dataBrasiliaISO, dataCivilISO, hojeBrasiliaISO } from "./horario-brasilia";
 import {
-  categoriaSemRegistroPonto,
+  funcionarioSemRegistroPonto,
   diaAnteriorIso,
   diaSeguinteIso,
-  type VigenciaCategoria
+  type VigenciaCategoria,
+  type SituacaoRegistroPonto
 } from "./categoria-jornada";
 
 type Tx = Prisma.TransactionClient;
@@ -12,14 +13,16 @@ type Tx = Prisma.TransactionClient;
 function toVigencia(
   rows: Array<{
     categoria: CategoriaFuncional;
+    isManager: boolean;
     vigenciaDesde: Date;
     vigenciaAte: Date | null;
   }>
 ): VigenciaCategoria[] {
   return rows.map((r) => ({
     categoria: r.categoria,
-    vigenciaDesde: dataBrasiliaISO(r.vigenciaDesde),
-    vigenciaAte: r.vigenciaAte ? dataBrasiliaISO(r.vigenciaAte) : null
+    isManager: r.isManager,
+    vigenciaDesde: dataCivilISO(r.vigenciaDesde),
+    vigenciaAte: r.vigenciaAte ? dataCivilISO(r.vigenciaAte) : null
   }));
 }
 
@@ -46,6 +49,7 @@ export async function ensureCategoriaHistorico(
     where: { id: funcionarioId },
     select: {
       categoria: true,
+      isManager: true,
       pontoObrigatorioDesde: true,
       createdAt: true,
       dataAdmissao: true
@@ -53,31 +57,36 @@ export async function ensureCategoriaHistorico(
   });
   if (!func) return [];
 
-  const inicioIso = dataBrasiliaISO(func.dataAdmissao ?? func.createdAt);
+  const inicioIso = func.dataAdmissao
+    ? dataCivilISO(func.dataAdmissao)
+    : dataBrasiliaISO(func.createdAt);
   const hoje = hojeBrasiliaISO();
-  const pontoDesde = func.pontoObrigatorioDesde
-    ? dataBrasiliaISO(func.pontoObrigatorioDesde)
-    : null;
+  const pontoDesde = func.pontoObrigatorioDesde ? dataCivilISO(func.pontoObrigatorioDesde) : null;
 
   const rows: Array<{
     funcionarioId: string;
     categoria: CategoriaFuncional;
+    isManager: boolean;
     vigenciaDesde: Date;
     vigenciaAte: Date | null;
   }> = [];
 
-  if (pontoDesde && pontoDesde > inicioIso && !categoriaSemRegistroPonto(func.categoria)) {
+  const situacaoAtual = { categoria: func.categoria, isManager: func.isManager };
+
+  if (pontoDesde && pontoDesde > inicioIso && !funcionarioSemRegistroPonto(situacaoAtual)) {
     /* Foi sem obrigação até o dia anterior a pontoDesde; obrigação a partir de pontoDesde. */
     const ateSem = diaAnteriorIso(pontoDesde);
     rows.push({
       funcionarioId,
       categoria: "ASSESSOR",
+      isManager: false,
       vigenciaDesde: new Date(`${inicioIso}T12:00:00-03:00`),
       vigenciaAte: new Date(`${ateSem}T12:00:00-03:00`)
     });
     rows.push({
       funcionarioId,
       categoria: func.categoria,
+      isManager: func.isManager,
       vigenciaDesde: new Date(`${pontoDesde}T12:00:00-03:00`),
       vigenciaAte: null
     });
@@ -85,13 +94,14 @@ export async function ensureCategoriaHistorico(
     rows.push({
       funcionarioId,
       categoria: func.categoria,
+      isManager: func.isManager,
       vigenciaDesde: new Date(`${inicioIso}T12:00:00-03:00`),
       vigenciaAte: null
     });
   }
 
   for (const r of rows) {
-    const desde = dataBrasiliaISO(r.vigenciaDesde);
+    const desde = dataCivilISO(r.vigenciaDesde);
     if (desde > hoje) {
       r.vigenciaDesde = new Date(`${hoje}T12:00:00-03:00`);
     }
@@ -106,21 +116,25 @@ export async function ensureCategoriaHistorico(
   );
 }
 
+export type SituacaoCategoria = { categoria: CategoriaFuncional; isManager: boolean };
+
 /**
- * Datas de corte da mudança de categoria no meio do dia:
- * - Promoção Concursado → Assessor/Gerente: o dia inteiro da mudança conta como isento (nova vigência desde D).
- * - Retorno Assessor/Gerente → Concursado: o dia da mudança permanece isento; obrigação só no dia seguinte (D+1).
+ * Datas de corte da mudança de situação (categoria e/ou isManager) no meio do dia:
+ * - Passa a isento (ex.: Concursado → Assessor, ou vira Chefe): o dia inteiro da mudança
+ *   conta como isento (nova vigência desde D).
+ * - Deixa de ser isento (ex.: Assessor → Concursado, ou deixa de ser Chefe): o dia da
+ *   mudança permanece isento; obrigação só no dia seguinte (D+1).
  */
-export function datasCorteMudancaCategoria(
-  categoriaAnterior: string | null | undefined,
-  novaCategoria: string,
+export function datasCorteMudancaSituacao(
+  situacaoAnterior: SituacaoRegistroPonto | null | undefined,
+  situacaoNova: SituacaoRegistroPonto,
   dataRefIso: string
 ): { ateAnterior: string; desdeNova: string } {
-  const anteriorSem = categoriaSemRegistroPonto(categoriaAnterior);
-  const novaSem = categoriaSemRegistroPonto(novaCategoria);
+  const anteriorSem = funcionarioSemRegistroPonto(situacaoAnterior ?? {});
+  const novaSem = funcionarioSemRegistroPonto(situacaoNova);
 
   if (!anteriorSem && novaSem) {
-    /* Obrigação → isento: dia D inteiro como assessor/gerente */
+    /* Obrigação → isento: dia D inteiro já isento */
     return { ateAnterior: diaAnteriorIso(dataRefIso), desdeNova: dataRefIso };
   }
   if (anteriorSem && !novaSem) {
@@ -132,13 +146,16 @@ export function datasCorteMudancaCategoria(
 }
 
 /**
- * Registra mudança de categoria: fecha vigência aberta e abre nova.
- * Respeita a regra de meio do dia (dia inteiro isento / obrigação só no dia seguinte).
+ * Registra mudança de categoria e/ou de característica "é chefe" (isManager): fecha
+ * vigência aberta e abre nova. Respeita a regra de meio do dia (dia inteiro isento /
+ * obrigação só no dia seguinte). Substitui o antigo registrarMudancaCategoria — agora
+ * "virar chefe" não é mais mudar a categoria para GERENTE, é marcar isManager=true
+ * mantendo a categoria real, então a vigência precisa reagir aos dois campos juntos.
  */
-export async function registrarMudancaCategoria(
+export async function registrarMudancaSituacao(
   db: Tx,
   funcionarioId: string,
-  novaCategoria: CategoriaFuncional,
+  novaSituacao: SituacaoCategoria,
   dataRefIso: string = hojeBrasiliaISO()
 ): Promise<{ desdeNova: string }> {
   let aberta = await db.funcionarioCategoriaHistorico.findFirst({
@@ -146,8 +163,11 @@ export async function registrarMudancaCategoria(
     orderBy: { vigenciaDesde: "desc" }
   });
 
-  if (aberta && aberta.categoria === novaCategoria) {
-    return { desdeNova: dataBrasiliaISO(aberta.vigenciaDesde) };
+  const mesmaSituacao = (a: { categoria: CategoriaFuncional; isManager: boolean }) =>
+    a.categoria === novaSituacao.categoria && a.isManager === novaSituacao.isManager;
+
+  if (aberta && mesmaSituacao(aberta)) {
+    return { desdeNova: dataCivilISO(aberta.vigenciaDesde) };
   }
 
   if (!aberta) {
@@ -156,28 +176,30 @@ export async function registrarMudancaCategoria(
       where: { funcionarioId, vigenciaAte: null },
       orderBy: { vigenciaDesde: "desc" }
     });
-    if (aberta && aberta.categoria === novaCategoria) {
-      return { desdeNova: dataBrasiliaISO(aberta.vigenciaDesde) };
+    if (aberta && mesmaSituacao(aberta)) {
+      return { desdeNova: dataCivilISO(aberta.vigenciaDesde) };
     }
   }
 
-  const catAnterior = aberta?.categoria ?? null;
-  const { ateAnterior, desdeNova } = datasCorteMudancaCategoria(
-    catAnterior,
-    novaCategoria,
+  const situacaoAnterior = aberta
+    ? { categoria: aberta.categoria, isManager: aberta.isManager }
+    : null;
+  const { ateAnterior, desdeNova } = datasCorteMudancaSituacao(
+    situacaoAnterior,
+    novaSituacao,
     dataRefIso
   );
 
   if (aberta) {
-    const desdeAberta = dataBrasiliaISO(aberta.vigenciaDesde);
+    const desdeAberta = dataCivilISO(aberta.vigenciaDesde);
 
     /* Vigência aberta no mesmo dia da mudança */
     if (desdeAberta >= dataRefIso) {
-      const anteriorSem = categoriaSemRegistroPonto(aberta.categoria);
-      const novaSem = categoriaSemRegistroPonto(novaCategoria);
+      const anteriorSem = funcionarioSemRegistroPonto(situacaoAnterior ?? {});
+      const novaSem = funcionarioSemRegistroPonto(novaSituacao);
 
       if (anteriorSem && !novaSem) {
-        /* Assessor hoje → concursado: mantém isento até D e abre obrigação em D+1 */
+        /* Isento hoje → obrigação: mantém isento até D e abre obrigação em D+1 */
         await db.funcionarioCategoriaHistorico.update({
           where: { id: aberta.id },
           data: { vigenciaAte: new Date(`${dataRefIso}T12:00:00-03:00`) }
@@ -185,7 +207,8 @@ export async function registrarMudancaCategoria(
         await db.funcionarioCategoriaHistorico.create({
           data: {
             funcionarioId,
-            categoria: novaCategoria,
+            categoria: novaSituacao.categoria,
+            isManager: novaSituacao.isManager,
             vigenciaDesde: new Date(`${diaSeguinteIso(dataRefIso)}T12:00:00-03:00`),
             vigenciaAte: null
           }
@@ -193,11 +216,11 @@ export async function registrarMudancaCategoria(
         return { desdeNova: diaSeguinteIso(dataRefIso) };
       }
 
-      /* Demais casos no mesmo dia: só troca a categoria da vigência aberta
-         (ex.: concursado → assessor no mesmo dia → dia inteiro isento). */
+      /* Demais casos no mesmo dia: só troca a situação da vigência aberta
+         (ex.: concursado → assessor, ou vira chefe, no mesmo dia → dia inteiro isento). */
       await db.funcionarioCategoriaHistorico.update({
         where: { id: aberta.id },
-        data: { categoria: novaCategoria }
+        data: { categoria: novaSituacao.categoria, isManager: novaSituacao.isManager }
       });
       return { desdeNova: desdeAberta };
     }
@@ -211,7 +234,8 @@ export async function registrarMudancaCategoria(
   await db.funcionarioCategoriaHistorico.create({
     data: {
       funcionarioId,
-      categoria: novaCategoria,
+      categoria: novaSituacao.categoria,
+      isManager: novaSituacao.isManager,
       vigenciaDesde: new Date(`${desdeNova}T12:00:00-03:00`),
       vigenciaAte: null
     }

@@ -5,6 +5,7 @@ import {
   Put,
   Delete,
   Body,
+  Query,
   Req,
   ForbiddenException,
   UseGuards
@@ -56,6 +57,13 @@ export class ExtensionsController {
     const hasOverride = body?.url !== undefined || body?.token !== undefined;
     if (hasOverride) assertSuperAdmin(req);
     return this.extensionsService.testConnection(body);
+  }
+
+  @Get("lookup")
+  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
+  lookup(@Query("email") email?: string) {
+    if (!email?.trim()) return { found: false as const };
+    return this.extensionsService.lookupUser(email.trim());
   }
 
   @Post("sync")

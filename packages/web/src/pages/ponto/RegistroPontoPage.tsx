@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import {
   CheckCircleIcon,
@@ -939,6 +939,8 @@ export function RegistroPontoPage() {
   const [geoloc, setGeoloc] = useState(true);
   const [geoStatus, setGeoStatus] = useState<"pendente" | "ok" | "fora">("pendente");
   const [categoriaFuncional, setCategoriaFuncional] = useState<string | null>(null);
+  const [isChefeHoje, setIsChefeHoje] = useState(false);
+  const [isFiscalHoje, setIsFiscalHoje] = useState(false);
   const [semRegistroPontoHoje, setSemRegistroPontoHoje] = useState(false);
 
   const [cfg, setCfg] = useState<SistemaConfig | null>(null);
@@ -955,6 +957,12 @@ export function RegistroPontoPage() {
     previsaoInicioAlmoco?: string;
   } | null>(null);
   const [statusCarregado, setStatusCarregado] = useState(false);
+  const statusGeoRef = useRef<{
+    loaded: boolean;
+    modoHomeOffice?: boolean;
+    modoHibridoLocal?: boolean;
+    enderecoResidencial?: SistemaConfig["enderecoResidencial"];
+  }>({ loaded: false });
 
   /* ── Feriado hoje ── */
   const [feriadoHoje, setFeriadoHoje] = useState<{ bloqueado: boolean; nome?: string } | null>(
@@ -990,19 +998,28 @@ export function RegistroPontoPage() {
     ])
       .then(([data, areas]) => {
         if (data)
-          setCfg((prev) => ({
-            ...data,
-            areasViagem: (areas ?? []).filter((a) => a.ativa),
-            /* Não sobrescreve o período efetivo do usuário já vindo de /ponto/status. */
-            horaEntrada: prev?.horaEntrada ?? data.horaEntrada,
-            horaSaida: prev?.horaSaida ?? data.horaSaida,
-            almocoMinMin: prev?.almocoMinMin ?? data.almocoMinMin,
-            almocoPodeIniciarA: prev?.almocoPodeIniciarA ?? data.almocoPodeIniciarA,
-            almocoPodeIniciarAte: prev?.almocoPodeIniciarAte ?? data.almocoPodeIniciarAte,
-            modoHomeOffice: prev?.modoHomeOffice ?? data.modoHomeOffice,
-            modoHibridoLocal: prev?.modoHibridoLocal ?? data.modoHibridoLocal,
-            enderecoResidencial: prev?.enderecoResidencial ?? data.enderecoResidencial
-          }));
+          setCfg((prev) => {
+            const geo = statusGeoRef.current;
+            return {
+              ...data,
+              areasViagem: (areas ?? []).filter((a) => a.ativa),
+              /* Não sobrescreve o período efetivo do usuário já vindo de /ponto/status. */
+              horaEntrada: prev?.horaEntrada ?? data.horaEntrada,
+              horaSaida: prev?.horaSaida ?? data.horaSaida,
+              almocoMinMin: prev?.almocoMinMin ?? data.almocoMinMin,
+              almocoPodeIniciarA: prev?.almocoPodeIniciarA ?? data.almocoPodeIniciarA,
+              almocoPodeIniciarAte: prev?.almocoPodeIniciarAte ?? data.almocoPodeIniciarAte,
+              modoHomeOffice: geo.loaded
+                ? (geo.modoHomeOffice ?? false)
+                : (prev?.modoHomeOffice ?? data.modoHomeOffice),
+              modoHibridoLocal: geo.loaded
+                ? (geo.modoHibridoLocal ?? false)
+                : (prev?.modoHibridoLocal ?? data.modoHibridoLocal),
+              enderecoResidencial: geo.loaded
+                ? (geo.enderecoResidencial ?? null)
+                : (prev?.enderecoResidencial ?? data.enderecoResidencial)
+            };
+          });
         else setErroCfg(true);
       })
       .catch(() => setErroCfg(true));
@@ -1044,6 +1061,8 @@ export function RegistroPontoPage() {
           dataFim: string;
         } | null;
         categoria?: string;
+        isManager?: boolean;
+        isFiscal?: boolean;
         semRegistroPonto?: boolean;
         isentoHoje?: boolean;
         modoHomeOffice?: boolean;
@@ -1062,11 +1081,14 @@ export function RegistroPontoPage() {
         if (status?.acoesPermitidas) setAcoesPermitidasApi(status.acoesPermitidas);
         setAfastamentoHoje(status?.afastamentoHoje ?? null);
         if (status?.categoria) setCategoriaFuncional(status.categoria);
+        setIsChefeHoje(!!status?.isManager);
+        setIsFiscalHoje(!!status?.isFiscal);
         setSemRegistroPontoHoje(
           !!status?.semRegistroPonto ||
             !!status?.isentoHoje ||
             status?.categoria === "ASSESSOR" ||
-            status?.categoria === "GERENTE"
+            !!status?.isManager ||
+            !!status?.isFiscal
         );
         setJanelaJornada({
           inicio: status?.almocoPodeIniciarA || "11:30",
@@ -1080,10 +1102,18 @@ export function RegistroPontoPage() {
             previsaoInicioAlmoco: status.previsaoInicioAlmoco ?? undefined
           });
         }
-        // Mescla dados de home office/híbrido e janela de almoço da jornada efetiva
+        // Mescla dados de home office/híbrido e janela de almoço da jornada efetiva.
+        // Guarda em ref para não perder se /ponto/status chegar antes de /ponto/config/sistema.
+        statusGeoRef.current = {
+          loaded: true,
+          modoHomeOffice: status?.modoHomeOffice,
+          modoHibridoLocal: status?.modoHibridoLocal,
+          enderecoResidencial: status?.enderecoResidencial
+        };
         if (
           status?.modoHomeOffice !== undefined ||
           status?.modoHibridoLocal !== undefined ||
+          status?.enderecoResidencial !== undefined ||
           status?.almocoPodeIniciarA ||
           status?.almocoPodeIniciarAte ||
           status?.horaEntrada ||
@@ -1301,8 +1331,18 @@ export function RegistroPontoPage() {
       setFotoCapturada(null);
       setPendingTipo(null);
       setConfirmado(resultado);
+      setAcoesPermitidasApi(null);
+      const tk = token();
+      if (tk) {
+        void api
+          .get<{ acoesPermitidas?: string[] }>("/ponto/status", tk)
+          .then((status) => {
+            if (status?.acoesPermitidas) setAcoesPermitidasApi(status.acoesPermitidas);
+          })
+          .catch(() => {});
+      }
     },
-    [registrar, fotoCapturada, modo, cfg, checkGeo, geoloc, categoriaFuncional]
+    [registrar, fotoCapturada, modo, cfg, checkGeo, geoloc, categoriaFuncional, token]
   );
 
   async function handleAcao(tipo: TipoRegistro) {
@@ -1702,29 +1742,27 @@ export function RegistroPontoPage() {
             textAlign: "center"
           }}
         >
-          <p style={{ fontSize: 28, marginBottom: 12 }}>
-            {categoriaFuncional === "GERENTE" ? "👑" : "📋"}
-          </p>
+          <p style={{ fontSize: 28, marginBottom: 12 }}>{isChefeHoje ? "👑" : "📋"}</p>
           <p
             style={{ fontSize: 15, fontWeight: 700, color: "var(--burgundy-600)", marginBottom: 8 }}
           >
             Registro de ponto não aplicável
           </p>
           <p style={{ fontSize: 13, color: "var(--ink-500)", lineHeight: 1.7, margin: 0 }}>
-            {categoriaFuncional === "ASSESSOR" || categoriaFuncional === "GERENTE" ? (
+            {categoriaFuncional === "ASSESSOR" || isChefeHoje || isFiscalHoje ? (
               <>
-                Funcionários na categoria{" "}
-                <strong>{categoriaFuncional === "GERENTE" ? "Gerente" : "Assessor"}</strong> não
-                utilizam o sistema de registro de ponto eletrônico. Solicitações, envio ao RH e
+                Funcionários na condição{" "}
+                <strong>{isChefeHoje ? "Chefe" : isFiscalHoje ? "Fiscal" : "Comissionado"}</strong>{" "}
+                não utilizam o sistema de registro de ponto eletrônico. Solicitações, envio ao RH e
                 demais fluxos permanecem disponíveis; após aprovação, o histórico é apenas
                 informativo e não entra em base de cálculo (mesmo após eventual mudança de
                 categoria). Em caso de dúvidas, entre em contato com o setor de RH.
               </>
             ) : (
               <>
-                Hoje ainda não há obrigação de registro de ponto. Após o retorno de Assessor/Gerente
-                para categoria com ponto, a obrigação começa apenas no <strong>dia seguinte</strong>
-                .
+                Hoje ainda não há obrigação de registro de ponto. Após o retorno de
+                Comissionado/Chefe para categoria com ponto, a obrigação começa apenas no{" "}
+                <strong>dia seguinte</strong>.
               </>
             )}
           </p>

@@ -1,37 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
-
-function InitSpinner() {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: "var(--cream-50)",
-        gap: 16
-      }}
-    >
-      <div
-        style={{
-          width: 40,
-          height: 40,
-          border: "3px solid var(--cream-200)",
-          borderTop: "3px solid var(--burgundy-600)",
-          borderRadius: "50%",
-          animation: "spin 0.8s linear infinite"
-        }}
-      />
-      <p style={{ fontSize: 13, color: "var(--ink-500)", fontFamily: "var(--font-body)" }}>
-        Verificando sessão…
-      </p>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
-}
+import { PageSpinner } from "../PageSpinner";
+import { useInstituicaoBranding } from "../../hooks/useInstituicaoBranding";
 
 function SsoCallbackError({ error }: { error: string | null }) {
   function retry() {
@@ -203,8 +174,104 @@ function ContaDesativadaScreen({ onLogout }: { onLogout: () => void }) {
   );
 }
 
+function SemMatriculaScreen({ onLogout }: { onLogout: () => void }) {
+  const { branding } = useInstituicaoBranding();
+  const telefone = branding.telefone?.trim();
+  const email = branding.emailInstitucional?.trim();
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+        background: "var(--cream-50)",
+        gap: 16,
+        padding: "0 24px",
+        textAlign: "center"
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: "50%",
+          background: "rgba(200,57,63,0.10)",
+          border: "2px solid rgba(200,57,63,0.25)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 26
+        }}
+      >
+        🚫
+      </div>
+      <p
+        style={{
+          fontSize: 18,
+          fontWeight: 700,
+          color: "var(--ink-900)",
+          fontFamily: "var(--font-body)",
+          margin: 0
+        }}
+      >
+        Acesso não permitido
+      </p>
+      <p
+        style={{
+          fontSize: 14,
+          color: "var(--ink-600)",
+          maxWidth: 440,
+          lineHeight: 1.6,
+          margin: 0
+        }}
+      >
+        Não encontramos uma matrícula cadastrada para o seu usuário no quadro de funcionários do
+        Conselho Federal de Odontologia.
+        <br />
+        Procure o setor de Recursos Humanos (RH) do CFO para regularizar seu cadastro.
+      </p>
+      {(telefone || email) && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            fontSize: 13,
+            color: "var(--ink-700)",
+            fontWeight: 600
+          }}
+        >
+          {telefone && <span>Telefone: {telefone}</span>}
+          {email && <span>E-mail: {email}</span>}
+        </div>
+      )}
+      <button
+        onClick={onLogout}
+        style={{
+          marginTop: 8,
+          padding: "10px 28px",
+          borderRadius: "var(--radius-md)",
+          background: "var(--burgundy-600)",
+          color: "#fff",
+          border: "none",
+          cursor: "pointer",
+          fontSize: 14,
+          fontWeight: 600,
+          fontFamily: "var(--font-body)"
+        }}
+      >
+        Sair do sistema
+      </button>
+    </div>
+  );
+}
+
 export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { authenticated, contaDesativada, ensureInitialized, initError, logout, token } = useAuth();
+  const { authenticated, contaDesativada, semMatricula, ensureInitialized, initError, logout } =
+    useAuth();
   const location = useLocation();
   const [checking, setChecking] = useState(!authenticated);
   const [ssoError, setSsoError] = useState(false);
@@ -231,11 +298,11 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
     };
   }, [authenticated, ensureInitialized]);
 
-  if (checking) return <InitSpinner />;
+  if (checking) return <PageSpinner label="Verificando sessão…" />;
   if (ssoError) return <SsoCallbackError error={initError} />;
   if (contaDesativada) return <ContaDesativadaScreen onLogout={logout} />;
+  if (semMatricula) return <SemMatriculaScreen onLogout={logout} />;
   if (!authenticated) return <Navigate to="/login" state={{ from: location }} replace />;
-  if (!token()) return <InitSpinner />;
 
   return <>{children}</>;
 }

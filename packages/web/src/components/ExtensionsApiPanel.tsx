@@ -110,10 +110,15 @@ export function ExtensionsApiPanel({
         created: number;
         updated: number;
         skipped: number;
+        semMatricula: number;
         errors: number;
       }>("/admin/extensions/sync", {});
+      const semMatriculaMsg =
+        res.semMatricula > 0
+          ? ` ${res.semMatricula} sem matrícula no AD (não sincronizados — sem acesso ao sistema).`
+          : "";
       setSyncMsg(
-        `Sync concluído: ${res.updated} atualizados, ${res.created} gerências criadas, ${res.skipped} ignorados.`
+        `Sync concluído: ${res.created} funcionários novos, ${res.updated} complementados, ${res.skipped} já cadastrados (preservados).${semMatriculaMsg}`
       );
       const status = await api.get<SyncStatus>("/admin/extensions/sync/status");
       setSyncStatus(status);
@@ -233,7 +238,7 @@ export function ExtensionsApiPanel({
 
           <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
             {syncStatus
-              ? `Último sync: ${new Date(syncStatus.createdAt).toLocaleString("pt-BR")} — ${syncStatus.updated} atualizados, ${syncStatus.created} gerências criadas, ${syncStatus.errors} erros`
+              ? `Último sync: ${new Date(syncStatus.createdAt).toLocaleString("pt-BR")} — ${syncStatus.created} novos, ${syncStatus.updated} complementados, ${syncStatus.skipped} preservados, ${syncStatus.errors} erros`
               : "Nenhuma sincronização realizada ainda."}
           </p>
 
@@ -332,7 +337,7 @@ export function ExtensionsApiPanel({
                 type="url"
                 value={form.url}
                 onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-                placeholder="https://192.168.161.50:11010/api/sections/integration/users"
+                placeholder="http://192.168.161.50:11010/api/sections/integration/users"
                 style={{ ...inputStyle, marginTop: 4 }}
               />
             </label>

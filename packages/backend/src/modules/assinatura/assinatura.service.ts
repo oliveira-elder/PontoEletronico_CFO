@@ -10,14 +10,17 @@ import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
+import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service";
 import {
   dataBrasiliaISO,
   hojeBrasiliaISO,
+  intervaloColunaDate,
   intervaloDiaBrasilia
 } from "../../utils/horario-brasilia";
 import {
   montarRelatorioQuadro,
-  resolverJornadaHistoricoContexto
+  resolverJornadaHistoricoContexto,
+  type DiaQuadroPdf
 } from "../../utils/historico-quadro";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { urlHomeSistema } from "../notificacao/atalhos-evento";
@@ -37,7 +40,7 @@ import {
 import { getPdfFonts } from "./pdf-fonts";
 import {
   categoriaSemIntervaloAlmoco,
-  categoriaSemRegistroPonto,
+  funcionarioSemRegistroPonto,
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoria-jornada";
 
@@ -106,7 +109,8 @@ export class AssinaturaService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditoriaService: AuditoriaService,
-    private readonly notificacaoService: NotificacaoService
+    private readonly notificacaoService: NotificacaoService,
+    private readonly configSolicitacoesService: ConfigSolicitacoesService
   ) {}
 
   /* ─── Cron: 00:05 UTC do 1º de cada mês (= 21:05 BRT do último dia do mês anterior) ─── */
@@ -254,6 +258,215 @@ export class AssinaturaService {
     );
   }
 
+  /**
+   * Lista (e cria sob demanda) assinaturas mensais de um ciclo encerrado
+   * do banco de horas. Só inclui meses já fechados (mesma regra do Histórico):
+   * a folha mensal não se assina enquanto o mês civil ainda está em curso,
+   * mesmo que a data marco tenha cortado o ciclo no meio do mês.
+   */
+  async listarAssinaturasCicloBancoHoras(keycloakSub: string, inicioIso: string, fimIso: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(inicioIso) || !/^\d{4}-\d{2}-\d{2}$/.test(fimIso)) {
+      throw new BadRequestException("Informe inicio e fim no formato YYYY-MM-DD.");
+    }
+    if (inicioIso > fimIso) {
+      throw new BadRequestException("O início do ciclo deve ser anterior ou igual ao fim.");
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) throw new NotFoundException("Usuário não encontrado");
+    const func = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+
+    const hojeIso = hojeBrasiliaISO();
+    const [anoHoje, mesHoje] = hojeIso.split("-").map(Number);
+
+    const meses: { mes: number; ano: number }[] = [];
+    let [y, m] = inicioIso.slice(0, 7).split("-").map(Number);
+    const [yFim, mFim] = fimIso.slice(0, 7).split("-").map(Number);
+    while (y < yFim || (y === yFim && m <= mFim)) {
+      const eMesPassado = y < anoHoje || (y === anoHoje && m < mesHoje);
+      if (eMesPassado) meses.push({ mes: m, ano: y });
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+
+    let bancoHorasSaldoTotalMinutos = 0;
+    try {
+      const bh = await this.auditoriaService.getBancoHorasFuncionario(func.id);
+      bancoHorasSaldoTotalMinutos = bh.saldoAtualMinutos ?? 0;
+    } catch {
+      /* ignora */
+    }
+
+    const itens = [];
+    for (const { mes, ano } of meses) {
+      const periodo = await this.prisma.periodoPonto.upsert({
+        where: { funcionarioId_mes_ano: { funcionarioId: func.id, mes, ano } },
+        create: { funcionarioId: func.id, mes, ano },
+        update: {}
+      });
+
+      let assinatura = await this.prisma.assinaturaQuadro.findUnique({
+        where: { periodoId: periodo.id },
+        include: { periodo: true }
+      });
+
+      if (!assinatura) {
+        assinatura = await this.prisma.assinaturaQuadro.create({
+          data: {
+            periodoId: periodo.id,
+            bancoHorasSaldoTotalMinutos,
+            criadoPor: "BANCO_HORAS_CICLO"
+          },
+          include: { periodo: true }
+        });
+      }
+
+      const avaliacao = await this.avaliarSaldoFolha(func.id, mes, ano);
+      const { relatorio } = await this.montarRelatorioParaPdf(func.id, mes, ano);
+      const diasOk = relatorio.dias.filter((d) => d.statusInterno === "OK").length;
+      itens.push({
+        ...assinatura,
+        saldoRegularizado: avaliacao.saldoRegularizado,
+        /** Mesmos números do PDF da folha (mês civil completo). */
+        folhaResumo: {
+          diasOk,
+          diasTrabalhados: relatorio.diasTrabalhados,
+          horasTrabalhadasMinutos: relatorio.horasTrabalhadasMinutos,
+          saldoMinutos: relatorio.saldoMinutos
+        }
+      });
+    }
+
+    return itens;
+  }
+
+  /**
+   * Assinatura do relatório do ciclo de banco de horas (somente funcionário).
+   * Exige que todos os meses civis do intervalo estejam fechados e com folha CONCLUIDA
+   * (funcionário + chefe da área).
+   */
+  async assinarCicloBancoHoras(
+    keycloakSub: string,
+    inicioIso: string,
+    fimIso: string,
+    meta: SignatureMeta
+  ) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(inicioIso) || !/^\d{4}-\d{2}-\d{2}$/.test(fimIso)) {
+      throw new BadRequestException("Informe inicio e fim no formato YYYY-MM-DD.");
+    }
+    if (inicioIso > fimIso) {
+      throw new BadRequestException("O início do ciclo deve ser anterior ou igual ao fim.");
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) throw new ForbiddenException("Usuário não encontrado");
+    const func = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
+    if (!func) throw new ForbiddenException("Funcionário não encontrado");
+
+    const existente = await this.prisma.assinaturaCicloBancoHoras.findUnique({
+      where: {
+        funcionarioId_inicioIso_fimIso: {
+          funcionarioId: func.id,
+          inicioIso,
+          fimIso
+        }
+      }
+    });
+    if (existente) {
+      throw new BadRequestException("Este ciclo já foi assinado.");
+    }
+
+    const meses = this.mesesNoIntervalo(inicioIso, fimIso);
+    const hojeIso = hojeBrasiliaISO();
+    const mesAtualPrefix = hojeIso.slice(0, 7);
+
+    for (const { mes, ano } of meses) {
+      const yyyyMM = `${ano}-${String(mes).padStart(2, "0")}`;
+      if (yyyyMM >= mesAtualPrefix) {
+        throw new BadRequestException(
+          `Não é possível assinar o ciclo enquanto ${yyyyMM} aguarda o fechamento do mês.`
+        );
+      }
+    }
+
+    const folhas = await this.listarAssinaturasCicloBancoHoras(keycloakSub, inicioIso, fimIso);
+    if (folhas.length !== meses.length) {
+      throw new BadRequestException(
+        "Assine todas as folhas mensais do ciclo (funcionário e chefe da área) antes de assinar o ciclo."
+      );
+    }
+    const pendentes = folhas.filter((a) => a.status !== "CONCLUIDA");
+    if (pendentes.length > 0) {
+      throw new BadRequestException(
+        "Há folhas mensais pendentes de assinatura (funcionário ou chefe da área). " +
+          "Conclua todas antes de assinar o ciclo."
+      );
+    }
+
+    let saldoCicloMinutos = 0;
+    for (const { mes, ano } of meses) {
+      const { relatorio } = await this.montarRelatorioParaPdf(func.id, mes, ano);
+      for (const d of relatorio.dias) {
+        if (d.iso >= inicioIso && d.iso <= fimIso && d.saldoMin !== null) {
+          saldoCicloMinutos += d.saldoMin;
+        }
+      }
+    }
+
+    return this.prisma.assinaturaCicloBancoHoras.create({
+      data: {
+        funcionarioId: func.id,
+        inicioIso,
+        fimIso,
+        saldoCicloMinutos,
+        assinadoEm: new Date(),
+        assinadoIp: meta.ipReal,
+        assinadoIpGateway: meta.ipGateway,
+        assinadoUserAgent: meta.userAgent,
+        assinadoUserId: keycloakSub
+      }
+    });
+  }
+
+  async obterAssinaturaCicloBancoHoras(keycloakSub: string, inicioIso: string, fimIso: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(inicioIso) || !/^\d{4}-\d{2}-\d{2}$/.test(fimIso)) {
+      throw new BadRequestException("Informe inicio e fim no formato YYYY-MM-DD.");
+    }
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) throw new NotFoundException("Usuário não encontrado");
+    const func = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+
+    return this.prisma.assinaturaCicloBancoHoras.findUnique({
+      where: {
+        funcionarioId_inicioIso_fimIso: {
+          funcionarioId: func.id,
+          inicioIso,
+          fimIso
+        }
+      }
+    });
+  }
+
+  private mesesNoIntervalo(inicioIso: string, fimIso: string): { mes: number; ano: number }[] {
+    const meses: { mes: number; ano: number }[] = [];
+    let [y, m] = inicioIso.slice(0, 7).split("-").map(Number);
+    const [yFim, mFim] = fimIso.slice(0, 7).split("-").map(Number);
+    while (y < yFim || (y === yFim && m <= mFim)) {
+      meses.push({ mes: m, ano: y });
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+    return meses;
+  }
+
   /* ─── Funcionário assina ─── */
 
   async assinarFuncionario(assinaturaId: string, keycloakSub: string, meta: SignatureMeta) {
@@ -276,6 +489,16 @@ export class AssinaturaService {
         `Status atual (${assinatura.status}) não permite assinatura do funcionário`
       );
 
+    const hojeIso = hojeBrasiliaISO();
+    const [anoHoje, mesHoje] = hojeIso.split("-").map(Number);
+    const { mes, ano } = assinatura.periodo;
+    const eMesPassado = ano < anoHoje || (ano === anoHoje && mes < mesHoje);
+    if (!eMesPassado) {
+      throw new BadRequestException(
+        "A folha de ponto mensal só pode ser assinada após o fechamento do mês."
+      );
+    }
+
     const avaliacao = await this.avaliarSaldoFolha(
       func.id,
       assinatura.periodo.mes,
@@ -288,10 +511,30 @@ export class AssinaturaService {
       );
     }
 
+    let bancoHorasSaldoTotalMinutos = assinatura.bancoHorasSaldoTotalMinutos;
+    try {
+      const { relatorio } = await this.montarRelatorioParaPdf(
+        func.id,
+        assinatura.periodo.mes,
+        assinatura.periodo.ano
+      );
+      const badges = await this.montarResumoBadgesPdf(
+        func.id,
+        func.categoria,
+        assinatura.periodo.mes,
+        assinatura.periodo.ano,
+        relatorio
+      );
+      bancoHorasSaldoTotalMinutos = badges.totalAcumuladoMinutos;
+    } catch {
+      /* mantém o valor já gravado */
+    }
+
     const atualizada = await this.prisma.assinaturaQuadro.update({
       where: { id: assinaturaId },
       data: {
         status: "PENDENTE_GESTOR",
+        bancoHorasSaldoTotalMinutos,
         assinadoFuncionarioEm: new Date(),
         assinadoFuncionarioIp: meta.ipReal,
         assinadoFuncionarioIpGateway: meta.ipGateway,
@@ -306,6 +549,95 @@ export class AssinaturaService {
     // Notifica o gestor da equipe do funcionário
     this.dispararNotificacaoGestor(atualizada).catch((e) =>
       this.logger.error(`Falha ao notificar ASSINAR_QUADRO_GESTOR: ${e}`)
+    );
+
+    return atualizada;
+  }
+
+  /**
+   * Gestor rejeita o quadro: devolve ao funcionário (PENDENTE_FUNCIONARIO)
+   * para correção e nova assinatura. Não conclui nem assina como gestor.
+   */
+  async rejeitarAssinaturaGestor(
+    assinaturaId: string,
+    keycloakSub: string,
+    isSuperAdmin = false,
+    temRoleGestor = false,
+    motivo?: string
+  ) {
+    const assinatura = await this.prisma.assinaturaQuadro.findUnique({
+      where: { id: assinaturaId },
+      include: {
+        periodo: {
+          include: {
+            funcionario: { include: { user: true, gerencia: true } }
+          }
+        }
+      }
+    });
+
+    if (!assinatura) throw new NotFoundException("Assinatura não encontrada");
+    if (assinatura.status !== "PENDENTE_GESTOR") {
+      throw new BadRequestException(
+        `Status atual (${assinatura.status}) não permite rejeição pelo chefe`
+      );
+    }
+
+    if (!isSuperAdmin) {
+      const equipe = await this.auditoriaService.getEquipeDoGestor(
+        keycloakSub,
+        false,
+        temRoleGestor
+      );
+      const pertenceEquipe = equipe.some((f) => f.id === assinatura.periodo.funcionarioId);
+      if (!pertenceEquipe) throw new ForbiddenException("Funcionário não pertence à sua equipe");
+    }
+
+    let bancoHorasSaldoTotalMinutos = assinatura.bancoHorasSaldoTotalMinutos;
+    try {
+      const { relatorio } = await this.montarRelatorioParaPdf(
+        assinatura.periodo.funcionarioId,
+        assinatura.periodo.mes,
+        assinatura.periodo.ano
+      );
+      const cat = assinatura.periodo.funcionario.categoria ?? null;
+      const badges = await this.montarResumoBadgesPdf(
+        assinatura.periodo.funcionarioId,
+        cat,
+        assinatura.periodo.mes,
+        assinatura.periodo.ano,
+        relatorio
+      );
+      bancoHorasSaldoTotalMinutos = badges.totalAcumuladoMinutos;
+    } catch {
+      /* mantém */
+    }
+
+    const atualizada = await this.prisma.assinaturaQuadro.update({
+      where: { id: assinaturaId },
+      data: {
+        status: "PENDENTE_FUNCIONARIO",
+        bancoHorasSaldoTotalMinutos,
+        assinadoFuncionarioEm: null,
+        assinadoFuncionarioIp: null,
+        assinadoFuncionarioIpGateway: null,
+        assinadoFuncionarioUserAgent: null,
+        assinadoFuncionarioUserId: null,
+        assinadoGestorEm: null,
+        assinadoGestorIp: null,
+        assinadoGestorIpGateway: null,
+        assinadoGestorUserAgent: null,
+        assinadoGestorUserId: null,
+        assinadoGestorNome: null
+      },
+      include: {
+        periodo: { include: { funcionario: { include: { user: true, gerencia: true } } } }
+      }
+    });
+
+    const { mes, ano } = atualizada.periodo;
+    this.dispararNotificacaoAssinarQuadro(atualizada.periodo.funcionario, mes, ano, motivo).catch(
+      (e) => this.logger.error(`Falha ao notificar rejeição de quadro: ${e}`)
     );
 
     return atualizada;
@@ -385,7 +717,7 @@ export class AssinaturaService {
       ? [status]
       : ["PENDENTE_GESTOR", "CONCLUIDA", "PENDENTE_FUNCIONARIO"];
 
-    return this.prisma.assinaturaQuadro.findMany({
+    const rows = await this.prisma.assinaturaQuadro.findMany({
       where: {
         status: {
           in: statusFiltro as (
@@ -411,6 +743,46 @@ export class AssinaturaService {
       },
       orderBy: [{ status: "asc" }, { criadoEm: "desc" }]
     });
+
+    // BH da folha do período (igual ao PDF: acumulado anterior + saldo do mês).
+    // Não usar saldoAtualMinutos ao vivo — muda a cada ciclo e diverge do quadro.
+    for (const a of rows) {
+      if (a.status !== "PENDENTE_GESTOR" && a.status !== "PENDENTE_FUNCIONARIO") continue;
+      try {
+        const funcionarioId = a.periodo.funcionarioId;
+        const { relatorio } = await this.montarRelatorioParaPdf(
+          funcionarioId,
+          a.periodo.mes,
+          a.periodo.ano
+        );
+        const cat =
+          (
+            await this.prisma.funcionario.findUnique({
+              where: { id: funcionarioId },
+              select: { categoria: true }
+            })
+          )?.categoria ?? null;
+        const badges = await this.montarResumoBadgesPdf(
+          funcionarioId,
+          cat,
+          a.periodo.mes,
+          a.periodo.ano,
+          relatorio
+        );
+        const saldo = badges.totalAcumuladoMinutos;
+        if (saldo !== a.bancoHorasSaldoTotalMinutos) {
+          await this.prisma.assinaturaQuadro.update({
+            where: { id: a.id },
+            data: { bancoHorasSaldoTotalMinutos: saldo }
+          });
+          a.bancoHorasSaldoTotalMinutos = saldo;
+        }
+      } catch {
+        /* mantém valor gravado */
+      }
+    }
+
+    return rows;
   }
 
   /* ─── Lista geral para o RH ─── */
@@ -715,11 +1087,15 @@ export class AssinaturaService {
       where: { id: "singleton" },
       select: { horaEntrada: true, horaSaida: true }
     });
-    const jornada = resolverJornadaHistoricoContexto({
-      ...funcJornada,
-      configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
-      configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
-    });
+    const cfgSolicitacoes = await this.configSolicitacoesService.getConfig();
+    const jornada = {
+      ...resolverJornadaHistoricoContexto({
+        ...funcJornada,
+        configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
+        configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
+      }),
+      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin
+    };
 
     const { registros, afastamentos } = await this.buscarRegistrosEAfastamentos(
       funcionarioId,
@@ -729,12 +1105,14 @@ export class AssinaturaService {
 
     const mm = String(mes).padStart(2, "0");
     const ultimoDia = new Date(ano, mes, 0).getDate();
-    const { inicio } = intervaloDiaBrasilia(`${ano}-${mm}-01`);
-    const { fim } = intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`);
+    const { inicio: feriadoIni, fim: feriadoFim } = intervaloColunaDate(
+      `${ano}-${mm}-01`,
+      `${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`
+    );
 
     const [feriados, cfg] = await Promise.all([
       this.prisma.feriadoConfig.findMany({
-        where: { data: { gte: inicio, lte: fim } },
+        where: { data: { gte: feriadoIni, lte: feriadoFim } },
         select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
       }),
       this.prisma.configuracaoSistema.findUnique({
@@ -780,9 +1158,9 @@ export class AssinaturaService {
   }> {
     const func = await this.prisma.funcionario.findUnique({
       where: { id: funcionarioId },
-      select: { categoria: true }
+      select: { categoria: true, isManager: true, isFiscal: true, registroPontoObrigatorio: true }
     });
-    if (!func || categoriaSemRegistroPonto(func.categoria)) {
+    if (!func || funcionarioSemRegistroPonto(func)) {
       return {
         saldoRegularizado: true,
         temDiasIrregulares: false,
@@ -850,6 +1228,9 @@ export class AssinaturaService {
               select: {
                 id: true,
                 categoria: true,
+                isManager: true,
+                isFiscal: true,
+                registroPontoObrigatorio: true,
                 user: { select: { externalId: true, email: true, emailReal: true } }
               }
             }
@@ -861,7 +1242,7 @@ export class AssinaturaService {
     let enviados = 0;
     for (const ass of pendentes) {
       const func = ass.periodo.funcionario;
-      if (categoriaSemRegistroPonto(func.categoria)) continue;
+      if (funcionarioSemRegistroPonto(func)) continue;
 
       const avaliacao = await this.avaliarSaldoFolha(func.id, ass.periodo.mes, ass.periodo.ano);
       if (avaliacao.saldoRegularizado) continue;
@@ -991,6 +1372,7 @@ export class AssinaturaService {
         cargo: funcionario.cargo,
         section: funcionario.section,
         categoria: funcionario.categoria,
+        isManager: funcionario.isManager,
         jornadaHorasDia: jornadaHorasExibicao,
         user: { name: funcionario.user.name },
         gerencia: funcionario.gerencia
@@ -1013,6 +1395,234 @@ export class AssinaturaService {
 
     if (!PdfPrinter) throw new InternalServerErrorException("pdfmake não disponível");
 
+    const printer = new PdfPrinter(PDF_FONTS);
+    const pdfDoc = printer.createPdfKitDocument(docDefinition);
+    return new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      pdfDoc.on("data", (c: Buffer) => chunks.push(c));
+      pdfDoc.on("end", () => resolve(Buffer.concat(chunks)));
+      pdfDoc.on("error", reject);
+      pdfDoc.end();
+    });
+  }
+
+  /**
+   * PDF do ciclo de banco de horas (apenas o intervalo [inicio, fim]),
+   * com o mesmo cabeçalho/estrutura da folha de ponto.
+   */
+  async gerarPdfCicloBancoHoras(
+    keycloakSub: string,
+    inicioIso: string,
+    fimIso: string
+  ): Promise<Buffer> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(inicioIso) || !/^\d{4}-\d{2}-\d{2}$/.test(fimIso)) {
+      throw new BadRequestException("Informe inicio e fim no formato YYYY-MM-DD.");
+    }
+    if (inicioIso > fimIso) {
+      throw new BadRequestException("O início do ciclo deve ser anterior ou igual ao fim.");
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) throw new NotFoundException("Usuário não encontrado");
+
+    const funcionario = await this.prisma.funcionario.findUnique({
+      where: { userId: user.id },
+      include: { user: true, gerencia: true }
+    });
+    if (!funcionario) throw new NotFoundException("Funcionário não encontrado");
+
+    const meses: { mes: number; ano: number }[] = [];
+    let [y, m] = inicioIso.slice(0, 7).split("-").map(Number);
+    const [yFim, mFim] = fimIso.slice(0, 7).split("-").map(Number);
+    while (y < yFim || (y === yFim && m <= mFim)) {
+      meses.push({ mes: m, ano: y });
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+
+    const dias: DiaQuadroPdf[] = [];
+    const diasPorMes = new Map<string, DiaQuadroPdf[]>();
+    for (const { mes, ano } of meses) {
+      const { relatorio } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
+      const yyyyMM = `${ano}-${String(mes).padStart(2, "0")}`;
+      const doMes: DiaQuadroPdf[] = [];
+      for (const d of relatorio.dias) {
+        if (d.iso >= inicioIso && d.iso <= fimIso) {
+          dias.push(d);
+          doMes.push(d);
+        }
+      }
+      diasPorMes.set(yyyyMM, doMes);
+    }
+    dias.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
+
+    const hojeIso = hojeBrasiliaISO();
+    const mesAtualPrefix = hojeIso.slice(0, 7);
+    const periodosAss = await this.prisma.periodoPonto.findMany({
+      where: {
+        funcionarioId: funcionario.id,
+        OR: meses.map(({ mes, ano }) => ({ mes, ano }))
+      },
+      include: { assinatura: true }
+    });
+    const assByMes = new Map(
+      periodosAss.map((p) => [`${p.ano}-${String(p.mes).padStart(2, "0")}`, p.assinatura])
+    );
+
+    let acumuladoCorrente = 0;
+    const MESES_PT_PDF = [
+      "Janeiro",
+      "Fevereiro",
+      "Março",
+      "Abril",
+      "Maio",
+      "Junho",
+      "Julho",
+      "Agosto",
+      "Setembro",
+      "Outubro",
+      "Novembro",
+      "Dezembro"
+    ];
+    const mesesResumo = meses.map(({ mes, ano }) => {
+      const yyyyMM = `${ano}-${String(mes).padStart(2, "0")}`;
+      const doMes = diasPorMes.get(yyyyMM) ?? [];
+      const trabalhadoMinutos = doMes
+        .filter((d) => d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+        .reduce((s, d) => s + d.horasMin, 0);
+      const saldoMesMinutos = doMes
+        .filter((d) => d.saldoMin !== null)
+        .reduce((s, d) => s + (d.saldoMin ?? 0), 0);
+      for (const d of doMes) {
+        if (d.saldoMin !== null) acumuladoCorrente += d.saldoMin;
+      }
+      const aguardaFechamento = yyyyMM >= mesAtualPrefix;
+      const ass = assByMes.get(yyyyMM);
+      const situacao = aguardaFechamento
+        ? ("AGUARDA_FECHAMENTO" as const)
+        : ass?.status === "CONCLUIDA"
+          ? ("ASSINADO" as const)
+          : ("PENDENTE" as const);
+      return {
+        yyyyMM,
+        label: `${MESES_PT_PDF[mes - 1]} de ${ano}`,
+        trabalhadoMinutos,
+        saldoMesMinutos,
+        acumuladoMinutos: acumuladoCorrente,
+        situacao
+      };
+    });
+
+    const horasTrabalhadasMinutos = dias
+      .filter((d) => d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+      .reduce((s, d) => s + d.horasMin, 0);
+    const diasTrabalhados = dias.filter(
+      (d) => d.horasMin > 0 && (d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+    ).length;
+    const horasEsperadasMinutos = dias.reduce((s, d) => {
+      if (d.statusInterno === "FUTURO" || d.statusInterno === "FOLGA") return s;
+      if (d.statusInterno === "AFASTAMENTO") return s;
+      if (d.multiplicadorPct && d.multiplicadorPct !== 100) return s;
+      if (d.saldoMin === null) return s;
+      return s + Math.max(0, d.horasMin - d.saldoMin);
+    }, 0);
+    const saldoMinutos = dias
+      .filter((d) => d.saldoMin !== null)
+      .reduce((s, d) => s + (d.saldoMin ?? 0), 0);
+
+    const fmt = (min: number) => {
+      const sign = min < 0 ? "-" : min > 0 ? "+" : "";
+      const abs = Math.abs(min);
+      return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}m`;
+    };
+
+    const relatorio = {
+      dias,
+      diasTrabalhados,
+      horasTrabalhadasMinutos,
+      horasTrabalhadasFormatado: fmt(horasTrabalhadasMinutos).replace(/^\+/, ""),
+      horasEsperadasMinutos,
+      saldoMinutos,
+      saldoFormatado: fmt(saldoMinutos)
+    };
+
+    const { jornada } = await this.montarRelatorioParaPdf(
+      funcionario.id,
+      meses[0]?.mes ?? Number(inicioIso.slice(5, 7)),
+      meses[0]?.ano ?? Number(inicioIso.slice(0, 4))
+    );
+    const jornadaHorasExibicao = Math.round(jornada.atualMin / 60);
+
+    const diasOk = dias.filter((d) => d.statusInterno === "OK").length;
+    const faltas = dias.filter((d) => d.statusInterno === "FALTA").length;
+    const afastamentos = dias.filter((d) => d.statusInterno === "AFASTAMENTO").length;
+
+    const logoBase64 = loadAssetBase64("logo.png");
+    const mesRef = meses[0]?.mes ?? Number(inicioIso.slice(5, 7));
+    const anoRef = meses[0]?.ano ?? Number(inicioIso.slice(0, 4));
+
+    const assinaturaCiclo = await this.prisma.assinaturaCicloBancoHoras.findUnique({
+      where: {
+        funcionarioId_inicioIso_fimIso: {
+          funcionarioId: funcionario.id,
+          inicioIso,
+          fimIso
+        }
+      }
+    });
+    const cicloAssinado = !!assinaturaCiclo;
+
+    const pdfInput = {
+      mes: mesRef,
+      ano: anoRef,
+      cicloBancoHoras: { inicio: inicioIso, fim: fimIso, mesesResumo },
+      funcionario: {
+        matricula: funcionario.matricula,
+        cpf: funcionario.cpf,
+        cargo: funcionario.cargo,
+        section: funcionario.section,
+        categoria: funcionario.categoria,
+        isManager: funcionario.isManager,
+        jornadaHorasDia: jornadaHorasExibicao,
+        user: { name: funcionario.user.name },
+        gerencia: funcionario.gerencia
+          ? { nome: funcionario.gerencia.nome, sigla: funcionario.gerencia.sigla }
+          : null
+      },
+      assinatura: {
+        assinadoFuncionarioEm: assinaturaCiclo?.assinadoEm ?? null,
+        assinadoFuncionarioIp: assinaturaCiclo?.assinadoIp ?? null,
+        assinadoFuncionarioIpGateway: assinaturaCiclo?.assinadoIpGateway ?? null,
+        assinadoFuncionarioUserAgent: assinaturaCiclo?.assinadoUserAgent ?? null,
+        assinadoGestorEm: null,
+        assinadoGestorIp: null,
+        assinadoGestorNome: null,
+        bancoHorasSaldoTotalMinutos: saldoMinutos
+      },
+      relatorio,
+      logoBase64,
+      certificadoBase64: cicloAssinado ? loadAssetBase64("certificado-digital.png") : null,
+      resumoBadges: {
+        diasOk,
+        faltas,
+        afastamentos,
+        horasTrabalhadasMinutos,
+        ocultarBancoHoras: categoriaSemVisibilidadeBancoHoras(funcionario.categoria),
+        saldoAcumuladoMesAnteriorMinutos: 0,
+        labelMesAnterior: "ciclo",
+        saldoMesMinutos: saldoMinutos,
+        totalAcumuladoMinutos: saldoMinutos
+      }
+    };
+
+    const docDefinition = cicloAssinado
+      ? buildQuadroPdfDocDefinition(pdfInput)
+      : buildRascunhoPdfDocDefinition(pdfInput);
+
+    if (!PdfPrinter) throw new InternalServerErrorException("pdfmake não disponível");
     const printer = new PdfPrinter(PDF_FONTS);
     const pdfDoc = printer.createPdfKitDocument(docDefinition);
     return new Promise<Buffer>((resolve, reject) => {
@@ -1110,7 +1720,8 @@ export class AssinaturaService {
       user: { externalId: string | null; email: string; emailReal: string | null } | null;
     },
     mes: number,
-    ano: number
+    ano: number,
+    motivoRejeicao?: string
   ) {
     if (
       !(await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO")) &&
@@ -1121,8 +1732,14 @@ export class AssinaturaService {
     const email = func.user?.emailReal ?? func.user?.email;
     const externalId = func.user?.externalId;
     const mesNome = new Date(ano, mes - 1).toLocaleString("pt-BR", { month: "long" });
-    const titulo = `Assinar quadro de pontos — ${mesNome}/${ano}`;
-    const corpo = `Seu quadro de ponto de ${mesNome}/${ano} está disponível para assinatura. Acesse o sistema para assinar.`;
+    const titulo = motivoRejeicao
+      ? `Quadro devolvido pelo chefe — ${mesNome}/${ano}`
+      : `Assinar quadro de pontos — ${mesNome}/${ano}`;
+    const corpo = motivoRejeicao
+      ? `Seu quadro de ponto de ${mesNome}/${ano} foi rejeitado pelo chefe da área e voltou para nova assinatura.` +
+        (motivoRejeicao.trim() ? ` Motivo: ${motivoRejeicao.trim()}` : "") +
+        ` Acesse o Histórico ou o Banco de horas para revisar e assinar novamente.`
+      : `Seu quadro de ponto de ${mesNome}/${ano} está disponível para assinatura. Acesse o sistema para assinar.`;
 
     if (email && (await this.notificacaoService.isEmailAtivoParaEvento("ASSINAR_QUADRO"))) {
       await this.notificacaoService.enviarEmailSistema(email, titulo, corpo, "ASSINAR_QUADRO");

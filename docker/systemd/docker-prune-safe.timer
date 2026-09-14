@@ -1,0 +1,12 @@
+[Unit]
+Description=Limpeza diária de lixo Docker às 03:30 de Brasília (06:30 UTC)
+Requires=docker.service
+
+[Timer]
+# Relógio do host está em UTC; 06:30 UTC = 03:30 America/Sao_Paulo
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

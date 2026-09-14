@@ -14,7 +14,8 @@ import {
   SsoIcon,
   ClipboardListIcon,
   TerminalIcon,
-  CrownIcon
+  CrownIcon,
+  ActivityIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -35,6 +36,11 @@ const mainNav: NavItem[] = [
 /* Aprovações: exibidas para gestores (GESTOR_APROVACAO, isManager) */
 const aprovacaoNav: NavItem[] = [
   { path: "/ponto/aprovacoes", label: "Aprovações", icon: <CheckCircleIcon size={18} /> }
+];
+
+/* Dashboard consolidado: apenas RH (RH_AUDITORIA) e admins/super admin */
+const dashboardNav: NavItem[] = [
+  { path: "/ponto/dashboard", label: "Dashboard", icon: <ActivityIcon size={18} /> }
 ];
 
 /* Gestão de funcionários: apenas RH (RH_AUDITORIA) e admins/super admin */
@@ -87,17 +93,18 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
 
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isSuperAdmin = !!user?.isSuperAdmin;
-  // PROVISÓRIO: isManager via campo do Funcionario enquanto responsavelUserId não está configurado
-  const isManagerProvisorio = !!user?.funcionario?.isManager;
+  // "Chefe" é a característica isManager (não mais a categoria GERENTE) — fonte oficial de acesso.
+  const isManager = !!user?.funcionario?.isManager;
   const isGestor =
     isAdmin ||
     hasRole("gestor") ||
     hasRole("GESTOR_APROVACAO") ||
     hasRole("RH_AUDITORIA") ||
-    isManagerProvisorio;
+    isManager;
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
 
   const visibleAprovacaoNav = isGestor ? aprovacaoNav : [];
+  const visibleDashboardNav = isRH ? dashboardNav : [];
   const visibleGestaoRhNav = isRH ? gestaoRhNav : [];
   const visibleAuditoriaNav = isRH ? auditoriaNav : [];
   const visibleAdminBottomNav = isAdmin || isRH ? adminBottomNav : [];
@@ -146,6 +153,7 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
 
         {/* Seção administração */}
         {(visibleAprovacaoNav.length > 0 ||
+          visibleDashboardNav.length > 0 ||
           visibleGestaoRhNav.length > 0 ||
           visibleAuditoriaNav.length > 0) && (
           <>
@@ -167,6 +175,9 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
             )}
             {!expanded && <div style={{ height: 12 }} />}
             {visibleAprovacaoNav.map((item) => (
+              <SidebarLink key={item.path} item={item} expanded={expanded} />
+            ))}
+            {visibleDashboardNav.map((item) => (
               <SidebarLink key={item.path} item={item} expanded={expanded} />
             ))}
             {visibleGestaoRhNav.map((item) => (

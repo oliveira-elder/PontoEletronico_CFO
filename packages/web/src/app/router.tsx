@@ -1,30 +1,75 @@
-import React from "react";
+import React, { lazy } from "react";
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppLayout } from "../components/layout/AppLayout";
 import { RequireAuth } from "../components/auth/RequireAuth";
+import { RouteErrorPage } from "../components/RouteErrorPage";
 import { LoginPage } from "../pages/LoginPage";
 import { DashboardPage } from "../pages/ponto/DashboardPage";
 import { RegistroPontoPage } from "../pages/ponto/RegistroPontoPage";
-import { HistoricoPage } from "../pages/ponto/HistoricoPage";
-import { RelatoriosPage } from "../pages/ponto/RelatoriosPage";
-import { SolicitacoesPage } from "../pages/ponto/SolicitacoesPage";
-import { GestaoPage } from "../pages/ponto/GestaoPage";
-import { GerenciasPage } from "../pages/ponto/GerenciasPage";
-import { ConfiguracoesPage } from "../pages/ponto/ConfiguracoesPage";
-import { GestaoUsuariosPage } from "../pages/ponto/GestaoUsuariosPage";
-import { AuditoriaPage } from "../pages/ponto/AuditoriaPage";
-import { AprovacaoGestorPage } from "../pages/ponto/AprovacaoGestorPage";
-import { BancoHorasPage } from "../pages/ponto/BancoHorasPage";
-import { DocumentosRhPage } from "../pages/ponto/DocumentosRhPage";
-import { RequisicaoRhAdminPage } from "../pages/ponto/RequisicaoRhAdminPage";
-import { MinhasRequisicoesRhPage } from "../pages/ponto/MinhasRequisicoesRhPage";
-import { LogsPage } from "../pages/ponto/LogsPage";
-import { NotificacoesPage } from "../pages/ponto/NotificacoesPage";
-import { SistemaSuperAdminPage } from "../pages/ponto/SistemaSuperAdminPage";
+
+/* Páginas pesadas fora do grafo inicial — o retorno do SSO não espera Auditoria (~10k linhas). */
+const HistoricoPage = lazy(() =>
+  import("../pages/ponto/HistoricoPage").then((m) => ({ default: m.HistoricoPage }))
+);
+const RelatoriosPage = lazy(() =>
+  import("../pages/ponto/RelatoriosPage").then((m) => ({ default: m.RelatoriosPage }))
+);
+const SolicitacoesPage = lazy(() =>
+  import("../pages/ponto/SolicitacoesPage").then((m) => ({ default: m.SolicitacoesPage }))
+);
+const GestaoPage = lazy(() =>
+  import("../pages/ponto/GestaoPage").then((m) => ({ default: m.GestaoPage }))
+);
+const FuncionarioFormPage = lazy(() =>
+  import("../pages/ponto/FuncionarioFormPage").then((m) => ({ default: m.FuncionarioFormPage }))
+);
+const GerenciasPage = lazy(() =>
+  import("../pages/ponto/GerenciasPage").then((m) => ({ default: m.GerenciasPage }))
+);
+const ConfiguracoesPage = lazy(() =>
+  import("../pages/ponto/ConfiguracoesPage").then((m) => ({ default: m.ConfiguracoesPage }))
+);
+const GestaoUsuariosPage = lazy(() =>
+  import("../pages/ponto/GestaoUsuariosPage").then((m) => ({ default: m.GestaoUsuariosPage }))
+);
+const AuditoriaPage = lazy(() =>
+  import("../pages/ponto/AuditoriaPage").then((m) => ({ default: m.AuditoriaPage }))
+);
+const DashboardConsolidadoPage = lazy(() =>
+  import("../pages/ponto/DashboardConsolidadoPage").then((m) => ({
+    default: m.DashboardConsolidadoPage
+  }))
+);
+const AprovacaoGestorPage = lazy(() =>
+  import("../pages/ponto/AprovacaoGestorPage").then((m) => ({ default: m.AprovacaoGestorPage }))
+);
+const BancoHorasPage = lazy(() =>
+  import("../pages/ponto/BancoHorasPage").then((m) => ({ default: m.BancoHorasPage }))
+);
+const DocumentosRhPage = lazy(() =>
+  import("../pages/ponto/DocumentosRhPage").then((m) => ({ default: m.DocumentosRhPage }))
+);
+const RequisicaoRhAdminPage = lazy(() =>
+  import("../pages/ponto/RequisicaoRhAdminPage").then((m) => ({ default: m.RequisicaoRhAdminPage }))
+);
+const MinhasRequisicoesRhPage = lazy(() =>
+  import("../pages/ponto/MinhasRequisicoesRhPage").then((m) => ({
+    default: m.MinhasRequisicoesRhPage
+  }))
+);
+const LogsPage = lazy(() =>
+  import("../pages/ponto/LogsPage").then((m) => ({ default: m.LogsPage }))
+);
+const NotificacoesPage = lazy(() =>
+  import("../pages/ponto/NotificacoesPage").then((m) => ({ default: m.NotificacoesPage }))
+);
+const SistemaSuperAdminPage = lazy(() =>
+  import("../pages/ponto/SistemaSuperAdminPage").then((m) => ({ default: m.SistemaSuperAdminPage }))
+);
 
 export const router = createBrowserRouter([
   /* Página de login — pública */
-  { path: "/login", element: <LoginPage /> },
+  { path: "/login", element: <LoginPage />, errorElement: <RouteErrorPage /> },
 
   /* Redireciona raiz para /login */
   { path: "/", element: <Navigate to="/login" replace /> },
@@ -32,6 +77,7 @@ export const router = createBrowserRouter([
   /* Sistema de Ponto Eletrônico — protegido */
   {
     path: "/ponto",
+    errorElement: <RouteErrorPage />,
     element: (
       <RequireAuth>
         <AppLayout />
@@ -46,11 +92,14 @@ export const router = createBrowserRouter([
       { path: "relatorios", element: <RelatoriosPage /> },
       { path: "solicitacoes", element: <SolicitacoesPage /> },
       { path: "gestao", element: <GestaoPage /> },
+      { path: "gestao/novo", element: <FuncionarioFormPage /> },
+      { path: "gestao/:id/editar", element: <FuncionarioFormPage /> },
       { path: "gerencias", element: <GerenciasPage /> },
       { path: "usuarios", element: <GestaoUsuariosPage /> },
       { path: "sistema", element: <SistemaSuperAdminPage /> },
       { path: "configuracoes", element: <ConfiguracoesPage /> },
       { path: "auditoria", element: <AuditoriaPage /> },
+      { path: "dashboard", element: <DashboardConsolidadoPage /> },
       { path: "aprovacoes", element: <AprovacaoGestorPage /> },
       { path: "requisicoes-rh", element: <RequisicaoRhAdminPage /> },
       { path: "minhas-requisicoes", element: <MinhasRequisicoesRhPage /> },

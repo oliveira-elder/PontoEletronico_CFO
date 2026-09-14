@@ -1,11 +1,17 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { api } from "../../../hooks/useApi";
 import { useLogsStream } from "../../../hooks/useLogsStream";
-import { SearchIcon, DownloadIcon, RefreshCwIcon } from "../../../components/icons";
+import { SearchIcon, DownloadIcon, RefreshCwIcon, InfoIcon } from "../../../components/icons";
 import {
   datetimeLocalBrasiliaParaIso,
   formatDateTimeBrasilia
 } from "../../../utils/horario-brasilia";
+
+interface EndpointInfo {
+  titulo: string;
+  descricao: string;
+  categoria: string;
+}
 
 interface LogEntry {
   id: string;
@@ -19,11 +25,15 @@ interface LogEntry {
   ipAddress: string | null;
   username: string | null;
   actorUserId: string | null;
+  atorNome: string | null;
+  atorEmail: string | null;
+  endpointInfo: EndpointInfo | null;
   payload: unknown;
   createdAt: string;
 }
 
 interface FilterState {
+  q: string;
   category: string;
   method: string;
   statusCode: string;
@@ -57,6 +67,7 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
   const { newCount, resetCount } = useLogsStream(getToken);
 
   const [filter, setFilter] = useState<FilterState>({
+    q: "",
     category: "",
     method: "",
     statusCode: "",
@@ -74,6 +85,7 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
       setLoading(true);
       try {
         const params = new URLSearchParams({ limit: String(LIMIT), page: String(p) });
+        if (filter.q) params.set("q", filter.q);
         if (filter.category) params.set("category", filter.category);
         if (filter.method) params.set("method", filter.method);
         if (filter.statusCode) params.set("statusCode", filter.statusCode);
@@ -106,6 +118,7 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
 
   async function exportCsv() {
     const params = new URLSearchParams();
+    if (filter.q) params.set("q", filter.q);
     if (filter.category) params.set("category", filter.category);
     if (filter.method) params.set("method", filter.method);
     if (filter.statusCode) params.set("statusCode", filter.statusCode);
@@ -131,6 +144,37 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Busca por assunto */}
+      <div style={{ position: "relative" }}>
+        <SearchIcon
+          size={15}
+          style={{
+            position: "absolute",
+            left: 12,
+            top: "50%",
+            transform: "translateY(-50%)",
+            color: "#94a3b8",
+            pointerEvents: "none"
+          }}
+        />
+        <input
+          value={filter.q}
+          onChange={(e) => setFilter((f) => ({ ...f, q: e.target.value }))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") load(0);
+          }}
+          placeholder='Buscar por assunto (ex.: "aprovar solicitação", "sincronizar gerências")…'
+          style={{
+            width: "100%",
+            padding: "10px 12px 10px 36px",
+            borderRadius: 8,
+            border: "1px solid var(--border, #e2e8f0)",
+            fontSize: 13,
+            boxSizing: "border-box"
+          }}
+        />
+      </div>
+
       {/* Filtros */}
       <div
         style={{
@@ -348,8 +392,15 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
                     </span>
                   </td>
                   <td style={{ padding: "9px 12px", color: "#475569" }}>{e.ipAddress ?? "—"}</td>
-                  <td style={{ padding: "9px 12px", color: "#334155", fontWeight: 500 }}>
-                    {e.username ?? "—"}
+                  <td
+                    style={{ padding: "9px 12px", color: "#334155", fontWeight: 500 }}
+                    title={
+                      [e.atorEmail, e.username ? `usuário: ${e.username}` : null]
+                        .filter(Boolean)
+                        .join(" · ") || undefined
+                    }
+                  >
+                    {e.atorNome ?? e.username ?? "—"}
                   </td>
                   <td
                     style={{
@@ -381,14 +432,45 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
                   <td
                     style={{
                       padding: "9px 12px",
-                      maxWidth: 200,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
+                      maxWidth: 220,
                       color: "#334155"
                     }}
                   >
-                    {e.path ?? e.action}
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 5,
+                        maxWidth: "100%"
+                      }}
+                    >
+                      {e.endpointInfo && (
+                        <span
+                          title={`${e.endpointInfo.titulo} (${e.endpointInfo.categoria})\n\n${e.endpointInfo.descricao}`}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setExpanded(e.id);
+                          }}
+                          style={{
+                            color: "#6366f1",
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            flexShrink: 0
+                          }}
+                        >
+                          <InfoIcon size={13} />
+                        </span>
+                      )}
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }}
+                      >
+                        {e.path ?? e.action}
+                      </span>
+                    </span>
                   </td>
                   <td
                     style={{
@@ -407,6 +489,34 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
                   <tr style={{ background: "#f0f9ff" }}>
                     <td colSpan={10} style={{ padding: "12px 16px" }}>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                        {e.endpointInfo && (
+                          <div style={{ gridColumn: "1 / -1" }}>
+                            <div
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: "#64748b",
+                                marginBottom: 4
+                              }}
+                            >
+                              O QUE ESTE ENDPOINT FAZ
+                            </div>
+                            <div
+                              style={{
+                                background: "#eef2ff",
+                                border: "1px solid #c7d2fe",
+                                borderRadius: 6,
+                                padding: "8px 10px",
+                                fontSize: 12,
+                                color: "#334155"
+                              }}
+                            >
+                              <strong>{e.endpointInfo.titulo}</strong>{" "}
+                              <span style={{ color: "#64748b" }}>({e.endpointInfo.categoria})</span>
+                              <div style={{ marginTop: 4 }}>{e.endpointInfo.descricao}</div>
+                            </div>
+                          </div>
+                        )}
                         <div>
                           <div
                             style={{
@@ -429,10 +539,11 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
                               marginBottom: 4
                             }}
                           >
-                            ACTOR USER ID
+                            ATOR (ID / E-MAIL)
                           </div>
                           <code style={{ fontSize: 11, color: "#334155" }}>
                             {e.actorUserId ?? "—"}
+                            {e.atorEmail ? ` · ${e.atorEmail}` : ""}
                           </code>
                         </div>
                         {e.payload != null && (

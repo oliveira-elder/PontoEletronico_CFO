@@ -1,9 +1,11 @@
 import { Module } from "@nestjs/common";
-import { APP_INTERCEPTOR } from "@nestjs/core";
+import { APP_INTERCEPTOR, APP_FILTER } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
 import { PrismaModule } from "./prisma/prisma.module";
 import { AuditLogInterceptor } from "./interceptors/audit-log.interceptor";
+import { AuditLogWriterService } from "./common/audit-log-writer.service";
+import { AuthFailureLogFilter } from "./interceptors/auth-failure-log.filter";
 import { AuthModule } from "./modules/auth/auth.module";
 import { OrgModule } from "./modules/org/org.module";
 import { AreaModulesModule } from "./modules/area-modules/area-modules.module";
@@ -49,6 +51,10 @@ import { SistemaModule } from "./modules/sistema/sistema.module";
     NotificacaoModule,
     SistemaModule
   ],
-  providers: [{ provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor }]
+  providers: [
+    AuditLogWriterService,
+    { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
+    { provide: APP_FILTER, useClass: AuthFailureLogFilter }
+  ]
 })
 export class AppModule {}

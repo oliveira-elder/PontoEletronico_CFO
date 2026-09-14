@@ -1,8 +1,9 @@
-import React, { useState } from "react";
+import React, { Suspense, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Topbar } from "./Topbar";
 import { Sidebar } from "./Sidebar";
 import { BottomNav } from "./BottomNav";
+import { PageSpinner } from "../PageSpinner";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
 export function AppLayout() {
@@ -37,7 +38,9 @@ export function AppLayout() {
             boxSizing: "border-box"
           }}
         >
-          <Outlet />
+          <Suspense fallback={<PageSpinner label="Carregando página…" />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 

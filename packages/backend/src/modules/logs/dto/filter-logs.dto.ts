@@ -8,6 +8,10 @@ export class FilterLogsDto {
   @IsOptional() @IsString() username?: string;
   @IsOptional() @IsString() path?: string;
   @IsOptional() @IsString() tracker?: string;
+  /** Busca livre: casa com path/ação/usuário OU com o assunto do endpoint no catálogo
+   *  (ex.: "aprovar solicitação" encontra os endpoints de aprovação mesmo sem o
+   *  usuário conhecer a URL exata). */
+  @IsOptional() @IsString() q?: string;
   @IsOptional() @IsString() from?: string;
   @IsOptional() @IsString() to?: string;
   @IsOptional() @IsInt() @Min(1) @Max(500) @Type(() => Number) limit?: number;

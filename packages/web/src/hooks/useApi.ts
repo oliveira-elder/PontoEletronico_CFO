@@ -100,6 +100,6 @@ export const api = {
   put: <T>(path: string, body: unknown, token?: string) => req<T>("PUT", path, body, token),
   post: <T>(path: string, body: unknown, token?: string) => req<T>("POST", path, body, token),
   patch: <T>(path: string, body?: unknown, token?: string) => req<T>("PATCH", path, body, token),
-  delete: <T>(path: string, token?: string) => req<T>("DELETE", path, undefined, token),
+  delete: <T>(path: string, body?: unknown, token?: string) => req<T>("DELETE", path, body, token),
   download: (path: string, filename: string, token?: string) => downloadFile(path, filename, token)
 };

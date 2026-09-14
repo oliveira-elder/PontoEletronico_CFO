@@ -1,16 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend
-} from "recharts";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -48,64 +36,16 @@ import {
 } from "./solicitacaoUi";
 import { InputHorario } from "../../components/ponto/InputHorario";
 import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
-import { normalizarHorarioParcial } from "../../utils/horario-brasilia";
+import {
+  normalizarHorarioParcial,
+  hojeBrasiliaISO,
+  dataBrasiliaISO,
+  dataCivilISO
+} from "../../utils/horario-brasilia";
 
 /* ═══════════════════════════════════════════════
    TIPOS
 ═══════════════════════════════════════════════ */
-
-interface RankingItem {
-  funcionarioId: string;
-  nome: string;
-  matricula: string;
-  minutos: number;
-  minutosFormatado: string;
-}
-
-interface RankingQuantidadeItem {
-  funcionarioId: string;
-  nome: string;
-  matricula: string;
-  quantidade: number;
-}
-
-interface Dashboard {
-  totalFuncionarios: number;
-  funcionariosAtivos: number;
-  registrosHoje: number;
-  trabalhando: number;
-  emIntervalo: number;
-  solicitacoesPendentes: number;
-  afastamentosAtivos: number;
-  periodosAbertos: number;
-  periodosFechados: number;
-  periodosAprovados: number;
-  registrosPorDia: { data: string; entradas: number }[];
-  registrosPorTempo?: { data: string; total: number }[];
-  topAtrasados?: RankingItem[];
-  topAdiantados?: RankingItem[];
-  topBancoNegativo?: RankingItem[];
-  topBancoPositivo?: RankingItem[];
-  topMaisAtestados?: RankingQuantidadeItem[];
-  topMenosAtestados?: RankingQuantidadeItem[];
-  topMaisAbonos?: RankingQuantidadeItem[];
-  topMenosAbonos?: RankingQuantidadeItem[];
-  atestadosPorMes?: { mes: string; label: string; total: number }[];
-  filtro?: { dataInicio: string; dataFim: string };
-  ultimosLogs: AuditLog[];
-  origens: { origem: string; total: number }[];
-  usoCanal: {
-    totalRegistros: number;
-    mobile: number;
-    desktop: number;
-    web: number;
-    totem: number;
-    pctMobile: number;
-    pctDesktop: number;
-    pctWeb: number;
-    pctTotem: number;
-  };
-}
 
 interface Funcionario {
   id: string;
@@ -139,9 +79,36 @@ interface Funcionario {
 }
 
 function slugLabel(slug: string): string {
+  const prep = new Set([
+    "de",
+    "da",
+    "do",
+    "das",
+    "dos",
+    "e",
+    "em",
+    "na",
+    "no",
+    "nas",
+    "nos",
+    "a",
+    "as",
+    "o",
+    "os",
+    "ao",
+    "aos",
+    "por",
+    "para",
+    "com",
+    "sem"
+  ]);
   return slug
     .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (i > 0 && prep.has(lower)) return lower;
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
     .join(" ");
 }
 
@@ -357,6 +324,8 @@ interface AuditLog {
   userAgent: string | null;
   payload: unknown;
   createdAt: string;
+  /** Vem do catálogo de endpoints do backend — explicação do que o endpoint faz. */
+  endpointInfo?: { titulo: string; descricao: string; categoria: string } | null;
 }
 
 /* ─── Mapa de descrições dos endpoints ─── */
@@ -585,6 +554,7 @@ const ENDPOINT_MAP: Array<{ re: RegExp; info: EndpointInfo }> = [
   }
 ];
 
+const CATEGORIA_COR_PADRAO = { bg: "rgba(107,114,128,0.09)", color: "#4b5563" };
 const CATEGORIA_COR: Record<string, { bg: string; color: string }> = {
   Ponto: { bg: "rgba(47,125,79,0.09)", color: "#2f7d4f" },
   Solicitações: { bg: "rgba(198,127,0,0.09)", color: "#c67f00" },
@@ -603,8 +573,23 @@ function getEndpointInfo(action: string): EndpointInfo | null {
   return null;
 }
 
+/** Explicação do endpoint: prefere o catálogo do backend (mais completo, com
+ *  título) e cai para o mapa local antigo quando o backend não reconhece a rota. */
+function resolverEndpointInfo(
+  l: AuditLog
+): { titulo: string | null; desc: string; categoria: string } | null {
+  if (l.endpointInfo) {
+    return {
+      titulo: l.endpointInfo.titulo,
+      desc: l.endpointInfo.descricao,
+      categoria: l.endpointInfo.categoria
+    };
+  }
+  const local = getEndpointInfo(l.action);
+  return local ? { titulo: null, desc: local.desc, categoria: local.categoria } : null;
+}
+
 type Aba =
-  | "dashboard"
   | "funcionarios"
   | "registros"
   | "solicitacoes"
@@ -692,7 +677,7 @@ function tipoPontoCor(tipo: string) {
 
 function statusSolBadge(status: string) {
   if (status === "PENDENTE")
-    return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Aguardando Gestor" };
+    return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Aguardando Chefe" };
   if (status === "AGUARDANDO_RH")
     return { bg: "rgba(37,99,235,0.12)", color: "#2563eb", label: "Aguardando RH" };
   if (status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO")
@@ -706,7 +691,7 @@ function statusSolBadge(status: string) {
   if (status === "APROVADA")
     return { bg: "rgba(47,125,79,0.12)", color: "#2f7d4f", label: "Aprovada pelo RH" };
   if (status === "REJEITADA_GESTOR")
-    return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo Gestor" };
+    return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo Chefe" };
   if (status === "REJEITADA_RH")
     return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo RH" };
   if (status === "CANCELADA")
@@ -763,96 +748,6 @@ function exportCSV(rows: Record<string, unknown>[], filename: string) {
 /* ═══════════════════════════════════════════════
    COMPONENTES PEQUENOS
 ═══════════════════════════════════════════════ */
-
-const statValueStyle: React.CSSProperties = {
-  fontSize: 28,
-  fontWeight: 700,
-  color: "var(--ink-900)",
-  lineHeight: 1,
-  fontFamily: "var(--font-display)"
-};
-
-function StatCard({
-  label,
-  value,
-  sub,
-  color,
-  icon,
-  onClick
-}: {
-  label: string;
-  value: string | number;
-  sub?: string;
-  color?: string;
-  icon?: React.ReactNode;
-  onClick?: () => void;
-}) {
-  const clicavel = typeof onClick === "function";
-  return (
-    <div
-      role={clicavel ? "button" : undefined}
-      tabIndex={clicavel ? 0 : undefined}
-      onClick={onClick}
-      onKeyDown={
-        clicavel
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onClick();
-              }
-            }
-          : undefined
-      }
-      style={{
-        background: "#fff",
-        borderRadius: "var(--radius-lg)",
-        border: "1px solid rgba(122,30,38,0.08)",
-        padding: "16px 20px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        minWidth: 0,
-        cursor: clicavel ? "pointer" : "default",
-        transition: clicavel ? "border-color 150ms, box-shadow 150ms" : undefined
-      }}
-      onMouseEnter={
-        clicavel
-          ? (e) => {
-              e.currentTarget.style.borderColor = "rgba(122,30,38,0.28)";
-              e.currentTarget.style.boxShadow = "0 2px 10px rgba(122,30,38,0.08)";
-            }
-          : undefined
-      }
-      onMouseLeave={
-        clicavel
-          ? (e) => {
-              e.currentTarget.style.borderColor = "rgba(122,30,38,0.08)";
-              e.currentTarget.style.boxShadow = "none";
-            }
-          : undefined
-      }
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        {icon && (
-          <span style={{ color: color ?? "var(--burgundy-600)", opacity: 0.85 }}>{icon}</span>
-        )}
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: "var(--ink-500)"
-          }}
-        >
-          {label}
-        </span>
-      </div>
-      <span style={{ ...statValueStyle, ...(color ? { color } : {}) }}>{value}</span>
-      {sub && <span style={{ fontSize: 11, color: "var(--ink-400)", marginTop: 2 }}>{sub}</span>}
-    </div>
-  );
-}
 
 function FuncAvatar({
   name,
@@ -1165,1405 +1060,6 @@ function Modal({
 }
 
 /* ═══════════════════════════════════════════════
-   ABA DASHBOARD
-═══════════════════════════════════════════════ */
-
-const LOGS_LIMIT = 50;
-
-function TabDashboard({
-  token,
-  onAbrirFuncionarios
-}: {
-  token: string;
-  onAbrirFuncionarios?: (statusPonto?: "presente" | "ausente") => void;
-}) {
-  const isoBrasilia = (d: Date) =>
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Sao_Paulo",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit"
-    }).format(d);
-  const hoje = new Date();
-  const seteAtras = new Date(hoje);
-  seteAtras.setDate(seteAtras.getDate() - 6);
-  const isoHoje = isoBrasilia(hoje);
-  const isoInicio = isoBrasilia(seteAtras);
-
-  const [dataInicio, setDataInicio] = useState(isoInicio);
-  const [dataFim, setDataFim] = useState(isoHoje);
-  const [data, setData] = useState<Dashboard | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [erro, setErro] = useState<string | null>(null);
-  const [modoPontualidade, setModoPontualidade] = useState<"atrasados" | "adiantados">("atrasados");
-  const [modoBanco, setModoBanco] = useState<"negativo" | "positivo">("negativo");
-  const [modoAtestado, setModoAtestado] = useState<"mais" | "menos">("mais");
-  const [modoAbono, setModoAbono] = useState<"mais" | "menos">("mais");
-  const [diaDetalhe, setDiaDetalhe] = useState<string | null>(null);
-  const [serieDetalhe, setSerieDetalhe] = useState<
-    { label: string; minuto: number; total: number }[]
-  >([]);
-  const [horaLoading, setHoraLoading] = useState(false);
-  const [horaErro, setHoraErro] = useState<string | null>(null);
-  /** Posições dos pontos em coordenadas de tela (clientX/Y) para hit-test do clique. */
-  const pontosDiaRef = useRef<Map<string, { x: number; y: number }>>(new Map());
-  const chartHostRef = useRef<HTMLDivElement | null>(null);
-
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [logsTotal, setLogsTotal] = useState(0);
-  const [logsPage, setLogsPage] = useState(1);
-  const [logsLoading, setLogsLoading] = useState(false);
-
-  const carregarDashboard = useCallback(
-    async (silent = false) => {
-      if (!silent) {
-        setLoading(true);
-        setErro(null);
-      }
-      try {
-        const params = new URLSearchParams();
-        if (dataInicio) params.set("dataInicio", dataInicio);
-        if (dataFim) params.set("dataFim", dataFim);
-        const res = await api.get<Dashboard>(`/auditoria/dashboard?${params}`, token);
-        setData(res);
-        if (silent) setErro(null);
-      } catch (e) {
-        if (!silent) setErro((e as Error).message);
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [token, dataInicio, dataFim]
-  );
-
-  const carregarLogs = useCallback(
-    async (page: number, silent = false) => {
-      if (!silent) setLogsLoading(true);
-      try {
-        const res = await api.get<{ total: number; logs: AuditLog[] }>(
-          `/auditoria/logs?page=${page}&limit=${LOGS_LIMIT}`,
-          token
-        );
-        setLogs(res?.logs ?? []);
-        setLogsTotal(res?.total ?? 0);
-        setLogsPage(page);
-      } finally {
-        if (!silent) setLogsLoading(false);
-      }
-    },
-    [token]
-  );
-
-  useEffect(() => {
-    void carregarDashboard(false);
-  }, [carregarDashboard]);
-
-  useEffect(() => {
-    void carregarLogs(1, false);
-  }, [carregarLogs]);
-
-  const abrirDia = useCallback(
-    async (dia: string, silent = false) => {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return;
-      if (!silent) {
-        setDiaDetalhe(dia);
-        setSerieDetalhe([]);
-        setHoraErro(null);
-        setHoraLoading(true);
-      }
-
-      const agregarPorMinuto = (datas: Array<string | Date>) => {
-        const map = new Map<string, number>();
-        for (const raw of datas) {
-          const d = typeof raw === "string" ? new Date(raw) : raw;
-          if (Number.isNaN(d.getTime())) continue;
-          const label = new Intl.DateTimeFormat("en-GB", {
-            timeZone: "America/Sao_Paulo",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false
-          }).format(d);
-          map.set(label, (map.get(label) ?? 0) + 1);
-        }
-        return Array.from(map.entries())
-          .map(([label, total]) => {
-            const [hh, mm] = label.split(":").map(Number);
-            return { label, minuto: hh * 60 + mm, total };
-          })
-          .sort((a, b) => a.minuto - b.minuto);
-      };
-
-      try {
-        /* Preferência: endpoint dedicado (quando o backend já foi reiniciado). */
-        try {
-          const res = await api.get<{
-            data: string;
-            porMinuto?: { label: string; minuto: number; total: number }[];
-            porHora?: { hora: number; label: string; total: number }[];
-          }>(`/auditoria/dashboard/registros-hora?data=${dia}`, token);
-          if (res?.porMinuto && res.porMinuto.length > 0) {
-            setSerieDetalhe(res.porMinuto);
-            setDiaDetalhe(res.data ?? dia);
-            setHoraErro(null);
-            return;
-          }
-          if (res?.porHora) {
-            setSerieDetalhe(
-              res.porHora
-                .filter((h) => h.total > 0)
-                .map((h) => ({
-                  label: `${String(h.hora).padStart(2, "0")}:00`,
-                  minuto: h.hora * 60,
-                  total: h.total
-                }))
-            );
-            setDiaDetalhe(res.data ?? dia);
-            setHoraErro(null);
-            return;
-          }
-        } catch {
-          /* 404 ou indisponível — fallback abaixo */
-        }
-
-        /* Fallback: agrega HH:MM a partir de GET /auditoria/registros (já disponível). */
-        const horarios: Array<string | Date> = [];
-        let page = 1;
-        let total = Infinity;
-        while (horarios.length < total && page <= 20) {
-          const res = await api.get<{
-            total: number;
-            registros: Array<{ dataHora: string }>;
-          }>(`/auditoria/registros?dataInicio=${dia}&dataFim=${dia}&page=${page}&limit=500`, token);
-          total = res?.total ?? 0;
-          for (const r of res?.registros ?? []) horarios.push(r.dataHora);
-          if (!res?.registros?.length) break;
-          page += 1;
-        }
-        setSerieDetalhe(agregarPorMinuto(horarios));
-        setDiaDetalhe(dia);
-        setHoraErro(null);
-      } catch (e) {
-        if (!silent) {
-          setHoraErro((e as Error).message || "Não foi possível carregar o dia.");
-          setSerieDetalhe([]);
-        }
-      } finally {
-        if (!silent) setHoraLoading(false);
-      }
-    },
-    [token]
-  );
-
-  function voltarSerieDiaria() {
-    setDiaDetalhe(null);
-    setSerieDetalhe([]);
-    setHoraErro(null);
-    pontosDiaRef.current.clear();
-  }
-
-  /**
-   * Recharts 3: onClick NÃO traz activePayload/chartX.
-   * Compara clientX/Y com a posição na tela de cada ponto (≤ HIT_PX).
-   */
-  function onClickSerieDiaria(_state: unknown, event?: { clientX?: number; clientY?: number }) {
-    if (diaDetalhe) return;
-    const clientX = event?.clientX;
-    const clientY = event?.clientY;
-    if (typeof clientX !== "number" || typeof clientY !== "number") return;
-
-    /* Atualiza posições com getBoundingClientRect (respeita transforms do Recharts). */
-    const host = chartHostRef.current;
-    if (host) {
-      host.querySelectorAll<SVGCircleElement>("circle[data-dia]").forEach((el) => {
-        const dia = el.getAttribute("data-dia");
-        if (!dia) return;
-        const r = el.getBoundingClientRect();
-        pontosDiaRef.current.set(dia, {
-          x: r.left + r.width / 2,
-          y: r.top + r.height / 2
-        });
-      });
-    }
-
-    const HIT_PX = 28;
-    let melhorDia: string | null = null;
-    let melhorDist = HIT_PX;
-    for (const [dia, p] of pontosDiaRef.current.entries()) {
-      const dist = Math.hypot(p.x - clientX, p.y - clientY);
-      if (dist <= melhorDist) {
-        melhorDist = dist;
-        melhorDia = dia;
-      }
-    }
-    if (melhorDia) void abrirDia(melhorDia);
-  }
-
-  /* Ao mudar o filtro de datas, sai do drill-down horário */
-  useEffect(() => {
-    setDiaDetalhe(null);
-    setSerieDetalhe([]);
-    setHoraErro(null);
-    pontosDiaRef.current.clear();
-  }, [dataInicio, dataFim]);
-
-  /* Polling completo do dashboard (cards, gráficos e logs) a cada 30s */
-  useEffect(() => {
-    const POLL_MS = 30_000;
-    const tick = () => {
-      if (document.visibilityState !== "visible") return;
-      void carregarDashboard(true);
-      void carregarLogs(logsPage, true);
-      if (diaDetalhe) void abrirDia(diaDetalhe, true);
-    };
-    const id = window.setInterval(tick, POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") tick();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [carregarDashboard, carregarLogs, logsPage, diaDetalhe, abrirDia]);
-
-  if (loading && !data) return <Loading />;
-  if (erro && !data) return <ErroBox msg={erro} />;
-  if (!data) return null;
-
-  const maxEntradas = Math.max(...(data.registrosPorDia ?? []).map((d) => d.entradas), 1);
-  const uc = data.usoCanal;
-  /* Fallback: se a API antiga não envia registrosPorTempo, usa entradas do período */
-  const serieBase =
-    data.registrosPorTempo && data.registrosPorTempo.length > 0
-      ? data.registrosPorTempo
-      : (data.registrosPorDia ?? []).map((d) => ({ data: d.data, total: d.entradas }));
-  const serieLinha = serieBase.map((d) => ({
-    ...d,
-    label: new Date(d.data + "T12:00:00").toLocaleDateString("pt-BR", {
-      day: "2-digit",
-      month: "short"
-    })
-  }));
-  const rankingPont =
-    modoPontualidade === "atrasados" ? (data.topAtrasados ?? []) : (data.topAdiantados ?? []);
-  const rankingBanco =
-    modoBanco === "negativo" ? (data.topBancoNegativo ?? []) : (data.topBancoPositivo ?? []);
-  const rankingAtestado =
-    modoAtestado === "mais" ? (data.topMaisAtestados ?? []) : (data.topMenosAtestados ?? []);
-  const rankingAbono =
-    modoAbono === "mais" ? (data.topMaisAbonos ?? []) : (data.topMenosAbonos ?? []);
-  /* Ordem da API: maior primeiro. No BarChart vertical o 1º item fica no topo. */
-  const abbreviarNome = (nome: string) =>
-    nome.split(" ")[0] + (nome.split(" ")[1] ? ` ${nome.split(" ")[1][0]}.` : "");
-  const chartPont = rankingPont.map((r) => ({
-    nome: abbreviarNome(r.nome),
-    nomeCompleto: r.nome,
-    minutos: r.minutos,
-    label: r.minutosFormatado
-  }));
-  const chartBanco = rankingBanco.map((r) => ({
-    nome: abbreviarNome(r.nome),
-    nomeCompleto: r.nome,
-    minutos: r.minutos,
-    label: r.minutosFormatado
-  }));
-  const chartAtestado = rankingAtestado.map((r) => ({
-    nome: abbreviarNome(r.nome),
-    nomeCompleto: r.nome,
-    quantidade: r.quantidade,
-    label: String(r.quantidade)
-  }));
-  const chartAbono = rankingAbono.map((r) => ({
-    nome: abbreviarNome(r.nome),
-    nomeCompleto: r.nome,
-    quantidade: r.quantidade,
-    label: String(r.quantidade)
-  }));
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Filtro de período */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid rgba(122,30,38,0.08)",
-          padding: "14px 16px",
-          display: "flex",
-          gap: 12,
-          flexWrap: "wrap",
-          alignItems: "flex-end"
-        }}
-      >
-        <InputField label="Data início" type="date" value={dataInicio} onChange={setDataInicio} />
-        <InputField label="Data fim" type="date" value={dataFim} onChange={setDataFim} />
-        <button
-          className="btn btn-primary"
-          onClick={carregarDashboard}
-          style={{ padding: "7px 16px", fontSize: 12 }}
-        >
-          <RefreshCwIcon size={13} /> &nbsp;Atualizar
-        </button>
-        {erro && (
-          <span style={{ fontSize: 12, color: "#c8393f", alignSelf: "center" }}>{erro}</span>
-        )}
-      </div>
-
-      {/* ── 8 cards em 2 linhas × 4 colunas — altura uniforme ── */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gridAutoRows: "130px",
-          gap: 12
-        }}
-      >
-        {/* Linha 1 */}
-        <StatCard
-          label="Funcionários"
-          value={data.totalFuncionarios}
-          sub={`${data.funcionariosAtivos} ativos`}
-          icon={<UsersIcon size={16} />}
-          onClick={() => onAbrirFuncionarios?.()}
-        />
-        <StatCard
-          label="Trabalhando agora"
-          value={data.trabalhando}
-          sub="no expediente"
-          color="#2f7d4f"
-          icon={<ClockIcon size={16} />}
-          onClick={() => onAbrirFuncionarios?.("presente")}
-        />
-        <StatCard
-          label="Em intervalo"
-          value={data.emIntervalo}
-          sub="pausa ativa"
-          color="#c67f00"
-          icon={<ClockIcon size={16} />}
-        />
-        <StatCard
-          label="Registros hoje"
-          value={data.registrosHoje}
-          sub="todos os tipos"
-          icon={<BarChart2Icon size={16} />}
-        />
-
-        {/* Linha 2 */}
-        <StatCard
-          label="Sol. pendentes"
-          value={data.solicitacoesPendentes}
-          sub="aguardando revisão"
-          color={data.solicitacoesPendentes > 0 ? "#c67f00" : undefined}
-          icon={<InboxIcon size={16} />}
-        />
-        <StatCard
-          label="Afastamentos"
-          value={data.afastamentosAtivos}
-          sub="ativos hoje"
-          color="#c8393f"
-          icon={<CalendarIcon size={16} />}
-        />
-        <StatCard
-          label="Períodos abertos"
-          value={data.periodosAbertos}
-          sub={`${data.periodosFechados} fechados · ${data.periodosAprovados} aprovados`}
-          color="#2563eb"
-          icon={<BarChart2Icon size={16} />}
-        />
-
-        {/* Card 8 — Uso por canal (todo o período) */}
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "16px 20px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            minWidth: 0
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: "var(--burgundy-600)", opacity: 0.85 }}>
-              <BarChart2Icon size={16} />
-            </span>
-            <span
-              style={{
-                fontSize: 10,
-                fontWeight: 700,
-                letterSpacing: "0.14em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)"
-              }}
-            >
-              Uso por canal
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-            <span
-              style={{
-                fontSize: 28,
-                fontWeight: 700,
-                color: "var(--ink-900)",
-                lineHeight: 1,
-                fontFamily: "var(--font-display)"
-              }}
-            >
-              {uc.totalRegistros.toLocaleString("pt-BR")}
-            </span>
-            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>registros totais</span>
-          </div>
-          <div
-            style={{
-              height: 8,
-              borderRadius: 4,
-              overflow: "hidden",
-              display: "flex",
-              background: "rgba(122,30,38,0.06)"
-            }}
-          >
-            {uc.pctMobile > 0 && (
-              <div style={{ width: `${uc.pctMobile}%`, background: "#7c3aed" }} />
-            )}
-            {uc.pctDesktop > 0 && (
-              <div style={{ width: `${uc.pctDesktop}%`, background: "#2f7d4f" }} />
-            )}
-          </div>
-          <div style={{ display: "flex", gap: 10 }}>
-            {[
-              { label: "Mobile", pct: uc.pctMobile, color: "#7c3aed" },
-              { label: "Desktop", pct: uc.pctDesktop, color: "#2f7d4f" }
-            ].map((item) => (
-              <div
-                key={item.label}
-                style={{ flex: 1, display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}
-              >
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: "50%",
-                    background: item.color,
-                    flexShrink: 0
-                  }}
-                />
-                <span style={{ fontSize: 11, color: "var(--ink-600)" }}>{item.label}</span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 700,
-                    color: "var(--ink-900)",
-                    marginLeft: "auto"
-                  }}
-                >
-                  {item.pct}%
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Gráfico + origens (existente) */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 16 }}>
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            height: 130,
-            boxSizing: "border-box"
-          }}
-        >
-          <p
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--ink-500)",
-              marginBottom: 16
-            }}
-          >
-            Entradas no período
-          </p>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
-            {data.registrosPorDia.map((d) => {
-              const pct = maxEntradas > 0 ? (d.entradas / maxEntradas) * 100 : 0;
-              const dt = new Date(d.data + "T12:00:00");
-              const dayName = dt.toLocaleDateString("pt-BR", { weekday: "short" });
-              const eHoje = d.data === isoHoje;
-              return (
-                <div
-                  key={d.data}
-                  style={{
-                    flex: 1,
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 4,
-                    minWidth: 0
-                  }}
-                >
-                  <span
-                    style={{
-                      ...statValueStyle,
-                      color: eHoje ? "var(--burgundy-600)" : "var(--ink-900)"
-                    }}
-                  >
-                    {d.entradas}
-                  </span>
-                  <div
-                    style={{
-                      width: "100%",
-                      height: `${Math.max(pct, 4)}%`,
-                      background: eHoje ? "var(--burgundy-600)" : "var(--burgundy-200)",
-                      borderRadius: "3px 3px 0 0",
-                      minHeight: 4
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: 9,
-                      color: "var(--ink-400)",
-                      textTransform: "capitalize"
-                    }}
-                  >
-                    {dayName}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            height: 130,
-            boxSizing: "border-box"
-          }}
-        >
-          <p
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--ink-500)",
-              marginBottom: 12
-            }}
-          >
-            Origens (hoje)
-          </p>
-          {data.origens.length === 0 ? (
-            <p style={{ fontSize: 12, color: "var(--ink-400)", fontStyle: "italic" }}>
-              Sem registros hoje.
-            </p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {data.origens.map((o) => {
-                const cores: Record<string, string> = {
-                  WEB: "#2563eb",
-                  MOBILE: "#7c3aed",
-                  DESKTOP: "#2f7d4f",
-                  TOTEM: "#c67f00"
-                };
-                return (
-                  <div key={o.origem} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span
-                      style={{
-                        display: "inline-block",
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        background: cores[o.origem] ?? "#6b7280",
-                        flexShrink: 0
-                      }}
-                    />
-                    <span style={{ flex: 1, fontSize: 12, color: "var(--ink-700)" }}>
-                      {o.origem}
-                    </span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-900)" }}>
-                      {o.total}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Gráfico de linha — registros por tempo (largura total, acima dos Logs) */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid rgba(122,30,38,0.08)",
-          padding: "18px 20px"
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
-            marginBottom: 12,
-            flexWrap: "wrap"
-          }}
-        >
-          <p
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--ink-500)",
-              margin: 0
-            }}
-          >
-            {diaDetalhe
-              ? `Registros por horário — ${new Date(diaDetalhe + "T12:00:00").toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "short", year: "numeric" })}`
-              : "Quantidade de registros por tempo"}
-          </p>
-          {diaDetalhe && (
-            <button
-              type="button"
-              onClick={voltarSerieDiaria}
-              style={{
-                padding: "5px 10px",
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.20)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 4
-              }}
-            >
-              <ArrowLeftIcon size={12} /> Voltar ao período
-            </button>
-          )}
-        </div>
-        {!diaDetalhe && (
-          <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "0 0 8px" }}>
-            Clique no ponto de um dia para ver a quantidade de registros por horário (HH:MM).
-          </p>
-        )}
-        {horaErro && (
-          <p style={{ fontSize: 12, color: "#b91c1c", margin: "0 0 8px" }}>{horaErro}</p>
-        )}
-        <div style={{ width: "100%", height: 280 }}>
-          {horaLoading ? (
-            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
-              Carregando…
-            </p>
-          ) : diaDetalhe ? (
-            serieDetalhe.length === 0 ? (
-              <p
-                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
-              >
-                Sem registros neste dia.
-              </p>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={serieDetalhe} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis
-                    dataKey="label"
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
-                    interval="preserveStartEnd"
-                    minTickGap={28}
-                  />
-                  <YAxis
-                    allowDecimals={false}
-                    tick={{ fontSize: 11, fill: "#6b7280" }}
-                    width={36}
-                  />
-                  <Tooltip
-                    formatter={(v: number | string) => [v as number, "Registros"]}
-                    labelFormatter={(label: string) => `Horário ${label}`}
-                  />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="total"
-                    name="Registros"
-                    stroke="var(--burgundy-600)"
-                    strokeWidth={2.5}
-                    dot={{ r: 3, fill: "var(--burgundy-600)" }}
-                    activeDot={{ r: 5 }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )
-          ) : serieLinha.length === 0 ? (
-            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
-              Sem registros no período.
-            </p>
-          ) : (
-            <div ref={chartHostRef} style={{ width: "100%", height: "100%" }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={serieLinha}
-                  margin={{ top: 16, right: 12, left: 0, bottom: 8 }}
-                  onClick={onClickSerieDiaria}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6b7280" }} />
-                  <YAxis
-                    allowDecimals={false}
-                    tick={{ fontSize: 11, fill: "#6b7280" }}
-                    width={36}
-                  />
-                  <Tooltip
-                    formatter={(v: number | string) => [v as number, "Registros"]}
-                    labelFormatter={(
-                      _l: string,
-                      payload?: Array<{ payload?: { data?: string } }>
-                    ) => {
-                      const d = payload?.[0]?.payload?.data;
-                      return d ? new Date(d + "T12:00:00").toLocaleDateString("pt-BR") : "";
-                    }}
-                  />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="total"
-                    name="Registros"
-                    stroke="var(--burgundy-600)"
-                    strokeWidth={2.5}
-                    isAnimationActive={false}
-                    activeDot={{
-                      r: 7,
-                      fill: "var(--burgundy-600)",
-                      stroke: "#fff",
-                      strokeWidth: 2,
-                      style: { cursor: "pointer" }
-                    }}
-                    dot={(props: {
-                      cx?: number;
-                      cy?: number;
-                      payload?: { data?: string; total?: number };
-                      index?: number;
-                    }) => {
-                      const { cx, cy, payload, index } = props;
-                      if (cx == null || cy == null || !payload?.data) {
-                        return <g key={`empty-dot-${index ?? 0}`} />;
-                      }
-                      return (
-                        <circle
-                          key={`dot-${payload.data}`}
-                          data-dia={payload.data}
-                          cx={cx}
-                          cy={cy}
-                          r={6}
-                          fill="var(--burgundy-600)"
-                          stroke="#fff"
-                          strokeWidth={2}
-                          style={{ cursor: "pointer", pointerEvents: "none" }}
-                        />
-                      );
-                    }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Top 10 pontualidade + Top 10 banco lado a lado */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            minWidth: 0
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              marginBottom: 12,
-              flexWrap: "wrap"
-            }}
-          >
-            <p
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)",
-                margin: 0
-              }}
-            >
-              Top 10 {modoPontualidade === "atrasados" ? "mais atrasados" : "mais adiantados"}
-            </p>
-            <button
-              type="button"
-              onClick={() =>
-                setModoPontualidade((m) => (m === "atrasados" ? "adiantados" : "atrasados"))
-              }
-              style={{
-                padding: "5px 10px",
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.20)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer"
-              }}
-            >
-              Ver {modoPontualidade === "atrasados" ? "adiantados" : "atrasados"}
-            </button>
-          </div>
-          <div style={{ width: "100%", height: 280 }}>
-            {chartPont.length === 0 ? (
-              <p
-                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
-              >
-                Sem dados no período.
-              </p>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartPont} layout="vertical" margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis type="number" tick={{ fontSize: 10, fill: "#6b7280" }} unit="m" />
-                  <YAxis
-                    type="category"
-                    dataKey="nome"
-                    width={88}
-                    tick={{ fontSize: 11, fill: "#374151" }}
-                  />
-                  <Tooltip
-                    formatter={(
-                      v: number | string,
-                      _n: string,
-                      item?: { payload?: { label?: string } }
-                    ) => [
-                      item?.payload?.label ?? `${v}m`,
-                      modoPontualidade === "atrasados" ? "Atraso médio" : "Adiantamento médio"
-                    ]}
-                    labelFormatter={(
-                      _l: string,
-                      p?: Array<{ payload?: { nomeCompleto?: string } }>
-                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
-                  />
-                  <Bar
-                    dataKey="minutos"
-                    name="Minutos"
-                    fill={modoPontualidade === "atrasados" ? "#c8393f" : "#2f7d4f"}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            minWidth: 0
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              marginBottom: 12,
-              flexWrap: "wrap"
-            }}
-          >
-            <p
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)",
-                margin: 0
-              }}
-            >
-              Top 10 banco {modoBanco === "negativo" ? "negativo" : "positivo"}
-            </p>
-            <button
-              type="button"
-              onClick={() => setModoBanco((m) => (m === "negativo" ? "positivo" : "negativo"))}
-              style={{
-                padding: "5px 10px",
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.20)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer"
-              }}
-            >
-              Ver {modoBanco === "negativo" ? "positivos" : "negativos"}
-            </button>
-          </div>
-          <div style={{ width: "100%", height: 280 }}>
-            {chartBanco.length === 0 ? (
-              <p
-                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
-              >
-                Sem dados no período.
-              </p>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartBanco} layout="vertical" margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis type="number" tick={{ fontSize: 10, fill: "#6b7280" }} unit="m" />
-                  <YAxis
-                    type="category"
-                    dataKey="nome"
-                    width={88}
-                    tick={{ fontSize: 11, fill: "#374151" }}
-                  />
-                  <Tooltip
-                    formatter={(
-                      v: number | string,
-                      _n: string,
-                      item?: { payload?: { label?: string } }
-                    ) => [
-                      item?.payload?.label ?? `${v}m`,
-                      modoBanco === "negativo" ? "Déficit" : "Crédito"
-                    ]}
-                    labelFormatter={(
-                      _l: string,
-                      p?: Array<{ payload?: { nomeCompleto?: string } }>
-                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
-                  />
-                  <Bar
-                    dataKey="minutos"
-                    name="Minutos"
-                    fill={modoBanco === "negativo" ? "#c8393f" : "#2f7d4f"}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Top 10 atestados + Top 10 abonos lado a lado */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            minWidth: 0
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              marginBottom: 12,
-              flexWrap: "wrap"
-            }}
-          >
-            <p
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)",
-                margin: 0
-              }}
-            >
-              Top 10 {modoAtestado === "mais" ? "mais atestados" : "menos atestados"}
-            </p>
-            <button
-              type="button"
-              onClick={() => setModoAtestado((m) => (m === "mais" ? "menos" : "mais"))}
-              style={{
-                padding: "5px 10px",
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.20)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer"
-              }}
-            >
-              Ver {modoAtestado === "mais" ? "menos atestados" : "mais atestados"}
-            </button>
-          </div>
-          <div style={{ width: "100%", height: 280 }}>
-            {chartAtestado.length === 0 ? (
-              <p
-                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
-              >
-                Sem dados no período.
-              </p>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartAtestado} layout="vertical" margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis
-                    type="number"
-                    allowDecimals={false}
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="nome"
-                    width={88}
-                    tick={{ fontSize: 11, fill: "#374151" }}
-                  />
-                  <Tooltip
-                    formatter={(
-                      v: number | string,
-                      _n: string,
-                      item?: { payload?: { label?: string } }
-                    ) => [item?.payload?.label ?? String(v), "Atestados"]}
-                    labelFormatter={(
-                      _l: string,
-                      p?: Array<{ payload?: { nomeCompleto?: string } }>
-                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
-                  />
-                  <Bar
-                    dataKey="quantidade"
-                    name="Atestados"
-                    fill={modoAtestado === "mais" ? "#c8393f" : "#2f7d4f"}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-
-        <div
-          style={{
-            background: "#fff",
-            borderRadius: "var(--radius-lg)",
-            border: "1px solid rgba(122,30,38,0.08)",
-            padding: "18px 20px",
-            minWidth: 0
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 8,
-              marginBottom: 12,
-              flexWrap: "wrap"
-            }}
-          >
-            <p
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)",
-                margin: 0
-              }}
-            >
-              Top 10{" "}
-              {modoAbono === "mais" ? "mais solicitações de abono" : "menos solicitações de abono"}
-            </p>
-            <button
-              type="button"
-              onClick={() => setModoAbono((m) => (m === "mais" ? "menos" : "mais"))}
-              style={{
-                padding: "5px 10px",
-                fontSize: 11,
-                fontWeight: 600,
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(122,30,38,0.20)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer"
-              }}
-            >
-              Ver {modoAbono === "mais" ? "menos solicitações" : "mais solicitações"}
-            </button>
-          </div>
-          <div style={{ width: "100%", height: 280 }}>
-            {chartAbono.length === 0 ? (
-              <p
-                style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}
-              >
-                Sem dados no período.
-              </p>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartAbono} layout="vertical" margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                  <XAxis
-                    type="number"
-                    allowDecimals={false}
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="nome"
-                    width={88}
-                    tick={{ fontSize: 11, fill: "#374151" }}
-                  />
-                  <Tooltip
-                    formatter={(
-                      v: number | string,
-                      _n: string,
-                      item?: { payload?: { label?: string } }
-                    ) => [item?.payload?.label ?? String(v), "Solicitações de abono"]}
-                    labelFormatter={(
-                      _l: string,
-                      p?: Array<{ payload?: { nomeCompleto?: string } }>
-                    ) => p?.[0]?.payload?.nomeCompleto ?? ""}
-                  />
-                  <Bar
-                    dataKey="quantidade"
-                    name="Abonos"
-                    fill={modoAbono === "mais" ? "#c8393f" : "#2f7d4f"}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Atestados por mês (últimos 12 meses) */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid rgba(122,30,38,0.08)",
-          padding: "18px 20px"
-        }}
-      >
-        <p
-          style={{
-            fontSize: 11,
-            fontWeight: 700,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color: "var(--ink-500)",
-            margin: "0 0 12px"
-          }}
-        >
-          Atestados por mês
-        </p>
-        <div style={{ width: "100%", height: 280 }}>
-          {(data.atestadosPorMes ?? []).length === 0 ? (
-            <p style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: 40 }}>
-              Sem dados.
-            </p>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={data.atestadosPorMes}
-                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
-                <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6b7280" }} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#6b7280" }} width={36} />
-                <Tooltip
-                  formatter={(v: number | string) => [v as number, "Atestados"]}
-                  labelFormatter={(
-                    _l: string,
-                    payload?: Array<{ payload?: { mes?: string; label?: string } }>
-                  ) => {
-                    const mes = payload?.[0]?.payload?.mes;
-                    if (!mes) return payload?.[0]?.payload?.label ?? "";
-                    const [y, m] = mes.split("-").map(Number);
-                    return new Date(y, m - 1, 1).toLocaleDateString("pt-BR", {
-                      month: "long",
-                      year: "numeric"
-                    });
-                  }}
-                />
-                <Bar dataKey="total" name="Atestados" fill="#c8393f" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-      </div>
-
-      {/* Últimos logs */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid rgba(122,30,38,0.08)",
-          overflow: "hidden"
-        }}
-      >
-        {/* Cabeçalho dos logs */}
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid rgba(122,30,38,0.06)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8
-          }}
-        >
-          <ShieldCheckIcon size={14} style={{ color: "var(--burgundy-600)" }} />
-          <p
-            style={{
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: "var(--ink-500)",
-              margin: 0,
-              flex: 1
-            }}
-          >
-            Logs e Auditoria
-          </p>
-          {logsLoading && (
-            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>Carregando…</span>
-          )}
-          {logsTotal > 0 && (
-            <span style={{ fontSize: 11, color: "var(--ink-400)" }}>
-              {logsTotal.toLocaleString("pt-BR")} registros
-            </span>
-          )}
-          <button
-            onClick={() => carregarLogs(logsPage)}
-            disabled={logsLoading}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              padding: "3px 10px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(122,30,38,0.18)",
-              background: "transparent",
-              color: "var(--burgundy-600)",
-              fontSize: 11,
-              fontWeight: 600,
-              cursor: logsLoading ? "not-allowed" : "pointer",
-              opacity: logsLoading ? 0.5 : 1
-            }}
-          >
-            <RefreshCwIcon size={11} /> Atualizar
-          </button>
-        </div>
-
-        {/* Linhas de log */}
-        {logsLoading ? (
-          <div style={{ padding: 32, textAlign: "center", fontSize: 12, color: "var(--ink-400)" }}>
-            Carregando…
-          </div>
-        ) : logs.length === 0 ? (
-          <p style={{ padding: 20, fontSize: 12, color: "var(--ink-400)", textAlign: "center" }}>
-            Nenhum log registrado.
-          </p>
-        ) : (
-          logs.map((log) => (
-            <div
-              key={log.id}
-              style={{
-                padding: "10px 16px",
-                borderBottom: "1px solid rgba(122,30,38,0.04)",
-                display: "flex",
-                gap: 12,
-                alignItems: "flex-start"
-              }}
-            >
-              <MethodBadge method={log.method} />
-              <span
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--burgundy-600)",
-                  background: "rgba(122,30,38,0.06)",
-                  padding: "2px 6px",
-                  borderRadius: "var(--radius-sm)",
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  maxWidth: 220
-                }}
-              >
-                {log.path ?? log.action}
-              </span>
-              <span style={{ flex: 1, fontSize: 11, color: "var(--ink-500)" }}>
-                {log.username ?? log.actorUserId ?? "sistema"}
-              </span>
-              {log.statusCode != null &&
-                (() => {
-                  const sb = statusBadge(log.statusCode);
-                  return sb ? (
-                    <span
-                      style={{
-                        fontSize: 10.5,
-                        fontWeight: 700,
-                        color: sb.color,
-                        background: sb.bg,
-                        padding: "1px 6px",
-                        borderRadius: "var(--radius-sm)",
-                        fontFamily: "var(--font-mono)",
-                        flexShrink: 0
-                      }}
-                    >
-                      {sb.label}
-                    </span>
-                  ) : null;
-                })()}
-              <span style={{ fontSize: 10.5, color: "var(--ink-400)", whiteSpace: "nowrap" }}>
-                {fmtDateTime(log.createdAt)}
-              </span>
-            </div>
-          ))
-        )}
-
-        {/* Paginação */}
-        <Pagination
-          page={logsPage}
-          total={logsTotal}
-          limit={LOGS_LIMIT}
-          onChange={(p) => carregarLogs(p)}
-        />
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════
    ABA FUNCIONÁRIOS
 ═══════════════════════════════════════════════ */
 
@@ -2576,9 +1072,8 @@ function TabFuncionarios({
   initialStatusPonto?: "" | "presente" | "ausente";
   isSuperAdmin?: boolean;
 }) {
-  const hoje = new Date();
-  const primeiroDiaMes = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-01`;
-  const hojeIso = hoje.toISOString().slice(0, 10);
+  const hojeIso = hojeBrasiliaISO();
+  const primeiroDiaMes = `${hojeIso.slice(0, 7)}-01`;
 
   const [lista, setLista] = useState<Funcionario[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2822,7 +1317,7 @@ function TabFuncionarios({
                   </p>
                   <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "1px 0 0" }}>
                     {f.gerencia?.nome ?? "—"}
-                    {f.isManager ? " · Gerente" : ""}
+                    {f.isManager ? " · Chefe" : ""}
                   </p>
                   {infoContato(f) && (
                     <p style={{ fontSize: 10.5, color: "var(--ink-400)", margin: "1px 0 0" }}>
@@ -2918,7 +1413,7 @@ function DetalhesFuncionario({
   const carregarRegistros = useCallback(async () => {
     setLoading(true);
     try {
-      const [regsResp, rel] = await Promise.all([
+      const [regsResp, rel, feriadosRaw] = await Promise.all([
         api.get<{ registros: Registro[] }>(
           `/auditoria/funcionarios/${funcionario.id}/registros?mes=${mes}&ano=${ano}`,
           token
@@ -2926,10 +1421,15 @@ function DetalhesFuncionario({
         api.get<Record<string, unknown>>(
           `/auditoria/funcionarios/${funcionario.id}/relatorio?mes=${mes}&ano=${ano}`,
           token
-        )
+        ),
+        api
+          .get<
+            ApiFeriadoH[] | { feriados?: ApiFeriadoH[] }
+          >(`/ponto/config/feriados?ano=${ano}`, token)
+          .catch(() => [] as ApiFeriadoH[])
       ]);
       setRegistros(regsResp?.registros ?? []);
-      setRelatorio(rel);
+      setRelatorio(abonarFeriadosNoRelatorio(rel, normalizarFeriadosH(feriadosRaw)));
     } finally {
       setLoading(false);
     }
@@ -3050,7 +1550,9 @@ function DetalhesFuncionario({
   } | null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, maxWidth: "100%" }}
+    >
       {/* Cabeçalho */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <button
@@ -3088,7 +1590,7 @@ function DetalhesFuncionario({
             {funcionario.gerencia
               ? ` · ${funcionario.gerencia.sigla || funcionario.gerencia.nome}`
               : ""}
-            {funcionario.isManager ? " · Gerente" : ""}
+            {funcionario.isManager ? " · Chefe" : ""}
           </p>
           {infoContato(funcionario) && (
             <p style={{ fontSize: 10.5, color: "var(--ink-400)", margin: "2px 0 0" }}>
@@ -4177,7 +2679,7 @@ function RegistrosPorDia({ registros }: { registros: Registro[] }) {
   /* Agrupar por data YYYY-MM-DD, ordenar decrescente */
   const porDia = new Map<string, Registro[]>();
   for (const r of registros) {
-    const key = new Date(r.dataHora).toISOString().slice(0, 10);
+    const key = dataBrasiliaISO(r.dataHora);
     if (!porDia.has(key)) porDia.set(key, []);
     porDia.get(key)!.push(r);
   }
@@ -4221,9 +2723,8 @@ function TabRegistros({ token }: { token: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  const hoje = new Date();
-  const [dataInicio, setDataInicio] = useState(hoje.toISOString().slice(0, 10));
-  const [dataFim, setDataFim] = useState(hoje.toISOString().slice(0, 10));
+  const [dataInicio, setDataInicio] = useState(hojeBrasiliaISO());
+  const [dataFim, setDataFim] = useState(hojeBrasiliaISO());
   const [tipo, setTipo] = useState("");
   const [origem, setOrigem] = useState("");
   const [ajustado, setAjustado] = useState("");
@@ -4748,12 +3249,12 @@ function TabSolicitacoes({
               value: "PENDENTE,AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO,AGUARDANDO_GESTOR_RH",
               label: "Em andamento"
             },
-            { value: "PENDENTE", label: "Aguardando Gestor" },
+            { value: "PENDENTE", label: "Aguardando Chefe" },
             { value: "AGUARDANDO_RH", label: "Aguardando RH" },
             { value: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", label: "Aguardando Doc. Funcionário" },
             { value: "AGUARDANDO_GESTOR_RH", label: "Aguardando Gerente de RH" },
             { value: "APROVADA", label: "Aprovadas pelo RH" },
-            { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Gestor" },
+            { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Chefe" },
             { value: "REJEITADA_RH", label: "Rejeitadas pelo RH" },
             { value: "REJEITADA", label: "Rejeitadas (legado)" },
             { value: "CANCELADA", label: "Canceladas" }
@@ -5229,6 +3730,7 @@ interface JornadaHistorico {
   toleranciaSaidaMin?: number;
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
+  atestadoTempoRetornoMin?: number;
   vigenciaDesde: string | null;
 }
 
@@ -5244,7 +3746,8 @@ const JORNADA_PADRAO_AUD: JornadaHistorico = {
   toleranciaEntradaMin: 5,
   toleranciaSaidaMin: 5,
   toleranciaCalculoMin: 0,
-  horaExtraLimiteAuto: 120
+  horaExtraLimiteAuto: 120,
+  atestadoTempoRetornoMin: 60
 };
 
 function jornadaMinDia(isoKey: string, jornada: JornadaHistorico): number {
@@ -5319,6 +3822,90 @@ interface ApiFeriadoH {
   marcoLado?: string | null;
 }
 
+function normalizarFeriadosH(raw: unknown): ApiFeriadoH[] {
+  if (!raw) return [];
+  const arr = Array.isArray(raw)
+    ? raw
+    : Array.isArray((raw as { feriados?: unknown[] }).feriados)
+      ? ((raw as { feriados: unknown[] }).feriados ?? [])
+      : Array.isArray((raw as { data?: unknown[] }).data)
+        ? ((raw as { data: unknown[] }).data ?? [])
+        : [];
+  const out: ApiFeriadoH[] = [];
+  for (const item of arr) {
+    const o = item as {
+      data?: string;
+      date?: string;
+      nome?: string;
+      name?: string;
+      marcoHorario?: string | null;
+      marcoLado?: string | null;
+    };
+    const data = o.data ?? o.date ?? "";
+    const nome = o.nome ?? o.name ?? "";
+    if (!data) continue;
+    out.push({
+      data,
+      nome,
+      marcoHorario: o.marcoHorario ?? null,
+      marcoLado: o.marcoLado ?? null
+    });
+  }
+  return out;
+}
+
+function fmtMinRelatorioH(min: number): string {
+  const sign = min < 0 ? "-" : "";
+  const abs = Math.abs(min);
+  return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}m`;
+}
+
+/** Remove falta indevida de feriado integral quando o relatório do backend ainda trata o dia como útil. */
+function abonarFeriadosNoRelatorio(
+  rel: Record<string, unknown> | null,
+  feriados: ApiFeriadoH[]
+): Record<string, unknown> | null {
+  if (!rel) return rel;
+  const feriadoIntegral = new Set(
+    feriados
+      .filter((f) => !f.marcoHorario)
+      .map((f) => dataCivilISO(f.data))
+      .filter(Boolean)
+  );
+  if (feriadoIntegral.size === 0) return rel;
+  const dias =
+    (rel.diasDetalhados as Array<{
+      data?: string;
+      horasTrabalhadasMinutos?: number;
+      saldoDiaMinutos?: number;
+      jornadaEsperadaMinutos?: number;
+      observacao?: string;
+    }>) ?? [];
+  let ajusteSaldo = 0;
+  let ajusteFalta = 0;
+  for (const d of dias) {
+    const key = dataCivilISO(d.data ?? "");
+    if (!feriadoIntegral.has(key)) continue;
+    const trab = d.horasTrabalhadasMinutos ?? 0;
+    const saldo = d.saldoDiaMinutos ?? 0;
+    const jornada = d.jornadaEsperadaMinutos ?? 0;
+    const jaAbonado = saldo === 0 && jornada === 0 && (d.observacao ?? "").startsWith("Feriado:");
+    if (jaAbonado || trab > 0) continue;
+    if (saldo < 0) ajusteFalta += Math.abs(saldo);
+    ajusteSaldo -= saldo;
+  }
+  if (ajusteFalta === 0 && ajusteSaldo === 0) return rel;
+  const saldoMinutos = Number(rel.saldoMinutos ?? 0) + ajusteSaldo;
+  const horasFaltaMinutos = Math.max(0, Number(rel.horasFaltaMinutos ?? 0) - ajusteFalta);
+  return {
+    ...rel,
+    saldoMinutos,
+    saldoFormatado: fmtMinRelatorioH(saldoMinutos),
+    horasFaltaMinutos,
+    horasFaltaFormatado: fmtMinRelatorioH(horasFaltaMinutos)
+  };
+}
+
 const TIPO_AFAST_LABEL: Record<string, string> = {
   FERIAS: "Férias",
   ATESTADO: "Atestado médico",
@@ -5342,7 +3929,7 @@ function labelParcialAfast(tipo: string | undefined, hi: string, hf: string): st
 function badgeLabelParcialH(obs?: string): string {
   if (obs?.startsWith("Abono parcial")) return "Abono parcial";
   if (obs?.startsWith("Afastamento parcial")) return "Afastamento parcial";
-  return "Atestado médico parcial";
+  return "Atestado parcial";
 }
 
 function toMinH(h: string) {
@@ -5358,12 +3945,10 @@ function fmtHoraH(iso: string) {
   }).format(new Date(iso));
 }
 function dtKeyH(iso: string) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date(iso));
+  return dataBrasiliaISO(iso);
+}
+function dtCivilH(iso: string) {
+  return dataCivilISO(iso);
 }
 function calcHorasH(
   regs: ApiRegHist[],
@@ -5417,29 +4002,20 @@ function normalizarRegsSemAlmocoH<T extends { tipo: string }>(regs: T[]): T[] {
   }
   return regs.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
 }
+function batidaContaForaAtestadoH(m: number, tipo: string, hi: number, hf: number): boolean {
+  const fechaExpediente = tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE";
+  const fechaNoLimite = fechaExpediente || tipo === "INICIO_INTERVALO";
+  return (
+    m < hi ||
+    m >= hf ||
+    (m === hi && fechaNoLimite) ||
+    ((fechaExpediente || tipo === "INICIO_INTERVALO") && m > hi && m < hf)
+  );
+}
 function atestadoEhMatutinoH(horarioFim: string, jornada: JornadaHistorico): boolean {
   const inicioAlmoco = toMinH(jornada.almocoPodeIniciarA ?? "12:00");
   const duracao = Math.max(0, jornada.almocoMinMin ?? 60);
   return toMinH(horarioFim) <= inicioAlmoco + duracao;
-}
-function aplicarMargemH(saldo: number, _tolerancia?: number | null): number {
-  void _tolerancia;
-  return saldo;
-}
-function saldoAtestadoExpedienteH(opts: {
-  hi: string;
-  hf: string;
-  horaEntrada: string;
-  horaSaida: string;
-  fimTrabalhoMin: number | null;
-  jornada: JornadaHistorico;
-}): number {
-  const marco = marcoAtestadoH(opts.hi, opts.hf, opts.horaEntrada, opts.horaSaida, opts.jornada);
-  if (opts.fimTrabalhoMin == null) return 0;
-  let delta = opts.fimTrabalhoMin - marco;
-  const limiteHe = Math.max(0, opts.jornada.horaExtraLimiteAuto ?? 120);
-  if (delta > 0) delta = Math.min(delta, limiteHe);
-  return aplicarMargemH(delta, opts.jornada.toleranciaCalculoMin ?? 0);
 }
 function marcoAtestadoH(
   hi: string,
@@ -5475,16 +4051,34 @@ function prepararRegsAtestadoH(opts: {
 } {
   const hiM = toMinH(opts.hi);
   const hfM = toMinH(opts.hf);
-  const fechaNoLimite = (tipo: string) =>
-    tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE" || tipo === "INICIO_INTERVALO";
+  const fechaExpediente = (tipo: string) => tipo === "SAIDA" || tipo === "INTERROMPER_EXPEDIENTE";
+  const fechaNoLimite = (tipo: string) => fechaExpediente(tipo) || tipo === "INICIO_INTERVALO";
+  const temFechaReal = opts.registros.some((x) => fechaExpediente(x.tipo));
+  const temFimAlmocoOrig = opts.registros.some((x) => x.tipo === "FIM_INTERVALO");
   const fora =
     hfM > hiM
-      ? opts.registros.filter(
-          (r) => r.minuto < hiM || r.minuto > hfM || (r.minuto === hiM && fechaNoLimite(r.tipo))
-        )
+      ? opts.registros.flatMap((r) => {
+          if (r.minuto < hiM || r.minuto >= hfM || (r.minuto === hiM && fechaNoLimite(r.tipo))) {
+            return [r];
+          }
+          if (fechaExpediente(r.tipo) && r.minuto > hiM) {
+            return [{ ...r, minuto: hiM }];
+          }
+          if (
+            r.tipo === "INICIO_INTERVALO" &&
+            r.minuto > hiM &&
+            !temFechaReal &&
+            !temFimAlmocoOrig
+          ) {
+            return [{ ...r, tipo: "SAIDA", minuto: hiM }];
+          }
+          return [];
+        })
       : opts.registros;
   const matutino = atestadoEhMatutinoH(opts.hf, opts.jornada);
-  const semAlmoco = matutino || !fora.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temInicioAlmoco = fora.some((r) => r.tipo === "INICIO_INTERVALO");
+  const temFimAlmoco = fora.some((r) => r.tipo === "FIM_INTERVALO");
+  const semAlmoco = temInicioAlmoco && temFimAlmoco ? false : matutino || !temInicioAlmoco;
   let registros = semAlmoco ? normalizarRegsSemAlmocoH(fora) : fora;
   const marco = marcoAtestadoH(opts.hi, opts.hf, opts.horaEntrada, opts.horaSaida, opts.jornada);
   let fimTrabalhoMin = fimTrabalhoMinH(registros);
@@ -5590,6 +4184,11 @@ function creditoAlmocoDireitoDoDiaH(opts: {
   return Math.max(0, opts.almocoMinMin ?? 60);
 }
 function afastDoDia(key: string, lista: ApiAfast[]) {
+  // Afastamento.dataInicio/dataFim são instantes precisos (00:00:00 / 23:59:59.999 em
+  // Brasília), não datas civis `@db.Date` — por isso usam dataBrasiliaISO (conversão de
+  // fuso), não dtCivilH/dataCivilISO (fatia o ISO em UTC). dataFim em Brasília cai nas
+  // primeiras horas do dia seguinte em UTC; usar dtCivilH aqui fazia o afastamento
+  // "vazar" um dia a mais (mesmo bug já corrigido no backend).
   return lista.find((a) => key >= dtKeyH(a.dataInicio) && key <= dtKeyH(a.dataFim));
 }
 function isAfastParcial(a: { horarioInicio?: string | null; horarioFim?: string | null }) {
@@ -5640,6 +4239,48 @@ function calcJornadaAtestadoParcial(
   const cobertos = overlap(hi, hf, entr, lunchStart) + overlap(hi, hf, lunchEnd, sai);
   return Math.max(0, jornadaDiariaMin - cobertos);
 }
+function fmtMinDiaH(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+/** Tipos de registro que representam retomar o trabalho (candidatos a "retorno" após atestado). */
+const TIPOS_RETORNO_TRABALHO_H = new Set(["ENTRADA", "FIM_INTERVALO", "REINICIAR_EXPEDIENTE"]);
+/**
+ * Primeira atividade do dia (de qualquer tipo) após o horarioFim de um atestado
+ * parcial. Só conta como "retorno" se ela própria for um tipo de retomada de
+ * trabalho — uma pausa/almoço comum bem depois (retorno já feito no horário
+ * certo, almoço normal horas mais tarde) não pode virar crédito de deslocamento.
+ * Espelha encontrarRetornoAposAtestado do backend (jornada-historico.ts).
+ */
+function encontrarRetornoAposAtestadoH(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioFim: string
+): { tipo: string; minuto: number } | null {
+  const hf = toMinH(horarioFim);
+  const primeiraAposFim = registros
+    .filter((r) => r.minuto > hf)
+    .sort((a, b) => a.minuto - b.minuto)[0];
+  if (!primeiraAposFim || !TIPOS_RETORNO_TRABALHO_H.has(primeiraAposFim.tipo)) return null;
+  return primeiraAposFim;
+}
+
+/**
+ * Crédito de tempo de deslocamento (min) tolerado quando o retorno ao trabalho
+ * ocorre depois do horarioFim de um atestado parcial. Espelha
+ * calcularCreditoDeslocamentoAtestado do backend (jornada-historico.ts).
+ */
+function calcularCreditoDeslocamentoAtestadoH(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioFim: string,
+  toleranciaMin: number
+): number {
+  if (toleranciaMin <= 0) return 0;
+  const retorno = encontrarRetornoAposAtestadoH(registros, horarioFim);
+  if (!retorno) return 0;
+  const hf = toMinH(horarioFim);
+  return Math.max(0, Math.min(retorno.minuto - hf, toleranciaMin));
+}
 function textoObsLeg(t: string) {
   return t.replace(/\s*\(#[a-z0-9]+\)/gi, "").replace(/\s*#[a-z0-9]+\.?/gi, ".");
 }
@@ -5675,7 +4316,8 @@ function buildHistorico(
   }
   const feriadoMap: Record<string, ApiFeriadoH> = {};
   for (const f of feriados) {
-    feriadoMap[dtKeyH(f.data)] = f;
+    const key = dtCivilH(f.data) || f.data.slice(0, 10);
+    if (key) feriadoMap[key] = f;
   }
 
   const diaIsento = (isoKey: string) =>
@@ -5741,7 +4383,7 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "ISENTO",
-        obs: "Isento — Assessor/Gerente",
+        obs: "Isento — Comissionado/Chefe",
         observacoes: dayRegsIsento.flatMap((r) => r.observacoes ?? [])
       });
       continue;
@@ -5802,10 +4444,10 @@ function buildHistorico(
           saida: null,
           horasMin: 0,
           jornadaMin: jornadaMandatoria,
-          status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
+          status: jornadaMandatoria > 0 ? "FALTA" : "FERIADO",
           obs: feriadoDia.marcoHorario
             ? `${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`
-            : `Feriado: ${feriadoDia.nome}`
+            : feriadoDia.nome
         });
       } else if (atestadoParcial) {
         const jornadaMandatoria = calcJornadaAtestadoParcial(
@@ -5867,8 +4509,6 @@ function buildHistorico(
       iiR = get("INICIO_INTERVALO"),
       fiR = get("FIM_INTERVALO"),
       sR = get("SAIDA");
-    const atestadoMatutino =
-      !!atestadoParcial && atestadoEhMatutinoH(atestadoParcial.horarioFim!, jornada);
     const prepAtestado = atestadoParcial
       ? prepararRegsAtestadoH({
           registros: dayRegs.map((r) => ({
@@ -5884,7 +4524,6 @@ function buildHistorico(
         })
       : null;
     const semAlmocoDia =
-      atestadoMatutino ||
       !!(eR?.observacoes ?? []).some(
         (o) =>
           o.tipo === "TURNO_SEM_INTERVALO" &&
@@ -5903,11 +4542,7 @@ function buildHistorico(
                 const m = toMinH(fmtHoraH(r.dataHora));
                 const hi = toMinH(atestadoParcial.horarioInicio!);
                 const hf = toMinH(atestadoParcial.horarioFim!);
-                const fechaNoLimite =
-                  r.tipo === "SAIDA" ||
-                  r.tipo === "INTERROMPER_EXPEDIENTE" ||
-                  r.tipo === "INICIO_INTERVALO";
-                return m < hi || m > hf || (m === hi && fechaNoLimite);
+                return batidaContaForaAtestadoH(m, r.tipo, hi, hf);
               })
             : dayRegs
         )
@@ -5916,11 +4551,7 @@ function buildHistorico(
             const m = toMinH(fmtHoraH(r.dataHora));
             const hi = toMinH(atestadoParcial.horarioInicio!);
             const hf = toMinH(atestadoParcial.horarioFim!);
-            const fechaNoLimite =
-              r.tipo === "SAIDA" ||
-              r.tipo === "INTERROMPER_EXPEDIENTE" ||
-              r.tipo === "INICIO_INTERVALO";
-            return m < hi || m > hf || (m === hi && fechaNoLimite);
+            return batidaContaForaAtestadoH(m, r.tipo, hi, hf);
           })
         : dayRegs;
     const eRh = dayRegs.find((r) => r.tipo === "ENTRADA");
@@ -5960,12 +4591,17 @@ function buildHistorico(
         ...calcOptsH,
         agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined
       });
-      const pausaSemRetorno = temSaidaParcialSemRetornoH(
-        dayRegsHoras.length ? dayRegsHoras : dayRegs
-      );
+      const pausaSemRetorno = temSaidaParcialSemRetornoH(dayRegs);
+      const saidaNoCalculo =
+        prepAtestado.registros.some(
+          (r) => r.tipo === "SAIDA" || r.tipo === "INTERROMPER_EXPEDIENTE"
+        ) ||
+        (prepAtestado.registros.some((r) => r.tipo === "INICIO_INTERVALO") &&
+          !prepAtestado.registros.some((r) => r.tipo === "FIM_INTERVALO"));
       if (!entrada) status = "PENDENTE";
       else if (dispensaSaida) status = isHoje ? "PENDENTE" : "OK";
-      else if (saida || pausaSemRetorno) status = isHoje && !saida ? "PENDENTE" : "OK";
+      else if (saida || pausaSemRetorno || saidaNoCalculo)
+        status = isHoje && !saida && !saidaNoCalculo ? "PENDENTE" : "OK";
       else if (isHoje) status = "PENDENTE";
       else status = "FALTA";
       if (!obs) {
@@ -5999,9 +4635,22 @@ function buildHistorico(
     // Multiplicador para fins de semana e feriados
     let jornadaMin = jornadaMinDia(isoKey, jornada);
     if (atestadoParcial && prepAtestado && !fimDeSemana) {
+      const regsMinParaCreditoH = dayRegs.map((r) => ({
+        tipo: r.tipo,
+        minuto: toMinH(fmtHoraH(r.dataHora))
+      }));
+      const creditoDeslocamentoH = calcularCreditoDeslocamentoAtestadoH(
+        regsMinParaCreditoH,
+        atestadoParcial.horarioFim!,
+        jornada.atestadoTempoRetornoMin ?? 60
+      );
+      const horarioFimEfetivoH =
+        creditoDeslocamentoH > 0
+          ? fmtMinDiaH(toMinH(atestadoParcial.horarioFim!) + creditoDeslocamentoH)
+          : atestadoParcial.horarioFim!;
       const jornadaRef = calcJornadaAtestadoParcial(
         atestadoParcial.horarioInicio!,
-        atestadoParcial.horarioFim!,
+        horarioFimEfetivoH,
         jornadaMin,
         jornada.horaEntrada ?? "08:00",
         jornada.horaSaida ?? "17:00",
@@ -6014,14 +4663,6 @@ function buildHistorico(
       if (status === "FALTA" && horasMin === 0) {
         jornadaMin = jornadaRef;
       } else {
-        const saldoExp = saldoAtestadoExpedienteH({
-          hi: atestadoParcial.horarioInicio!,
-          hf: atestadoParcial.horarioFim!,
-          horaEntrada: jornada.horaEntrada ?? "08:00",
-          horaSaida: jornada.horaSaida ?? "17:00",
-          fimTrabalhoMin: prepAtestado.fimTrabalhoMin,
-          jornada
-        });
         const creditoAlmoco = creditoAlmocoDireitoDoDiaH({
           registros: dayRegsHoras.length ? dayRegsHoras : dayRegs,
           horarioInicioAtestado: atestadoParcial.horarioInicio,
@@ -6032,7 +4673,8 @@ function buildHistorico(
           agoraMin: isHoje ? hoje.getHours() * 60 + hoje.getMinutes() : undefined,
           exigirIntervalo: exigirIntervaloDia
         });
-        jornadaMin = Math.max(0, horasMin - (saldoExp + creditoAlmoco));
+        /* SaldoCell = horas − jornada: jornada abonada pelo período − crédito de almoço */
+        jornadaMin = Math.max(0, jornadaRef - creditoAlmoco);
       }
       if (!obs) {
         obs = labelParcialAfast(
@@ -6081,7 +4723,7 @@ function buildHistorico(
       (obsTurno as { motivo?: string }).motivo !== "CATEGORIA_CARGA_CORRIDA"
         ? obsTurno
         : null;
-    const bloquearIntervalo = !!atestadoParcial || !!obsForca || semAlmocoDia;
+    const bloquearIntervalo = !!obsForca || semAlmocoDia;
     const almocoCurtoDetect = !bloquearIntervalo
       ? analisarAlmocoCurto(
           dayRegs.map((r) => ({
@@ -6147,19 +4789,32 @@ function StatusPillH({
   status,
   obs,
   atestadoParcial,
-  atestadoParcialHorario
+  atestadoParcialHorario,
+  onClickAtestado
 }: {
   status: StatusDia;
   obs?: string;
   atestadoParcial?: boolean;
   atestadoParcialHorario?: string;
+  onClickAtestado?: () => void;
 }) {
   if (atestadoParcial) {
     const label = badgeLabelParcialH(obs);
+    const clicavel = label === "Atestado parcial" && !!onClickAtestado;
     return (
       <span
         className="badge badge-blue"
-        title={obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`}
+        title={
+          clicavel
+            ? "Clique para ver os detalhes do atestado"
+            : (obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`)
+        }
+        onClick={clicavel ? onClickAtestado : undefined}
+        style={
+          clicavel
+            ? { cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" }
+            : undefined
+        }
       >
         {label}
       </span>
@@ -6176,19 +4831,21 @@ function StatusPillH({
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
     FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
-    ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
+    ISENTO: { label: "Isento — Comissionado/Chefe", cls: "badge-blue" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-gray" };
   const titulo = obs ?? undefined;
   return (
     <span className={`badge ${cls}`} title={titulo}>
       {status === "ISENTO"
-        ? "Isento — Assessor/Gerente"
+        ? "Isento — Comissionado/Chefe"
         : status === "AFASTAMENTO" && obs
           ? obs
-          : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
+          : status === "FERIADO" && obs
             ? obs
-            : label}
+            : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
+              ? obs
+              : label}
     </span>
   );
 }
@@ -6221,7 +4878,8 @@ function HoraCellH({
         fontFamily: "var(--font-mono)",
         display: "inline-flex",
         alignItems: "center",
-        gap: 3
+        gap: 3,
+        maxWidth: "100%"
       }}
     >
       {hora}
@@ -6295,7 +4953,9 @@ function IntervaloNaoAplicavelCellH({
         cursor: onClick ? "pointer" : "default",
         fontFamily: "inherit",
         lineHeight: 1.3,
-        whiteSpace: "nowrap"
+        whiteSpace: "normal",
+        maxWidth: "100%",
+        boxSizing: "border-box"
       }}
     >
       <CheckCircleIcon size={11} style={{ flexShrink: 0 }} />
@@ -6309,6 +4969,7 @@ function HorasCellH({ min, status }: { min: number; status: StatusDia }) {
     status === "FOLGA" ||
     status === "FALTA" ||
     status === "AFASTAMENTO" ||
+    status === "FERIADO" ||
     status === "ISENTO"
   )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
@@ -6327,7 +4988,13 @@ function SaldoCellH({
   jornadaMin: number;
   status: StatusDia;
 }) {
-  if (status === "FUTURO" || status === "FOLGA" || status === "AFASTAMENTO" || status === "ISENTO")
+  if (
+    status === "FUTURO" ||
+    status === "FOLGA" ||
+    status === "AFASTAMENTO" ||
+    status === "FERIADO" ||
+    status === "ISENTO"
+  )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (status === "FALTA") {
     const h = Math.floor(jornadaMin / 60);
@@ -6456,6 +5123,262 @@ function ModalObsH({
     </div>
   );
 }
+
+interface AtestadoDetalheH {
+  id: string;
+  tipo: string;
+  status: string;
+  dataInicio: string;
+  dataFim: string;
+  horarioInicio: string | null;
+  horarioFim: string | null;
+  descricao: string;
+  documentoUrl: string | null;
+  documentoRetornoUrl: string | null;
+  gestor: { nome: string | null; resolvidoEm: string | null; observacao: string | null } | null;
+  ciencia: { em: string | null; nome: string | null; codigoHash: string | null } | null;
+  rh: { nome: string | null; resolvidoEm: string | null; observacao: string | null } | null;
+  deslocamento: {
+    atrasoRealMin: number;
+    creditoMin: number;
+    toleranciaMin: number;
+    horaRetorno: string;
+  } | null;
+}
+
+function fmtDataHoraCurtaH(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    return `${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+  } catch {
+    return iso;
+  }
+}
+
+function fmtDataCivilH(iso: string): string {
+  const [a, m, d] = iso.split("-");
+  return `${d}/${m}/${a}`;
+}
+
+function LinhaDetalheAtestadoH({ label, valor }: { label: string; valor: React.ReactNode }) {
+  return (
+    <div>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 11,
+          fontWeight: 600,
+          color: "var(--ink-500)",
+          textTransform: "uppercase",
+          letterSpacing: 0.3
+        }}
+      >
+        {label}
+      </p>
+      <p style={{ margin: "2px 0 0", fontSize: 13.5, color: "var(--ink-800)" }}>{valor}</p>
+    </div>
+  );
+}
+
+function ModalAtestadoDetalheH({
+  funcionarioId,
+  data,
+  token,
+  onClose
+}: {
+  funcionarioId: string;
+  data: string;
+  token: string;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [erro, setErro] = useState<string | null>(null);
+  const [atestados, setAtestados] = useState<AtestadoDetalheH[]>([]);
+
+  useEffect(() => {
+    let ativo = true;
+    setLoading(true);
+    setErro(null);
+    api
+      .get<{ atestados: AtestadoDetalheH[] }>(
+        `/auditoria/funcionarios/${funcionarioId}/atestado-do-dia?data=${data}`,
+        token
+      )
+      .then((r) => {
+        if (ativo) setAtestados(r?.atestados ?? []);
+      })
+      .catch((e) => {
+        if (ativo) setErro(e instanceof Error ? e.message : "Falha ao carregar o atestado.");
+      })
+      .finally(() => {
+        if (ativo) setLoading(false);
+      });
+    return () => {
+      ativo = false;
+    };
+  }, [funcionarioId, data, token]);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 520,
+          maxHeight: "85vh",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column"
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexShrink: 0
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Atestado médico</p>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+              {fmtDataCivilH(data)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 18,
+              color: "var(--ink-500)"
+            }}
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          style={{
+            padding: "16px 20px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16
+          }}
+        >
+          {loading && <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Carregando…</p>}
+          {erro && <p style={{ fontSize: 13, color: "#c8393f" }}>{erro}</p>}
+          {!loading && !erro && atestados.length === 0 && (
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              Nenhum atestado aprovado encontrado para este dia.
+            </p>
+          )}
+          {atestados.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                paddingBottom: 14,
+                borderBottom: "1px solid rgba(122,30,38,0.08)"
+              }}
+            >
+              <LinhaDetalheAtestadoH
+                label="Período do atestado"
+                valor={
+                  `${fmtDataCivilH(a.dataInicio)}${a.dataInicio !== a.dataFim ? ` a ${fmtDataCivilH(a.dataFim)}` : ""}` +
+                  (a.horarioInicio && a.horarioFim
+                    ? ` · ${a.horarioInicio}–${a.horarioFim}`
+                    : " · dia inteiro")
+                }
+              />
+              {a.descricao && <LinhaDetalheAtestadoH label="Justificativa" valor={a.descricao} />}
+              <LinhaDetalheAtestadoH
+                label="Ciência do chefe"
+                valor={
+                  a.ciencia?.nome
+                    ? `${a.ciencia.nome}${a.ciencia.em ? ` — ${fmtDataHoraCurtaH(a.ciencia.em)}` : ""}`
+                    : a.gestor?.nome
+                      ? `${a.gestor.nome}${a.gestor.resolvidoEm ? ` — ${fmtDataHoraCurtaH(a.gestor.resolvidoEm)}` : ""}`
+                      : "—"
+                }
+              />
+              <LinhaDetalheAtestadoH
+                label="Aprovado pelo RH"
+                valor={
+                  a.rh?.nome
+                    ? `${a.rh.nome}${a.rh.resolvidoEm ? ` — ${fmtDataHoraCurtaH(a.rh.resolvidoEm)}` : ""}`
+                    : "—"
+                }
+              />
+              {a.deslocamento && (
+                <LinhaDetalheAtestadoH
+                  label="Tempo de deslocamento"
+                  valor={
+                    `Retorno registrado às ${a.deslocamento.horaRetorno} — creditados ${a.deslocamento.creditoMin} min` +
+                    (a.deslocamento.atrasoRealMin > a.deslocamento.creditoMin
+                      ? ` (atraso real de ${a.deslocamento.atrasoRealMin} min, limitado pela tolerância de ${a.deslocamento.toleranciaMin} min)`
+                      : "")
+                  }
+                />
+              )}
+              {a.documentoUrl && (
+                <LinhaDetalheAtestadoH
+                  label="Documento"
+                  valor={
+                    <a
+                      href={a.documentoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "var(--brand-700, #7a1e26)" }}
+                    >
+                      Ver atestado anexado
+                    </a>
+                  }
+                />
+              )}
+              {a.documentoRetornoUrl && (
+                <LinhaDetalheAtestadoH
+                  label="Documento de retorno"
+                  valor={
+                    <a
+                      href={a.documentoRetornoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "var(--brand-700, #7a1e26)" }}
+                    >
+                      Ver documento de retorno
+                    </a>
+                  }
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BotaoObsH({
   observacoes,
   onClick
@@ -6668,6 +5591,10 @@ function ModalCorrecaoRH({
   const [erro, setErro] = useState("");
 
   async function handleSubmit() {
+    if (!diaFechado) {
+      setErro("Correção de ponto só é permitida para dias anteriores ao dia de hoje.");
+      return;
+    }
     if (!justificativa.trim()) {
       setErro("A justificativa é obrigatória.");
       return;
@@ -6970,6 +5897,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
     dia: string;
     observacoes: { data: string; texto: string }[];
   } | null>(null);
+  const [modalAtestado, setModalAtestado] = useState<{ data: string } | null>(null);
   const [modalEdit, setModalEdit] = useState<EditDayState | null>(null);
   const [feedbackEnviada, setFeedbackEnviada] = useState(false);
   const [popupMes, setPopupMes] = useState(false);
@@ -6985,6 +5913,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           categoria?: string | null;
           jornada?: JornadaHistorico;
           periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+          feriados?: ApiFeriadoH[];
         }>(`/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`, token),
         api.get<{ afastamentos: ApiAfast[] }>(
           `/auditoria/afastamentos?funcionarioId=${funcionarioId}&limit=200`,
@@ -7000,15 +5929,19 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           .catch(() => null),
         api
           .get<
-            { data: ApiFeriadoH[] } | ApiFeriadoH[]
-          >(`/api-publica/v1/feriados?ano=${ano}&mes=${mes}`, token)
-          .catch(() => null),
+            ApiFeriadoH[] | { feriados?: ApiFeriadoH[] }
+          >(`/ponto/config/feriados?ano=${ano}`, token)
+          .catch(() =>
+            api
+              .get<{ date: string; name: string }[]>(`/ponto/feriados?ano=${ano}`, token)
+              .catch(() => null)
+          ),
         api
           .get<{
             bancoHorasSabadoPct?: number;
             bancoHorasDomingoPct?: number;
             bancoHorasFeriadoPct?: number;
-          }>(`/api-publica/v1/configuracoes`, token)
+          }>(`/ponto/config/sistema`, token)
           .catch(() => null)
       ]);
       const regs = regsRaw?.registros ?? [];
@@ -7016,9 +5949,9 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
       const exigirIntervalo = regsRaw?.categoria !== "ESTAGIARIO";
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
-      const feriados: ApiFeriadoH[] = Array.isArray(feriadosRaw)
-        ? feriadosRaw
-        : ((feriadosRaw as { data?: ApiFeriadoH[] })?.data ?? []);
+      const feriados = normalizarFeriadosH(
+        (regsRaw?.feriados && regsRaw.feriados.length > 0 ? regsRaw.feriados : null) ?? feriadosRaw
+      );
       const sabadoPct =
         (cfgRaw as { bancoHorasSabadoPct?: number } | null)?.bancoHorasSabadoPct ?? 100;
       const domingoPct =
@@ -7099,6 +6032,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       r.status !== "FUTURO" &&
       r.status !== "FOLGA" &&
       r.status !== "AFASTAMENTO" &&
+      r.status !== "FERIADO" &&
       r.status !== "ISENTO"
   ).length;
   const totalJornadaMin = dias
@@ -7107,18 +6041,29 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
         r.status !== "FUTURO" &&
         r.status !== "FOLGA" &&
         r.status !== "AFASTAMENTO" &&
+        r.status !== "FERIADO" &&
         r.status !== "ISENTO"
     )
     .reduce((s, r) => s + r.jornadaMin, 0);
   const mesAtual = mes === hoje.getMonth() + 1 && ano === hoje.getFullYear();
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <div
+      style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0, maxWidth: "100%" }}
+    >
       {modalObs && (
         <ModalObsH
           dia={modalObs.dia}
           observacoes={modalObs.observacoes}
           onClose={() => setModalObs(null)}
+        />
+      )}
+      {modalAtestado && (
+        <ModalAtestadoDetalheH
+          funcionarioId={funcionarioId}
+          data={modalAtestado.data}
+          token={token}
+          onClose={() => setModalAtestado(null)}
         />
       )}
       {modalEdit && (
@@ -7164,7 +6109,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
             color: "var(--burgundy-700)"
           }}
         >
-          🔒 Este período já foi assinado pelo funcionário e pelo gestor. Correções não são
+          🔒 Este período já foi assinado pelo funcionário e pelo chefe. Correções não são
           permitidas.
         </div>
       )}
@@ -7271,260 +6216,272 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
         </div>
       ) : (
         <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table className="table-cfo" style={{ minWidth: 860, tableLayout: "auto" }}>
-              <thead>
-                <tr>
-                  {[
-                    "Data",
-                    "Dia",
-                    "Entrada",
-                    "Início Interv.",
-                    "Fim Interv.",
-                    "Saída",
-                    "Pausa",
-                    "Horas",
-                    "Saldo",
-                    "Status",
-                    "Ações"
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      style={
-                        h === "Status" || h === "Ações"
-                          ? { width: "1%", whiteSpace: "nowrap", paddingLeft: 10, paddingRight: 10 }
+          <table className="table-cfo table-cfo-freq">
+            <colgroup>
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "5%" }} />
+              <col style={{ width: "8.5%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "10%" }} />
+              <col style={{ width: "8.5%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "6.5%" }} />
+              <col style={{ width: "6.5%" }} />
+              <col style={{ width: "16%" }} />
+              <col style={{ width: "9.5%" }} />
+            </colgroup>
+            <thead>
+              <tr>
+                {[
+                  "Data",
+                  "Dia",
+                  "Entrada",
+                  "Início",
+                  "Fim",
+                  "Saída",
+                  "Pausa",
+                  "Horas",
+                  "Saldo",
+                  "Status",
+                  "Ações"
+                ].map((h) => (
+                  <th
+                    key={h}
+                    title={
+                      h === "Início"
+                        ? "Início do intervalo"
+                        : h === "Fim"
+                          ? "Fim do intervalo"
                           : undefined
-                      }
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {dias.map((r, i) => {
-                  const isHoje =
-                    r.data ===
-                    `${String(hoje.getDate()).padStart(2, "0")}/${String(hoje.getMonth() + 1).padStart(2, "0")}/${hoje.getFullYear()}`;
-                  const isoKey = (() => {
-                    const [d, m, a] = r.data.split("/");
-                    return `${a}-${m}-${d}`;
-                  })();
-                  const podeEditar =
-                    !periodoLocked &&
-                    r.status !== "FUTURO" &&
-                    r.status !== "AFASTAMENTO" &&
-                    r.status !== "ISENTO";
-                  return (
-                    <tr
-                      key={i}
-                      style={{
-                        background: isHoje ? "rgba(122,30,38,0.03)" : undefined,
-                        opacity: r.status === "FUTURO" ? 0.5 : 1
-                      }}
-                    >
-                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
-                        {r.data}
-                        {isHoje && (
-                          <span className="badge badge-blue" style={{ marginLeft: 6, fontSize: 9 }}>
-                            hoje
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
-                      <td>
-                        <HoraCellH
-                          hora={r.entrada}
-                          editado={r.entradaEditada}
-                          turnoSemIntervalo={r.semIntervalo ? { turno: r.turno } : undefined}
-                        />
-                      </td>
-                      <td>
-                        {r.inicioIntervalo ? (
-                          <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
-                        ) : r.semIntervalo ? (
-                          <IntervaloNaoAplicavelCellH
-                            turno={r.turno}
-                            motivo={r.motivoSemIntervalo}
-                            janelaAlmoco={r.janelaAlmoco}
-                            onClick={
-                              r.observacoes?.length
-                                ? () =>
-                                    setModalObs({
-                                      dia: `${r.diaSemana}, ${r.data}`,
-                                      observacoes: r.observacoes ?? []
-                                    })
-                                : undefined
-                            }
-                          />
-                        ) : (
-                          <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
-                        )}
-                      </td>
-                      <td>
-                        {r.fimIntervalo ? (
-                          <HoraCellH
-                            hora={r.fimIntervalo}
-                            editado={r.fimIntervaloEditado}
-                            almocoCurto={r.almocoCurto}
-                          />
-                        ) : r.semIntervalo || r.atestadoParcial ? (
-                          <IntervaloNaoAplicavelCellH
-                            turno={r.turno}
-                            motivo={r.motivoSemIntervalo}
-                            janelaAlmoco={r.janelaAlmoco}
-                            onClick={
-                              r.observacoes?.length
-                                ? () =>
-                                    setModalObs({
-                                      dia: `${r.diaSemana}, ${r.data}`,
-                                      observacoes: r.observacoes ?? []
-                                    })
-                                : undefined
-                            }
-                          />
-                        ) : (
-                          <HoraCellH hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
-                        )}
-                      </td>
-                      <td>
-                        {r.saida ? (
-                          <HoraCellH hora={r.saida} editado={r.saidaEditada} />
-                        ) : r.saidaNaoAplicavel ? (
-                          <IntervaloNaoAplicavelCellH
-                            turno="ATESTADO_PARCIAL"
-                            motivo="ATESTADO_PARCIAL_SAIDA"
-                            onClick={
-                              r.observacoes?.length
-                                ? () =>
-                                    setModalObs({
-                                      dia: `${r.diaSemana}, ${r.data}`,
-                                      observacoes: r.observacoes ?? []
-                                    })
-                                : undefined
-                            }
-                          />
-                        ) : (
-                          <HoraCellH hora={r.saida} editado={r.saidaEditada} />
-                        )}
-                      </td>
-                      <td>
-                        <PausaCellH pausas={r.pausas} />
-                      </td>
-                      <td>
-                        <HorasCellH min={r.horasMin} status={r.status} />
-                      </td>
-                      <td>
-                        <SaldoCellH
-                          trabMin={r.horasMin}
-                          jornadaMin={r.jornadaMin}
-                          status={r.status}
-                        />
-                      </td>
-                      <td
-                        style={{
-                          width: "1%",
-                          whiteSpace: "nowrap",
-                          paddingLeft: 10,
-                          paddingRight: 10
-                        }}
-                      >
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          <StatusPillH
-                            status={r.status}
-                            obs={r.obs}
-                            atestadoParcial={r.atestadoParcial}
-                            atestadoParcialHorario={r.atestadoParcialHorario}
-                          />
-                          <BotaoObsH
-                            observacoes={r.observacoes ?? []}
-                            onClick={() =>
-                              setModalObs({
-                                dia: `${r.diaSemana}, ${r.data}`,
-                                observacoes: r.observacoes ?? []
-                              })
-                            }
-                          />
+                    }
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {dias.map((r, i) => {
+                const isHoje =
+                  r.data ===
+                  `${String(hoje.getDate()).padStart(2, "0")}/${String(hoje.getMonth() + 1).padStart(2, "0")}/${hoje.getFullYear()}`;
+                const isoKey = (() => {
+                  const [d, m, a] = r.data.split("/");
+                  return `${a}-${m}-${d}`;
+                })();
+                const podeEditar =
+                  !periodoLocked &&
+                  !isHoje &&
+                  r.status !== "FUTURO" &&
+                  r.status !== "AFASTAMENTO" &&
+                  r.status !== "ISENTO";
+                return (
+                  <tr
+                    key={i}
+                    style={{
+                      background: isHoje ? "rgba(122,30,38,0.03)" : undefined,
+                      opacity: r.status === "FUTURO" ? 0.5 : 1
+                    }}
+                  >
+                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
+                      {r.data}
+                      {isHoje && (
+                        <span className="badge badge-blue" style={{ marginLeft: 6, fontSize: 9 }}>
+                          hoje
                         </span>
-                      </td>
-                      <td
+                      )}
+                    </td>
+                    <td style={{ color: "var(--ink-500)", fontSize: 13 }}>{r.diaSemana}</td>
+                    <td>
+                      <HoraCellH
+                        hora={r.entrada}
+                        editado={r.entradaEditada}
+                        turnoSemIntervalo={r.semIntervalo ? { turno: r.turno } : undefined}
+                      />
+                    </td>
+                    <td>
+                      {r.inicioIntervalo ? (
+                        <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                      ) : r.semIntervalo ? (
+                        <IntervaloNaoAplicavelCellH
+                          turno={r.turno}
+                          motivo={r.motivoSemIntervalo}
+                          janelaAlmoco={r.janelaAlmoco}
+                          onClick={
+                            r.observacoes?.length
+                              ? () =>
+                                  setModalObs({
+                                    dia: `${r.diaSemana}, ${r.data}`,
+                                    observacoes: r.observacoes ?? []
+                                  })
+                              : undefined
+                          }
+                        />
+                      ) : (
+                        <HoraCellH hora={r.inicioIntervalo} editado={r.inicioIntervaloEditado} />
+                      )}
+                    </td>
+                    <td>
+                      {r.fimIntervalo ? (
+                        <HoraCellH
+                          hora={r.fimIntervalo}
+                          editado={r.fimIntervaloEditado}
+                          almocoCurto={r.almocoCurto}
+                        />
+                      ) : r.semIntervalo || r.atestadoParcial ? (
+                        <IntervaloNaoAplicavelCellH
+                          turno={r.turno}
+                          motivo={r.motivoSemIntervalo}
+                          janelaAlmoco={r.janelaAlmoco}
+                          onClick={
+                            r.observacoes?.length
+                              ? () =>
+                                  setModalObs({
+                                    dia: `${r.diaSemana}, ${r.data}`,
+                                    observacoes: r.observacoes ?? []
+                                  })
+                              : undefined
+                          }
+                        />
+                      ) : (
+                        <HoraCellH hora={r.fimIntervalo} editado={r.fimIntervaloEditado} />
+                      )}
+                    </td>
+                    <td>
+                      {r.saida ? (
+                        <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                      ) : r.saidaNaoAplicavel ? (
+                        <IntervaloNaoAplicavelCellH
+                          turno="ATESTADO_PARCIAL"
+                          motivo="ATESTADO_PARCIAL_SAIDA"
+                          onClick={
+                            r.observacoes?.length
+                              ? () =>
+                                  setModalObs({
+                                    dia: `${r.diaSemana}, ${r.data}`,
+                                    observacoes: r.observacoes ?? []
+                                  })
+                              : undefined
+                          }
+                        />
+                      ) : (
+                        <HoraCellH hora={r.saida} editado={r.saidaEditada} />
+                      )}
+                    </td>
+                    <td>
+                      <PausaCellH pausas={r.pausas} />
+                    </td>
+                    <td>
+                      <HorasCellH min={r.horasMin} status={r.status} />
+                    </td>
+                    <td>
+                      <SaldoCellH
+                        trabMin={r.horasMin}
+                        jornadaMin={r.jornadaMin}
+                        status={r.status}
+                      />
+                    </td>
+                    <td className="cell-status">
+                      <span
                         style={{
-                          width: "1%",
-                          whiteSpace: "nowrap",
-                          paddingLeft: 10,
-                          paddingRight: 10
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          flexWrap: "wrap"
                         }}
                       >
-                        <button
-                          onClick={() => podeEditar && abrirEdicao(r, isoKey)}
-                          disabled={!podeEditar}
-                          title={
-                            periodoLocked
-                              ? "Período assinado — edição bloqueada"
+                        <StatusPillH
+                          status={r.status}
+                          obs={r.obs}
+                          atestadoParcial={r.atestadoParcial}
+                          atestadoParcialHorario={r.atestadoParcialHorario}
+                          onClickAtestado={() => setModalAtestado({ data: isoKey })}
+                        />
+                        <BotaoObsH
+                          observacoes={r.observacoes ?? []}
+                          onClick={() =>
+                            setModalObs({
+                              dia: `${r.diaSemana}, ${r.data}`,
+                              observacoes: r.observacoes ?? []
+                            })
+                          }
+                        />
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        onClick={() => podeEditar && abrirEdicao(r, isoKey)}
+                        disabled={!podeEditar}
+                        title={
+                          periodoLocked
+                            ? "Período assinado — edição bloqueada"
+                            : isHoje
+                              ? "Correção só é permitida a partir do dia seguinte"
                               : !podeEditar
                                 ? "Não editável"
                                 : "Corrigir registros deste dia"
-                          }
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            padding: "4px 9px",
-                            border: "1px solid rgba(122,30,38,0.22)",
-                            borderRadius: "var(--radius-md)",
-                            background: podeEditar ? "#fff" : "transparent",
-                            color: podeEditar ? "var(--burgundy-600)" : "var(--ink-300)",
-                            cursor: podeEditar ? "pointer" : "not-allowed",
-                            fontSize: 11,
-                            fontWeight: 600
-                          }}
-                        >
-                          <Edit2Icon size={11} />
-                          {periodoLocked ? "🔒" : "Corrigir"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {dias.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={11}
-                      style={{ textAlign: "center", padding: 40, color: "var(--ink-500)" }}
-                    >
-                      Nenhum registro encontrado.
+                        }
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
+                          padding: "4px 7px",
+                          border: "1px solid rgba(122,30,38,0.22)",
+                          borderRadius: "var(--radius-md)",
+                          background: podeEditar ? "#fff" : "transparent",
+                          color: podeEditar ? "var(--burgundy-600)" : "var(--ink-300)",
+                          cursor: podeEditar ? "pointer" : "not-allowed",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          whiteSpace: "nowrap",
+                          maxWidth: "100%"
+                        }}
+                      >
+                        <Edit2Icon size={11} />
+                        {periodoLocked ? "🔒" : "Corrigir"}
+                      </button>
                     </td>
                   </tr>
-                )}
-              </tbody>
-              {totalUteis > 0 && (
-                <tfoot>
-                  <tr style={{ borderTop: "2px solid rgba(122,30,38,0.10)" }}>
-                    <td
-                      colSpan={7}
-                      style={{
-                        padding: "12px 14px",
-                        fontWeight: 600,
-                        fontSize: 12,
-                        letterSpacing: "0.05em",
-                        textTransform: "uppercase",
-                        color: "var(--ink-500)"
-                      }}
-                    >
-                      Total do período
-                    </td>
-                    <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
-                      {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")}
-                    </td>
-                    <td>
-                      <SaldoCellH trabMin={totalTrab} jornadaMin={totalJornadaMin} status="OK" />
-                    </td>
-                    <td colSpan={2} />
-                  </tr>
-                </tfoot>
+                );
+              })}
+              {dias.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={11}
+                    style={{ textAlign: "center", padding: 40, color: "var(--ink-500)" }}
+                  >
+                    Nenhum registro encontrado.
+                  </td>
+                </tr>
               )}
-            </table>
-          </div>
+            </tbody>
+            {totalUteis > 0 && (
+              <tfoot>
+                <tr style={{ borderTop: "2px solid rgba(122,30,38,0.10)" }}>
+                  <td
+                    colSpan={7}
+                    style={{
+                      padding: "12px 14px",
+                      fontWeight: 600,
+                      fontSize: 12,
+                      letterSpacing: "0.05em",
+                      textTransform: "uppercase",
+                      color: "var(--ink-500)"
+                    }}
+                  >
+                    Total do período
+                  </td>
+                  <td style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+                    {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")}
+                  </td>
+                  <td>
+                    <SaldoCellH trabMin={totalTrab} jornadaMin={totalJornadaMin} status="OK" />
+                  </td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            )}
+          </table>
         </div>
       )}
 
@@ -7571,11 +6528,11 @@ function PainelFerias({
   onRecarregar: () => void;
 }) {
   const statusBadge: Record<string, { label: string; cls: string }> = {
-    PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
+    PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguard. doc. funcionário", cls: "badge-amber" },
     APROVADA: { label: "Aprovada", cls: "badge-green" },
-    REJEITADA_GESTOR: { label: "Rej. Gestor", cls: "badge-red" },
+    REJEITADA_GESTOR: { label: "Rej. Chefe", cls: "badge-red" },
     REJEITADA_RH: { label: "Rej. RH", cls: "badge-red" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     CANCELADA: { label: "Cancelada", cls: "badge-gray" }
@@ -7859,7 +6816,11 @@ function TabelaDocumentosRh({
     setExcluindoId(doc.id);
     setErro(null);
     try {
-      await api.delete(`/auditoria/funcionarios/${funcionarioId}/documentos-rh/${doc.id}`, token);
+      await api.delete(
+        `/auditoria/funcionarios/${funcionarioId}/documentos-rh/${doc.id}`,
+        undefined,
+        token
+      );
       onExcluido?.();
     } catch (e) {
       setErro((e as Error).message || "Não foi possível excluir o documento.");
@@ -9072,12 +8033,13 @@ function TabLogs({ token }: { token: string }) {
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [busca, setBusca] = useState("");
+  const [buscaLivre, setBuscaLivre] = useState("");
+  const [usuarioFiltro, setUsuarioFiltro] = useState("");
   const [metodoFiltro, setMetodoFiltro] = useState("");
   const [expandido, setExpandido] = useState<string | null>(null);
 
-  const hoje = new Date();
-  const [dataInicio, setDataInicio] = useState(hoje.toISOString().slice(0, 10));
-  const [dataFim, setDataFim] = useState(hoje.toISOString().slice(0, 10));
+  const [dataInicio, setDataInicio] = useState(hojeBrasiliaISO());
+  const [dataFim, setDataFim] = useState(hojeBrasiliaISO());
 
   const limit = 50;
 
@@ -9088,15 +8050,16 @@ function TabLogs({ token }: { token: string }) {
       try {
         const params = new URLSearchParams({ page: String(p), limit: String(limit) });
         if (busca) params.set("action", busca);
+        if (buscaLivre) params.set("q", buscaLivre);
+        if (usuarioFiltro) params.set("usuario", usuarioFiltro);
+        if (metodoFiltro) params.set("method", metodoFiltro);
         if (dataInicio) params.set("dataInicio", dataInicio);
         if (dataFim) params.set("dataFim", dataFim);
         const data = await api.get<{ total: number; logs: AuditLog[] }>(
           `/auditoria/logs?${params}`,
           token
         );
-        const lista = data?.logs ?? [];
-        const filtrados = metodoFiltro ? lista.filter((l) => l.method === metodoFiltro) : lista;
-        setLogs(filtrados);
+        setLogs(data?.logs ?? []);
         setTotal(data?.total ?? 0);
         setPage(p);
       } catch (e) {
@@ -9105,7 +8068,7 @@ function TabLogs({ token }: { token: string }) {
         setLoading(false);
       }
     },
-    [token, busca, dataInicio, dataFim, metodoFiltro]
+    [token, busca, buscaLivre, usuarioFiltro, dataInicio, dataFim, metodoFiltro]
   );
 
   useEffect(() => {
@@ -9115,7 +8078,7 @@ function TabLogs({ token }: { token: string }) {
   function exportar() {
     exportCSV(
       logs.map((l) => {
-        const info = getEndpointInfo(l.action);
+        const info = resolverEndpointInfo(l);
         return {
           Data: fmtDateTime(l.createdAt),
           Metodo: l.method ?? "",
@@ -9139,6 +8102,18 @@ function TabLogs({ token }: { token: string }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Filtros */}
       <FiltrosBox>
+        <InputField
+          label="Buscar por assunto (ex.: registro de fulano, banco de horas)"
+          value={buscaLivre}
+          onChange={setBuscaLivre}
+          placeholder='"login de fulano", "banco de horas", "aprovar solicitação"…'
+        />
+        <InputField
+          label="Usuário"
+          value={usuarioFiltro}
+          onChange={setUsuarioFiltro}
+          placeholder="nome, e-mail ou login"
+        />
         <InputField
           label="Endpoint / ação"
           value={busca}
@@ -9213,9 +8188,9 @@ function TabLogs({ token }: { token: string }) {
             const sb = statusBadge(l.statusCode);
             const isOpen = expandido === l.id;
             const payloadStr = l.payload ? JSON.stringify(l.payload, null, 2) : null;
-            const endpointInfo = getEndpointInfo(l.action);
+            const endpointInfo = resolverEndpointInfo(l);
             const catCor = endpointInfo
-              ? (CATEGORIA_COR[endpointInfo.categoria] ?? CATEGORIA_COR["Autenticação"])
+              ? (CATEGORIA_COR[endpointInfo.categoria] ?? CATEGORIA_COR_PADRAO)
               : null;
 
             return (
@@ -9410,6 +8385,40 @@ function TabLogs({ token }: { token: string }) {
                       flexWrap: "wrap"
                     }}
                   >
+                    {/* O que este endpoint faz */}
+                    {endpointInfo && (
+                      <div style={{ flexBasis: "100%" }}>
+                        <p
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: "var(--ink-400)",
+                            textTransform: "uppercase",
+                            letterSpacing: "0.10em",
+                            margin: "0 0 4px"
+                          }}
+                        >
+                          O que este endpoint faz
+                        </p>
+                        <div
+                          style={{
+                            background: "#eef2ff",
+                            border: "1px solid #c7d2fe",
+                            borderRadius: 6,
+                            padding: "8px 10px",
+                            fontSize: 12,
+                            color: "var(--ink-700)"
+                          }}
+                        >
+                          <strong>{endpointInfo.titulo ?? l.path ?? l.action}</strong>{" "}
+                          <span style={{ color: "var(--ink-500)" }}>
+                            ({endpointInfo.categoria})
+                          </span>
+                          <div style={{ marginTop: 4 }}>{endpointInfo.desc}</div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* User agent */}
                     {l.userAgent && (
                       <div style={{ minWidth: 200, flex: 1 }}>
@@ -9473,7 +8482,7 @@ function TabLogs({ token }: { token: string }) {
                       </div>
                     )}
 
-                    {!payloadStr && !l.userAgent && (
+                    {!payloadStr && !l.userAgent && !endpointInfo && (
                       <p
                         style={{
                           fontSize: 12,
@@ -9651,8 +8660,8 @@ interface ResultadoCodigoAssinatura {
 
 const PAPEL_CODIGO_LABEL: Record<ResultadoCodigoAssinatura["papel"], string> = {
   FUNCIONARIO: "Assinatura do funcionário (quadro mensal)",
-  GESTOR: "Assinatura do gestor (quadro mensal)",
-  CIENCIA_GESTOR: "Ciência do gestor (atestado)"
+  GESTOR: "Assinatura do chefe (quadro mensal)",
+  CIENCIA_GESTOR: "Ciência do chefe (atestado)"
 };
 
 function fmtBH(min: number): string {
@@ -9960,7 +8969,7 @@ function TabValidacoes({ token }: { token: string }) {
           >
             <option value="">Todos</option>
             <option value="PENDENTE_FUNCIONARIO">Aguardando funcionário</option>
-            <option value="PENDENTE_GESTOR">Aguardando gestor</option>
+            <option value="PENDENTE_GESTOR">Aguardando chefe</option>
             <option value="CONCLUIDA">Concluídas</option>
           </select>
         </div>
@@ -10319,7 +9328,6 @@ function TabValidacoes({ token }: { token: string }) {
 ═══════════════════════════════════════════════ */
 
 const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
-  { id: "dashboard", label: "Dashboard", icon: <BarChart2Icon size={14} /> },
   { id: "funcionarios", label: "Funcionários", icon: <UsersIcon size={14} /> },
   { id: "registros", label: "Registros", icon: <ClockIcon size={14} /> },
   { id: "solicitacoes", label: "Solicitações", icon: <InboxIcon size={14} /> },
@@ -10331,7 +9339,7 @@ const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
 
 export function AuditoriaPage() {
   const { user, token, hasRole } = useAuth();
-  const [aba, setAba] = useState<Aba>("dashboard");
+  const [aba, setAba] = useState<Aba>("funcionarios");
   const [funcionariosStatusPonto, setFuncionariosStatusPonto] = useState<
     "" | "presente" | "ausente"
   >("");
@@ -10346,11 +9354,6 @@ export function AuditoriaPage() {
   const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
 
   const temAcesso = isRH || hasRole("gestor") || hasRole("GESTOR_APROVACAO");
-
-  function abrirFuncionarios(statusPonto?: "presente" | "ausente") {
-    setFuncionariosStatusPonto(statusPonto ?? "");
-    setAba("funcionarios");
-  }
 
   if (!temAcesso) {
     return (
@@ -10374,7 +9377,7 @@ export function AuditoriaPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: 1100, margin: "0 auto", minWidth: 0, width: "100%" }}>
       {/* Cabeçalho */}
       <div style={{ marginBottom: 24 }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
@@ -10438,7 +9441,6 @@ export function AuditoriaPage() {
       </div>
 
       {/* Conteúdo da aba */}
-      {aba === "dashboard" && <TabDashboard token={tk} onAbrirFuncionarios={abrirFuncionarios} />}
       {aba === "funcionarios" && (
         <TabFuncionarios
           key={`func-${funcionariosStatusPonto || "todos"}`}

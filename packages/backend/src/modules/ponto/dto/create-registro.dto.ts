@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsNumber, IsString, Min, Max } from "class-validator";
+import { IsEnum, IsOptional, IsNumber, IsString, Min, Max, IsIn } from "class-validator";
 
 export enum TipoPontoDto {
   ENTRADA = "ENTRADA",
@@ -16,13 +16,24 @@ export enum OrigemPontoDto {
   TOTEM = "TOTEM"
 }
 
+/** Origem do dispositivo + modos de trabalho enviados por clientes antigos no campo origem. */
+export const ORIGENS_REGISTRO_ACEITAS = [
+  "WEB",
+  "MOBILE",
+  "DESKTOP",
+  "TOTEM",
+  "HIBRIDO",
+  "VIAGEM",
+  "HOME_OFFICE"
+] as const;
+
 export class CreateRegistroDto {
   @IsEnum(TipoPontoDto)
   tipo!: TipoPontoDto;
 
   @IsOptional()
-  @IsEnum(OrigemPontoDto)
-  origem?: OrigemPontoDto;
+  @IsIn(ORIGENS_REGISTRO_ACEITAS)
+  origem?: string;
 
   @IsOptional()
   @IsNumber()
@@ -35,6 +46,11 @@ export class CreateRegistroDto {
   @Min(-180)
   @Max(180)
   longitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  precisaoMetros?: number;
 
   @IsOptional()
   @IsString()

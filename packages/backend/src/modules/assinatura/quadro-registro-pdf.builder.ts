@@ -20,12 +20,21 @@ const MESES_PT = [
 ];
 
 const CATEGORIA_LABEL: Record<string, string> = {
-  CONCURSADO: "Concursado",
+  CONCURSADO: "Empregado",
   ESTAGIARIO: "Estagiário",
-  MENOR_APRENDIZ: "Menor Aprendiz",
-  ASSESSOR: "Assessor",
-  GERENTE: "Gerente"
+  MENOR_APRENDIZ: "Jovem Aprendiz",
+  ASSESSOR: "Comissionado"
 };
+
+/** "Chefe" deixou de ser categoria (GERENTE) e virou característica (isManager) —
+ *  exibida como qualificador junto da categoria real, não mais isolada. */
+function regimeLabel(
+  categoria: string | null | undefined,
+  isManager: boolean | null | undefined
+): string {
+  const base = CATEGORIA_LABEL[categoria ?? ""] ?? categoria ?? "—";
+  return isManager ? `${base} — Chefe` : base;
+}
 
 /** Largura útil A4 com margens [25, 22, 25, 28] */
 const PAGE_CONTENT_WIDTH = 545;
@@ -51,6 +60,7 @@ export interface FuncionarioPdf {
   cargo: string | null;
   section: string | null;
   categoria: string | null;
+  isManager?: boolean | null;
   jornadaHorasDia: number;
   user: { name: string };
   gerencia: { nome: string; sigla: string } | null;
@@ -91,7 +101,24 @@ export interface QuadroPdfInput {
   logoBase64: string | null;
   certificadoBase64: string | null;
   resumoBadges?: ResumoBadgesPdf;
+  /** Relatório de ciclo de banco de horas (período customizado). */
+  cicloBancoHoras?: {
+    inicio: string;
+    fim: string;
+    /** Síntese mês a mês — espelha o card do front no rodapé do relatório. */
+    mesesResumo?: MesCicloResumoPdf[];
+  };
 }
+
+/** Linha da síntese mensal do ciclo (espelha Julho/Agosto do front). */
+export type MesCicloResumoPdf = {
+  yyyyMM: string;
+  label: string;
+  trabalhadoMinutos: number;
+  saldoMesMinutos: number;
+  acumuladoMinutos: number;
+  situacao: "ASSINADO" | "PENDENTE" | "AGUARDA_FECHAMENTO";
+};
 
 interface PausaPar {
   inicio: string;
@@ -191,11 +218,14 @@ const groupCode = groupCodigoAssinatura;
 const TOPBAR_ROW_HEIGHT = 46;
 
 /** Topbar centralizado — reproduz layout do sistema (Topbar.tsx): logo | gap | divisor | gap | títulos */
-function buildHeader(logoBase64: string | null): unknown {
+function buildHeader(
+  logoBase64: string | null,
+  docSubtitle = "QUADRO DE REGISTRO DE PONTO"
+): unknown {
   const tituloStack = {
     stack: [
       { text: "Ponto Eletrônico", style: "orgTitle" },
-      { text: "QUADRO DE REGISTRO DE PONTO", style: "orgSubtitle" }
+      { text: docSubtitle, style: "orgSubtitle" }
     ],
     alignment: "left" as const
   };
@@ -248,7 +278,7 @@ function buildHeader(logoBase64: string | null): unknown {
         stack: [
           { text: "Ponto Eletrônico", style: "orgTitle", alignment: "center" as const },
           {
-            text: "QUADRO DE REGISTRO DE PONTO",
+            text: docSubtitle,
             style: "orgSubtitle",
             alignment: "center" as const
           }
@@ -284,9 +314,18 @@ function buildHeader(logoBase64: string | null): unknown {
 }
 
 function buildFuncionarioCard(input: QuadroPdfInput): unknown {
-  const { funcionario, mes, ano } = input;
+  const { funcionario, mes, ano, cicloBancoHoras } = input;
   const nomeMes = MESES_PT[mes - 1];
-  const periodoStr = `01/${String(mes).padStart(2, "0")}/${ano} a ${new Date(ano, mes, 0).getDate()}/${String(mes).padStart(2, "0")}/${ano}`;
+  const fmtBr = (iso: string) => {
+    const [y, m, d] = iso.split("-");
+    return `${d}/${m}/${y}`;
+  };
+  const referencia = cicloBancoHoras
+    ? `Ciclo ${fmtBr(cicloBancoHoras.inicio)} – ${fmtBr(cicloBancoHoras.fim)}`
+    : `${nomeMes}/${ano}`;
+  const periodoStr = cicloBancoHoras
+    ? `${fmtBr(cicloBancoHoras.inicio)} a ${fmtBr(cicloBancoHoras.fim)}`
+    : `01/${String(mes).padStart(2, "0")}/${ano} a ${new Date(ano, mes, 0).getDate()}/${String(mes).padStart(2, "0")}/${ano}`;
   const jornadaLabel = funcionario.jornadaHorasDia ? `${funcionario.jornadaHorasDia}h/dia` : "—";
 
   const labelCell = (txt: string) => ({
@@ -334,15 +373,13 @@ function buildFuncionarioCard(input: QuadroPdfInput): unknown {
                 ],
                 [
                   labelCell("Regime"),
-                  valueCell(
-                    CATEGORIA_LABEL[funcionario.categoria ?? ""] ?? funcionario.categoria ?? "—"
-                  ),
+                  valueCell(regimeLabel(funcionario.categoria, funcionario.isManager)),
                   labelCell("Jornada"),
                   valueCell(jornadaLabel)
                 ],
                 [
                   labelCell("Referência"),
-                  valueCell(`${nomeMes}/${ano}`),
+                  valueCell(referencia),
                   labelCell("Período"),
                   valueCell(periodoStr)
                 ]
@@ -699,58 +736,141 @@ function buildAssinaturaColuna(
   };
 }
 
+/**
+ * Síntese mês a mês do ciclo — espelha a estrutura do front (Julho / Agosto
+ * com Trabalhado, Saldo do mês, Acumulado e situação), no layout do relatório.
+ */
+function buildSinteseMesesCiclo(meses: MesCicloResumoPdf[]): unknown {
+  const th = (t: string) => ({
+    text: t,
+    style: "thCell",
+    alignment: "center" as const
+  });
+  const td = (t: string, opts?: { bold?: boolean; color?: string; align?: string }) => ({
+    text: t,
+    fontSize: 7,
+    alignment: (opts?.align ?? "center") as "left" | "center" | "right",
+    ...(opts?.bold ? { bold: true } : {}),
+    ...(opts?.color ? { color: opts.color } : {})
+  });
+
+  const situacaoLabel: Record<MesCicloResumoPdf["situacao"], { text: string; color: string }> = {
+    ASSINADO: { text: "Assinado", color: "#15803D" },
+    PENDENTE: { text: "Pendente de assinatura", color: "#B45309" },
+    AGUARDA_FECHAMENTO: { text: "Aguarda fechamento do mês", color: "#6B7280" }
+  };
+
+  const body: unknown[][] = [
+    [th("Mês"), th("Trabalhado"), th("Saldo do mês"), th("Acumulado"), th("Situação")]
+  ];
+
+  for (const m of meses) {
+    const sit = situacaoLabel[m.situacao];
+    body.push([
+      td(m.label, { bold: true, align: "left", color: "#6B0F1A" }),
+      td(formatHorasNeutro(m.trabalhadoMinutos)),
+      td(formatBadgeHoras(m.saldoMesMinutos), {
+        color: m.saldoMesMinutos >= 0 ? "#15803D" : "#B91C1C",
+        bold: true
+      }),
+      td(formatBadgeHoras(m.acumuladoMinutos), {
+        color: m.acumuladoMinutos >= 0 ? "#15803D" : "#B91C1C",
+        bold: true
+      }),
+      td(sit.text, { color: sit.color, bold: true })
+    ]);
+  }
+
+  return {
+    stack: [
+      {
+        text: "Síntese do ciclo — mês a mês",
+        style: "sectionTitle",
+        margin: [0, 8, 0, 2] as [number, number, number, number]
+      },
+      {
+        text: "Mesma estrutura do acompanhamento no sistema (trabalhado, saldo, acumulado e situação da folha).",
+        fontSize: 6.5,
+        color: "#6B7280",
+        margin: [0, 0, 0, 4] as [number, number, number, number]
+      },
+      {
+        table: {
+          headerRows: 1,
+          widths: ["*", 70, 70, 70, 110],
+          body
+        },
+        layout: TABLE_LAYOUT
+      }
+    ],
+    margin: [0, 0, 0, 16] as [number, number, number, number],
+    unbreakable: true
+  };
+}
+
 function buildAssinaturas(input: QuadroPdfInput): unknown {
   const { funcionario, assinatura, certificadoBase64 } = input;
+  const soFuncionarioCiclo = !!input.cicloBancoHoras;
+
+  const colunaFuncionario = {
+    width: "*" as const,
+    stack: [
+      buildAssinaturaColuna(
+        "FUNCIONÁRIO",
+        "#6B0F1A",
+        "#FFF5F5",
+        "#FFF5F5",
+        funcionario.user.name,
+        `Matrícula: ${funcionario.matricula ?? "—"}`,
+        {
+          assinadoEm: assinatura.assinadoFuncionarioEm,
+          ipReal: assinatura.assinadoFuncionarioIp,
+          ipGateway: assinatura.assinadoFuncionarioIpGateway,
+          userAgent: assinatura.assinadoFuncionarioUserAgent
+        },
+        certificadoBase64
+      )
+    ]
+  };
+
+  const colunaGestor = {
+    width: "*" as const,
+    stack: [
+      buildAssinaturaColuna(
+        "GESTOR DA ÁREA",
+        "#374151",
+        "#F8FAFC",
+        "#F8FAFC",
+        assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
+        funcionario.gerencia ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})` : "—",
+        {
+          assinadoEm: assinatura.assinadoGestorEm,
+          ipReal: assinatura.assinadoGestorIp,
+          ipGateway: assinatura.assinadoGestorIpGateway,
+          userAgent: assinatura.assinadoGestorUserAgent
+        },
+        certificadoBase64
+      )
+    ]
+  };
 
   return {
     stack: [
       { text: "Assinaturas", style: "sectionTitle" },
+      ...(soFuncionarioCiclo
+        ? [
+            {
+              text: "Neste relatório de ciclo, apenas o funcionário assina. O documento assinado fica disponível ao RH.",
+              fontSize: 6.5,
+              color: "#6B7280",
+              margin: [0, 0, 0, 6] as [number, number, number, number]
+            }
+          ]
+        : []),
       {
-        columns: [
-          {
-            width: "*",
-            stack: [
-              buildAssinaturaColuna(
-                "FUNCIONÁRIO",
-                "#6B0F1A",
-                "#FFF5F5",
-                "#FFF5F5",
-                funcionario.user.name,
-                `Matrícula: ${funcionario.matricula ?? "—"}`,
-                {
-                  assinadoEm: assinatura.assinadoFuncionarioEm,
-                  ipReal: assinatura.assinadoFuncionarioIp,
-                  ipGateway: assinatura.assinadoFuncionarioIpGateway,
-                  userAgent: assinatura.assinadoFuncionarioUserAgent
-                },
-                certificadoBase64
-              )
-            ]
-          },
-          { width: 8, text: "" },
-          {
-            width: "*",
-            stack: [
-              buildAssinaturaColuna(
-                "GESTOR DA ÁREA",
-                "#374151",
-                "#F8FAFC",
-                "#F8FAFC",
-                assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
-                funcionario.gerencia
-                  ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})`
-                  : "—",
-                {
-                  assinadoEm: assinatura.assinadoGestorEm,
-                  ipReal: assinatura.assinadoGestorIp,
-                  ipGateway: assinatura.assinadoGestorIpGateway,
-                  userAgent: assinatura.assinadoGestorUserAgent
-                },
-                certificadoBase64
-              )
-            ]
-          }
-        ]
+        columns: soFuncionarioCiclo
+          ? [colunaFuncionario]
+          : [colunaFuncionario, { width: 8, text: "" }, colunaGestor]
       },
       buildAutenticidade(input)
     ],
@@ -848,49 +968,59 @@ function buildAutenticidadeColuna(
   };
 }
 
-/** Faixa de autenticidade — um bloco por signatário, lado a lado */
+/** Faixa de autenticidade — um bloco por signatário (ciclo: só funcionário) */
 function buildAutenticidade(input: QuadroPdfInput): unknown {
   const { assinatura, funcionario } = input;
-  const periodo = `${input.mes}/${input.ano}`;
+  const periodo = input.cicloBancoHoras
+    ? `${input.cicloBancoHoras.inicio}/${input.cicloBancoHoras.fim}`
+    : `${input.mes}/${input.ano}`;
   const matricula = funcionario.matricula ?? "";
+  const soFuncionarioCiclo = !!input.cicloBancoHoras;
+
+  const colunaFunc = {
+    width: "*" as const,
+    stack: [
+      buildAutenticidadeColuna(
+        "AUTENTICIDADE — FUNCIONÁRIO",
+        assinatura.assinadoFuncionarioEm,
+        assinatura.assinadoFuncionarioIp,
+        matricula,
+        periodo
+      )
+    ]
+  };
+
+  const colunaGestor = {
+    width: "*" as const,
+    stack: [
+      buildAutenticidadeColuna(
+        "AUTENTICIDADE — GESTOR DA ÁREA",
+        assinatura.assinadoGestorEm,
+        assinatura.assinadoGestorIp,
+        matricula,
+        periodo
+      )
+    ]
+  };
 
   return {
     stack: [
       {
-        columns: [
-          {
-            width: "*",
-            stack: [
-              buildAutenticidadeColuna(
-                "AUTENTICIDADE — FUNCIONÁRIO",
-                assinatura.assinadoFuncionarioEm,
-                assinatura.assinadoFuncionarioIp,
-                matricula,
-                periodo
-              )
-            ]
-          },
-          { width: 8, text: "" },
-          {
-            width: "*",
-            stack: [
-              buildAutenticidadeColuna(
-                "AUTENTICIDADE — GESTOR DA ÁREA",
-                assinatura.assinadoGestorEm,
-                assinatura.assinadoGestorIp,
-                matricula,
-                periodo
-              )
-            ]
-          }
-        ]
+        columns: soFuncionarioCiclo
+          ? [colunaFunc]
+          : [colunaFunc, { width: 8, text: "" }, colunaGestor]
       },
       {
-        text:
-          "Assinado eletronicamente pelo Sistema de Ponto Eletrônico CFO. " +
-          "A autenticidade de cada assinatura pode ser verificada confrontando o código SHA-256 " +
-          "com o IP e horário registrados na base do sistema. " +
-          "Qualquer alteração no conteúdo invalida os códigos de validação.",
+        text: soFuncionarioCiclo
+          ? "Assinado eletronicamente pelo funcionário no Sistema de Ponto Eletrônico CFO. " +
+            "O documento assinado fica disponível ao RH. " +
+            "A autenticidade pode ser verificada confrontando o código SHA-256 " +
+            "com o IP e horário registrados na base do sistema. " +
+            "Qualquer alteração no conteúdo invalida o código de validação."
+          : "Assinado eletronicamente pelo Sistema de Ponto Eletrônico CFO. " +
+            "A autenticidade de cada assinatura pode ser verificada confrontando o código SHA-256 " +
+            "com o IP e horário registrados na base do sistema. " +
+            "Qualquer alteração no conteúdo invalida os códigos de validação.",
         fontSize: 5.5,
         color: "#777",
         margin: [0, 4, 0, 0] as [number, number, number, number],
@@ -902,6 +1032,10 @@ function buildAutenticidade(input: QuadroPdfInput): unknown {
 }
 
 export function buildQuadroPdfDocDefinition(input: QuadroPdfInput): Record<string, unknown> {
+  const docSubtitle = input.cicloBancoHoras
+    ? "RELATÓRIO DO CICLO DE BANCO DE HORAS"
+    : "QUADRO DE REGISTRO DE PONTO";
+  const sectionRegistros = input.cicloBancoHoras ? "Registros do Ciclo" : "Registros do Mês";
   return {
     pageSize: "A4",
     pageMargins: [25, 22, 25, 28],
@@ -939,11 +1073,14 @@ export function buildQuadroPdfDocDefinition(input: QuadroPdfInput): Record<strin
       totalValue: { fontSize: 9, bold: true, color: "#111111" }
     },
     content: [
-      buildHeader(input.logoBase64),
+      buildHeader(input.logoBase64, docSubtitle),
       buildFuncionarioCard(input),
-      { text: "Registros do Mês", style: "sectionTitle" },
+      { text: sectionRegistros, style: "sectionTitle" },
       buildTabelaDias(input),
       buildTotais(input),
+      ...(input.cicloBancoHoras?.mesesResumo?.length
+        ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
+        : []),
       buildAssinaturas(input)
     ],
     footer: () => ({
@@ -991,125 +1128,139 @@ export function buildRascunhoPdfDocDefinition(input: QuadroPdfInput): Record<str
     totalValue: { fontSize: 9, bold: true, color: "#111111" }
   };
 
+  const colunaFuncionarioRascunho = {
+    width: "*" as const,
+    stack: [
+      {
+        table: {
+          widths: ["*"],
+          body: [
+            [
+              {
+                stack: [
+                  {
+                    text: "FUNCIONÁRIO",
+                    fontSize: 7,
+                    bold: true,
+                    color: "#6B0F1A",
+                    margin: [0, 0, 0, 32] as [number, number, number, number]
+                  },
+                  {
+                    canvas: [
+                      {
+                        type: "line",
+                        x1: 0,
+                        y1: 0,
+                        x2: 220,
+                        y2: 0,
+                        lineWidth: 0.6,
+                        lineColor: "#9CA3AF"
+                      }
+                    ]
+                  },
+                  {
+                    text: input.funcionario.user.name,
+                    fontSize: 6.5,
+                    color: "#555",
+                    margin: [0, 2, 0, 0] as [number, number, number, number]
+                  },
+                  {
+                    text: `Matrícula: ${input.funcionario.matricula ?? "—"}`,
+                    fontSize: 6,
+                    color: "#888",
+                    margin: [0, 1, 0, 0] as [number, number, number, number]
+                  }
+                ],
+                border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
+                margin: [8, 6, 8, 8] as [number, number, number, number]
+              }
+            ]
+          ]
+        },
+        layout: {
+          hLineWidth: () => 0.5,
+          vLineWidth: () => 0.5,
+          hLineColor: () => "#D1D5DB",
+          vLineColor: () => "#D1D5DB"
+        }
+      }
+    ]
+  };
+
+  const colunaGestorRascunho = {
+    width: "*" as const,
+    stack: [
+      {
+        table: {
+          widths: ["*"],
+          body: [
+            [
+              {
+                stack: [
+                  {
+                    text: "GESTOR DA ÁREA",
+                    fontSize: 7,
+                    bold: true,
+                    color: "#374151",
+                    margin: [0, 0, 0, 32] as [number, number, number, number]
+                  },
+                  {
+                    canvas: [
+                      {
+                        type: "line",
+                        x1: 0,
+                        y1: 0,
+                        x2: 220,
+                        y2: 0,
+                        lineWidth: 0.6,
+                        lineColor: "#9CA3AF"
+                      }
+                    ]
+                  },
+                  {
+                    text: input.funcionario.gerencia
+                      ? `${input.funcionario.gerencia.nome} (${input.funcionario.gerencia.sigla})`
+                      : "—",
+                    fontSize: 6.5,
+                    color: "#555",
+                    margin: [0, 2, 0, 0] as [number, number, number, number]
+                  }
+                ],
+                border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
+                margin: [8, 6, 8, 8] as [number, number, number, number]
+              }
+            ]
+          ]
+        },
+        layout: {
+          hLineWidth: () => 0.5,
+          vLineWidth: () => 0.5,
+          hLineColor: () => "#D1D5DB",
+          vLineColor: () => "#D1D5DB"
+        }
+      }
+    ]
+  };
+
+  const soFuncionarioCiclo = !!input.cicloBancoHoras;
+
   const assinaturaManual = {
     stack: [
       { text: "Assinaturas", style: "sectionTitle" },
+      ...(soFuncionarioCiclo
+        ? [
+            {
+              text: "Neste relatório de ciclo, apenas o funcionário assina. O documento assinado fica disponível ao RH.",
+              fontSize: 6.5,
+              color: "#6B7280",
+              margin: [0, 0, 0, 6] as [number, number, number, number]
+            }
+          ]
+        : []),
       {
-        columns: [
-          {
-            width: "*",
-            stack: [
-              {
-                table: {
-                  widths: ["*"],
-                  body: [
-                    [
-                      {
-                        stack: [
-                          {
-                            text: "FUNCIONÁRIO",
-                            fontSize: 7,
-                            bold: true,
-                            color: "#6B0F1A",
-                            margin: [0, 0, 0, 32] as [number, number, number, number]
-                          },
-                          {
-                            canvas: [
-                              {
-                                type: "line",
-                                x1: 0,
-                                y1: 0,
-                                x2: 220,
-                                y2: 0,
-                                lineWidth: 0.6,
-                                lineColor: "#9CA3AF"
-                              }
-                            ]
-                          },
-                          {
-                            text: input.funcionario.user.name,
-                            fontSize: 6.5,
-                            color: "#555",
-                            margin: [0, 2, 0, 0] as [number, number, number, number]
-                          },
-                          {
-                            text: `Matrícula: ${input.funcionario.matricula ?? "—"}`,
-                            fontSize: 6,
-                            color: "#888",
-                            margin: [0, 1, 0, 0] as [number, number, number, number]
-                          }
-                        ],
-                        border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
-                        margin: [8, 6, 8, 8] as [number, number, number, number]
-                      }
-                    ]
-                  ]
-                },
-                layout: {
-                  hLineWidth: () => 0.5,
-                  vLineWidth: () => 0.5,
-                  hLineColor: () => "#D1D5DB",
-                  vLineColor: () => "#D1D5DB"
-                }
-              }
-            ]
-          },
-          { width: 8, text: "" },
-          {
-            width: "*",
-            stack: [
-              {
-                table: {
-                  widths: ["*"],
-                  body: [
-                    [
-                      {
-                        stack: [
-                          {
-                            text: "GESTOR DA ÁREA",
-                            fontSize: 7,
-                            bold: true,
-                            color: "#374151",
-                            margin: [0, 0, 0, 32] as [number, number, number, number]
-                          },
-                          {
-                            canvas: [
-                              {
-                                type: "line",
-                                x1: 0,
-                                y1: 0,
-                                x2: 220,
-                                y2: 0,
-                                lineWidth: 0.6,
-                                lineColor: "#9CA3AF"
-                              }
-                            ]
-                          },
-                          {
-                            text: input.funcionario.gerencia
-                              ? `${input.funcionario.gerencia.nome} (${input.funcionario.gerencia.sigla})`
-                              : "—",
-                            fontSize: 6.5,
-                            color: "#555",
-                            margin: [0, 2, 0, 0] as [number, number, number, number]
-                          }
-                        ],
-                        border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
-                        margin: [8, 6, 8, 8] as [number, number, number, number]
-                      }
-                    ]
-                  ]
-                },
-                layout: {
-                  hLineWidth: () => 0.5,
-                  vLineWidth: () => 0.5,
-                  hLineColor: () => "#D1D5DB",
-                  vLineColor: () => "#D1D5DB"
-                }
-              }
-            ]
-          }
-        ]
+        columns: soFuncionarioCiclo
+          ? [colunaFuncionarioRascunho]
+          : [colunaFuncionarioRascunho, { width: 8, text: "" }, colunaGestorRascunho]
       }
     ],
     margin: [0, 0, 0, 0] as [number, number, number, number],
@@ -1123,11 +1274,22 @@ export function buildRascunhoPdfDocDefinition(input: QuadroPdfInput): Record<str
     watermark: { text: "RASCUNHO", color: "#6B0F1A", opacity: 0.055, bold: true, fontSize: 90 },
     styles: STYLES,
     content: [
-      buildHeader(input.logoBase64),
+      buildHeader(
+        input.logoBase64,
+        input.cicloBancoHoras
+          ? "RELATÓRIO DO CICLO DE BANCO DE HORAS"
+          : "QUADRO DE REGISTRO DE PONTO"
+      ),
       buildFuncionarioCard(input),
-      { text: "Registros do Mês", style: "sectionTitle" },
+      {
+        text: input.cicloBancoHoras ? "Registros do Ciclo" : "Registros do Mês",
+        style: "sectionTitle"
+      },
       buildTabelaDias(input),
       buildTotais(input),
+      ...(input.cicloBancoHoras?.mesesResumo?.length
+        ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
+        : []),
       assinaturaManual
     ],
     footer: () => ({

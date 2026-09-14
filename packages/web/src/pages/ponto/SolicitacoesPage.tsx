@@ -14,10 +14,16 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import {
   FeriasDetalheBlock,
   LinkDocumentoAnexado,
+  LogTimelineGestor,
   textoCorrecaoPontoFuncionario
 } from "./solicitacaoUi";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
-import { hojeBrasiliaISO, normalizarHorarioParcial } from "../../utils/horario-brasilia";
+import {
+  hojeBrasiliaISO,
+  instanteCivilBrasilia,
+  normalizarHorarioParcial,
+  somarDiasCivil
+} from "../../utils/horario-brasilia";
 import { InputHorario } from "../../components/ponto/InputHorario";
 
 /* ══════════════════════════════════════════
@@ -55,7 +61,10 @@ interface Solicitacao {
   apenasInformativo?: boolean;
   observacaoGestor?: string;
   gestorObservacao?: string;
+  gestorResolvidoEm?: string | null;
+  gestorUser?: { name: string } | null;
   rhObservacao?: string;
+  rhResolvidoEm?: string | null;
   resolvidoEm?: string;
   guiaMedicoUrl?: string | null;
   guiaMedicoEnviadaEm?: string | null;
@@ -164,15 +173,15 @@ function diffDias(inicio: string, fim: string): number {
 function mensagemStatusCorrecaoPonto(status: StatusSolicitacao): string {
   switch (status) {
     case "PENDENTE":
-      return "Enviada ao seu gestor de área. Você será notificado quando houver uma decisão.";
+      return "Enviada ao seu chefe de área. Você será notificado quando houver uma decisão.";
     case "AGUARDANDO_RH":
-      return "Aprovada pelo gestor e encaminhada ao RH. Após a aálise final, seu ponto será atualizado automaticamente.";
+      return "Aprovada pelo chefe e encaminhada ao RH. Após a análise final, seu ponto será atualizado automaticamente.";
     case "APROVADA":
-      return "Aprovada pelo gestor e pelo RH. Seu histórico de ponto já reflete a alteração solicitada.";
+      return "Aprovada pelo chefe e pelo RH. Seu histórico de ponto já reflete a alteração solicitada.";
     case "REJEITADA_GESTOR":
-      return "Rejeitada pelo gestor de área. Confira o motivo abaixo; se precisar, você pode abrir uma nova solicitação.";
+      return "Rejeitada pelo chefe de área. Confira o motivo abaixo; se precisar, você pode abrir uma nova solicitação.";
     case "REJEITADA_RH":
-      return "Aprovada pelo gestor, mas rejeitada pelo RH na análise final. Confira o motivo abaixo.";
+      return "Aprovada pelo chefe, mas rejeitada pelo RH na análise final. Confira o motivo abaixo.";
     case "REJEITADA":
       return "Solicitação rejeitada. Confira as observações abaixo.";
     default:
@@ -182,12 +191,12 @@ function mensagemStatusCorrecaoPonto(status: StatusSolicitacao): string {
 
 function StatusBadge({ status }: { status: StatusSolicitacao }) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
-    PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
+    PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguardando seu documento", cls: "badge-amber" },
     APROVADA: { label: "Aprovada", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
-    REJEITADA_GESTOR: { label: "Rejeitada pelo Gestor", cls: "badge-red" },
+    REJEITADA_GESTOR: { label: "Rejeitada pelo Chefe", cls: "badge-red" },
     REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" },
     CANCELADA: { label: "Cancelada (substituída)", cls: "badge-amber" }
   };
@@ -333,6 +342,7 @@ function FormCorrecaoPonto({
   const [horarioMax, setHorarioMax] = useState("23:59");
   const [semIntervaloAlmoco, setSemIntervaloAlmoco] = useState(false);
   const hojeIso = hojeBrasiliaISO();
+  const ontemIso = somarDiasCivil(hojeIso, -1);
 
   /* Horários desejados para cada tipo — "" = sem alteração */
   const [horarios, setHorarios] = useState<Record<string, string>>({
@@ -436,10 +446,10 @@ function FormCorrecaoPonto({
   const temErro = Object.keys(erros).length > 0;
 
   const handleSubmit = () => {
-    if (!dataRef || !descricao || !temAlteracao || temErro) return;
+    if (!dataRef || dataRef >= hojeIso || !descricao || !temAlteracao || temErro) return;
     onSubmit({
       tipo: "CORRECAO_PONTO",
-      dataReferencia: new Date(dataRef + "T12:00:00").toISOString(),
+      dataReferencia: instanteCivilBrasilia(dataRef, "12:00:00").toISOString(),
       descricao,
       metadados: { correcoesDia }
     });
@@ -471,12 +481,34 @@ function FormCorrecaoPonto({
           style={{ ...input, maxWidth: 200 }}
           value={dataRef}
           onChange={(e) => setDataRef(e.target.value)}
-          max={hojeIso}
+          max={ontemIso}
         />
+        <p style={{ fontSize: 11.5, color: "var(--ink-400)", margin: "6px 0 0" }}>
+          Somente dias anteriores ao dia de hoje. O dia corrente e datas futuras não podem ser
+          corrigidos.
+        </p>
       </div>
 
+      {dataRef && !diaFechado && (
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--red)",
+            margin: 0,
+            padding: "10px 12px",
+            background: "rgba(200,57,63,0.06)",
+            border: "1px solid rgba(200,57,63,0.18)",
+            borderRadius: "var(--radius-md)",
+            lineHeight: 1.45
+          }}
+        >
+          Correção de ponto só é permitida para dias anteriores. O dia de hoje ainda não está
+          fechado — aguarde o dia seguinte.
+        </p>
+      )}
+
       {/* Tabela de horários */}
-      {dataRef && (
+      {dataRef && diaFechado && (
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <p
             style={{
@@ -652,7 +684,7 @@ function FormCorrecaoPonto({
               {correcoesDia.length} {correcoesDia.length !== 1 ? "alterações" : "alteração"}{" "}
               detectada
               {correcoesDia.length !== 1 ? "s" : ""} — será enviada como uma única solicitação ao
-              gestor.
+              chefe.
             </p>
           )}
 
@@ -679,7 +711,7 @@ function FormCorrecaoPonto({
 
       <button
         className="btn btn-primary"
-        disabled={enviando || !dataRef || !descricao || !temAlteracao || temErro}
+        disabled={enviando || !diaFechado || !descricao || !temAlteracao || temErro}
         onClick={handleSubmit}
       >
         {enviando ? "Enviando…" : "Enviar Solicitação"}
@@ -898,9 +930,9 @@ function FormAtestado({
     if (!dataInicio || !descricao) return;
     onSubmit({
       tipo: "ATESTADO",
-      dataReferencia: new Date(dataInicio + "T12:00:00").toISOString(),
-      dataInicio: new Date(dataInicio + "T00:00:00").toISOString(),
-      dataFim: new Date((dataFim || dataInicio) + "T23:59:59").toISOString(),
+      dataReferencia: new Date(dataInicio + "T12:00:00-03:00").toISOString(),
+      dataInicio: new Date(dataInicio + "T00:00:00-03:00").toISOString(),
+      dataFim: new Date((dataFim || dataInicio) + "T23:59:59.999-03:00").toISOString(),
       descricao,
       metadados: {
         horarioInicio: diaUnico ? normalizarHorarioParcial(horaInicio) || horaInicio || null : null,
@@ -944,9 +976,7 @@ function FormAtestado({
             onChange={(e) => {
               const novoInicio = e.target.value;
               setDataInicio(novoInicio);
-              if (!dataFim) {
-                setDataFim(novoInicio);
-              } else if (dataFim !== novoInicio) {
+              if (dataFim && dataFim !== novoInicio) {
                 setHoraInicio("");
                 setHoraFim("");
               }
@@ -1063,9 +1093,9 @@ function FormAtestado({
                 ⚠️ Atestado com homologação necessária ({limite + 1}–{limiteInss - 1} dias)
               </p>
               <p style={{ fontSize: 12.5, color: "#92400e", margin: "0 0 8px" }}>
-                Após a aprovação do seu gestor, o RH avaliará se este atestado precisa de uma Guia
-                do Médico do Trabalho. Caso seja necessário, o RH enviará a guia específica
-                diretamente nesta solicitação e você poderá acompanhá-la aqui.
+                Após a aprovação do seu chefe, o RH avaliará se este atestado precisa de uma Guia do
+                Médico do Trabalho. Caso seja necessário, o RH enviará a guia específica diretamente
+                nesta solicitação e você poderá acompanhá-la aqui.
               </p>
               <p style={{ fontSize: 12.5, color: "#92400e", margin: "6px 0 0" }}>
                 {config.atestadoMensagemOriginais}
@@ -1345,12 +1375,10 @@ function FormFerias({
     // Reset proposital ao trocar ciclo (deps incompletas de propósito).
   }, [cicloSelecionado]);
 
-  const hoje = new Date();
-  const minData = new Date(hoje);
-  if (!isEstagiario) {
-    minData.setDate(minData.getDate() + cfg.feriasAntecedenciaMinDias);
-  }
-  const minDataStr = minData.toISOString().slice(0, 10);
+  const hojeIso = hojeBrasiliaISO();
+  const minDataStr = isEstagiario
+    ? hojeIso
+    : somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
 
   const periodosPreenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
   const totalDiasGozo = periodosPreenchidos.reduce((s, p) => s + p.dias, 0);
@@ -1438,7 +1466,7 @@ function FormFerias({
 
     preenchidos.forEach((p) => {
       const i = periodos.indexOf(p);
-      if (new Date(p.dataInicio) < minData)
+      if (p.dataInicio < minDataStr)
         errs.push(
           `Período ${i + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
         );
@@ -1476,7 +1504,7 @@ function FormFerias({
     maxVenda,
     maxPeriodosGozo,
     cfg,
-    minData
+    minDataStr
   ]);
 
   const podeEnviar =
@@ -1499,9 +1527,9 @@ function FormFerias({
     const ultimoFim = preenchidos.reduce((m, p) => (!m || p.dataFim > m ? p.dataFim : m), "");
     onSubmit({
       tipo: "FERIAS",
-      dataReferencia: new Date(primeiroInicio + "T12:00:00").toISOString(),
-      dataInicio: new Date(primeiroInicio + "T00:00:00").toISOString(),
-      dataFim: new Date(ultimoFim + "T23:59:59").toISOString(),
+      dataReferencia: instanteCivilBrasilia(primeiroInicio, "12:00:00").toISOString(),
+      dataInicio: instanteCivilBrasilia(primeiroInicio, "00:00:00").toISOString(),
+      dataFim: instanteCivilBrasilia(ultimoFim, "23:59:59").toISOString(),
       descricao,
       metadados: {
         periodos: preenchidos.map((p) => ({
@@ -2216,12 +2244,10 @@ function FormFeriasAlteracao({
   const cicloOriginal =
     cicloNumero ?? (metaOriginal?.cicloNumero != null ? Number(metaOriginal.cicloNumero) : null);
 
-  const hoje = new Date();
-  const minAlteracao = new Date(hoje);
-  if (!isEstagiario) {
-    minAlteracao.setDate(minAlteracao.getDate() + cfg.feriasAntecedenciaMinDias);
-  }
-  const minDataStr = minAlteracao.toISOString().slice(0, 10);
+  const hojeIso = hojeBrasiliaISO();
+  const minDataStr = isEstagiario
+    ? hojeIso
+    : somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
 
   type PeriodoAlt = { dataInicio: string; dataFim: string; dias: number; bloqueado: boolean };
   const [periodos, setPeriodos] = useState<PeriodoAlt[]>(() =>
@@ -2230,7 +2256,7 @@ function FormFeriasAlteracao({
       dataFim: p.dataFim.slice(0, 10),
       dias: p.dias,
       /* Estagiário: única regra é o saldo de 30 dias/ciclo — períodos sempre editáveis */
-      bloqueado: isEstagiario ? false : new Date(p.dataInicio) <= minAlteracao
+      bloqueado: isEstagiario ? false : p.dataInicio.slice(0, 10) <= minDataStr
     }))
   );
   const [descricao, setDescricao] = useState("");
@@ -2264,7 +2290,7 @@ function FormFeriasAlteracao({
 
     editaveis.forEach((p) => {
       if (!p.dataInicio || !p.dataFim) return;
-      if (new Date(p.dataInicio) <= minAlteracao)
+      if (p.dataInicio <= minDataStr)
         errs.push(
           `Período ${periodos.indexOf(p) + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
         );
@@ -2284,7 +2310,7 @@ function FormFeriasAlteracao({
       );
     }
     setErros(errs);
-  }, [periodos, cfg, minAlteracao, isEstagiario]);
+  }, [periodos, cfg, minDataStr, isEstagiario]);
 
   const podeEnviar =
     periodos.some((p) => !p.bloqueado) &&
@@ -2301,9 +2327,9 @@ function FormFeriasAlteracao({
     const totalDiasGozo = periodos.reduce((s, p) => s + p.dias, 0);
     onSubmit({
       tipo: "FERIAS",
-      dataReferencia: new Date(primeiroInicio + "T12:00:00").toISOString(),
-      dataInicio: new Date(primeiroInicio + "T00:00:00").toISOString(),
-      dataFim: new Date(ultimoFim + "T23:59:59").toISOString(),
+      dataReferencia: instanteCivilBrasilia(primeiroInicio, "12:00:00").toISOString(),
+      dataInicio: instanteCivilBrasilia(primeiroInicio, "00:00:00").toISOString(),
+      dataFim: instanteCivilBrasilia(ultimoFim, "23:59:59").toISOString(),
       descricao,
       metadados: {
         periodos: periodos.map((p) => ({
@@ -2562,9 +2588,9 @@ function FormSimples({
         : {};
     onSubmit({
       tipo,
-      dataReferencia: new Date(dataInicio + "T12:00:00").toISOString(),
-      dataInicio: new Date(dataInicio + "T00:00:00").toISOString(),
-      dataFim: new Date((dataFim || dataInicio) + "T23:59:59").toISOString(),
+      dataReferencia: new Date(dataInicio + "T12:00:00-03:00").toISOString(),
+      dataInicio: new Date(dataInicio + "T00:00:00-03:00").toISOString(),
+      dataFim: new Date((dataFim || dataInicio) + "T23:59:59.999-03:00").toISOString(),
       descricao,
       metadados
     });
@@ -2599,9 +2625,7 @@ function FormSimples({
             onChange={(e) => {
               const novoInicio = e.target.value;
               setDataInicio(novoInicio);
-              if (!dataFim) {
-                setDataFim(novoInicio);
-              } else if (isAbono && dataFim !== novoInicio) {
+              if (isAbono && dataFim && dataFim !== novoInicio) {
                 setHoraInicio("");
                 setHoraFim("");
               }
@@ -2792,7 +2816,7 @@ function FormDayOff({
   // Se for o mês atual, min = hoje; caso contrário, min = primeiro dia do mês
   const ehMesAtual = mesHoje === mes && anoDayOff === hoje.getFullYear();
   const minData = ehMesAtual
-    ? hoje.toISOString().slice(0, 10)
+    ? hojeBrasiliaISO()
     : `${anoDayOff}-${String(mes + 1).padStart(2, "0")}-01`;
   const maxData = `${anoDayOff}-${String(mes + 1).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
   const nomeMes = aniversario.toLocaleDateString("pt-BR", { month: "long", timeZone: "UTC" });
@@ -2801,9 +2825,9 @@ function FormDayOff({
     if (!dataEscolhida || !descricao) return;
     onSubmit({
       tipo: "DAY_OFF",
-      dataReferencia: new Date(dataEscolhida + "T12:00:00").toISOString(),
-      dataInicio: new Date(dataEscolhida + "T00:00:00").toISOString(),
-      dataFim: new Date(dataEscolhida + "T23:59:59").toISOString(),
+      dataReferencia: instanteCivilBrasilia(dataEscolhida, "12:00:00").toISOString(),
+      dataInicio: instanteCivilBrasilia(dataEscolhida, "00:00:00").toISOString(),
+      dataFim: instanteCivilBrasilia(dataEscolhida, "23:59:59").toISOString(),
       descricao,
       metadados: { mesAniversario: mes + 1 }
     });
@@ -2878,7 +2902,7 @@ function FormHoraExtra({
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
 }) {
-  const hoje = new Date().toISOString().slice(0, 10);
+  const hoje = hojeBrasiliaISO();
   /* Limite mínimo configurado (em minutos) — carregado da API; 120 enquanto carrega */
   const [limiteMin, setLimiteMin] = useState<number>(120);
   const [cfgCarregada, setCfgCarregada] = useState(false);
@@ -2936,9 +2960,9 @@ function FormHoraExtra({
     if (!data || !descricao.trim() || totalMin < limiteMin) return;
     onSubmit({
       tipo: "HORA_EXTRA",
-      dataReferencia: new Date(data + "T12:00:00").toISOString(),
-      dataInicio: new Date(data + "T00:00:00").toISOString(),
-      dataFim: new Date(data + "T23:59:59").toISOString(),
+      dataReferencia: instanteCivilBrasilia(data, "12:00:00").toISOString(),
+      dataInicio: instanteCivilBrasilia(data, "00:00:00").toISOString(),
+      dataFim: instanteCivilBrasilia(data, "23:59:59").toISOString(),
       descricao: descricao.trim(),
       metadados: { automatica: false, horasExtraMinutos: totalMin }
     });
@@ -2958,7 +2982,7 @@ function FormHoraExtra({
         }}
       >
         ⏱️ Use este formulário para solicitar <strong>antecipadamente</strong> horas extras ao seu
-        gestor. O mínimo permitido é <strong>{cfgCarregada ? limiteLabel : "…"}</strong>, conforme
+        chefe. O mínimo permitido é <strong>{cfgCarregada ? limiteLabel : "…"}</strong>, conforme
         configuração do sistema.
       </div>
 
@@ -3277,7 +3301,7 @@ function AlterarFeriasModal({
           <div style={{ textAlign: "center", padding: "52px 28px" }}>
             <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
             <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>Alteração enviada!</p>
-            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Aguardando análise do gestor.</p>
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Aguardando análise do chefe.</p>
           </div>
         ) : (
           <>
@@ -3424,7 +3448,7 @@ function NovaModal({
             <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
               {tipo === "ENVIO_DOCUMENTO_RH"
                 ? "Documento encaminhado ao RH para análise."
-                : "Aguardando análise do gestor."}
+                : "Aguardando análise do chefe."}
             </p>
           </div>
         ) : (
@@ -4080,6 +4104,36 @@ function SolicitacaoCard({
           );
         })()}
 
+      {(s.gestorResolvidoEm ||
+        s.status === "AGUARDANDO_RH" ||
+        s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" ||
+        s.status === "APROVADA" ||
+        s.status === "REJEITADA_RH" ||
+        s.status === "REJEITADA_GESTOR") &&
+        s.tipo !== "ENVIO_DOCUMENTO_RH" && (
+          <LogTimelineGestor
+            s={{
+              id: s.id,
+              tipo: s.tipo,
+              status: s.status,
+              dataReferencia: s.dataReferencia,
+              dataInicio: s.dataInicio,
+              dataFim: s.dataFim,
+              descricao: s.descricao,
+              metadados: s.metadados,
+              createdAt: s.createdAt,
+              gestorObservacao: s.gestorObservacao,
+              gestorResolvidoEm: s.gestorResolvidoEm,
+              gestorUser: s.gestorUser,
+              rhObservacao: s.rhObservacao,
+              rhResolvidoEm: s.rhResolvidoEm,
+              funcionario: {
+                user: { name: "" }
+              }
+            }}
+          />
+        )}
+
       {(s.gestorObservacao || s.rhObservacao || s.observacaoGestor) && (
         <div
           style={{
@@ -4104,7 +4158,7 @@ function SolicitacaoCard({
           </p>
           {s.gestorObservacao && (
             <p style={{ fontSize: 12, color: "#1e40af", margin: "0 0 4px", lineHeight: 1.45 }}>
-              <strong>Gestor:</strong> {s.gestorObservacao}
+              <strong>Chefe:</strong> {s.gestorObservacao}
             </p>
           )}
           {s.rhObservacao && (
@@ -4181,7 +4235,7 @@ export function SolicitacoesPage() {
     { v: "AGUARDANDO_RH", l: "Aguardando RH" },
     { v: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", l: "Aguardando seu documento" },
     { v: "APROVADA", l: "Aprovadas" },
-    { v: "REJEITADA_GESTOR", l: "Rej. Gestor" },
+    { v: "REJEITADA_GESTOR", l: "Rej. Chefe" },
     { v: "REJEITADA_RH", l: "Rej. RH" }
   ];
 

@@ -84,6 +84,16 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Aceita o ponto se a distância estiver no raio, com margem limitada pela precisão do GPS. */
+function dentroDoRaio(dist: number, raio: number, accuracy: number): boolean {
+  const margem = Math.min(Math.max(0, accuracy), Math.max(50, raio));
+  return dist <= raio + margem;
+}
+
+function origemDispositivo(modoViewport: ModoRegistro): "MOBILE" | "DESKTOP" {
+  return modoViewport === "DESKTOP" ? "DESKTOP" : "MOBILE";
+}
+
 async function getPublicIP(): Promise<string> {
   try {
     const r = await fetch("https://api.ipify.org?format=json", {
@@ -124,6 +134,7 @@ export function usePontoRegistration() {
       /* ── 1. Geolocalização ── */
       let latitude: number | undefined;
       let longitude: number | undefined;
+      let precisaoGps: number | undefined;
       let dentroPerimetro: boolean | undefined;
       let distanciaMetros: number | undefined;
 
@@ -173,44 +184,41 @@ export function usePontoRegistration() {
           latitude = pos.coords.latitude;
           longitude = pos.coords.longitude;
           const accuracy = Math.round(pos.coords.accuracy);
+          precisaoGps = accuracy;
 
           /* ── Modo remoto: verifica residencial primeiro, depois sede ── */
           if (temModoRemoto) {
             const er = cfg.enderecoResidencial;
 
             let dentroResidencial = false;
-            if (er?.lat && er?.lng) {
-              const distRes = haversine(latitude, longitude, er.lat, er.lng);
-              if (accuracy > er.raioMetros * 4) {
-                setErro(
-                  `Precisão do GPS insuficiente (±${accuracy}m) para verificar o raio de ${er.raioMetros}m.\n\n` +
-                    "Ative localização precisa:\n" +
-                    "• Android: Configurações → Localização → Precisão de localização → ativar\n" +
-                    "• Android Chrome: barra de endereço 🔒 → Permissões → Localização → Localização precisa\n" +
-                    "• iPhone: Ajustes → Privacidade → Serviços de Localização → Safari/Chrome → Precisão Total → ativar"
-                );
-                setLoading(false);
-                return null;
-              }
-              dentroResidencial = distRes <= er.raioMetros;
+            if (er?.lat != null && er?.lng != null) {
+              const distRes = haversine(latitude, longitude, Number(er.lat), Number(er.lng));
+              dentroResidencial = dentroDoRaio(distRes, er.raioMetros ?? 20, accuracy);
             }
 
             if (dentroResidencial) {
               /* 1. Dentro de casa */
-              distanciaMetros = Math.round(haversine(latitude, longitude, er!.lat!, er!.lng!));
+              distanciaMetros = Math.round(
+                haversine(latitude, longitude, Number(er!.lat!), Number(er!.lng!))
+              );
               dentroPerimetro = true;
+              params = { ...params, modo: modoEfetivo as ModoRegistro };
             } else {
               /* 2. Tenta sede */
               const distSede = haversine(latitude, longitude, cfg.lat, cfg.lng);
-              if (distSede <= cfg.raioMetros) {
+              if (dentroDoRaio(distSede, cfg.raioMetros, accuracy)) {
                 distanciaMetros = Math.round(distSede);
                 dentroPerimetro = true;
                 params = { ...params, modo: "MOBILE" };
               } else {
                 /* 3. Tenta áreas de viagem */
                 const areas = cfg.areasViagem ?? [];
-                const areaOk = areas.find(
-                  (a) => haversine(latitude!, longitude!, a.lat, a.lng) <= a.raioMetros
+                const areaOk = areas.find((a) =>
+                  dentroDoRaio(
+                    haversine(latitude!, longitude!, a.lat, a.lng),
+                    a.raioMetros,
+                    accuracy
+                  )
                 );
                 if (areaOk) {
                   distanciaMetros = Math.round(
@@ -220,10 +228,12 @@ export function usePontoRegistration() {
                   params = { ...params, modo: "VIAGEM" };
                 } else {
                   const raioRes = er?.raioMetros ?? 20;
-                  const msgRes = er?.lat
-                    ? ` e a mais de ${raioRes}m do endereço residencial`
-                    : " (endereço residencial sem coordenadas)";
-                  const msgAreas = areas.length > 0 ? " e fora das áreas de viagem" : "";
+                  const msgRes =
+                    er?.lat != null
+                      ? ` e a mais de ${raioRes}m do endereço residencial`
+                      : " (endereço residencial sem coordenadas)";
+                  const msgAreas =
+                    areas.length > 0 || cfg.modoViagem ? " e fora das áreas de viagem" : "";
                   setErro(
                     `Você está a ${Math.round(distSede)}m do CFO${msgRes}${msgAreas}.\n` +
                       `Deve estar na sede, em casa ou em uma área de viagem para registrar o ponto.`
@@ -234,25 +244,33 @@ export function usePontoRegistration() {
               }
             }
           } else {
-            /* ── Modo sede: valida contra CFO ── */
+            /* ── Modo sede: valida contra CFO, depois áreas de viagem ── */
             const dist = haversine(latitude, longitude, cfg.lat, cfg.lng);
             distanciaMetros = Math.round(dist);
-            dentroPerimetro = dist <= cfg.raioMetros;
+            dentroPerimetro = dentroDoRaio(dist, cfg.raioMetros, accuracy);
 
-            if (modo === "MOBILE" && cfg.mobileCheckGeo) {
-              if (accuracy > cfg.raioMetros * 4) {
-                setErro(
-                  `Precisão do GPS insuficiente (±${accuracy}m) para verificar o perímetro de ${cfg.raioMetros}m.\n\n` +
-                    '• Android: Configurações → Apps → [Navegador] → Permissões → Localização → alterar para "Localização precisa"\n' +
-                    "• Ative também: Configurações → Localização → Precisão de localização"
+            if (modo === "MOBILE" && cfg.mobileCheckGeo && !dentroPerimetro) {
+              const areas = cfg.areasViagem ?? [];
+              const areaOk =
+                cfg.modoViagem &&
+                areas.find((a) =>
+                  dentroDoRaio(
+                    haversine(latitude!, longitude!, a.lat, a.lng),
+                    a.raioMetros,
+                    accuracy
+                  )
                 );
-                setLoading(false);
-                return null;
-              }
-              if (!dentroPerimetro) {
+              if (areaOk) {
+                distanciaMetros = Math.round(
+                  haversine(latitude, longitude, areaOk.lat, areaOk.lng)
+                );
+                dentroPerimetro = true;
+                params = { ...params, modo: "VIAGEM" };
+              } else {
                 setErro(
                   `Você está a ${distanciaMetros}m do CFO. ` +
-                    `O registro mobile exige estar dentro do raio de ${cfg.raioMetros}m.`
+                    `O registro mobile exige estar dentro do raio de ${cfg.raioMetros}m` +
+                    (cfg.modoViagem ? " ou em uma área de viagem." : ".")
                 );
                 setLoading(false);
                 return null;
@@ -260,11 +278,6 @@ export function usePontoRegistration() {
             }
           }
         }
-      }
-
-      /* Sobrepõe modo para registro remoto */
-      if (temModoRemoto) {
-        params = { ...params, modo: modoEfetivo as ModoRegistro };
       }
 
       /* ── 2. IP público (desktop) ── */
@@ -286,8 +299,9 @@ export function usePontoRegistration() {
               tipo: params.tipo,
               latitude,
               longitude,
-              origem: modoFinal,
+              origem: origemDispositivo(modo),
               modoRegistro: modoFinal,
+              precisaoMetros: precisaoGps,
               ipOrigem: ipOrigem || undefined,
               fotoBase64: params.foto || undefined
             },

@@ -30,7 +30,7 @@ const PAPEIS_DISPONIVEIS = [
   },
   {
     valor: "GESTOR_APROVACAO",
-    label: "Gestor / Aprovador",
+    label: "Chefe / Aprovador",
     cor: "var(--blue-ink)",
     desc: "Aprova solicitações de sua equipe"
   },

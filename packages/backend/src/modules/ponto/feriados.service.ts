@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { HttpService } from "@nestjs/axios";
 import { firstValueFrom } from "rxjs";
+import { dataBrasiliaISO, somarDiasCivil } from "../../utils/horario-brasilia";
 
 export interface Feriado {
   date: string; // "YYYY-MM-DD"
@@ -37,20 +38,19 @@ export class FeriadosService {
   }
 
   async isDataVedadaFerias(data: Date, vedacaoDias = 2): Promise<boolean> {
-    const dia = data.getDay();
-    // Domingo (0) ou Sábado (6) são repouso semanal
+    const startIso = dataBrasiliaISO(data);
+    const [y0, m0, d0] = startIso.split("-").map(Number);
+    const dia = new Date(y0, m0 - 1, d0).getDay();
     if (dia === 0 || dia === 6) return true;
 
-    const ano = data.getFullYear();
+    const ano = y0;
     const feriados = await this.getFeriadosDoAno(ano);
     const fds = new Set(feriados.map((f) => f.date));
 
-    // Verifica os próximos `vedacaoDias` dias (inclusive o próprio)
     for (let i = 0; i <= vedacaoDias; i++) {
-      const d = new Date(data);
-      d.setDate(d.getDate() + i);
-      const key = d.toISOString().slice(0, 10);
-      const diaSemana = d.getDay();
+      const key = somarDiasCivil(startIso, i);
+      const [y, m, d] = key.split("-").map(Number);
+      const diaSemana = new Date(y, m - 1, d).getDay();
       if (fds.has(key) || diaSemana === 0 || diaSemana === 6) return true;
     }
     return false;

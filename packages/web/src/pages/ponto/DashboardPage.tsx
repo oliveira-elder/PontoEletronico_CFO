@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import {
   ClockIcon,
-  TrendingUpIcon,
   CheckCircleIcon,
   AlertCircleIcon,
   ArrowRightIcon,
@@ -12,13 +11,26 @@ import {
   LogInIcon,
   PauseIcon,
   PlayIcon,
-  FileTextIcon
+  FileTextIcon,
+  BarChart2Icon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
-import { formatarDataExtensoPt } from "../../utils/horario-brasilia";
+import {
+  formatarDataExtensoPt,
+  hojeBrasiliaISO,
+  horarioHHMMBrasilia
+} from "../../utils/horario-brasilia";
+import {
+  transformarHistorico,
+  marcarDiasFeriado,
+  JORNADA_PADRAO,
+  type HistoricoApiResponse,
+  type ApiFeriado,
+  type DiaRegistro
+} from "../../utils/historicoTransform";
 
 /* ─── Helpers ─── */
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -29,6 +41,17 @@ const toHM = (m: number) => {
   const abs = Math.abs(m);
   return `${sign}${Math.floor(abs / 60)}h${pad(abs % 60)}`;
 };
+
+function mesAnteriorInfo(ref = new Date()) {
+  const d = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
+  const yyyyMM = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  const mesmoAno = d.getFullYear() === ref.getFullYear();
+  const nome = d.toLocaleDateString(
+    "pt-BR",
+    mesmoAno ? { month: "long" } : { month: "long", year: "numeric" }
+  );
+  return { yyyyMM, nome: nome.charAt(0).toUpperCase() + nome.slice(1) };
+}
 
 /* ─── Types ─── */
 interface ApiStatus {
@@ -50,6 +73,12 @@ interface ApiRelatorio {
   ocultarBancoHoras?: boolean;
 }
 
+interface ApiBancoHoras {
+  saldoAtualMinutos: number;
+  proximaZeragem: string | null;
+  dias?: { data: string; saldoDiaMinutos: number }[];
+}
+
 interface DiaQuinzena {
   dia: string;
   data: string;
@@ -59,69 +88,41 @@ interface DiaQuinzena {
   status: "OK" | "PARCIAL" | "FALTA" | "FUTURO";
 }
 
-/* ─── Computa a quinzena atual (1–15 ou 16–fim) a partir dos registros ─── */
-function computeQuinzena(
-  registros: { tipo: string; dataHora: string }[],
-  today: Date
-): DiaQuinzena[] {
-  const ano = today.getFullYear();
-  const mes = today.getMonth();
-  const diaMes = today.getDate();
+/* ─── Computa a quinzena atual (1–15 ou 16–fim) a partir do histórico ─── */
+function statusQuinzena(dia: DiaRegistro): DiaQuinzena["status"] {
+  if (dia.status === "FUTURO") return "FUTURO";
+  if (dia.status === "OK") return "OK";
+  if (dia.status === "PENDENTE") return "PARCIAL";
+  if (dia.horasMin > 0) return "OK";
+  return "FALTA";
+}
+
+function computeQuinzena(diasMes: DiaRegistro[]): DiaQuinzena[] {
+  const hojeIso = hojeBrasiliaISO();
+  const [, , diaMes] = hojeIso.split("-").map(Number);
   const inicioDia = diaMes <= 15 ? 1 : 16;
-  const fimDia = diaMes <= 15 ? 15 : new Date(ano, mes + 1, 0).getDate();
+  const fimDia =
+    diaMes <= 15
+      ? 15
+      : new Date(Number(hojeIso.slice(0, 4)), Number(hojeIso.slice(5, 7)), 0).getDate();
 
-  const toMin = (iso: string) => {
-    const d = new Date(iso);
-    return d.getHours() * 60 + d.getMinutes();
-  };
-  const nomes = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
-
-  const dias: DiaQuinzena[] = [];
-  for (let diaNum = inicioDia; diaNum <= fimDia; diaNum++) {
-    const d = new Date(ano, mes, diaNum);
-    d.setHours(0, 0, 0, 0);
-    const dow = d.getDay();
-    /* Apenas dias úteis (seg–sex) */
-    if (dow === 0 || dow === 6) continue;
-
-    const isoKey = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    const dayRegs = registros.filter((r) => r.dataHora.slice(0, 10) === isoKey);
-    const isFuture = d > today;
-    const isHoje = d.toDateString() === today.toDateString();
-
-    let horasMin = 0;
-    const entradaR = dayRegs.find((r) => r.tipo === "ENTRADA");
-    const saidaR = dayRegs.find((r) => r.tipo === "SAIDA");
-    const iniAlmR = dayRegs.find((r) => r.tipo === "INICIO_INTERVALO");
-    const fimAlmR = dayRegs.find((r) => r.tipo === "FIM_INTERVALO");
-
-    if (entradaR && saidaR) {
-      const intervalo = iniAlmR && fimAlmR ? toMin(fimAlmR.dataHora) - toMin(iniAlmR.dataHora) : 0;
-      horasMin = toMin(saidaR.dataHora) - toMin(entradaR.dataHora) - intervalo;
-    } else if (entradaR) {
-      const nowMin = today.getHours() * 60 + today.getMinutes();
-      const intervalo = iniAlmR && fimAlmR ? toMin(fimAlmR.dataHora) - toMin(iniAlmR.dataHora) : 0;
-      horasMin = nowMin - toMin(entradaR.dataHora) - intervalo;
-    }
-
-    const status: DiaQuinzena["status"] = isFuture
-      ? "FUTURO"
-      : !entradaR
-        ? "FALTA"
-        : saidaR
-          ? "OK"
-          : "PARCIAL";
-
-    dias.push({
-      dia: nomes[dow],
-      data: pad(d.getDate()),
-      isoKey,
-      isHoje,
-      horasMin: Math.max(0, horasMin),
-      status
-    });
-  }
-  return dias;
+  return diasMes.flatMap((dia) => {
+    const [d, m, a] = dia.data.split("/");
+    const isoKey = `${a}-${m}-${d}`;
+    const dayNum = Number(d);
+    if (dayNum < inicioDia || dayNum > fimDia) return [];
+    if (dia.diaSemana === "Sáb" || dia.diaSemana === "Dom") return [];
+    return [
+      {
+        dia: dia.diaSemana,
+        data: pad(dayNum),
+        isoKey,
+        isHoje: isoKey === hojeIso,
+        horasMin: dia.horasMin,
+        status: statusQuinzena(dia)
+      }
+    ];
+  });
 }
 
 /** Dias com registro na quinzena profissional atual. */
@@ -159,8 +160,7 @@ function getIconForTipo(tipo: string): React.ElementType {
 }
 
 function fmtHoraCurta(iso: string) {
-  const d = new Date(iso);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return horarioHHMMBrasilia(new Date(iso));
 }
 
 const TIPO_LABEL: Record<string, string> = {
@@ -300,11 +300,11 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaQuinzena) {
 
 /* ─── Seção: Essa Quinzena ─── */
 function QuinzenaSection({ quinzena, compact }: { quinzena: DiaQuinzena[]; compact?: boolean }) {
-  const hoje = new Date();
-  const diaMes = hoje.getDate();
+  const hojeIso = hojeBrasiliaISO();
+  const [ano, mes, diaMes] = hojeIso.split("-").map(Number);
   const inicio = diaMes <= 15 ? 1 : 16;
-  const fim = diaMes <= 15 ? 15 : new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
-  const periodoLabel = `${pad(inicio)}–${pad(fim)}/${pad(hoje.getMonth() + 1)}`;
+  const fim = diaMes <= 15 ? 15 : new Date(ano, mes, 0).getDate();
+  const periodoLabel = `${pad(inicio)}–${pad(fim)}/${pad(mes)}`;
   const colunas = Math.min(Math.max(quinzena.length, 1), compact ? 5 : 10);
 
   return (
@@ -672,6 +672,7 @@ export function DashboardPage() {
 
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [relatorio, setRelatorio] = useState<ApiRelatorio | null>(null);
+  const [bancoHoras, setBancoHoras] = useState<ApiBancoHoras | null>(null);
   const [quinzena, setQuinzena] = useState<DiaQuinzena[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -686,28 +687,46 @@ export function DashboardPage() {
       if (!cancelled) setLoading(false);
     }, 20_000);
 
-    const hoje = new Date();
-    const mes = hoje.getMonth() + 1;
-    const ano = hoje.getFullYear();
+    const hojeIso = hojeBrasiliaISO();
+    const [ano, mes] = hojeIso.split("-").map(Number);
 
     Promise.all([
       api.get<ApiStatus>("/ponto/status"),
       api.get<ApiRelatorio>(`/ponto/relatorio?mes=${mes}&ano=${ano}`),
-      api.get<{ registros: { tipo: string; dataHora: string }[] }>(
-        `/ponto/historico?mes=${mes}&ano=${ano}`
-      )
+      api.get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`),
+      api.get<ApiBancoHoras>("/ponto/banco-horas").catch(() => null),
+      api.get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`).catch(() => [] as ApiFeriado[])
     ])
-      .then(([statusData, relData, histData]) => {
+      .then(([statusData, relData, histData, bancoData, feriadosCfg]) => {
         if (cancelled) return;
         setStatus(statusData);
         setRelatorio(relData);
-        const todos = [
-          ...(statusData?.registrosHoje ?? []),
-          ...(histData?.registros ?? []).filter(
-            (r) => !statusData?.registrosHoje?.some((h) => h.dataHora === r.dataHora)
-          )
-        ];
-        setQuinzena(computeQuinzena(todos, new Date()));
+        setBancoHoras(bancoData);
+        const feriados =
+          Array.isArray(feriadosCfg) && feriadosCfg.length > 0
+            ? feriadosCfg
+            : (histData?.feriados ?? []);
+        const diasMes = marcarDiasFeriado(
+          transformarHistorico(
+            histData?.registros ?? [],
+            histData?.afastamentos ?? [],
+            mes,
+            ano,
+            feriados,
+            histData?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
+            histData?.jornada ?? JORNADA_PADRAO,
+            histData?.inicioAtividades ?? null,
+            {
+              pontoObrigatorioDesde: histData?.pontoObrigatorioDesde ?? null,
+              semRegistroPonto: !!histData?.semRegistroPonto,
+              periodosSemObrigacao: histData?.periodosSemObrigacao ?? [],
+              exigirIntervalo: histData?.categoria !== "ESTAGIARIO"
+            }
+          ),
+          feriados,
+          histData?.bancoPorDia
+        );
+        setQuinzena(computeQuinzena(diasMes));
       })
       .catch(() => {})
       .finally(() => {
@@ -737,6 +756,13 @@ export function DashboardPage() {
   const saldoMes = relatorio?.saldoMinutos ?? 0;
   const ocultarBancoHoras =
     !!relatorio?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(status?.categoria);
+  const saldoBanco = bancoHoras?.saldoAtualMinutos;
+  const mesAnt = mesAnteriorInfo(now);
+  const diasMesAnterior = bancoHoras?.dias?.filter((d) => d.data?.slice(0, 7) === mesAnt.yyyyMM);
+  const saldoMesAnterior =
+    diasMesAnterior && diasMesAnterior.length > 0
+      ? diasMesAnterior.reduce((s, d) => s + d.saldoDiaMinutos, 0)
+      : null;
 
   const { diasTrabalhados: diasTrabQuinzena, diasUteis: diasUteisQuinzena } =
     progressoQuinzena(quinzena);
@@ -925,13 +951,82 @@ export function DashboardPage() {
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <StatPill label="Hoje" value={toHM(horasHoje)} sub={`de ${toHM(jornada)}`} />
           <StatPill
-            label="Saldo"
-            value={toHM(saldoHoje)}
-            sub={saldoHoje >= 0 ? "extras" : "a cumprir"}
-            color={saldoHoje >= 0 ? "var(--green)" : "var(--red)"}
+            label="Hoje"
+            value={toHM(horasHoje)}
+            sub={`de ${toHM(jornada)} · saldo ${toHM(saldoHoje)}`}
           />
+          {!ocultarBancoHoras && (
+            <Link
+              to="/ponto/banco-horas"
+              title="Ver banco de horas"
+              style={{
+                textDecoration: "none",
+                color: "inherit",
+                flex: 1,
+                minWidth: 0,
+                background: "#fff",
+                borderRadius: "var(--radius-lg)",
+                border: "1px solid rgba(122,30,38,0.08)",
+                padding: "14px",
+                boxSizing: "border-box"
+              }}
+            >
+              <p
+                style={{
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: "0.07em",
+                  textTransform: "uppercase",
+                  color: "var(--ink-500)",
+                  marginBottom: 8
+                }}
+              >
+                Banco de Horas
+              </p>
+              <div style={{ display: "flex", alignItems: "stretch", gap: 12, minWidth: 0 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p
+                    style={{
+                      fontFamily: "var(--font-display)",
+                      fontSize: 22,
+                      color:
+                        saldoBanco == null
+                          ? "var(--ink-900)"
+                          : saldoBanco >= 0
+                            ? "var(--green)"
+                            : "var(--red)",
+                      lineHeight: 1
+                    }}
+                  >
+                    {saldoBanco == null ? "—" : toHM(saldoBanco)}
+                  </p>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>acumulado</p>
+                </div>
+                <div style={{ width: 1, background: "rgba(122,30,38,0.10)", flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p
+                    style={{
+                      fontFamily: "var(--font-display)",
+                      fontSize: 22,
+                      color:
+                        saldoMesAnterior == null
+                          ? "var(--ink-500)"
+                          : saldoMesAnterior >= 0
+                            ? "var(--ink-900)"
+                            : "var(--red)",
+                      lineHeight: 1
+                    }}
+                  >
+                    {saldoMesAnterior == null ? "—" : toHM(saldoMesAnterior)}
+                  </p>
+                  <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>
+                    {saldoMesAnterior == null ? `${mesAnt.nome} · fora do ciclo` : mesAnt.nome}
+                  </p>
+                </div>
+              </div>
+            </Link>
+          )}
         </div>
 
         {/* Painel principal: quinzena + requisições RH */}
@@ -1268,11 +1363,13 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Grid topo — 3 colunas iguais */}
+      {/* Grid topo — relógio, horas de hoje e banco de horas */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: ocultarBancoHoras
+            ? "repeat(2, minmax(0, 1fr))"
+            : "repeat(3, minmax(0, 1fr))",
           gap: 16,
           marginBottom: 24,
           alignItems: "stretch"
@@ -1358,80 +1455,146 @@ export function DashboardPage() {
               <ClockIcon size={18} />
             </span>
           </div>
-          <div>
-            <p
+          <div style={{ display: "flex", alignItems: "stretch", gap: 16, minWidth: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontSize: 26,
+                  color: "var(--ink-900)",
+                  lineHeight: 1
+                }}
+              >
+                {toHM(horasHoje)}
+              </p>
+              <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
+                de {toHM(jornada)} esperadas
+              </p>
+            </div>
+            <div
               style={{
-                fontFamily: "var(--font-display)",
-                fontSize: 26,
-                color: "var(--ink-900)",
-                lineHeight: 1
-              }}
-            >
-              {toHM(horasHoje)}
-            </p>
-            <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
-              de {toHM(jornada)} esperadas
-            </p>
-          </div>
-        </div>
-        <div
-          className="card-flat"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 12,
-            minWidth: 0,
-            width: "100%",
-            boxSizing: "border-box"
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <p
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--ink-500)"
-              }}
-            >
-              Saldo Hoje
-            </p>
-            <span
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 10,
-                background: saldoHoje >= 0 ? "rgba(47,125,79,0.08)" : "rgba(200,57,63,0.08)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: saldoHoje >= 0 ? "var(--green)" : "var(--red)",
+                width: 1,
+                background: "rgba(122,30,38,0.10)",
                 flexShrink: 0
               }}
-            >
-              <TrendingUpIcon size={18} />
-            </span>
-          </div>
-          <div>
-            <p
-              style={{
-                fontFamily: "var(--font-display)",
-                fontSize: 26,
-                color: saldoHoje >= 0 ? "var(--ink-900)" : "var(--red)",
-                lineHeight: 1
-              }}
-            >
-              {toHM(saldoHoje)}
-            </p>
-            <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
-              {saldoHoje >= 0 ? "horas extras" : "horas a cumprir"}
-            </p>
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontSize: 26,
+                  color: saldoHoje >= 0 ? "var(--ink-900)" : "var(--red)",
+                  lineHeight: 1
+                }}
+              >
+                {toHM(saldoHoje)}
+              </p>
+              <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
+                {saldoHoje >= 0 ? "horas extras" : "horas a cumprir"}
+              </p>
+            </div>
           </div>
         </div>
+        {!ocultarBancoHoras && (
+          <Link
+            to="/ponto/banco-horas"
+            className="card-flat"
+            title="Ver banco de horas"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              minWidth: 0,
+              width: "100%",
+              boxSizing: "border-box",
+              textDecoration: "none",
+              color: "inherit",
+              cursor: "pointer"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <p
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: "var(--ink-500)"
+                }}
+              >
+                Banco de Horas
+              </p>
+              <span
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  background:
+                    saldoBanco == null || saldoBanco >= 0
+                      ? "rgba(47,125,79,0.08)"
+                      : "rgba(200,57,63,0.08)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: saldoBanco == null || saldoBanco >= 0 ? "var(--green)" : "var(--red)",
+                  flexShrink: 0
+                }}
+              >
+                <BarChart2Icon size={18} />
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "stretch", gap: 16, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p
+                  style={{
+                    fontFamily: "var(--font-display)",
+                    fontSize: 26,
+                    color:
+                      saldoBanco == null
+                        ? "var(--ink-900)"
+                        : saldoBanco >= 0
+                          ? "var(--ink-900)"
+                          : "var(--red)",
+                    lineHeight: 1
+                  }}
+                >
+                  {saldoBanco == null ? "—" : toHM(saldoBanco)}
+                </p>
+                <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>acumulado</p>
+              </div>
+              <div
+                style={{
+                  width: 1,
+                  background: "rgba(122,30,38,0.10)",
+                  flexShrink: 0
+                }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p
+                  style={{
+                    fontFamily: "var(--font-display)",
+                    fontSize: 26,
+                    color:
+                      saldoMesAnterior == null
+                        ? "var(--ink-500)"
+                        : saldoMesAnterior >= 0
+                          ? "var(--ink-900)"
+                          : "var(--red)",
+                    lineHeight: 1
+                  }}
+                >
+                  {saldoMesAnterior == null ? "—" : toHM(saldoMesAnterior)}
+                </p>
+                <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
+                  {saldoMesAnterior == null ? `${mesAnt.nome} · fora do ciclo` : mesAnt.nome}
+                </p>
+              </div>
+            </div>
+          </Link>
+        )}
       </div>
 
-      {/* Painel principal (2fr) + Registros hoje (1fr) — alinha com o card Saldo do topo */}
+      {/* Painel principal (2fr) + Registros hoje (1fr) — alinha com o card Banco de Horas do topo */}
       <div
         style={{
           display: "grid",

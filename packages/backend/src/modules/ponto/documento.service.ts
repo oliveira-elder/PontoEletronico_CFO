@@ -241,7 +241,7 @@ export class DocumentoService {
 
   /**
    * Converte o atestado (PDF ou imagem) em PDF assinado com ciência do gestor
-   * no canto inferior esquerdo — selo + metadados (nome, data, IP, dispositivo).
+   * no canto superior esquerdo de todas as páginas — selo + metadados (nome, data, IP, dispositivo).
    * Retorna a nova URL do PDF assinado.
    */
   async assinarAtestadoCienciaGestor(params: {
@@ -299,12 +299,12 @@ export class DocumentoService {
     const isPng = urlLower.endsWith(".png");
     const embedded = isPng ? await pdfDoc.embedPng(imageBuf) : await pdfDoc.embedJpg(imageBuf);
 
-    // A4: encaixa a imagem preservando proporção, com margem inferior para o selo
+    // A4: encaixa a imagem preservando proporção, com margem superior para o selo
     const A4_W = 595.28;
     const A4_H = 841.89;
     const marginX = 28;
-    const marginTop = 28;
-    const marginBottom = 88; // espaço para selo/ciência
+    const marginTop = 88; // espaço para selo/ciência no topo
+    const marginBottom = 28;
     const maxW = A4_W - marginX * 2;
     const maxH = A4_H - marginTop - marginBottom;
     const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
@@ -326,8 +326,6 @@ export class DocumentoService {
     if (!pages.length) {
       throw new BadRequestException("PDF do atestado não possui páginas.");
     }
-    // Carimba a primeira página (conteúdo do atestado)
-    const page = pages[0];
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const burgundy = rgb(0.42, 0.09, 0.16);
@@ -335,45 +333,13 @@ export class DocumentoService {
     const muted = rgb(0.4, 0.4, 0.45);
 
     const marginLeft = 18;
-    const marginBottom = 14;
-    const boxW = 210;
+    const marginTop = 14;
     const boxH = 62;
 
-    // Fundo semi-opaco para legibilidade sobre o documento
-    page.drawRectangle({
-      x: marginLeft - 4,
-      y: marginBottom - 4,
-      width: boxW + 8,
-      height: boxH + 8,
-      color: rgb(1, 1, 1),
-      opacity: 0.92,
-      borderColor: rgb(0.85, 0.78, 0.8),
-      borderWidth: 0.6
-    });
-
     const seloBytes = loadAssetBytes("selo-assinado-digital.png");
-    let textStartY = marginBottom + boxH - 12;
-    if (seloBytes) {
-      const selo = await pdfDoc.embedPng(seloBytes);
-      const seloW = 118;
-      const seloH = (selo.height / selo.width) * seloW;
-      page.drawImage(selo, {
-        x: marginLeft,
-        y: marginBottom + boxH - seloH - 2,
-        width: seloW,
-        height: seloH
-      });
-      textStartY = marginBottom + boxH - seloH - 10;
-    } else {
-      page.drawText("Assinado digitalmente", {
-        x: marginLeft,
-        y: marginBottom + boxH - 12,
-        size: 8,
-        font: fontBold,
-        color: burgundy
-      });
-      textStartY = marginBottom + boxH - 24;
-    }
+    const selo = seloBytes ? await pdfDoc.embedPng(seloBytes) : null;
+    const seloW = 118;
+    const seloH = selo ? (selo.height / selo.width) * seloW : 0;
 
     const hash = codigoCienciaGestorExibido(
       assinatura.gestorNome,
@@ -407,16 +373,42 @@ export class DocumentoService {
         }
       ];
 
-    let y = textStartY;
-    for (const linha of linhas) {
-      page.drawText(linha.text.slice(0, 72), {
-        x: marginLeft,
-        y,
-        size: linha.size,
-        font: linha.bold ? fontBold : font,
-        color: linha.color
-      });
-      y -= linha.size + 2.5;
+    // Mesmo atesto em todas as páginas, canto superior esquerdo, sem fundo branco
+    for (const page of pages) {
+      const { height: pageH } = page.getSize();
+      const boxBottom = pageH - marginTop - boxH;
+
+      let textStartY = boxBottom + boxH - 12;
+      if (selo) {
+        page.drawImage(selo, {
+          x: marginLeft,
+          y: boxBottom + boxH - seloH - 2,
+          width: seloW,
+          height: seloH
+        });
+        textStartY = boxBottom + boxH - seloH - 10;
+      } else {
+        page.drawText("Assinado digitalmente", {
+          x: marginLeft,
+          y: boxBottom + boxH - 12,
+          size: 8,
+          font: fontBold,
+          color: burgundy
+        });
+        textStartY = boxBottom + boxH - 24;
+      }
+
+      let y = textStartY;
+      for (const linha of linhas) {
+        page.drawText(linha.text.slice(0, 72), {
+          x: marginLeft,
+          y,
+          size: linha.size,
+          font: linha.bold ? fontBold : font,
+          color: linha.color
+        });
+        y -= linha.size + 2.5;
+      }
     }
   }
 }

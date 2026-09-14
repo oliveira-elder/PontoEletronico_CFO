@@ -161,14 +161,29 @@ export class AuthService {
         SSO_FAKE_DOMAINS.includes(newEmailDomain) && ctx.username
           ? `${ctx.username}@${REAL_EMAIL_DOMAIN}`
           : undefined;
-      // Tenta criar; se email já existir (de outro usuário), usa sub como email
-      user = await this.prisma.user
-        .create({ data: { externalId: ctx.sub, email, name, emailReal } })
-        .catch(() =>
-          this.prisma.user.create({
-            data: { externalId: ctx.sub, email: `${ctx.sub}@sso.local`, name, emailReal }
-          })
-        );
+
+      /* Vincula login SSO a usuário já criado pela sync da API de ramais. */
+      user = await this.findUserPreCadastrado(email, emailReal, ctx.username);
+      if (user?.externalId && user.externalId !== ctx.sub) {
+        user = null;
+      }
+
+      if (user) {
+        const vinculo: Record<string, string> = {};
+        if (!user.externalId) vinculo.externalId = ctx.sub;
+        if (!user.emailReal && emailReal) vinculo.emailReal = emailReal;
+        if (Object.keys(vinculo).length > 0) {
+          user = await this.prisma.user.update({ where: { id: user.id }, data: vinculo });
+        }
+      } else {
+        user = await this.prisma.user
+          .create({ data: { externalId: ctx.sub, email, name, emailReal } })
+          .catch(() =>
+            this.prisma.user.create({
+              data: { externalId: ctx.sub, email: `${ctx.sub}@sso.local`, name, emailReal }
+            })
+          );
+      }
     } else {
       // Atualiza apenas email temporário (nome é gerenciado manualmente pelo RH)
       const updates: Record<string, string | null> = {};
@@ -213,19 +228,13 @@ export class AuthService {
     }
 
     if (!funcionario) {
-      const matriculaBase = ctx.username || ctx.sub.slice(0, 12);
-      let matricula = matriculaBase;
-      // Garante unicidade da matrícula
-      let suffix = 0;
-      while (await this.prisma.funcionario.findUnique({ where: { matricula } })) {
-        suffix++;
-        matricula = `${matriculaBase}-${suffix}`;
-      }
+      /* Não inventa matrícula: fica null até a sincronização com o AD (Extensions API)
+         trazer a matrícula real (staffId) ou o RH cadastrar manualmente. Enquanto isso,
+         o acesso permanece bloqueado pela checagem de SEM_MATRICULA abaixo. */
       funcionario = await this.prisma.funcionario
         .create({
           data: {
             userId: user.id,
-            matricula,
             cargo: "A definir",
             ativo: true
           },
@@ -244,6 +253,17 @@ export class AuthService {
         .catch(() => null);
     }
 
+    // Bloqueia acesso de quem não consta no quadro oficial (sem matrícula do RH).
+    // Super admins não são bloqueados.
+    if (funcionario && !funcionario.matricula && !ctx.isSuperAdmin) {
+      throw new ForbiddenException("SEM_MATRICULA");
+    }
+
+    // Registra o login (usado na Gestão para indicar quem já acessou o sistema hoje).
+    await this.prisma.user
+      .update({ where: { id: user.id }, data: { ultimoLoginEm: new Date() } })
+      .catch(() => null);
+
     const enriched = await this.enrichRoles(ctx);
     const isSuperAdmin = enriched.isSuperAdmin;
     const roles = isSuperAdmin ? mergeSuperAdminRoles(enriched.roles) : enriched.roles;
@@ -260,5 +280,43 @@ export class AuthService {
       isSuperAdmin,
       funcionario: funcionario ?? null
     };
+  }
+
+  /** Localiza usuário pré-cadastrado pela API de ramais (ainda sem sub do SSO). */
+  private async findUserPreCadastrado(
+    email: string,
+    emailReal: string | undefined,
+    username: string
+  ) {
+    if (emailReal) {
+      const porEmailReal = await this.prisma.user.findFirst({
+        where: { emailReal: { equals: emailReal, mode: "insensitive" } }
+      });
+      if (porEmailReal) return porEmailReal;
+    }
+
+    const dominio = email.split("@")[1] ?? "";
+    if (email && !SSO_FAKE_DOMAINS.includes(dominio)) {
+      const porEmail = await this.prisma.user.findFirst({
+        where: { email: { equals: email, mode: "insensitive" } }
+      });
+      if (porEmail) return porEmail;
+    }
+
+    if (!username) return null;
+
+    const porUsernameReal = await this.prisma.user.findFirst({
+      where: {
+        emailReal: { equals: `${username}@${REAL_EMAIL_DOMAIN}`, mode: "insensitive" }
+      }
+    });
+    if (porUsernameReal) return porUsernameReal;
+
+    return this.prisma.user.findFirst({
+      where: {
+        externalId: null,
+        email: { startsWith: `${username}@`, mode: "insensitive" }
+      }
+    });
   }
 }

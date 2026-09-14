@@ -75,3 +75,10 @@ done
 
 echo ""
 "${COMPOSE_CMD[@]}" "${COMPOSE_FILES[@]}" ps
+
+# Depois que o stack está no ar: só lixo ocioso (não para nada, não apaga volumes)
+if [ -x "$ROOT/scripts/docker-prune-safe.sh" ]; then
+  echo ""
+  echo "Limpando lixo Docker ocioso (imagens/cache não usados)..."
+  "$ROOT/scripts/docker-prune-safe.sh" || echo "AVISO: prune Docker ignorado (sem permissão)."
+fi

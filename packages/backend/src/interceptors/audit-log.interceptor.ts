@@ -1,20 +1,13 @@
-import {
-  CallHandler,
-  ExecutionContext,
-  Injectable,
-  NestInterceptor,
-  Optional
-} from "@nestjs/common";
+import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from "@nestjs/common";
 import { Observable, tap } from "rxjs";
 import { randomUUID } from "crypto";
-import { PrismaService } from "../prisma/prisma.service";
-import { LogsSseService } from "../modules/logs/logs.sse.service";
-import { MonitorAuditIngestService } from "../modules/ingest/monitor-audit-ingest.service";
+import { AuditLogWriterService } from "../common/audit-log-writer.service";
 
-/* Endpoints de alta frequência que poluiriam o log sem valor diagnóstico */
+/* Endpoints de alta frequência que poluiriam o log sem valor diagnóstico.
+   /api/auth/me FOI REMOVIDO daqui de propósito: é o endpoint de login/sincronização
+   de sessão — precisamos dele para rastreabilidade de quem acessou o sistema. */
 const SKIP_PATHS = new Set([
   "/api/ponto/status",
-  "/api/auth/me",
   "/api/ponto/config/sistema",
   "/api/ponto/config/branding",
   "/api/logs/stream",
@@ -42,6 +35,12 @@ interface RequestWithUser {
   query: Record<string, unknown>;
   body: unknown;
   user?: { sub?: string; username?: string };
+  /** Marca que este interceptor já vai observar erros desta requisição (via tap
+   *  abaixo) — usado por AuthFailureLogFilter para não duplicar o log quando um
+   *  ForbiddenException/UnauthorizedException é lançado de DENTRO de um handler
+   *  (nesse caso o próprio interceptor já registra o erro). O filtro só deve agir
+   *  quando um Guard barrou a requisição ANTES de chegar aqui. */
+  __auditLogInterceptorSeen?: boolean;
 }
 
 function deriveCategory(statusCode: number): string {
@@ -53,11 +52,7 @@ function deriveCategory(statusCode: number): string {
 @Injectable()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class AuditLogInterceptor implements NestInterceptor<any, any> {
-  constructor(
-    private readonly prisma: PrismaService,
-    @Optional() private readonly logsSse?: LogsSseService,
-    @Optional() private readonly monitorAudit?: MonitorAuditIngestService
-  ) {}
+  constructor(private readonly writer: AuditLogWriterService) {}
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   intercept(ctx: ExecutionContext, next: CallHandler<any>): Observable<any> {
@@ -74,6 +69,7 @@ export class AuditLogInterceptor implements NestInterceptor<any, any> {
     const res = ctx.switchToHttp().getResponse<{ setHeader?: (k: string, v: string) => void }>();
     res?.setHeader?.("X-Trace-Id", tracker);
 
+    req.__auditLogInterceptorSeen = true;
     const start = Date.now();
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,8 +92,11 @@ export class AuditLogInterceptor implements NestInterceptor<any, any> {
   ): void {
     const durationMs = Date.now() - start;
     const method = req.method?.toUpperCase() ?? "GET";
-    const actorUserId = req.user?.sub ?? null;
-    const username = req.user?.username ?? null;
+    const actorUserId = req.user?.sub?.trim() || null;
+    /* "" (claim preferred_username ausente no token) deve virar null, não string
+       vazia — senão a coluna "Ator" na tela de Logs fica em branco silenciosamente
+       em vez de mostrar "—" e o filtro por usuário fica inconsistente. */
+    const username = req.user?.username?.trim() || null;
     const ipAddress = (req.ips?.[0] ?? req.ip ?? "").replace(/^::ffff:/, "");
     const userAgent = String(req.headers?.["user-agent"] ?? "").slice(0, 200) || null;
     const action = `${method} ${path}`;
@@ -113,53 +112,20 @@ export class AuditLogInterceptor implements NestInterceptor<any, any> {
           }
         : null;
 
-    /* Fire-and-forget — não bloqueia a resposta */
-    this.prisma.auditLog
-      .create({
-        data: {
-          tracker,
-          category,
-          actorUserId,
-          username,
-          method,
-          path,
-          action,
-          statusCode,
-          durationMs,
-          ipAddress: ipAddress || null,
-          userAgent,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          payload: (payload as any) ?? null
-        }
-      })
-      .then((log) => {
-        this.logsSse?.emit({
-          id: log.id,
-          category: log.category,
-          method: log.method ?? method,
-          path: log.path ?? path,
-          statusCode: log.statusCode ?? statusCode,
-          durationMs: log.durationMs ?? durationMs,
-          username: log.username,
-          ipAddress: log.ipAddress,
-          createdAt: log.createdAt.toISOString()
-        });
-
-        void this.monitorAudit?.pushAudit({
-          tracker,
-          method,
-          path,
-          action,
-          statusCode,
-          durationMs,
-          username,
-          actorUserId,
-          ipAddress
-        });
-      })
-      .catch(() => {
-        /* log failure não afeta a requisição */
-      });
+    this.writer.write({
+      tracker,
+      category,
+      actorUserId,
+      username,
+      method,
+      path,
+      action,
+      statusCode,
+      durationMs,
+      ipAddress: ipAddress || null,
+      userAgent,
+      payload
+    });
   }
 
   private sanitize(value: unknown): Record<string, unknown> | null {

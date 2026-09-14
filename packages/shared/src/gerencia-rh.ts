@@ -5,14 +5,17 @@
 export const GERENCIA_RH_NOME = "Gerência de Recursos Humanos";
 export const GERENCIA_RH_NOME_CURTO = "Recursos Humanos";
 export const GERENCIA_RH_SIGLA_PADRAO = "GERH";
-export const GERENCIA_RH_SIGLAS = ["RH", "GERH", "GRH", "SERHUM"] as const;
+export const GERENCIA_RH_SIGLAS = ["RH", "GERH", "GRH", "SERHUM", "DDGDP", "DGP"] as const;
 
 export const GERENCIA_RH_SLUGS = [
   "rh",
   "serhum",
   "recursos-humanos",
   "gerencia-recursos-humanos",
-  "gerencia-de-recursos-humanos"
+  "gerencia-de-recursos-humanos",
+  "gestao-de-pessoas",
+  "departamento-de-gestao-de-pessoas",
+  "departamento-gestao-de-pessoas"
 ] as const;
 
 export interface GerenciaRef {
@@ -31,8 +34,19 @@ function norm(s: string): string {
 }
 
 export function isGerenciaRhSlug(slug: string): boolean {
-  const s = norm(slug);
-  return GERENCIA_RH_SLUGS.some((x) => s === x || s.startsWith(`${x}-`));
+  const s = norm(slug).replace(/\s+/g, "-");
+  if (GERENCIA_RH_SLUGS.some((x) => s === x || s.startsWith(`${x}-`))) return true;
+  return s.includes("gestao-de-pessoas") || s.includes("recursos-humanos");
+}
+
+function nomeIndicaGerenciaRh(nome: string): boolean {
+  const n = norm(nome);
+  return (
+    n === "rh" ||
+    n.includes("recursos humanos") ||
+    n.includes("gerencia de recursos humanos") ||
+    n.includes("gestao de pessoas")
+  );
 }
 
 export function isGerenciaRh(gerencia: GerenciaRef | null | undefined): boolean {
@@ -42,13 +56,7 @@ export function isGerenciaRh(gerencia: GerenciaRef | null | undefined): boolean 
   const sigla = gerencia.sigla ? norm(gerencia.sigla) : "";
   if (GERENCIA_RH_SIGLAS.some((s) => norm(s) === sigla)) return true;
 
-  const nome = gerencia.nome ? norm(gerencia.nome) : "";
-  return (
-    nome === "recursos humanos" ||
-    nome === "rh" ||
-    nome.includes("recursos humanos") ||
-    nome.includes("gerencia de recursos humanos")
-  );
+  return gerencia.nome ? nomeIndicaGerenciaRh(gerencia.nome) : false;
 }
 
 export function gerenciaRhCanonica(): { nome: string; sigla: string } {

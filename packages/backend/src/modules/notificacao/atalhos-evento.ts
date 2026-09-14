@@ -56,8 +56,8 @@ export const ATALHOS_EVENTO: Record<string, AtalhoEvento> = {
   },
   SOLICITACAO_NOVA_GESTOR: {
     path: "/ponto/aprovacoes?etapa=gestor",
-    label: "Aprovações — Pendências do gestor",
-    caminho: "Aprovações → Pendências do gestor"
+    label: "Aprovações — Pendências do chefe",
+    caminho: "Aprovações → Pendências do chefe"
   },
   SOLICITACAO_AGUARDANDO_RH: {
     path: "/ponto/aprovacoes?etapa=rh",

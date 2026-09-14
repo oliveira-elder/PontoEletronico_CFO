@@ -6,12 +6,14 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh } from "../../common/gerencia-rh.util";
 import {
   dataBrasiliaISO,
+  dataCivilISO,
+  dataCivilFimAfastamento,
   hojeBrasiliaISO,
   intervaloDiaBrasilia
 } from "../../utils/horario-brasilia";
 import {
   categoriaSemIntervaloAlmoco,
-  categoriaSemRegistroPonto,
+  funcionarioSemRegistroPonto,
   categoriaSemVisibilidadeBancoHoras,
   diaSemObrigacaoPonto
 } from "../../utils/categoria-jornada";
@@ -86,11 +88,11 @@ export const EVENTOS_NOTIFICACAO = [
   },
   {
     id: "ASSINAR_QUADRO_GESTOR",
-    titulo: "Quadro Aguardando Assinatura do Gestor",
+    titulo: "Quadro Aguardando Assinatura do Chefe",
     descricao:
-      "Notifica o gestor quando um funcionário da sua equipe assinou o quadro de pontos " +
-      "e está aguardando aprovação do gestor.",
-    destinatario: "Gestor",
+      "Notifica o chefe quando um funcionário da sua equipe assinou o quadro de pontos " +
+      "e está aguardando aprovação do chefe.",
+    destinatario: "Chefe",
     gatilho: "Automático — ao funcionário assinar o quadro"
   },
   {
@@ -134,28 +136,28 @@ export const EVENTOS_NOTIFICACAO = [
     id: "ASSINATURA_CONCLUIDA",
     titulo: "Quadro Totalmente Assinado",
     descricao:
-      "Notifica o funcionário quando o gestor assinou o quadro de pontos e o processo " +
+      "Notifica o funcionário quando o chefe assinou o quadro de pontos e o processo " +
       "de assinatura foi concluído.",
     destinatario: "Funcionário",
-    gatilho: "Automático — ao gestor concluir a assinatura"
+    gatilho: "Automático — ao chefe concluir a assinatura"
   },
   {
     id: "SOLICITACAO_NOVA_GESTOR",
-    titulo: "Nova Solicitação — Aviso ao Gestor",
+    titulo: "Nova Solicitação — Aviso ao Chefe",
     descricao:
-      "Notifica o gestor quando um funcionário da sua equipe abre uma nova solicitação " +
+      "Notifica o chefe quando um funcionário da sua equipe abre uma nova solicitação " +
       "(férias, atestado, licença, correção de ponto etc.).",
-    destinatario: "Gestor",
+    destinatario: "Chefe",
     gatilho: "Automático — ao funcionário criar solicitação"
   },
   {
     id: "SOLICITACAO_AGUARDANDO_RH",
     titulo: "Solicitação Aguardando RH",
     descricao:
-      "Notifica a equipe de RH quando o gestor aprova uma solicitação e ela passa " +
+      "Notifica a equipe de RH quando o chefe aprova uma solicitação e ela passa " +
       "para análise do RH.",
     destinatario: "RH",
-    gatilho: "Automático — ao gestor encaminhar para o RH"
+    gatilho: "Automático — ao chefe encaminhar para o RH"
   },
   {
     id: "RH_DOCUMENTO_ENVIADO",
@@ -181,7 +183,7 @@ export const EVENTOS_NOTIFICACAO = [
     descricao:
       "Notifica o gestor quando um funcionário da equipe registra entrada ou saída " +
       "no ponto eletrônico.",
-    destinatario: "Gestor",
+    destinatario: "Chefe",
     gatilho: "Automático — ao registrar entrada ou saída"
   },
   {
@@ -211,10 +213,10 @@ export const EVENTOS_NOTIFICACAO = [
   },
   {
     id: "PAPEL_CRITICO_DESATIVADO",
-    titulo: "Supervisor ou Gerente Substituto Desativado",
+    titulo: "Supervisor ou Chefe Substituto Desativado",
     descricao:
-      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/menor aprendiz) " +
-      "ou um Gerente Substituto em exercício é desativado, para providenciar substituição imediata.",
+      "Notifica toda a equipe de RH quando um Supervisor de Estágio (estagiário/jovem aprendiz) " +
+      "ou um Chefe Substituto em exercício é desativado, para providenciar substituição imediata.",
     destinatario: "RH",
     gatilho: "Automático — ao desativar funcionário com papel crítico ativo"
   },
@@ -389,9 +391,6 @@ export class NotificacaoService {
         skipDuplicates: true
       });
     }
-
-    /* Corrige eventos críticos criados antes com ambos os canais desligados. */
-    await this.garantirEventosCriticos();
 
     const todos = await this.prisma.configuracaoNotificacao.findMany({
       where: { id: { in: ids } }
@@ -599,31 +598,20 @@ export class NotificacaoService {
   }
 
   /**
-   * Garante linha do evento no banco. Eventos críticos mantêm e-mail + sistema ativos
-   * (reativa canal individualmente se estiver desligado por seed antigo).
+   * Garante linha do evento no banco. Eventos críticos nascem com e-mail + sistema ativos,
+   * mas depois de criados a escolha do administrador na tela de configurações é respeitada
+   * (não força reativação em toggles que o usuário desligou de propósito).
    */
   async ensureEventoRow(eventoId: string): Promise<void> {
     const existente = await this.prisma.configuracaoNotificacao.findUnique({
       where: { id: eventoId }
     });
-    if (!existente) {
-      const critico = EVENTOS_NOTIFICACAO_CRITICOS.has(eventoId);
-      await this.prisma.configuracaoNotificacao.create({
-        data: { id: eventoId, ativoEmail: critico, ativoSistema: critico }
-      });
-      return;
-    }
-    if (!EVENTOS_NOTIFICACAO_CRITICOS.has(eventoId)) return;
+    if (existente) return;
 
-    const data: { ativoEmail?: boolean; ativoSistema?: boolean } = {};
-    if (!existente.ativoEmail) data.ativoEmail = true;
-    if (!existente.ativoSistema) data.ativoSistema = true;
-    if (Object.keys(data).length > 0) {
-      await this.prisma.configuracaoNotificacao.update({
-        where: { id: eventoId },
-        data
-      });
-    }
+    const critico = EVENTOS_NOTIFICACAO_CRITICOS.has(eventoId);
+    await this.prisma.configuracaoNotificacao.create({
+      data: { id: eventoId, ativoEmail: critico, ativoSistema: critico }
+    });
   }
 
   /** E-mail entregável: preferir emailReal; ignorar máscaras SSO. */
@@ -790,7 +778,7 @@ export class NotificacaoService {
   }
 
   /**
-   * Quando um Supervisor de Estágio ou Gerente Substituto em exercício é desativado,
+   * Quando um Supervisor de Estágio ou Chefe Substituto em exercício é desativado,
    * alerta todo o RH para substituição imediata.
    */
   async notificarRhPapelCriticoDesativado(funcionarioId: string): Promise<void> {
@@ -843,7 +831,7 @@ export class NotificacaoService {
     if (supervisionados.length) {
       const lista = supervisionados
         .map((s) => {
-          const cat = s.categoria === "MENOR_APRENDIZ" ? "Menor Aprendiz" : "Estagiário";
+          const cat = s.categoria === "MENOR_APRENDIZ" ? "Jovem Aprendiz" : "Estagiário";
           return `• ${s.user?.name ?? "—"} (${cat}${s.gerencia ? ` — ${s.gerencia.sigla || s.gerencia.nome}` : ""})`;
         })
         .join("\n");
@@ -858,13 +846,13 @@ export class NotificacaoService {
       const ini = new Date(substituicaoAtiva.dataInicio).toLocaleDateString("pt-BR");
       const fim = new Date(substituicaoAtiva.dataFim).toLocaleDateString("pt-BR");
       partes.push(
-        `\nGerente Substituto em exercício na ${g} (titular: ${titularNome}; período ${ini}–${fim}). ` +
+        `\nChefe Substituto em exercício na ${g} (titular: ${titularNome}; período ${ini}–${fim}). ` +
           `A gerência ficou sem substituto ativo — reatribuir ou encerrar a substituição.`
       );
     }
 
     partes.push(
-      "\n\nAcesse Gestão de Funcionários para designar novo supervisor e/ou gerente substituto."
+      "\n\nAcesse Gestão de Funcionários para designar novo supervisor e/ou chefe substituto."
     );
 
     const titulo = `Ação urgente RH — ${nome} desativado com papel crítico`;
@@ -1100,7 +1088,7 @@ export class NotificacaoService {
       const funcId = ass.periodo.funcionario.id;
       if (notificados.has(funcId)) continue;
 
-      // Estagiário / Menor Aprendiz não recebem alerta de banco de horas
+      // Estagiário / Jovem Aprendiz não recebem alerta de banco de horas
       if (categoriaSemVisibilidadeBancoHoras(ass.periodo.funcionario.categoria)) {
         continue;
       }
@@ -1186,6 +1174,9 @@ export class NotificacaoService {
       select: {
         id: true,
         categoria: true,
+        isManager: true,
+        isFiscal: true,
+        registroPontoObrigatorio: true,
         pontoObrigatorioDesde: true,
         user: { select: { externalId: true, email: true, emailReal: true, name: true } }
       }
@@ -1208,16 +1199,19 @@ export class NotificacaoService {
     const prazoAtestadoDias = cfgSol?.atestadoPrazoEnvioDias ?? 2;
 
     for (const func of funcionarios) {
-      if (categoriaSemRegistroPonto(func.categoria)) continue;
+      if (funcionarioSemRegistroPonto(func)) continue;
 
       const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
       const pontoObrigatorioDesde = func.pontoObrigatorioDesde
-        ? dataBrasiliaISO(func.pontoObrigatorioDesde)
+        ? dataCivilISO(func.pontoObrigatorioDesde)
         : null;
       if (
         diaSemObrigacaoPonto(ontemIso, {
           historico: historicoCat,
           categoriaAtual: func.categoria,
+          isManagerAtual: func.isManager,
+          isFiscalAtual: func.isFiscal,
+          registroPontoObrigatorioAtual: func.registroPontoObrigatorio,
           pontoObrigatorioDesde
         })
       ) {
@@ -1255,7 +1249,7 @@ export class NotificacaoService {
       const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, sols);
       const afastamentoDia = afastamentos.find((a) => {
         const aIni = dataBrasiliaISO(a.dataInicio);
-        const aFim = dataBrasiliaISO(a.dataFim);
+        const aFim = dataCivilFimAfastamento(a.dataInicio, a.dataFim);
         return ontemIso >= aIni && ontemIso <= aFim;
       });
       /* Afastamento dia inteiro: não exige ponto. */

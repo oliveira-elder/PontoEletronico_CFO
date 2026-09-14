@@ -1,5 +1,5 @@
-/** Categorias sem obrigação de bater ponto (mantêm solicitações e demais fluxos). */
-export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR", "GERENTE"] as const;
+/** Categorias sem obrigação de bater ponto por si só (independente de isManager/isFiscal). */
+export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR"] as const;
 
 export function categoriaSemRegistroPonto(categoria: string | null | undefined): boolean {
   if (!categoria) return false;
@@ -7,7 +7,24 @@ export function categoriaSemRegistroPonto(categoria: string | null | undefined):
 }
 
 /**
- * Estagiário e Menor Aprendiz não veem banco de horas (página, links, relatórios self-service).
+ * "Chefe" (isManager) e "Fiscal" (isFiscal) deixaram de ser categorias próprias (GERENTE)
+ * e passaram a ser características combináveis com qualquer categoria.
+ */
+export type SituacaoRegistroPonto = {
+  categoria?: string | null;
+  isManager?: boolean | null;
+  isFiscal?: boolean | null;
+  registroPontoObrigatorio?: boolean | null;
+};
+
+export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
+  if (s.registroPontoObrigatorio === true) return false;
+  if (s.registroPontoObrigatorio === false) return true;
+  return categoriaSemRegistroPonto(s.categoria) || !!s.isManager || !!s.isFiscal;
+}
+
+/**
+ * Estagiário e Jovem Aprendiz não veem banco de horas (página, links, relatórios self-service).
  * O cálculo permanece no backend; RH vê em auditoria.
  */
 export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
@@ -17,8 +34,10 @@ export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | un
   return (CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS as readonly string[]).includes(categoria);
 }
 
-export function labelCategoriaSemRegistroPonto(categoria: string): string {
-  return categoria === "GERENTE" ? "Gerente" : "Assessor";
+export function labelSemRegistroPonto(s: SituacaoRegistroPonto): string {
+  if (s.isManager) return "Chefe";
+  if (s.isFiscal) return "Fiscal";
+  return "Comissionado";
 }
 
 /** Texto do ícone informativo — solicitações de assessor/gerente no histórico. */

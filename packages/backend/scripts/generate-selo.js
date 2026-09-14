@@ -3,7 +3,7 @@ const sharp = require("sharp");
 const path = require("path");
 
 const svg = `<svg width="240" height="72" xmlns="http://www.w3.org/2000/svg">
-  <rect x="1" y="1" width="238" height="70" rx="8" fill="#FFF5F5" stroke="#6B0F1A" stroke-width="2"/>
+  <rect x="1" y="1" width="238" height="70" rx="8" fill="none" stroke="#6B0F1A" stroke-width="2"/>
   <circle cx="28" cy="36" r="16" fill="#6B0F1A"/>
   <path d="M 21 36 L 26 41 L 36 29" stroke="white" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
   <text x="52" y="30" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="bold" fill="#6B0F1A">Assinado digitalmente</text>

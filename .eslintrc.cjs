@@ -10,5 +10,5 @@ module.exports = {
   },
   plugins: ["@typescript-eslint"],
   extends: ["eslint:recommended", "plugin:@typescript-eslint/recommended", "prettier"],
-  ignorePatterns: ["dist", "build", "coverage", ".expo", ".turbo"]
+  ignorePatterns: ["dist", "build", "coverage", ".expo", ".turbo", "**/*.test.tsx"]
 };

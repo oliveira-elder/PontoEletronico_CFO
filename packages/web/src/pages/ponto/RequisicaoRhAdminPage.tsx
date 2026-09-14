@@ -926,10 +926,10 @@ function NovaReqModal({
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   {(
                     [
-                      { value: "ASSESSOR", label: "Assessores", cor: "#1a4f7a" },
+                      { value: "ASSESSOR", label: "Comissionados", cor: "#1a4f7a" },
                       { value: "ESTAGIARIO", label: "Estagiários", cor: "#7a6c1a" },
-                      { value: "MENOR_APRENDIZ", label: "Menores Aprendizes", cor: "#5b4a9e" },
-                      { value: "CONCURSADO", label: "Concursados", cor: "#1e5c38" }
+                      { value: "MENOR_APRENDIZ", label: "Jovens Aprendizes", cor: "#5b4a9e" },
+                      { value: "CONCURSADO", label: "Efetivos", cor: "#1e5c38" }
                     ] as const
                   ).map((cat) => {
                     const ativo = selectedCategoria === cat.value;
@@ -959,12 +959,12 @@ function NovaReqModal({
                     A requisição será enviada para todos os{" "}
                     <strong style={{ color: "var(--ink-700)" }}>
                       {selectedCategoria === "ASSESSOR"
-                        ? "Assessores"
+                        ? "Comissionados"
                         : selectedCategoria === "ESTAGIARIO"
                           ? "Estagiários"
                           : selectedCategoria === "MENOR_APRENDIZ"
-                            ? "Menores Aprendizes"
-                            : "Concursados"}
+                            ? "Jovens Aprendizes"
+                            : "Efetivos"}
                     </strong>{" "}
                     ativos.
                   </p>

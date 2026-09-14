@@ -1,6 +1,6 @@
 import { ForbiddenException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
-import { dataBrasiliaISO } from "./horario-brasilia";
+import { dataCivilISO } from "./horario-brasilia";
 
 /** Retorna YYYY-MM-DD do go-live, ou null se ainda em fase de teste. */
 export async function getDataInicioProducao(prisma: PrismaService): Promise<string | null> {
@@ -8,7 +8,7 @@ export async function getDataInicioProducao(prisma: PrismaService): Promise<stri
     where: { id: "singleton" },
     select: { dataInicioProducao: true }
   });
-  return cfg?.dataInicioProducao ? dataBrasiliaISO(cfg.dataInicioProducao) : null;
+  return cfg?.dataInicioProducao ? dataCivilISO(cfg.dataInicioProducao) : null;
 }
 
 /**

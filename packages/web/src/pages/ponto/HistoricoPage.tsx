@@ -23,9 +23,11 @@ import {
   type Pausa,
   type DiaRegistro,
   type HistoricoApiResponse,
+  type ApiFeriado,
   type JornadaHistorico,
   JORNADA_PADRAO,
   transformarHistorico,
+  marcarDiasFeriado,
   badgeLabelParcial
 } from "../../utils/historicoTransform";
 import {
@@ -372,7 +374,7 @@ function BannerAssinatura({
         <CheckCircleIcon size={18} style={{ color: "#2563EB", flexShrink: 0 }} />
         <span style={{ fontSize: 13.5, color: "#1E40AF" }}>
           <strong>Você assinou em {fmtDt(assinatura.assinadoFuncionarioEm)}.</strong> Aguardando
-          assinatura do gestor.
+          assinatura do chefe.
         </span>
       </div>
     );
@@ -396,7 +398,7 @@ function BannerAssinatura({
         <CheckIcon size={18} style={{ color: "#16A34A", flexShrink: 0 }} />
         <span style={{ fontSize: 13.5, color: "#14532D", flex: 1 }}>
           <strong>Quadro assinado.</strong> Funcionário em {fmtDt(assinatura.assinadoFuncionarioEm)}{" "}
-          · Gestor {assinatura.assinadoGestorNome ? `(${assinatura.assinadoGestorNome})` : ""} em{" "}
+          · Chefe {assinatura.assinadoGestorNome ? `(${assinatura.assinadoGestorNome})` : ""} em{" "}
           {fmtDt(assinatura.assinadoGestorEm)}.
         </span>
         <button
@@ -435,18 +437,37 @@ function StatusPill({
   status,
   obs,
   atestadoParcial,
-  atestadoParcialHorario
+  atestadoParcialHorario,
+  onClickAtestado
 }: {
   status: StatusDia;
   obs?: string;
   atestadoParcial?: boolean;
   atestadoParcialHorario?: string;
+  onClickAtestado?: () => void;
 }) {
   if (atestadoParcial) {
     const label = badgeLabelParcial(obs);
-    const titulo = obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`;
+    const clicavel = label === "Atestado médico parcial" && !!onClickAtestado;
+    const titulo = clicavel
+      ? "Clique para ver os detalhes do atestado"
+      : (obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`);
     return (
-      <span className="badge badge-blue" style={BADGE_HISTORICO_STYLE} title={titulo}>
+      <span
+        className="badge badge-blue"
+        style={
+          clicavel
+            ? {
+                ...BADGE_HISTORICO_STYLE,
+                cursor: "pointer",
+                textDecoration: "underline",
+                textDecorationStyle: "dotted"
+              }
+            : BADGE_HISTORICO_STYLE
+        }
+        title={titulo}
+        onClick={clicavel ? onClickAtestado : undefined}
+      >
         {label}
       </span>
     );
@@ -462,7 +483,7 @@ function StatusPill({
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
     FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
-    ISENTO: { label: "Isento — Assessor/Gerente", cls: "badge-blue" }
+    ISENTO: { label: "Isento — Comissionado/Chefe", cls: "badge-blue" }
   };
   const { label, cls } = map[status];
   const titulo =
@@ -476,7 +497,7 @@ function StatusPill({
   return (
     <span className={`badge ${cls}`} style={BADGE_HISTORICO_STYLE} title={titulo}>
       {status === "ISENTO"
-        ? "Isento — Assessor/Gerente"
+        ? "Isento — Comissionado/Chefe"
         : status === "AFASTAMENTO" && obs
           ? obs
           : status === "FERIADO" && obs
@@ -501,7 +522,13 @@ function SaldoCell({
   saldoBancoMin?: number | null;
   saldoBancoNeutro?: boolean;
 }) {
-  if (status === "FUTURO" || status === "AFASTAMENTO" || status === "FOLGA" || status === "ISENTO")
+  if (
+    status === "FUTURO" ||
+    status === "AFASTAMENTO" ||
+    status === "FOLGA" ||
+    status === "ISENTO" ||
+    status === "FERIADO"
+  )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (saldoBancoNeutro) return <span style={{ color: "var(--ink-500)" }}>—</span>;
   const saldo =
@@ -786,6 +813,243 @@ function ModalObservacoes({
               <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--ink-400)" }}>
                 Registrado em {fmtObsData(o.data)}
               </p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AtestadoDetalhe {
+  id: string;
+  tipo: string;
+  status: string;
+  dataInicio: string;
+  dataFim: string;
+  horarioInicio: string | null;
+  horarioFim: string | null;
+  descricao: string;
+  documentoUrl: string | null;
+  documentoRetornoUrl: string | null;
+  gestor: { nome: string | null; resolvidoEm: string | null; observacao: string | null } | null;
+  ciencia: { em: string | null; nome: string | null; codigoHash: string | null } | null;
+  rh: { nome: string | null; resolvidoEm: string | null; observacao: string | null } | null;
+  deslocamento: {
+    atrasoRealMin: number;
+    creditoMin: number;
+    toleranciaMin: number;
+    horaRetorno: string;
+  } | null;
+}
+
+function fmtDataCivilAtestado(iso: string): string {
+  const [a, m, d] = iso.split("-");
+  return `${d}/${m}/${a}`;
+}
+
+function LinhaDetalheAtestado({ label, valor }: { label: string; valor: React.ReactNode }) {
+  return (
+    <div>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 11,
+          fontWeight: 600,
+          color: "var(--ink-500)",
+          textTransform: "uppercase",
+          letterSpacing: 0.3
+        }}
+      >
+        {label}
+      </p>
+      <p style={{ margin: "2px 0 0", fontSize: 13.5, color: "var(--ink-800)" }}>{valor}</p>
+    </div>
+  );
+}
+
+function ModalAtestadoDetalhe({ data, onClose }: { data: string; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [erro, setErro] = useState<string | null>(null);
+  const [atestados, setAtestados] = useState<AtestadoDetalhe[]>([]);
+
+  useEffect(() => {
+    let ativo = true;
+    setLoading(true);
+    setErro(null);
+    api
+      .get<{ atestados: AtestadoDetalhe[] }>(`/ponto/atestado-do-dia?data=${data}`)
+      .then((r) => {
+        if (ativo) setAtestados(r?.atestados ?? []);
+      })
+      .catch((e) => {
+        if (ativo) setErro(e instanceof Error ? e.message : "Falha ao carregar o atestado.");
+      })
+      .finally(() => {
+        if (ativo) setLoading(false);
+      });
+    return () => {
+      ativo = false;
+    };
+  }, [data]);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.45)",
+        zIndex: 300,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "var(--radius-xl)",
+          width: "100%",
+          maxWidth: 520,
+          maxHeight: "85vh",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column"
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 20px",
+            borderBottom: "1px solid rgba(122,30,38,0.10)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexShrink: 0
+          }}
+        >
+          <div>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--ink-900)" }}>
+              Atestado médico
+            </p>
+            <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
+              {fmtDataCivilAtestado(data)}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 18,
+              color: "var(--ink-500)",
+              lineHeight: 1
+            }}
+            aria-label="Fechar"
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          style={{
+            padding: "16px 20px",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16
+          }}
+        >
+          {loading && <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Carregando…</p>}
+          {erro && <p style={{ fontSize: 13, color: "#c8393f" }}>{erro}</p>}
+          {!loading && !erro && atestados.length === 0 && (
+            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
+              Nenhum atestado aprovado encontrado para este dia.
+            </p>
+          )}
+          {atestados.map((a) => (
+            <div
+              key={a.id}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                paddingBottom: 14,
+                borderBottom: "1px solid rgba(122,30,38,0.08)"
+              }}
+            >
+              <LinhaDetalheAtestado
+                label="Período do atestado"
+                valor={
+                  `${fmtDataCivilAtestado(a.dataInicio)}${a.dataInicio !== a.dataFim ? ` a ${fmtDataCivilAtestado(a.dataFim)}` : ""}` +
+                  (a.horarioInicio && a.horarioFim
+                    ? ` · ${a.horarioInicio}–${a.horarioFim}`
+                    : " · dia inteiro")
+                }
+              />
+              {a.descricao && <LinhaDetalheAtestado label="Justificativa" valor={a.descricao} />}
+              <LinhaDetalheAtestado
+                label="Ciência do chefe"
+                valor={
+                  a.ciencia?.nome
+                    ? `${a.ciencia.nome}${a.ciencia.em ? ` — ${fmtObsData(a.ciencia.em)}` : ""}`
+                    : a.gestor?.nome
+                      ? `${a.gestor.nome}${a.gestor.resolvidoEm ? ` — ${fmtObsData(a.gestor.resolvidoEm)}` : ""}`
+                      : "—"
+                }
+              />
+              <LinhaDetalheAtestado
+                label="Aprovado pelo RH"
+                valor={
+                  a.rh?.nome
+                    ? `${a.rh.nome}${a.rh.resolvidoEm ? ` — ${fmtObsData(a.rh.resolvidoEm)}` : ""}`
+                    : "—"
+                }
+              />
+              {a.deslocamento && (
+                <LinhaDetalheAtestado
+                  label="Tempo de deslocamento"
+                  valor={
+                    `Retorno registrado às ${a.deslocamento.horaRetorno} — creditados ${a.deslocamento.creditoMin} min` +
+                    (a.deslocamento.atrasoRealMin > a.deslocamento.creditoMin
+                      ? ` (atraso real de ${a.deslocamento.atrasoRealMin} min, limitado pela tolerância de ${a.deslocamento.toleranciaMin} min)`
+                      : "")
+                  }
+                />
+              )}
+              {a.documentoUrl && (
+                <LinhaDetalheAtestado
+                  label="Documento"
+                  valor={
+                    <a
+                      href={a.documentoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "var(--brand-700, #7a1e26)" }}
+                    >
+                      Ver atestado anexado
+                    </a>
+                  }
+                />
+              )}
+              {a.documentoRetornoUrl && (
+                <LinhaDetalheAtestado
+                  label="Documento de retorno"
+                  valor={
+                    <a
+                      href={a.documentoRetornoUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "var(--brand-700, #7a1e26)" }}
+                    >
+                      Ver documento de retorno
+                    </a>
+                  }
+                />
+              )}
             </div>
           ))}
         </div>
@@ -1170,6 +1434,7 @@ export function HistoricoPage() {
     dia: string;
     observacoes: ObservacaoRegistro[];
   } | null>(null);
+  const [modalAtestado, setModalAtestado] = useState<{ data: string } | null>(null);
   const [modalAlmoco, setModalAlmoco] = useState<{
     dia: string;
     info: NonNullable<DiaRegistro["almocoCurto"]>;
@@ -1189,9 +1454,11 @@ export function HistoricoPage() {
     (silent = false) => {
       if (!silent) setLoading(true);
 
-      api
-        .get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`)
-        .then((data) => {
+      Promise.all([
+        api.get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`),
+        api.get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`).catch(() => [] as ApiFeriado[])
+      ])
+        .then(([data, feriadosCfg]) => {
           const inicio = data?.inicioAtividades ?? null;
           setInicioAtividades(inicio);
           setDataInicioProducao(data?.dataInicioProducao ?? null);
@@ -1203,22 +1470,30 @@ export function HistoricoPage() {
             !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria)
           );
           setJornadaInfo(data?.jornada ?? JORNADA_PADRAO);
+          const feriados =
+            Array.isArray(feriadosCfg) && feriadosCfg.length > 0
+              ? feriadosCfg
+              : (data?.feriados ?? []);
           setRegistros(
-            transformarHistorico(
-              data?.registros ?? [],
-              data?.afastamentos ?? [],
-              mes,
-              ano,
-              data?.feriados ?? [],
-              data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
-              data?.jornada ?? JORNADA_PADRAO,
-              inicio,
-              {
-                pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
-                semRegistroPonto: !!data?.semRegistroPonto,
-                periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
-                exigirIntervalo: data?.categoria !== "ESTAGIARIO"
-              }
+            marcarDiasFeriado(
+              transformarHistorico(
+                data?.registros ?? [],
+                data?.afastamentos ?? [],
+                mes,
+                ano,
+                feriados,
+                data?.multiplicadores ?? { sabadoPct: 100, domingoPct: 200, feriadoPct: 200 },
+                data?.jornada ?? JORNADA_PADRAO,
+                inicio,
+                {
+                  pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
+                  semRegistroPonto: !!data?.semRegistroPonto,
+                  periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
+                  exigirIntervalo: data?.categoria !== "ESTAGIARIO"
+                }
+              ),
+              feriados,
+              data?.bancoPorDia
             )
           );
         })
@@ -1354,11 +1629,14 @@ export function HistoricoPage() {
   /** Em atestado parcial, preferir o cálculo do transform (novas regras) ao banco legado. */
   const minutosDiaExibidos = (r: (typeof registros)[number], isoKey: string) => {
     const bancoDia = bancoPorDia?.[isoKey];
+    if (r.status === "FERIADO") {
+      return { trab: r.horasMin, jornada: 0, saldo: 0 };
+    }
     if (r.atestadoParcial) {
       return { trab: r.horasMin, jornada: r.jornadaMin, saldo: r.horasMin - r.jornadaMin };
     }
     return {
-      trab: bancoDia?.horasTrabalhadasMinutos ?? r.horasMin,
+      trab: r.horasMin,
       jornada: bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin,
       saldo:
         bancoDia?.saldoDiaMinutos !== undefined && bancoDia?.saldoDiaMinutos !== null
@@ -1390,6 +1668,7 @@ export function HistoricoPage() {
       !r.apenasInformativo &&
       r.status !== "FUTURO" &&
       r.status !== "AFASTAMENTO" &&
+      r.status !== "FERIADO" &&
       r.status !== "FOLGA" &&
       r.status !== "ISENTO"
   ).length;
@@ -1399,6 +1678,7 @@ export function HistoricoPage() {
         !r.apenasInformativo &&
         r.status !== "FUTURO" &&
         r.status !== "AFASTAMENTO" &&
+        r.status !== "FERIADO" &&
         r.status !== "FOLGA" &&
         r.status !== "ISENTO"
     )
@@ -1411,10 +1691,14 @@ export function HistoricoPage() {
   let saldoMesAjustado = saldoMesBanco;
   if (usarBanco) {
     for (const r of registros) {
-      if (!r.atestadoParcial || r.apenasInformativo) continue;
       const [d, m, a] = r.data.split("/");
       const isoKey = `${a}-${m}-${d}`;
       const bancoDia = bancoPorDia?.[isoKey];
+      if (r.status === "FERIADO" && bancoDia && !bancoDia.neutro) {
+        saldoMesAjustado -= bancoDia.saldoDiaMinutos;
+        continue;
+      }
+      if (!r.atestadoParcial || r.apenasInformativo) continue;
       if (!bancoDia) continue;
       saldoMesAjustado = saldoMesAjustado - bancoDia.saldoDiaMinutos + (r.horasMin - r.jornadaMin);
     }
@@ -1516,6 +1800,9 @@ export function HistoricoPage() {
           observacoes={modalObs.observacoes}
           onClose={() => setModalObs(null)}
         />
+      )}
+      {modalAtestado && (
+        <ModalAtestadoDetalhe data={modalAtestado.data} onClose={() => setModalAtestado(null)} />
       )}
       {modalAlmoco && (
         <ModalAlmocoReferencia
@@ -1865,23 +2152,12 @@ export function HistoricoPage() {
                         <PausaCell pausas={r.pausas} />
                       </td>
                       <td>
-                        <HorasCell
-                          min={
-                            r.atestadoParcial
-                              ? r.horasMin
-                              : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
-                          }
-                          status={r.status}
-                        />
+                        <HorasCell min={r.horasMin} status={r.status} />
                       </td>
                       {!ocultarBancoHoras && (
                         <td>
                           <SaldoCell
-                            trabMin={
-                              r.atestadoParcial
-                                ? r.horasMin
-                                : (bancoDia?.horasTrabalhadasMinutos ?? r.horasMin)
-                            }
+                            trabMin={r.horasMin}
                             jornadaMin={
                               r.atestadoParcial
                                 ? r.jornadaMin
@@ -1909,6 +2185,7 @@ export function HistoricoPage() {
                             obs={r.obs}
                             atestadoParcial={r.atestadoParcial}
                             atestadoParcialHorario={r.atestadoParcialHorario}
+                            onClickAtestado={() => setModalAtestado({ data: isoKey })}
                           />
                           {r.apenasInformativo && (
                             <span

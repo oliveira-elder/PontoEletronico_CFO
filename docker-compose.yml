@@ -64,7 +64,7 @@ services:
       BACKUP_PG_DUMP_FORMAT: ${BACKUP_PG_DUMP_FORMAT:-plain}
       BACKUP_ARTIFACT_BASENAME: ${BACKUP_ARTIFACT_BASENAME:-backup_sst}
       # API de Ramais (nova integração — token carregado do .env da raiz)
-      SECTIONS_INTEGRATION_URL: ${SECTIONS_INTEGRATION_URL:-https://192.168.161.50:11010/api/sections/integration/users}
+      SECTIONS_INTEGRATION_URL: ${SECTIONS_INTEGRATION_URL:-http://192.168.161.50:11010/api/sections/integration/users}
       SECTIONS_INTEGRATION_TOKEN: ${SECTIONS_INTEGRATION_TOKEN:-}
       # Credenciais da API Admin do Keycloak (lista usuários/grupos do AD para seed no banco).
       KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER:-}

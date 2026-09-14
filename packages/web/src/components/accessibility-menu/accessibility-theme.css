@@ -1,0 +1,93 @@
+/*
+ * Tema do menu de acessibilidade — Ponto Eletrônico CFO.
+ * Usa os tokens do sistema (--burgundy-*, --cream-*, --ink-*) e os sobrescreve
+ * nos modos de contraste para que a aplicação inteira herde as preferências.
+ */
+:root {
+  --intranet-a11y-primary: var(--burgundy-600, #7a1e26);
+  --intranet-a11y-primary-hover: var(--burgundy-700, #5c1519);
+  --intranet-a11y-primary-soft: rgba(122, 30, 38, 0.08);
+  --intranet-a11y-surface: #ffffff;
+  --intranet-a11y-text: var(--ink-900, #140a0c);
+  --intranet-a11y-text-muted: var(--ink-500, rgba(20, 10, 12, 0.58));
+  --intranet-a11y-border: rgba(122, 30, 38, 0.16);
+  --intranet-a11y-focus: var(--burgundy-600, #7a1e26);
+  --intranet-a11y-shadow: 0 24px 60px -30px rgba(122, 30, 38, 0.3);
+}
+
+.intranet-a11y-root,
+.intranet-a11y-menu {
+  z-index: 120;
+}
+
+html.intranet-a11y-high-contrast {
+  --burgundy-500: #000000;
+  --burgundy-600: #000000;
+  --burgundy-700: #202020;
+  --burgundy-800: #000000;
+  --burgundy-900: #000000;
+  --cfo-bar: #000000;
+  --cream-50: #ffffff;
+  --cream-100: #f2f2f2;
+  --cream-200: #e8e8e8;
+  --gold-400: #000000;
+  --gold-500: #000000;
+  --ink-900: #000000;
+  --ink-700: #000000;
+  --ink-500: #000000;
+  --gray-cfo: #000000;
+  --green: #000000;
+  --red: #000000;
+  --blue-ink: #000000;
+  --amber: #e8e8e8;
+}
+
+html.intranet-a11y-high-contrast,
+html.intranet-a11y-high-contrast body {
+  background: #ffffff;
+  color: #000000;
+}
+
+html.intranet-a11y-high-contrast .card,
+html.intranet-a11y-high-contrast .card-flat {
+  background: #ffffff;
+  border-color: #000000;
+}
+
+html.intranet-a11y-high-contrast .btn-primary {
+  background: #000000;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+html.intranet-a11y-negative-contrast,
+html.intranet-a11y-negative-contrast body {
+  background: #ffffff;
+}
+
+html.intranet-a11y-light-background {
+  color-scheme: light;
+  --cream-50: #ffffff;
+  --cream-100: #ffffff;
+  --cream-200: #f0f0f0;
+}
+
+html.intranet-a11y-light-background,
+html.intranet-a11y-light-background body,
+html.intranet-a11y-light-background [data-intranet-a11y-app],
+html.intranet-a11y-light-background main {
+  background: #ffffff !important;
+  color: var(--ink-900, #140a0c);
+}
+
+html.intranet-a11y-light-background .card,
+html.intranet-a11y-light-background .card-flat {
+  background: #ffffff !important;
+  color: var(--ink-900, #140a0c);
+}
+
+@media (max-width: 767px) {
+  .intranet-a11y-menu {
+    bottom: calc(var(--bottom-nav-h, 64px) + 0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+}

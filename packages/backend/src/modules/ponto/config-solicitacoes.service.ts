@@ -5,6 +5,7 @@ const DEFAULTS = {
   atestadoDiasLimiteSimples: 3,
   atestadoDiasLimiteInss: 14,
   atestadoPrazoEnvioDias: 2,
+  atestadoTempoRetornoMin: 60,
   atestadoMensagemOriginais: "Os originais devem ser entregues ao setor de RH.",
   feriasAntecedenciaMinDias: 30,
   feriasMinimoGrandePeriodo: 14,

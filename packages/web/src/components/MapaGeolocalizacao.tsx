@@ -16,28 +16,30 @@ function haversine(lat1: number, lng1: number, lat2: number, lng2: number): numb
 function verificarDentroPerimetro(
   lat: number,
   lng: number,
-  cfg: SistemaConfig
+  cfg: SistemaConfig,
+  accuracy = 0
 ): { dentro: boolean; nomeArea: string; distancia: number } {
   const temModoRemoto = !!(cfg.modoHomeOffice || cfg.modoHibridoLocal);
+  const margem = Math.min(Math.max(0, accuracy), 50);
 
   if (temModoRemoto) {
     const er = cfg.enderecoResidencial;
-    if (er?.lat && er?.lng) {
-      const d = haversine(lat, lng, er.lat, er.lng);
-      if (d <= er.raioMetros)
+    if (er?.lat != null && er?.lng != null) {
+      const d = haversine(lat, lng, Number(er.lat), Number(er.lng));
+      if (d <= (er.raioMetros ?? 20) + margem)
         return { dentro: true, nomeArea: "Residência", distancia: Math.round(d) };
     }
   }
 
   const distSede = haversine(lat, lng, cfg.lat, cfg.lng);
-  if (distSede <= cfg.raioMetros) {
+  if (distSede <= cfg.raioMetros + margem) {
     return { dentro: true, nomeArea: "Sede (CFO)", distancia: Math.round(distSede) };
   }
 
   const areas = cfg.areasViagem ?? [];
   for (const area of areas) {
     const d = haversine(lat, lng, area.lat, area.lng);
-    if (d <= area.raioMetros)
+    if (d <= area.raioMetros + margem)
       return { dentro: true, nomeArea: "Área de viagem", distancia: Math.round(d) };
   }
 
@@ -55,8 +57,11 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
   const mapRef = useRef<L.Map | null>(null);
   const userMarkerRef = useRef<L.CircleMarker | null>(null);
   const userAccuracyRef = useRef<L.Circle | null>(null);
+  const residencialCircleRef = useRef<L.Circle | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const leafletRef = useRef<typeof L | null>(null);
+  const cfgRef = useRef(cfg);
+  cfgRef.current = cfg;
 
   const [info, setInfo] = useState<{ dentro: boolean; nomeArea: string; distancia: number } | null>(
     null
@@ -108,9 +113,9 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
       // Perímetro residencial (home office / híbrido)
       const temModoRemoto = !!(cfg.modoHomeOffice || cfg.modoHibridoLocal);
       const er = cfg.enderecoResidencial;
-      if (temModoRemoto && er?.lat && er?.lng) {
-        Lmap.circle([er.lat, er.lng], {
-          radius: er.raioMetros,
+      if (temModoRemoto && er?.lat != null && er?.lng != null) {
+        residencialCircleRef.current = Lmap.circle([Number(er.lat), Number(er.lng)], {
+          radius: er.raioMetros ?? 20,
           color: "#2f7d4f",
           fillColor: "#2f7d4f",
           fillOpacity: 0.08,
@@ -118,7 +123,7 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
           weight: 2.5
         })
           .addTo(map)
-          .bindTooltip(`Residência — raio ${er.raioMetros}m`, {
+          .bindTooltip(`Residência — raio ${er.raioMetros ?? 20}m`, {
             permanent: false,
             direction: "top"
           });
@@ -146,12 +151,55 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
 
     return () => {
       destroyed = true;
+      residencialCircleRef.current = null;
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
     };
   }, []);
+
+  // Atualiza o círculo residencial se o endereço chegar depois da montagem do mapa
+  useEffect(() => {
+    const Lmap = leafletRef.current;
+    const map = mapRef.current;
+    if (!Lmap || !map) return;
+
+    const temModoRemoto = !!(cfg.modoHomeOffice || cfg.modoHibridoLocal);
+    const er = cfg.enderecoResidencial;
+    if (!temModoRemoto || er?.lat == null || er?.lng == null) {
+      if (residencialCircleRef.current) {
+        residencialCircleRef.current.remove();
+        residencialCircleRef.current = null;
+      }
+      return;
+    }
+
+    const lat = Number(er.lat);
+    const lng = Number(er.lng);
+    const raio = er.raioMetros ?? 20;
+    if (residencialCircleRef.current) {
+      residencialCircleRef.current.setLatLng([lat, lng]);
+      residencialCircleRef.current.setRadius(raio);
+      return;
+    }
+    residencialCircleRef.current = Lmap.circle([lat, lng], {
+      radius: raio,
+      color: "#2f7d4f",
+      fillColor: "#2f7d4f",
+      fillOpacity: 0.08,
+      dashArray: "8 5",
+      weight: 2.5
+    })
+      .addTo(map)
+      .bindTooltip(`Residência — raio ${raio}m`, { permanent: false, direction: "top" });
+  }, [
+    cfg.modoHomeOffice,
+    cfg.modoHibridoLocal,
+    cfg.enderecoResidencial?.lat,
+    cfg.enderecoResidencial?.lng,
+    cfg.enderecoResidencial?.raioMetros
+  ]);
 
   // Rastreia a posição do usuário em tempo real
   useEffect(() => {
@@ -170,7 +218,7 @@ export function MapaGeolocalizacao({ cfg, ativo, onStatusChange }: MapaGeolocali
         setAguardando(false);
         setGpsErro(null);
 
-        const resultado = verificarDentroPerimetro(latitude, longitude, cfg);
+        const resultado = verificarDentroPerimetro(latitude, longitude, cfgRef.current, accuracy);
         setInfo(resultado);
         onStatusChange?.(resultado.dentro ? "ok" : "fora");
 

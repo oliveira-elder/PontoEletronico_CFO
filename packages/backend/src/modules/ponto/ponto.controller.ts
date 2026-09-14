@@ -60,13 +60,18 @@ export class PontoController {
   }
 
   @Get("banco-horas")
-  getBancoHoras(@Req() req: { user: { sub: string } }) {
-    return this.pontoService.getBancoHoras(req.user.sub);
+  getBancoHoras(@Req() req: { user: { sub: string } }, @Query("cicloInicio") cicloInicio?: string) {
+    return this.pontoService.getBancoHoras(req.user.sub, cicloInicio);
   }
 
   @Get("solicitacoes")
   getSolicitacoes(@Req() req: { user: { sub: string } }) {
     return this.pontoService.getSolicitacoes(req.user.sub);
+  }
+
+  @Get("atestado-do-dia")
+  getAtestadoDoDia(@Req() req: { user: { sub: string } }, @Query("data") data: string) {
+    return this.pontoService.getMeuAtestadoDoDia(req.user.sub, data);
   }
 
   @Post("solicitacoes")

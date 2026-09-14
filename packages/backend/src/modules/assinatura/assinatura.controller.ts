@@ -85,6 +85,69 @@ export class AssinaturaController {
     );
   }
 
+  /** Ciclo encerrado do banco de horas: lista folhas mês a mês (cria sob demanda). */
+  @Get("ciclo-banco-horas")
+  getAssinaturasCicloBancoHoras(
+    @Req() req: AuthRequest,
+    @Query("inicio") inicio?: string,
+    @Query("fim") fim?: string
+  ) {
+    if (!inicio || !fim) {
+      throw new BadRequestException("Informe inicio e fim (YYYY-MM-DD) do ciclo.");
+    }
+    return this.assinaturaService.listarAssinaturasCicloBancoHoras(req.user.sub, inicio, fim);
+  }
+
+  /** Relatório PDF apenas do intervalo do ciclo (mesmo modelo da folha de ponto). */
+  @Get("ciclo-banco-horas/pdf")
+  async getPdfCicloBancoHoras(
+    @Req() req: AuthRequest,
+    @Query("inicio") inicio: string | undefined,
+    @Query("fim") fim: string | undefined,
+    @Res() res: Response
+  ) {
+    if (!inicio || !fim) {
+      throw new BadRequestException("Informe inicio e fim (YYYY-MM-DD) do ciclo.");
+    }
+    const pdf = await this.assinaturaService.gerarPdfCicloBancoHoras(req.user.sub, inicio, fim);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="ciclo-banco-horas-${inicio}_${fim}.pdf"`
+    );
+    res.send(pdf);
+  }
+
+  /** Status da assinatura do relatório do ciclo (funcionário). */
+  @Get("ciclo-banco-horas/assinatura")
+  getAssinaturaCicloBancoHoras(
+    @Req() req: AuthRequest,
+    @Query("inicio") inicio?: string,
+    @Query("fim") fim?: string
+  ) {
+    if (!inicio || !fim) {
+      throw new BadRequestException("Informe inicio e fim (YYYY-MM-DD) do ciclo.");
+    }
+    return this.assinaturaService.obterAssinaturaCicloBancoHoras(req.user.sub, inicio, fim);
+  }
+
+  /**
+   * Assina o relatório do ciclo (somente funcionário).
+   * Exige todas as folhas mensais CONCLUIDAS (funcionário + chefe) e nenhum mês aberto.
+   */
+  @Post("ciclo-banco-horas/assinar")
+  assinarCicloBancoHoras(@Req() req: AuthRequest, @Body() body: { inicio?: string; fim?: string }) {
+    if (!body?.inicio || !body?.fim) {
+      throw new BadRequestException("Informe inicio e fim (YYYY-MM-DD) do ciclo.");
+    }
+    return this.assinaturaService.assinarCicloBancoHoras(
+      req.user.sub,
+      body.inicio,
+      body.fim,
+      getSignatureMeta(req)
+    );
+  }
+
   @Post(":id/assinar")
   assinar(@Req() req: AuthRequest, @Param("id") id: string) {
     return this.assinaturaService.assinarFuncionario(id, req.user.sub, getSignatureMeta(req));
@@ -156,10 +219,27 @@ export class AssinaturaAuditoriaController {
     return this.assinaturaService.assinarGestor(
       id,
       req.user.sub,
-      req.user.name ?? "Gestor",
+      req.user.name ?? "Chefe",
       getSignatureMeta(req),
       req.user.isSuperAdmin ?? false,
       req.user.roles.includes("gestor") || req.user.roles.includes("GESTOR_APROVACAO")
+    );
+  }
+
+  /** Devolve o quadro ao funcionário para correção e nova assinatura. */
+  @Post("gestao/assinaturas/:id/rejeitar")
+  @Roles("GESTOR_APROVACAO", "gestor", "ponto-admin", "PONTO_ADMIN")
+  rejeitarAssinaturaGestor(
+    @Req() req: AuthRequest,
+    @Param("id") id: string,
+    @Body() body: { motivo?: string }
+  ) {
+    return this.assinaturaService.rejeitarAssinaturaGestor(
+      id,
+      req.user.sub,
+      req.user.isSuperAdmin ?? false,
+      req.user.roles.includes("gestor") || req.user.roles.includes("GESTOR_APROVACAO"),
+      body?.motivo
     );
   }
 

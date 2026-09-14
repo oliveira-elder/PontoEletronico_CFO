@@ -185,9 +185,9 @@ function TipoBadge({ tipo }: { tipo: string }) {
 
 function StatusBadge({ status, tipo }: { status: StatusSolicitacao; tipo?: string }) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
-    PENDENTE: { label: "Aguardando Gestor", cls: "badge-amber" },
+    PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: {
-      label: tipo === "ATESTADO" ? "Ciência do Gestor" : "Aprovado pelo Gestor",
+      label: tipo === "ATESTADO" ? "Ciência do Chefe" : "Aprovado pelo Chefe",
       cls: "badge-blue"
     },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: {
@@ -197,7 +197,7 @@ function StatusBadge({ status, tipo }: { status: StatusSolicitacao; tipo?: strin
     AGUARDANDO_GESTOR_RH: { label: "Aguardando Gerente de RH", cls: "badge-amber" },
     APROVADA: { label: "Aprovada pelo RH", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
-    REJEITADA_GESTOR: { label: "Rejeitada pelo Gestor", cls: "badge-red" },
+    REJEITADA_GESTOR: { label: "Rejeitada pelo Chefe", cls: "badge-red" },
     REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-amber" };
@@ -383,9 +383,9 @@ function ModalDecisao({
                 lineHeight: 1.55
               }}
             >
-              Ao confirmar, sua assinatura digital será aplicada no canto inferior esquerdo do
-              atestado (imagem será convertida em PDF, se necessário) e o documento será encaminhado
-              ao RH.
+              Ao confirmar, sua assinatura digital será aplicada no canto superior esquerdo de todas
+              as páginas do atestado (imagem será convertida em PDF, se necessário) e o documento
+              será encaminhado ao RH.
             </p>
           ) : (
             isAprovar && (
@@ -782,15 +782,15 @@ export function AprovacaoGestorPage() {
   const { user, hasRole, token } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // PROVISÓRIO: isManager via campo do Funcionario dá acesso enquanto responsavelUserId não está configurado
-  const isManagerProvisorio = !!user?.funcionario?.isManager;
+  // "Chefe" é a característica isManager (não mais a categoria GERENTE) — fonte oficial de acesso.
+  const isManager = !!user?.funcionario?.isManager;
   const isGestorArea =
     !!user?.isSuperAdmin ||
     hasRole("gestor") ||
     hasRole("GESTOR_APROVACAO") ||
     hasRole("ponto-admin") ||
     hasRole("PONTO_ADMIN") ||
-    isManagerProvisorio;
+    isManager;
   const isRH =
     !!user?.isSuperAdmin ||
     hasRole("RH_AUDITORIA") ||
@@ -803,6 +803,9 @@ export function AprovacaoGestorPage() {
     etapaInicialFromUrl(searchParams, isRH, isGestorArea)
   );
   const [aba, setAba] = useState<"pendentes" | "historico">("pendentes");
+  const [filtroCard, setFiltroCard] = useState<"pendentes" | "todas" | "aprovadas" | "rejeitadas">(
+    "pendentes"
+  );
   const [busca, setBusca] = useState("");
   const [tipo, setTipo] = useState("");
   const [page, setPage] = useState(1);
@@ -828,6 +831,8 @@ export function AprovacaoGestorPage() {
   const [loadingAssin, setLoadingAssin] = useState(false);
   const [assinandoId, setAssinandoId] = useState<string | null>(null);
   const [modalAssin, setModalAssin] = useState<AssinaturaQuadro | null>(null);
+  const [modalRejeitarAssin, setModalRejeitarAssin] = useState<AssinaturaQuadro | null>(null);
+  const [motivoRejeitarAssin, setMotivoRejeitarAssin] = useState("");
   const [erroAssin, setErroAssin] = useState("");
   const [filtroAssinStatus, setFiltroAssinStatus] = useState("PENDENTE_GESTOR");
 
@@ -913,11 +918,15 @@ export function AprovacaoGestorPage() {
       if (tipo) params.set("tipo", tipo);
 
       if (etapa === "gestor") {
-        const statusMap = {
-          pendentes: "PENDENTE",
-          historico: "HISTORICO_GESTOR"
-        };
-        params.set("status", statusMap[aba]);
+        const status =
+          aba === "pendentes"
+            ? "PENDENTE"
+            : filtroCard === "aprovadas"
+              ? "AGUARDANDO_RH,APROVADA,REJEITADA_RH"
+              : filtroCard === "rejeitadas"
+                ? "REJEITADA_GESTOR"
+                : "HISTORICO_GESTOR";
+        params.set("status", status);
         const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
           `/auditoria/gestao/solicitacoes?${params}`
         );
@@ -936,11 +945,15 @@ export function AprovacaoGestorPage() {
         setSolicitacoes(data.solicitacoes ?? []);
         setTotal(data.total ?? 0);
       } else {
-        const statusMap = {
-          pendentes: "AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO",
-          historico: "APROVADA,REJEITADA_RH"
-        };
-        params.set("status", statusMap[aba]);
+        const status =
+          aba === "pendentes"
+            ? "AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO"
+            : filtroCard === "aprovadas"
+              ? "APROVADA"
+              : filtroCard === "rejeitadas"
+                ? "REJEITADA_RH"
+                : "APROVADA,REJEITADA_RH";
+        params.set("status", status);
         const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
           `/auditoria/solicitacoes?${params}`
         );
@@ -952,7 +965,7 @@ export function AprovacaoGestorPage() {
     } finally {
       setLoading(false);
     }
-  }, [aba, page, tipo, etapa]);
+  }, [aba, page, tipo, etapa, filtroCard]);
 
   useEffect(() => {
     const fromUrl = searchParams.get("etapa");
@@ -966,6 +979,7 @@ export function AprovacaoGestorPage() {
   function selecionarEtapa(nova: EtapaAprovacao) {
     setEtapa(nova);
     setAba("pendentes");
+    setFiltroCard("pendentes");
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -983,7 +997,7 @@ export function AprovacaoGestorPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [aba, tipo, etapa]);
+  }, [aba, tipo, etapa, filtroCard]);
 
   useEffect(() => {
     void carregar();
@@ -1131,6 +1145,33 @@ export function AprovacaoGestorPage() {
     }
   }
 
+  async function confirmarRejeitarAssinatura() {
+    if (!modalRejeitarAssin) return;
+    const motivo = motivoRejeitarAssin.trim();
+    if (!motivo) {
+      setErroAssin("Informe o motivo da rejeição.");
+      return;
+    }
+    setAssinandoId(modalRejeitarAssin.id);
+    setErroAssin("");
+    try {
+      await api.post(`/auditoria/gestao/assinaturas/${modalRejeitarAssin.id}/rejeitar`, {
+        motivo
+      });
+      setModalRejeitarAssin(null);
+      setMotivoRejeitarAssin("");
+      const data = await api.get<AssinaturaQuadro[]>(
+        `/auditoria/gestao/assinaturas${filtroAssinStatus ? `?status=${filtroAssinStatus}` : ""}`
+      );
+      setAssinaturas(data ?? []);
+      setFeedbackMsg("Quadro rejeitado e devolvido ao funcionário.");
+    } catch (e) {
+      setErroAssin((e as Error).message || "Erro ao rejeitar. Tente novamente.");
+    } finally {
+      setAssinandoId(null);
+    }
+  }
+
   async function confirmarAdmin(observacao: string) {
     if (!modalAdminSol) return;
     setModalLoading(true);
@@ -1179,7 +1220,7 @@ export function AprovacaoGestorPage() {
           <AlertCircleIcon size={20} style={{ color: "#856404", marginBottom: 8 }} />
           <p style={{ margin: 0, fontWeight: 600 }}>Acesso restrito</p>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: "#856404" }}>
-            Esta página é exclusiva para gestores de área, RH e administradores.
+            Esta página é exclusiva para chefes de área, RH e administradores.
           </p>
         </div>
       </div>
@@ -1219,7 +1260,7 @@ export function AprovacaoGestorPage() {
         </h1>
         <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
           {etapa === "gestor"
-            ? "Etapa do gestor de área — aprovação inicial da equipe."
+            ? "Etapa do chefe de área — aprovação inicial da equipe."
             : etapa === "rh"
               ? "Etapa do RH — aprovação final de todas as solicitações."
               : etapa === "correcoes_rh"
@@ -1233,7 +1274,7 @@ export function AprovacaoGestorPage() {
         <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
           {[
             ...(mostrarEtapaGestor
-              ? [{ id: "gestor" as const, label: "Gestor de Área", count: statsGestor.pendentes }]
+              ? [{ id: "gestor" as const, label: "Chefe de Área", count: statsGestor.pendentes }]
               : []),
             ...(mostrarEtapaRH
               ? [{ id: "rh" as const, label: "RH", count: statsRH.pendentes }]
@@ -1340,7 +1381,7 @@ export function AprovacaoGestorPage() {
                   </div>
                   <div>
                     <p style={{ fontSize: 11, color: "var(--ink-400)", marginBottom: 1 }}>
-                      Banco de horas (total)
+                      Saldo da folha (total)
                     </p>
                     <p
                       style={{
@@ -1386,6 +1427,121 @@ export function AprovacaoGestorPage() {
                     }}
                   >
                     {assinandoId ? "Assinando…" : "✍ Assinar Quadro"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {modalRejeitarAssin && (
+            <div
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.45)",
+                zIndex: 1000,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 16
+              }}
+              onClick={() => {
+                if (assinandoId) return;
+                setModalRejeitarAssin(null);
+                setMotivoRejeitarAssin("");
+                setErroAssin("");
+              }}
+            >
+              <div
+                style={{
+                  background: "white",
+                  borderRadius: 12,
+                  padding: "28px 28px 24px",
+                  maxWidth: 460,
+                  width: "100%",
+                  boxShadow: "0 8px 40px rgba(0,0,0,0.18)"
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h2
+                  style={{
+                    fontFamily: "var(--font-display)",
+                    fontSize: 17,
+                    marginBottom: 4,
+                    color: "var(--burgundy-700)"
+                  }}
+                >
+                  Rejeitar quadro
+                </h2>
+                <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16 }}>
+                  {modalRejeitarAssin.periodo.funcionario.user.name} —{" "}
+                  {MESES_PT[(modalRejeitarAssin.periodo.mes ?? 1) - 1]}/
+                  {modalRejeitarAssin.periodo.ano}
+                </p>
+                <p
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--ink-600)",
+                    marginBottom: 12,
+                    lineHeight: 1.55
+                  }}
+                >
+                  O quadro volta para o funcionário assinar de novo. Informe o motivo da rejeição.
+                </p>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--ink-600)",
+                    marginBottom: 6
+                  }}
+                >
+                  Motivo
+                </label>
+                <textarea
+                  value={motivoRejeitarAssin}
+                  onChange={(e) => setMotivoRejeitarAssin(e.target.value)}
+                  rows={4}
+                  placeholder="Ex.: Há divergências nos registros do dia 15. Solicite correção antes de assinar."
+                  style={{
+                    width: "100%",
+                    resize: "vertical",
+                    border: "1px solid rgba(122,30,38,0.2)",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    fontSize: 13,
+                    fontFamily: "inherit",
+                    marginBottom: 12,
+                    boxSizing: "border-box"
+                  }}
+                />
+                {erroAssin && (
+                  <p style={{ color: "#b91c1c", fontSize: 12, marginBottom: 12 }}>{erroAssin}</p>
+                )}
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setModalRejeitarAssin(null);
+                      setMotivoRejeitarAssin("");
+                      setErroAssin("");
+                    }}
+                    disabled={!!assinandoId}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void confirmarRejeitarAssinatura()}
+                    disabled={!!assinandoId}
+                    style={{
+                      background: "#B91C1C",
+                      borderColor: "#B91C1C",
+                      color: "#fff"
+                    }}
+                  >
+                    {assinandoId ? "Rejeitando…" : "Rejeitar"}
                   </button>
                 </div>
               </div>
@@ -1439,7 +1595,7 @@ export function AprovacaoGestorPage() {
                     <th>Matrícula</th>
                     <th>Departamento</th>
                     <th>Mês/Ano</th>
-                    <th>Banco de Horas (total)</th>
+                    <th>Saldo da folha (total)</th>
                     <th>Assinatura Func.</th>
                     <th>Status</th>
                     <th style={{ width: "1%", whiteSpace: "nowrap" }}>Ação</th>
@@ -1477,7 +1633,7 @@ export function AprovacaoGestorPage() {
                           <span className="badge badge-amber">Aguard. funcionário</span>
                         )}
                         {a.status === "PENDENTE_GESTOR" && (
-                          <span className="badge badge-blue">Aguard. gestor</span>
+                          <span className="badge badge-blue">Aguard. chefe</span>
                         )}
                         {a.status === "CONCLUIDA" && (
                           <span className="badge badge-green">Concluída</span>
@@ -1503,6 +1659,26 @@ export function AprovacaoGestorPage() {
                               }}
                             >
                               ✍ Assinar
+                            </button>
+                          )}
+                          {a.status === "PENDENTE_GESTOR" && (
+                            <button
+                              className="btn btn-sm"
+                              onClick={() => {
+                                setModalRejeitarAssin(a);
+                                setMotivoRejeitarAssin("");
+                                setErroAssin("");
+                              }}
+                              style={{
+                                gap: 5,
+                                fontSize: 12,
+                                background: "#FEF2F2",
+                                border: "1px solid #FECACA",
+                                color: "#B91C1C"
+                              }}
+                              title="Devolver ao funcionário para correção"
+                            >
+                              Rejeitar
                             </button>
                           )}
                           {(a.status === "PENDENTE_GESTOR" || a.status === "CONCLUIDA") && (
@@ -1553,25 +1729,33 @@ export function AprovacaoGestorPage() {
                   label: "Aguardando minha aprovação",
                   val: stats.pendentes,
                   color: "#92400e",
-                  bg: "#fef3c7"
+                  bg: "#fef3c7",
+                  aba: "pendentes" as const,
+                  filtro: "pendentes" as const
                 },
                 {
                   label: "Aprovadas por mim (encam. ao RH)",
                   val: stats.aprovadas,
                   color: "#065f46",
-                  bg: "#d1fae5"
+                  bg: "#d1fae5",
+                  aba: "historico" as const,
+                  filtro: "aprovadas" as const
                 },
                 {
                   label: "Rejeitadas por mim",
                   val: stats.rejeitadas,
                   color: "#7a1e26",
-                  bg: "#fee2e2"
+                  bg: "#fee2e2",
+                  aba: "historico" as const,
+                  filtro: "rejeitadas" as const
                 },
                 {
                   label: "Funcionários na equipe",
                   val: equipeCount ?? "–",
                   color: "#1e3a5f",
-                  bg: "#dbeafe"
+                  bg: "#dbeafe",
+                  aba: undefined,
+                  filtro: undefined
                 }
               ]
             : [
@@ -1579,57 +1763,93 @@ export function AprovacaoGestorPage() {
                   label: "Aguardando aprovação do RH",
                   val: stats.pendentes,
                   color: "#1e40af",
-                  bg: "#dbeafe"
+                  bg: "#dbeafe",
+                  aba: "pendentes" as const,
+                  filtro: "pendentes" as const
                 },
                 {
                   label: "Aprovadas pelo RH",
                   val: stats.aprovadas,
                   color: "#065f46",
-                  bg: "#d1fae5"
+                  bg: "#d1fae5",
+                  aba: "historico" as const,
+                  filtro: "aprovadas" as const
                 },
                 {
                   label: "Rejeitadas pelo RH",
                   val: stats.rejeitadas,
                   color: "#7a1e26",
-                  bg: "#fee2e2"
+                  bg: "#fee2e2",
+                  aba: "historico" as const,
+                  filtro: "rejeitadas" as const
                 }
               ]
-          ).map((c) => (
-            <div
-              key={c.label}
-              style={{
-                background: "#fff",
-                borderRadius: "var(--radius-lg)",
-                border: "1px solid rgba(122,30,38,0.08)",
-                padding: "14px 18px"
-              }}
-            >
-              <p
+          ).map((c) => {
+            const clicavel = !!c.aba;
+            const ativo = clicavel && aba === c.aba && filtroCard === c.filtro;
+            return (
+              <div
+                key={c.label}
+                role={clicavel ? "button" : undefined}
+                tabIndex={clicavel ? 0 : undefined}
+                onClick={
+                  clicavel
+                    ? () => {
+                        setAba(c.aba!);
+                        setFiltroCard(c.filtro!);
+                      }
+                    : undefined
+                }
+                onKeyDown={
+                  clicavel
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setAba(c.aba!);
+                          setFiltroCard(c.filtro!);
+                        }
+                      }
+                    : undefined
+                }
                 style={{
-                  margin: "0 0 6px",
-                  fontSize: 11,
-                  color: "var(--ink-500)",
-                  fontWeight: 600,
-                  lineHeight: 1.3
+                  background: ativo ? "var(--burgundy-50, #fdf2f3)" : "#fff",
+                  borderRadius: "var(--radius-lg)",
+                  border: ativo
+                    ? "1px solid var(--burgundy-300, #d68f96)"
+                    : "1px solid rgba(122,30,38,0.08)",
+                  padding: "14px 18px",
+                  cursor: clicavel ? "pointer" : "default",
+                  boxShadow: ativo ? "0 0 0 1px var(--burgundy-300, #d68f96) inset" : "none",
+                  transition: "background 0.15s, border-color 0.15s"
                 }}
               >
-                {c.label}
-              </p>
-              <span
-                style={{
-                  fontSize: 28,
-                  fontWeight: 800,
-                  fontFamily: "var(--font-display)",
-                  background: c.bg,
-                  color: c.color,
-                  borderRadius: "var(--radius-md)",
-                  padding: "2px 10px"
-                }}
-              >
-                {c.val}
-              </span>
-            </div>
-          ))}
+                <p
+                  style={{
+                    margin: "0 0 6px",
+                    fontSize: 11,
+                    color: "var(--ink-500)",
+                    fontWeight: 600,
+                    lineHeight: 1.3
+                  }}
+                >
+                  {c.label}
+                </p>
+                <span
+                  style={{
+                    fontSize: 28,
+                    fontWeight: 800,
+                    fontFamily: "var(--font-display)",
+                    background: c.bg,
+                    color: c.color,
+                    borderRadius: "var(--radius-md)",
+                    padding: "2px 10px"
+                  }}
+                >
+                  {c.val}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1667,7 +1887,10 @@ export function AprovacaoGestorPage() {
           {(["pendentes", "historico"] as const).map((a) => (
             <button
               key={a}
-              onClick={() => setAba(a)}
+              onClick={() => {
+                setAba(a);
+                setFiltroCard(a === "pendentes" ? "pendentes" : "todas");
+              }}
               style={{
                 padding: "9px 18px",
                 border: "none",
@@ -1806,7 +2029,7 @@ export function AprovacaoGestorPage() {
                   </p>
                   <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink-500)" }}>
                     {etapa === "rh"
-                      ? "Solicitações aprovadas pelos gestores aparecerão aqui para análise final."
+                      ? "Solicitações aprovadas pelos chefes aparecerão aqui para análise final."
                       : "Quando os membros da sua equipe enviarem solicitações, elas aparecerão aqui."}
                   </p>
                 </>

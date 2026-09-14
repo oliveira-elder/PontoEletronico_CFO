@@ -49,6 +49,15 @@ export default defineConfig({
             clientPort: publicHost.includes(":") ? Number(publicHost.split(":")[1]) : 443
           }
         : undefined,
+    warmup: {
+      clientFiles: [
+        "./src/main.tsx",
+        "./src/app/router.tsx",
+        "./src/pages/LoginPage.tsx",
+        "./src/pages/ponto/DashboardPage.tsx",
+        "./src/pages/ponto/RegistroPontoPage.tsx"
+      ]
+    },
     proxy: {
       "/api": {
         target: process.env.VITE_API_TARGET ?? "http://backend:3000",
@@ -96,6 +105,6 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    include: ["keycloak-js", "react-is", "recharts"]
+    include: ["keycloak-js", "react-is", "recharts", "lucide-react"]
   }
 });

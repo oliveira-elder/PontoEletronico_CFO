@@ -1,22 +1,54 @@
 export const FUSO_BRASILIA = "America/Sao_Paulo";
 const OFFSET_BRASILIA = "-03:00";
 
-/** YYYY-MM-DD de hoje no fuso de Brasília. */
-export function hojeBrasiliaISO(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: FUSO_BRASILIA,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date());
-}
-
 type DateInput = string | Date | null | undefined;
 
 function toDate(value: DateInput): Date | null {
   if (value == null || value === "") return null;
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Data civil (YYYY-MM-DD) de um instante, no fuso de Brasília. */
+export function dataBrasiliaISO(value: DateInput = new Date()): string {
+  const d = toDate(value) ?? new Date();
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: FUSO_BRASILIA,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(d);
+}
+
+/**
+ * Data civil YYYY-MM-DD de coluna DATE (meia-noite UTC) ou string já civil.
+ * NÃO usar em DateTime de batidas: nesses casos use `dataBrasiliaISO`.
+ */
+export function dataCivilISO(value: DateInput): string {
+  if (typeof value === "string") return value.slice(0, 10);
+  const d = toDate(value);
+  if (!d) return "";
+  return d.toISOString().slice(0, 10);
+}
+
+/** Soma dias em calendário civil (YYYY-MM-DD), sem fuso local. */
+export function somarDiasCivil(isoYYYYMMDD: string, delta: number): string {
+  const [y, m, d] = isoYYYYMMDD.slice(0, 10).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + delta));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    dt.getUTCDate()
+  ).padStart(2, "0")}`;
+}
+
+/** YYYY-MM-DD de hoje no fuso de Brasília. */
+export function hojeBrasiliaISO(): string {
+  return dataBrasiliaISO(new Date());
+}
+
+/** Instante de um dia civil em Brasília (ex.: 00:00:00, 12:00:00, 23:59:59). */
+export function instanteCivilBrasilia(isoYYYYMMDD: string, horario = "12:00:00"): Date {
+  const h = horario.length === 5 ? `${horario}:00` : horario;
+  return new Date(`${isoYYYYMMDD.slice(0, 10)}T${h}${OFFSET_BRASILIA}`);
 }
 
 /** Data/hora completa em pt-BR no fuso de Brasília. */
@@ -56,6 +88,14 @@ export function horarioHHMMBrasilia(d: Date = new Date()): string {
     /* relógio local */
   }
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Minuto do dia (0–1439) no fuso de Brasília. */
+export function minutosBrasilia(value: DateInput = new Date()): number {
+  const d = toDate(value);
+  if (!d) return 0;
+  const [h, m] = horarioHHMMBrasilia(d).split(":").map(Number);
+  return h * 60 + m;
 }
 
 export function formatTimeBrasilia(value: DateInput): string {

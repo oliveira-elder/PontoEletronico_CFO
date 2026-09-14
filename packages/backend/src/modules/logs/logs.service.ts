@@ -3,12 +3,14 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { FilterLogsDto } from "./dto/filter-logs.dto";
 import { Response } from "express";
 import { formatDateTimeBrasilia } from "../../utils/horario-brasilia";
+import { ENDPOINT_CATALOG, matchEndpoint } from "./endpoint-catalog";
+import { buildQuerySearchCondition } from "./log-search.util";
 
 @Injectable()
 export class LogsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private buildWhere(f: FilterLogsDto) {
+  private async buildWhere(f: FilterLogsDto) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = {};
     if (f.category) where.category = f.category;
@@ -22,13 +24,15 @@ export class LogsService {
       if (f.from) where.createdAt.gte = new Date(f.from);
       if (f.to) where.createdAt.lte = new Date(f.to);
     }
+    const buscaLivre = await buildQuerySearchCondition(this.prisma, f.q ?? "");
+    if (buscaLivre) where.AND = [buscaLivre];
     return where;
   }
 
   async listEntries(f: FilterLogsDto) {
     const limit = f.limit ?? 50;
     const page = f.page ?? 0;
-    const where = this.buildWhere(f);
+    const where = await this.buildWhere(f);
 
     const [total, items] = await Promise.all([
       this.prisma.auditLog.count({ where }),
@@ -55,7 +59,36 @@ export class LogsService {
       })
     ]);
 
-    return { total, page, limit, items };
+    /* Ator: junta com User pelo externalId (= actorUserId/sub do Keycloak) para exibir
+       nome/e-mail reais, não só o username cru — melhora a rastreabilidade do "quem". */
+    const idsAtores = Array.from(
+      new Set(items.map((i) => i.actorUserId).filter((id): id is string => !!id))
+    );
+    const usuarios = idsAtores.length
+      ? await this.prisma.user.findMany({
+          where: { externalId: { in: idsAtores } },
+          select: { externalId: true, name: true, email: true, emailReal: true }
+        })
+      : [];
+    const usuarioPorExternalId = new Map(usuarios.map((u) => [u.externalId, u]));
+
+    const itemsEnriquecidos = items.map((item) => {
+      const usuario = item.actorUserId ? usuarioPorExternalId.get(item.actorUserId) : undefined;
+      return {
+        ...item,
+        atorNome: usuario?.name ?? null,
+        atorEmail: usuario?.emailReal ?? usuario?.email ?? null,
+        endpointInfo: matchEndpoint(item.method, item.path)
+      };
+    });
+
+    return { total, page, limit, items: itemsEnriquecidos };
+  }
+
+  /** Catálogo completo de endpoints (título/descrição/categoria) — usado pela tela de
+   *  Logs para exibir a explicação de cada endpoint e para uma visão de referência. */
+  getCatalog() {
+    return ENDPOINT_CATALOG;
   }
 
   async getDashboard() {
@@ -213,7 +246,7 @@ export class LogsService {
   }
 
   async exportCsv(f: FilterLogsDto, res: Response): Promise<void> {
-    const where = this.buildWhere(f);
+    const where = await this.buildWhere(f);
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="logs-${Date.now()}.csv"`);

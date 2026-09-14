@@ -33,7 +33,8 @@ export interface CalcHorasOpts {
   horaSaida?: string;
   /**
    * Tolerância simétrica de entrada (±N) e excesso de almoço (até mín+N).
-   * INTERROMPER/REINICIAR não usam esta tolerância.
+   * INTERROMPER/REINICIAR não usam esta tolerância na retomada.
+   * INÍCIO_INTERVALO (ou pausa) sem retorno, na janela de saída, usa toleranciaSaidaMin.
    */
   toleranciaEntradaMin?: number;
   /** Tolerância simétrica de saída (±N em torno de horaSaida). */
@@ -208,6 +209,18 @@ export function calcHorasTrabalhadasMinutos(
 
   if (emAlmocoDesde !== null && opts.agoraMin !== undefined) {
     marcarJanela(opts.agoraMin);
+  }
+
+  /*
+   * Registro incompleto mas calculável: almoço ou pausa sem retorno.
+   * Se o horário de fechamento cair na janela de saída, aplica o mesmo snap da SAÍDA
+   * (ex.: 15:58 com saída 16:00 e tol ±5 conta como 16:00 no cálculo).
+   */
+  const fechamentoIncompletoMin = emAlmocoDesde ?? pausaDesde;
+  if (fechamentoIncompletoMin !== null) {
+    total +=
+      snapDentroTolerancia(fechamentoIncompletoMin, opts.horaSaida, opts.toleranciaSaidaMin) -
+      fechamentoIncompletoMin;
   }
 
   /*

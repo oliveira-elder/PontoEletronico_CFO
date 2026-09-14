@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { HttpService } from "@nestjs/axios";
 import { firstValueFrom } from "rxjs";
 import { PrismaService } from "../../prisma/prisma.service";
+import { dataBrasiliaISO, hojeBrasiliaISO } from "../../utils/horario-brasilia";
 
 const DF_FIXOS: { mes: number; dia: number; nome: string }[] = [
   { mes: 4, dia: 28, nome: "Fundação de Brasília" },
@@ -9,11 +11,34 @@ const DF_FIXOS: { mes: number; dia: number; nome: string }[] = [
 ];
 
 @Injectable()
-export class FeriadoConfigService {
+export class FeriadoConfigService implements OnModuleInit {
+  private readonly logger = new Logger(FeriadoConfigService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService
   ) {}
+
+  async onModuleInit() {
+    const ano = Number(hojeBrasiliaISO().slice(0, 4));
+    await this.garantirCalendarioAno(ano).catch((err) =>
+      this.logger.warn(`Falha ao sincronizar feriados de ${ano} na inicialização: ${String(err)}`)
+    );
+  }
+
+  /** 1º de janeiro 03:00 Brasília: garante o calendário do ano corrente. */
+  @Cron("0 3 1 1 *", { timeZone: "America/Sao_Paulo" })
+  async cronImportarAnoCorrente() {
+    const ano = Number(hojeBrasiliaISO().slice(0, 4));
+    await this.garantirCalendarioAno(ano, true);
+  }
+
+  /** 1º de dezembro 03:00 Brasília: importa o ano seguinte com antecedência. */
+  @Cron("0 3 1 12 *", { timeZone: "America/Sao_Paulo" })
+  async cronImportarProximoAno() {
+    const ano = Number(hojeBrasiliaISO().slice(0, 4)) + 1;
+    await this.garantirCalendarioAno(ano, true);
+  }
 
   async listarTodos() {
     return this.prisma.feriadoConfig.findMany({
@@ -30,6 +55,23 @@ export class FeriadoConfigService {
     });
   }
 
+  /** Importa da BrasilAPI + DF se o ano ainda não tiver feriados nacionais. */
+  async garantirCalendarioAno(ano: number, forcar = false) {
+    if (!forcar) {
+      const inicio = new Date(`${ano}-01-01T00:00:00.000Z`);
+      const fim = new Date(`${ano}-12-31T23:59:59.999Z`);
+      const nacionais = await this.prisma.feriadoConfig.count({
+        where: { data: { gte: inicio, lte: fim }, tipo: "NACIONAL" }
+      });
+      if (nacionais > 0) return { skipped: true, criados: 0, atualizados: 0, total: 0 };
+    }
+    const result = await this.importar(ano);
+    this.logger.log(
+      `Calendário de feriados ${ano}: ${result.criados} criados, ${result.atualizados} atualizados (total ${result.total}).`
+    );
+    return result;
+  }
+
   async importar(ano: number) {
     // 1. Busca feriados nacionais via BrasilAPI
     let nacionais: { date: string; name: string; type: string }[] = [];
@@ -40,8 +82,10 @@ export class FeriadoConfigService {
         )
       )) as { data: { date: string; name: string; type: string }[] };
       nacionais = resp.data ?? [];
-    } catch {
-      // Prossegue sem nacionais se a API falhar
+    } catch (err) {
+      this.logger.warn(
+        `BrasilAPI indisponível ao importar feriados de ${ano}: ${String(err)}. Seguindo só com distritais.`
+      );
     }
 
     const upserts: Array<{
@@ -165,8 +209,10 @@ export class FeriadoConfigService {
     marcoHorario?: string | null;
     marcoLado?: string | null;
   }> {
-    const inicio = new Date(Date.UTC(data.getUTCFullYear(), data.getUTCMonth(), data.getUTCDate()));
-    const f = await this.prisma.feriadoConfig.findUnique({ where: { data: inicio } });
+    const iso = dataBrasiliaISO(data);
+    const f = await this.prisma.feriadoConfig.findUnique({
+      where: { data: new Date(`${iso}T00:00:00.000Z`) }
+    });
     if (f?.bloqueiaRegistro)
       return {
         bloqueado: true,

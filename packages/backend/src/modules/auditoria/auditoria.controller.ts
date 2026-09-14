@@ -118,6 +118,11 @@ export class AuditoriaController {
     );
   }
 
+  @Get("funcionarios/:id/atestado-do-dia")
+  getAtestadoDoDia(@Param("id") id: string, @Query("data") data: string) {
+    return this.auditoriaService.getAtestadoDoDia(id, data);
+  }
+
   @Get("funcionarios/:id/relatorio")
   getRelatorioMensal(
     @Request() req: AuthRequest,
@@ -485,6 +490,9 @@ export class AuditoriaController {
   getLogs(
     @Query("action") action?: string,
     @Query("actorUserId") actorUserId?: string,
+    @Query("method") method?: string,
+    @Query("usuario") usuario?: string,
+    @Query("q") q?: string,
     @Query("dataInicio") dataInicio?: string,
     @Query("dataFim") dataFim?: string,
     @Query("page") page?: string,
@@ -493,6 +501,9 @@ export class AuditoriaController {
     return this.auditoriaService.getLogs({
       action,
       actorUserId,
+      method,
+      usuario,
+      q,
       dataInicio,
       dataFim,
       page: page ? parseInt(page) : undefined,

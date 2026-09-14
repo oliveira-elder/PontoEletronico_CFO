@@ -1,8 +1,28 @@
-import { Controller, Get, Post, Put, Patch, Delete, Body, Param, UseGuards } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Request,
+  UseGuards,
+  ForbiddenException,
+  BadRequestException
+} from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
-import { GestaoService } from "./gestao.service";
+import {
+  GestaoService,
+  CamposSimplesFuncionario as CamposSimplesFuncionarioBody
+} from "./gestao.service";
+
+interface AuthRequest {
+  user: { sub: string; name?: string; email?: string; roles: string[]; isSuperAdmin?: boolean };
+}
 
 @Controller("ponto/gestao")
 @UseGuards(AuthGuard("jwt"), RolesGuard)
@@ -64,6 +84,12 @@ export class GestaoController {
     return this.gestaoService.listFuncionarios();
   }
 
+  @Get("dashboard")
+  @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
+  getDashboardStats() {
+    return this.gestaoService.getDashboardStats();
+  }
+
   @Post("funcionarios")
   @Roles("gestor", "ponto-admin")
   createFuncionario(
@@ -76,7 +102,21 @@ export class GestaoController {
       cpf?: string;
       categoria: string;
       gerenciaId?: string;
-    }
+      subsecao?: string | null;
+      isManager?: boolean;
+      dataNascimento?: string | null;
+      dataAdmissao?: string | null;
+      modoHomeOffice?: boolean;
+      modoHibridoLocal?: boolean;
+      dependentes?: { nome: string; cpf?: string | null; dataNascimento?: string | null }[];
+      formacoesAcademicas?: {
+        grauEscolaridade?: string | null;
+        curso: string;
+        instituicao?: string | null;
+        conclusao?: string | null;
+      }[];
+      capacitacoes?: { nome: string; instituicao?: string | null; conclusao?: string | null }[];
+    } & CamposSimplesFuncionarioBody
   ) {
     return this.gestaoService.createFuncionario({ ...body, cargo: body.cargo ?? "" });
   }
@@ -86,26 +126,63 @@ export class GestaoController {
   updateFuncionario(
     @Param("id") id: string,
     @Body()
-    body: Partial<{
-      nome: string;
-      email: string;
-      matricula: string;
-      cpf: string;
-      cargo: string;
-      categoria: string;
-      gerenciaId: string;
-      subsecao: string | null;
-      ativo: boolean;
-      dataNascimento: string | null;
-      modoHomeOffice: boolean;
-      modoHibridoLocal: boolean;
-      supervisorEstagioId: string | null;
-      substitutoId: string | null;
-      substitutoDataInicio: string | null;
-      substitutoDataFim: string | null;
-    }>
+    body: Partial<
+      {
+        nome: string;
+        email: string;
+        matricula: string;
+        cpf: string;
+        cargo: string;
+        categoria: string;
+        gerenciaId: string;
+        subsecao: string | null;
+        ativo: boolean;
+        camposManuaisConfigurados: boolean;
+        dataNascimento: string | null;
+        dataAdmissao: string | null;
+        dataDesligamento: string | null;
+        modoHomeOffice: boolean;
+        modoHibridoLocal: boolean;
+        supervisorEstagioId: string | null;
+        substitutoId: string | null;
+        substitutoDataInicio: string | null;
+        substitutoDataFim: string | null;
+        isManager: boolean;
+        dependentes: { nome: string; cpf?: string | null; dataNascimento?: string | null }[];
+        formacoesAcademicas: {
+          grauEscolaridade?: string | null;
+          curso: string;
+          instituicao?: string | null;
+          conclusao?: string | null;
+        }[];
+        capacitacoes: { nome: string; instituicao?: string | null; conclusao?: string | null }[];
+      } & CamposSimplesFuncionarioBody
+    >
   ) {
     return this.gestaoService.updateFuncionario(id, body);
+  }
+
+  @Get("funcionarios/:id/lotacao-historico")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  getLotacaoHistorico(@Param("id") id: string) {
+    return this.gestaoService.getLotacaoHistorico(id);
+  }
+
+  @Post("funcionarios/:id/lotacao-historico")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  registrarMovimentacaoLotacao(
+    @Param("id") id: string,
+    @Body()
+    body: {
+      cargo: string;
+      gerenciaId: string | null;
+      subsecao: string | null;
+      situacaoAtiva: boolean;
+      data: string | null;
+      vigenciaDesde: string;
+    }
+  ) {
+    return this.gestaoService.registrarMovimentacaoLotacao(id, body);
   }
 
   @Post("funcionarios/:id/requerimento-endereco")
@@ -164,7 +241,20 @@ export class GestaoController {
 
   @Delete("funcionarios/:id")
   @Roles("ponto-admin")
-  deleteFuncionario(@Param("id") id: string) {
-    return this.gestaoService.deleteFuncionario(id);
+  deleteFuncionario(
+    @Param("id") id: string,
+    @Body() body: { numeroChamado?: string },
+    @Request() req: AuthRequest
+  ) {
+    if (!req.user?.isSuperAdmin) {
+      throw new ForbiddenException("Apenas o Super Administrador pode excluir funcionários.");
+    }
+    const numeroChamado = body?.numeroChamado?.trim();
+    if (!numeroChamado) {
+      throw new BadRequestException(
+        "Informe o número do chamado interno que autoriza esta exclusão."
+      );
+    }
+    return this.gestaoService.deleteFuncionario(id, req.user.sub, numeroChamado);
   }
 }

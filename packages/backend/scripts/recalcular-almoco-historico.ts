@@ -7,7 +7,11 @@ import { PrismaClient } from "@prisma/client";
 import { montarRelatorioQuadro } from "../src/utils/historico-quadro";
 import { resolverJornadaHistoricoContexto } from "../src/utils/jornada-historico";
 import { categoriaSemIntervaloAlmoco } from "../src/utils/categoria-jornada";
-import { dataBrasiliaISO, intervaloDiaBrasilia } from "../src/utils/horario-brasilia";
+import {
+  dataBrasiliaISO,
+  intervaloColunaDate,
+  intervaloDiaBrasilia
+} from "../src/utils/horario-brasilia";
 
 const prisma = new PrismaClient();
 
@@ -25,6 +29,7 @@ async function resumoMensal(
   const { fim } = intervaloDiaBrasilia(ultimoDiaIso);
   const inicioBuffer = new Date(inicio.getTime() - 3 * 60 * 60 * 1000);
   const fimBuffer = new Date(fim.getTime() + 3 * 60 * 60 * 1000);
+  const { inicio: feriadoIni, fim: feriadoFim } = intervaloColunaDate(primeiroDia, ultimoDiaIso);
 
   const func = await prisma.funcionario.findUnique({
     where: { id: funcionarioId },
@@ -84,7 +89,7 @@ async function resumoMensal(
       select: { dataInicio: true, dataFim: true }
     }),
     prisma.feriadoConfig.findMany({
-      where: { data: { gte: inicio, lte: fim } },
+      where: { data: { gte: feriadoIni, lte: feriadoFim } },
       select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
     })
   ]);

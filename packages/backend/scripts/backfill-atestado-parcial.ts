@@ -1,5 +1,5 @@
 /**
- * Backfill: copia horarioInicio/horarioFim das solicitações ATESTADO aprovadas
+ * Backfill: copia horarioInicio/horarioFim das solicitações ATESTADO/ABONO aprovadas
  * para os Afastamentos correspondentes (corrige histórico de atestado parcial).
  *
  * Uso:
@@ -7,16 +7,22 @@
  *   DRY_RUN=1 npx ts-node --transpile-only scripts/backfill-atestado-parcial.ts
  */
 import { PrismaClient } from "@prisma/client";
-import { dataBrasiliaISO } from "../src/utils/horario-brasilia";
+import { dataCivilISO } from "../src/utils/horario-brasilia";
 
 const prisma = new PrismaClient();
 const DRY = process.env.DRY_RUN === "1" || process.env.DRY_RUN === "true";
 
+function diaValido(iso: string): boolean {
+  const y = Number(iso.slice(0, 4));
+  return y >= 2000 && y <= 2100;
+}
+
 async function main() {
   const solicitacoes = await prisma.solicitacao.findMany({
-    where: { tipo: "ATESTADO", status: "APROVADA" },
+    where: { tipo: { in: ["ATESTADO", "ABONO"] }, status: "APROVADA" },
     select: {
       id: true,
+      tipo: true,
       funcionarioId: true,
       dataInicio: true,
       dataFim: true,
@@ -47,14 +53,15 @@ async function main() {
       continue;
     }
 
-    const diaInicio = dataBrasiliaISO(sol.dataInicio ?? sol.dataReferencia);
-    const diaFim = dataBrasiliaISO(sol.dataFim ?? sol.dataInicio ?? sol.dataReferencia);
+    const diaInicio = dataCivilISO(sol.dataInicio ?? sol.dataReferencia);
+    const diaFimRaw = dataCivilISO(sol.dataFim ?? sol.dataInicio ?? sol.dataReferencia);
+    const diaFim = diaValido(diaFimRaw) ? diaFimRaw : diaInicio;
 
     const afastamentos = await prisma.afastamento.findMany({
       where: {
         funcionarioId: sol.funcionarioId,
-        tipo: "ATESTADO",
-        horarioInicio: null
+        tipo: sol.tipo === "ABONO" ? "ABONO" : "ATESTADO",
+        OR: [{ horarioInicio: null }, { horarioFim: null }]
       },
       select: {
         id: true,
@@ -66,15 +73,18 @@ async function main() {
     });
 
     const match = afastamentos.find((a) => {
-      const aIni = dataBrasiliaISO(a.dataInicio);
-      const aFim = dataBrasiliaISO(a.dataFim);
-      return aIni === diaInicio && aFim === diaFim;
+      const aIni = dataCivilISO(a.dataInicio);
+      const aFimRaw = dataCivilISO(a.dataFim);
+      const aFim = diaValido(aFimRaw) ? aFimRaw : aIni;
+      if (aIni === diaInicio && aFim === diaFim) return true;
+      /* Fallback: mesmo dia de início quando dataFim histórica está corrompida */
+      return aIni === diaInicio && diaInicio === diaFim;
     });
 
     if (!match) {
       naoEncontrado++;
       console.log(
-        `[skip] sol=${sol.id} func=${sol.funcionarioId} ${diaInicio}→${diaFim} ${horarioInicio}-${horarioFim}: afastamento não encontrado`
+        `[skip] sol=${sol.id} tipo=${sol.tipo} func=${sol.funcionarioId} ${diaInicio}→${diaFim} ${horarioInicio}-${horarioFim}: afastamento não encontrado`
       );
       continue;
     }
@@ -85,7 +95,7 @@ async function main() {
     }
 
     console.log(
-      `[${DRY ? "dry" : "upd"}] afast=${match.id} ← ${horarioInicio}–${horarioFim} (${diaInicio})`
+      `[${DRY ? "dry" : "upd"}] afast=${match.id} ← ${horarioInicio}–${horarioFim} (${diaInicio}) tipo=${sol.tipo}`
     );
     if (!DRY) {
       await prisma.afastamento.update({

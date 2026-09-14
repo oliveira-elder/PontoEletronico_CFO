@@ -1,4 +1,4 @@
-import { dataBrasiliaISO } from "./horario-brasilia";
+import { dataBrasiliaISO, dataCivilFimAfastamento } from "./horario-brasilia";
 
 type MetaHorario = { horarioInicio?: unknown; horarioFim?: unknown };
 
@@ -43,9 +43,10 @@ export function enriquecerAfastamentosComSolicitacoes<T extends AfastamentoComHo
     .map((s) => {
       const h = horariosDeMetadados(s.metadados);
       if (!h) return null;
+      const inicioRef = s.dataInicio ?? s.dataReferencia;
       return {
-        diaInicio: dataBrasiliaISO(s.dataInicio ?? s.dataReferencia),
-        diaFim: dataBrasiliaISO(s.dataFim ?? s.dataInicio ?? s.dataReferencia),
+        diaInicio: dataBrasiliaISO(inicioRef),
+        diaFim: dataCivilFimAfastamento(inicioRef, s.dataFim ?? inicioRef),
         ...h
       };
     })
@@ -57,7 +58,7 @@ export function enriquecerAfastamentosComSolicitacoes<T extends AfastamentoComHo
     if (a.tipo !== "ATESTADO" && a.tipo !== "ABONO") return a;
     if (a.horarioInicio && a.horarioFim) return a;
     const aIni = dataBrasiliaISO(a.dataInicio);
-    const aFim = dataBrasiliaISO(a.dataFim);
+    const aFim = dataCivilFimAfastamento(a.dataInicio, a.dataFim);
     const match = solsParciais.find((s) => s.diaInicio === aIni && s.diaFim === aFim);
     if (!match) return a;
     return {
