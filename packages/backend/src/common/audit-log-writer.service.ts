@@ -16,6 +16,12 @@ export interface AuditLogWriteParams {
   ipAddress: string | null;
   userAgent: string | null;
   payload: Record<string, unknown> | null;
+  /** Indica se a requisição trouxe algo efetivamente digitado/enviado pelo
+   *  requisitante (corpo ou query, ex.: usuário informado num formulário) —
+   *  diferente de `payload`, que pode conter só uma descrição interna fixa
+   *  (ex.: motivo de acesso negado). Usado só para decidir o que vale a pena
+   *  reportar ao monitor externo quando não há actorUserId/username. */
+  hasTraceableContent?: boolean;
 }
 
 /** Escreve uma linha de AuditLog e replica para SSE (tela de Logs ao vivo) e
@@ -59,7 +65,8 @@ export class AuditLogWriterService {
           durationMs: params.durationMs ?? 0,
           username: params.username,
           actorUserId: params.actorUserId,
-          ipAddress: params.ipAddress
+          ipAddress: params.ipAddress,
+          hasTraceableContent: params.hasTraceableContent
         });
       })
       .catch((e) => this.logger.warn(`Falha ao gravar AuditLog: ${e}`));

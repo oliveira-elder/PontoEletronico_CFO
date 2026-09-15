@@ -2,7 +2,7 @@ import React from "react";
 
 /** Agrupa StatCards relacionados visualmente (ex.: Total/Ativos/Inativos). */
 export function StatGroup({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: "flex", gap: 12, flexWrap: "nowrap" }}>{children}</div>;
+  return <div className="dashboard-stat-group">{children}</div>;
 }
 
 /** Separador vertical "|" entre grupos de StatCards. */

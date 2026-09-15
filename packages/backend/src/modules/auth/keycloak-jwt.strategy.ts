@@ -95,7 +95,11 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
       issuer: validateIssuer && issuer ? issuer.replace(/\/$/, "") : undefined,
       audience: validateAudience ? audience : undefined,
       algorithms: ["RS256", "HS256"],
-      secretOrKeyProvider
+      secretOrKeyProvider,
+      /* Tolerância de relógio (segundos): sem isso o `jsonwebtoken` usa 0s de
+         tolerância, e um pequeno clock skew entre o container do backend e o
+         Keycloak rejeita tokens ainda válidos bem na borda da expiração. */
+      jsonWebTokenOptions: { clockTolerance: 30 }
     });
   }
 

@@ -1760,9 +1760,9 @@ export function RegistroPontoPage() {
               </>
             ) : (
               <>
-                Hoje ainda não há obrigação de registro de ponto. Após o retorno de
-                Comissionado/Chefe para categoria com ponto, a obrigação começa apenas no{" "}
-                <strong>dia seguinte</strong>.
+                Hoje ainda não há obrigação de registro de ponto. Após deixar a condição de{" "}
+                <strong>Comissionado, Chefe ou Fiscal</strong> para uma categoria com ponto, a
+                obrigação começa apenas no <strong>dia seguinte</strong>.
               </>
             )}
           </p>

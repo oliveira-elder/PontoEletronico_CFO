@@ -174,7 +174,7 @@ export class GestaoController {
     @Param("id") id: string,
     @Body()
     body: {
-      cargo: string;
+      cargo?: string;
       gerenciaId: string | null;
       subsecao: string | null;
       situacaoAtiva: boolean;

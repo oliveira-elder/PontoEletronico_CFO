@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { api } from "../../../hooks/useApi";
 import { useLogsStream } from "../../../hooks/useLogsStream";
 import { SearchIcon, DownloadIcon, RefreshCwIcon, InfoIcon } from "../../../components/icons";
@@ -64,7 +64,23 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const { newCount, resetCount } = useLogsStream(getToken);
+
+  /* Na página 0 (mais recentes), atualiza sozinho ao chegar log novo via SSE —
+     sem isso o usuário precisava clicar manualmente no aviso "N novos logs" a
+     cada evento. Em outras páginas, mantém o aviso (não puxa o usuário de volta
+     para a página 0 sem avisar). Debounce evita recarregar a cada log isolado
+     quando chegam vários em sequência. */
+  const pageRef = useRef(0);
+  const loadRef = useRef<(p?: number) => Promise<void>>(async () => {});
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleNewLog = useCallback(() => {
+    if (pageRef.current !== 0) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      void loadRef.current(0);
+    }, 1500);
+  }, []);
+  const { newCount, resetCount } = useLogsStream(getToken, handleNewLog);
 
   const [filter, setFilter] = useState<FilterState>({
     q: "",
@@ -115,6 +131,20 @@ export function LogsEntradasTab({ getToken }: { getToken?: () => string | undefi
   useEffect(() => {
     void load(0);
   }, [load]);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  /* Limpa o contador de "novos logs" depois que o auto-refresh da página 0
+     efetivamente trouxe as entradas novas (evita o aviso ficar piscando ali). */
+  useEffect(() => {
+    if (page === 0 && newCount > 0) resetCount();
+  }, [entries, page, newCount, resetCount]);
 
   async function exportCsv() {
     const params = new URLSearchParams();

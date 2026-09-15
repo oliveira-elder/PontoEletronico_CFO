@@ -48,9 +48,7 @@ export function StatCard({
         display: "flex",
         flexDirection: "column",
         gap: 4,
-        flex: "1 1 90px",
-        minWidth: 80,
-        maxWidth: 150,
+        minWidth: 0,
         boxSizing: "border-box",
         cursor: clicavel ? "pointer" : "default",
         transition: clicavel ? "border-color 150ms, box-shadow 150ms" : undefined

@@ -24,6 +24,7 @@ import {
 } from "../../utils/horario-brasilia";
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
 import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
+import { inicioAtividadesUsuario } from "../../utils/inicio-atividades";
 import {
   jornadaEsperadaMin as jornadaMinParaDia,
   resolverJornadaHistoricoContexto,
@@ -692,7 +693,7 @@ export class AuditoriaService {
         jornadaPeriodo: {
           select: { jornadaDiariaMin: true, horaEntrada: true, horaSaida: true }
         },
-        user: { select: { name: true, createdAt: true } }
+        user: { select: { name: true, primeiroLoginEm: true } }
       }
     });
     const funcMap = new Map(funcionarios.map((f) => [f.id, f]));
@@ -763,8 +764,8 @@ export class AuditoriaService {
       const f = funcMap.get(funcionarioId);
       if (!f) continue;
 
-      const inicioAtividades = f.user.createdAt ? dataBrasiliaISO(f.user.createdAt) : null;
-      if (inicioAtividades && dia < inicioAtividades) continue;
+      const inicioAtividades = inicioAtividadesUsuario(f.user);
+      if (dia < inicioAtividades) continue;
 
       const [y, m, d] = dia.split("-").map(Number);
       const diaSemana = new Date(y, m - 1, d).getDay();
@@ -1291,7 +1292,8 @@ export class AuditoriaService {
               toleranciaCalculoMin: true,
               horaExtraLimiteAuto: true
             }
-          }
+          },
+          user: { select: { primeiroLoginEm: true } }
         }
       }),
       this.prisma.configuracaoSistema.findUnique({
@@ -1340,6 +1342,7 @@ export class AuditoriaService {
       periodosSemObrigacao,
       semRegistroPonto: funcionarioSemRegistroPonto(func ?? {}),
       pontoObrigatorioDesde,
+      inicioAtividades: inicioAtividadesUsuario(func?.user),
       feriados,
       jornada: {
         ...resolverJornadaHistoricoContexto({
@@ -2753,9 +2756,11 @@ export class AuditoriaService {
             toleranciaCalculoMin: true,
             horaExtraLimiteAuto: true
           }
-        }
+        },
+        user: { select: { primeiroLoginEm: true } }
       }
     });
+    const inicioLogin = inicioAtividadesUsuario(funcJornada?.user);
     const semIntervaloCategoria = categoriaSemIntervaloAlmoco(funcJornada?.categoria);
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
@@ -2939,8 +2944,10 @@ export class AuditoriaService {
       /* Mesma regra do Histórico: em dias passados o trecho aberto (ex. retorno
          sem saída) NÃO conta; no dia corrente usa o horário atual como teto. */
       const capMs = eHoje ? Date.now() : undefined;
+      /* Antes do primeiro login real: não conta falta nem saldo negativo. */
+      const antesDoPrimeiroAcesso = dataAtual < inicioLogin && regsDodia.length === 0;
 
-      if (eDiaUtil) {
+      if (!antesDoPrimeiroAcesso && eDiaUtil) {
         const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
         const optsDispAlmocoDia = {
           horarioInicio: parciaisDia[0]?.horarioInicio,
@@ -3087,7 +3094,7 @@ export class AuditoriaService {
           saldoAcumuladoMinutos: saldoAcumulado,
           observacao: obs
         });
-      } else if (!temAfastamentoIntegral && regsDodia.length > 0) {
+      } else if (!antesDoPrimeiroAcesso && !temAfastamentoIntegral && regsDodia.length > 0) {
         // Fim de semana com registros: aplica multiplicador
         const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
         const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {

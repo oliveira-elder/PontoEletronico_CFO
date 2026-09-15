@@ -129,6 +129,7 @@ export interface Funcionario {
   // ── Dados pessoais (RH) ──
   rg?: string | null;
   rgOrgaoEmissor?: string | null;
+  rgUf?: string | null;
   rgDataEmissao?: string | null;
   raca?: string | null;
   genero?: string | null;
@@ -405,6 +406,7 @@ export const FORM_VAZIO = {
   // Identificação
   rg: "",
   rgOrgaoEmissor: "",
+  rgUf: "",
   rgDataEmissao: "",
   raca: "",
   genero: "",
@@ -476,6 +478,7 @@ export function formFromFuncionario(f: Funcionario): FuncionarioFormState {
 
     rg: f.rg ?? "",
     rgOrgaoEmissor: f.rgOrgaoEmissor ?? "",
+    rgUf: f.rgUf ?? "",
     rgDataEmissao: dataOuVazio(f.rgDataEmissao),
     raca: f.raca ?? "",
     genero: f.genero ?? "",

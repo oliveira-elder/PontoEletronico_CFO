@@ -24,6 +24,7 @@ import {
 export type CamposSimplesFuncionario = Partial<{
   rg: string | null;
   rgOrgaoEmissor: string | null;
+  rgUf: string | null;
   rgDataEmissao: string | null;
   raca: string | null;
   genero: string | null;
@@ -47,6 +48,7 @@ export type CamposSimplesFuncionario = Partial<{
 const CAMPOS_TEXTO_SIMPLES = [
   "rg",
   "rgOrgaoEmissor",
+  "rgUf",
   "raca",
   "genero",
   "emailPessoal",
@@ -1440,7 +1442,7 @@ export class GestaoService {
   async registrarMovimentacaoLotacao(
     funcionarioId: string,
     data: {
-      cargo: string;
+      cargo?: string;
       gerenciaId: string | null;
       subsecao: string | null;
       situacaoAtiva: boolean;
@@ -1450,12 +1452,16 @@ export class GestaoService {
   ) {
     const func = await this.prisma.funcionario.findUnique({ where: { id: funcionarioId } });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
-    if (!data.cargo?.trim()) throw new BadRequestException("Informe o cargo.");
     if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início da vigência.");
+
+    /* Cargo é opcional aqui — telas que só editam setor/lotação (ex.: Empregado)
+       não reenviam o cargo, então mantemos o valor já vigente em vez de exigir
+       ou apagar o cargo atual do funcionário. */
+    const cargoFinal = data.cargo?.trim() || func.cargo || "";
 
     const registro = await this.prisma.$transaction(async (tx) => {
       const criado = await registrarMovimentacaoLotacao(tx, funcionarioId, {
-        cargo: data.cargo.trim(),
+        cargo: cargoFinal,
         gerenciaId: data.gerenciaId || null,
         subsecao: data.subsecao || null,
         situacaoAtiva: data.situacaoAtiva,
@@ -1470,7 +1476,7 @@ export class GestaoService {
         await tx.funcionario.update({
           where: { id: funcionarioId },
           data: {
-            cargo: data.cargo.trim(),
+            cargo: cargoFinal,
             gerenciaId: data.gerenciaId || null,
             subsecao: data.subsecao || null,
             cargoData: data.data ? new Date(`${data.data}T12:00:00-03:00`) : null,

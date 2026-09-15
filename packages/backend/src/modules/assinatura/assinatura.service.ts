@@ -12,7 +12,6 @@ import { AuditoriaService } from "../auditoria/auditoria.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
 import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service";
 import {
-  dataBrasiliaISO,
   hojeBrasiliaISO,
   intervaloColunaDate,
   intervaloDiaBrasilia
@@ -23,6 +22,7 @@ import {
   type DiaQuadroPdf
 } from "../../utils/historico-quadro";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
+import { inicioAtividadesUsuario } from "../../utils/inicio-atividades";
 import { urlHomeSistema } from "../notificacao/atalhos-evento";
 import {
   codigoAssinaturaCoincide,
@@ -1079,7 +1079,7 @@ export class AssinaturaService {
         jornadaPeriodo: {
           select: { nome: true, jornadaDiariaMin: true, horaEntrada: true, horaSaida: true }
         },
-        user: { select: { createdAt: true } },
+        user: { select: { primeiroLoginEm: true } },
         categoria: true
       }
     });
@@ -1136,7 +1136,7 @@ export class AssinaturaService {
         cfg?.bancoHorasSabadoPct ?? 100,
         cfg?.bancoHorasDomingoPct ?? 200,
         cfg?.bancoHorasFeriadoPct ?? 200,
-        funcJornada?.user?.createdAt ? dataBrasiliaISO(funcJornada.user.createdAt) : null,
+        inicioAtividadesUsuario(funcJornada?.user),
         { forcarSemIntervalo: categoriaSemIntervaloAlmoco(funcJornada?.categoria) }
       ),
       jornada

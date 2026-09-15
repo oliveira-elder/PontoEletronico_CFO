@@ -102,7 +102,7 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Solicitações por Status">
           <MiniDonut data={donutSolicitacoesPorStatus} />
         </DashboardPanel>
@@ -111,7 +111,7 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
         </DashboardPanel>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Tempo Médio de Aprovação por Etapa">
           {!tempoAprovacao ||
           (tempoAprovacao.amostraGestor === 0 && tempoAprovacao.amostraRh === 0) ? (

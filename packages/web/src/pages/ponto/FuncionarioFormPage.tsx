@@ -39,7 +39,6 @@ import {
   type Gerencia,
   type JornadaPeriodo
 } from "./gestaoShared";
-import { funcionarioSemRegistroPonto } from "../../utils/categoriaPonto";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
@@ -153,17 +152,21 @@ type VigenciaLotacaoUI = {
 function HistoricoLotacaoAccordion({
   funcionarioId,
   gerencias,
-  onRegistrado
+  onRegistrado,
+  apenasSetorLotacao
 }: {
   funcionarioId: string;
   gerencias: Gerencia[];
   onRegistrado: (novo: {
-    cargo: string;
+    cargo?: string;
     gerenciaId: string | null;
     subsecao: string | null;
     cargoData: string;
     lotacaoInicio: string;
   }) => void;
+  /** Empregado: histórico só mostra/edita Setor e Lotação (+ datas) — sem Cargo,
+   *  Situação nem Data do Ato, que ficam com o valor já vigente do funcionário. */
+  apenasSetorLotacao?: boolean;
 }) {
   const [aberto, setAberto] = useState(false);
   const [carregado, setCarregado] = useState(false);
@@ -196,15 +199,19 @@ function HistoricoLotacaoAccordion({
   }
 
   async function salvar() {
-    if (!novo.cargo.trim() || !novo.vigenciaDesde) {
-      setErro("Informe cargo e data de início da vigência.");
+    if ((!apenasSetorLotacao && !novo.cargo.trim()) || !novo.vigenciaDesde) {
+      setErro(
+        apenasSetorLotacao
+          ? "Informe a data de início da vigência."
+          : "Informe cargo e data de início da vigência."
+      );
       return;
     }
     setSalvando(true);
     setErro("");
     try {
       await api.post(`/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico`, {
-        cargo: novo.cargo.trim(),
+        cargo: apenasSetorLotacao ? undefined : novo.cargo.trim(),
         gerenciaId: novo.gerenciaId || null,
         subsecao: novo.subsecao || null,
         situacaoAtiva: novo.situacaoAtiva,
@@ -215,7 +222,7 @@ function HistoricoLotacaoAccordion({
       const hoje = new Date().toISOString().slice(0, 10);
       if (novo.vigenciaDesde <= hoje) {
         onRegistrado({
-          cargo: novo.cargo.trim(),
+          ...(apenasSetorLotacao ? {} : { cargo: novo.cargo.trim() }),
           gerenciaId: novo.gerenciaId || null,
           subsecao: novo.subsecao || null,
           cargoData: novo.data,
@@ -288,19 +295,33 @@ function HistoricoLotacaoAccordion({
                   fontSize: 12.5
                 }}
               >
-                <strong>{h.cargo || "—"}</strong>
-                {h.gerencia ? ` — ${h.gerencia.nome}` : ""}
-                {h.subsecao ? ` / ${slugLabel(h.subsecao)}` : ""}
+                {apenasSetorLotacao ? (
+                  <strong>
+                    {h.gerencia?.nome ?? "—"}
+                    {h.subsecao ? ` / ${slugLabel(h.subsecao)}` : ""}
+                  </strong>
+                ) : (
+                  <>
+                    <strong>{h.cargo || "—"}</strong>
+                    {h.gerencia ? ` — ${h.gerencia.nome}` : ""}
+                    {h.subsecao ? ` / ${slugLabel(h.subsecao)}` : ""}
+                  </>
+                )}
                 <div style={{ color: "var(--ink-500)", marginTop: 2 }}>
-                  {new Date(`${h.vigenciaDesde}T12:00:00`).toLocaleDateString("pt-BR")} até{" "}
+                  Data Início: {new Date(`${h.vigenciaDesde}T12:00:00`).toLocaleDateString("pt-BR")}
+                  {" · "}Data Fim:{" "}
                   {h.vigenciaAte
                     ? new Date(`${h.vigenciaAte}T12:00:00`).toLocaleDateString("pt-BR")
                     : "atual"}
-                  {" · "}
-                  {h.situacaoAtiva ? "Ativo" : "Inativo"}
-                  {h.data
-                    ? ` · Ato de ${new Date(`${h.data}T12:00:00`).toLocaleDateString("pt-BR")}`
-                    : ""}
+                  {!apenasSetorLotacao && (
+                    <>
+                      {" · "}
+                      {h.situacaoAtiva ? "Ativo" : "Inativo"}
+                      {h.data
+                        ? ` · Ato de ${new Date(`${h.data}T12:00:00`).toLocaleDateString("pt-BR")}`
+                        : ""}
+                    </>
+                  )}
                 </div>
               </div>
             ))
@@ -331,15 +352,17 @@ function HistoricoLotacaoAccordion({
             <div
               style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
             >
-              <div>
-                <FieldLabel>Cargo *</FieldLabel>
-                <input
-                  type="text"
-                  value={novo.cargo}
-                  onChange={(e) => setNovo((n) => ({ ...n, cargo: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
+              {!apenasSetorLotacao && (
+                <div>
+                  <FieldLabel>Cargo *</FieldLabel>
+                  <input
+                    type="text"
+                    value={novo.cargo}
+                    onChange={(e) => setNovo((n) => ({ ...n, cargo: e.target.value }))}
+                    style={fieldStyle}
+                  />
+                </div>
+              )}
               <div>
                 <FieldLabel>Lotação</FieldLabel>
                 <SelectWrap>
@@ -366,25 +389,29 @@ function HistoricoLotacaoAccordion({
                   style={fieldStyle}
                 />
               </div>
-              <div>
-                <FieldLabel>Situação</FieldLabel>
-                <div style={{ paddingTop: 8 }}>
-                  <Toggle
-                    checked={novo.situacaoAtiva}
-                    onChange={(v) => setNovo((n) => ({ ...n, situacaoAtiva: v }))}
-                    label="Ativo nesta movimentação"
-                  />
-                </div>
-              </div>
-              <div>
-                <FieldLabel>Data do Ato</FieldLabel>
-                <input
-                  type="date"
-                  value={novo.data}
-                  onChange={(e) => setNovo((n) => ({ ...n, data: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
+              {!apenasSetorLotacao && (
+                <>
+                  <div>
+                    <FieldLabel>Situação</FieldLabel>
+                    <div style={{ paddingTop: 8 }}>
+                      <Toggle
+                        checked={novo.situacaoAtiva}
+                        onChange={(v) => setNovo((n) => ({ ...n, situacaoAtiva: v }))}
+                        label="Ativo nesta movimentação"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <FieldLabel>Data do Ato</FieldLabel>
+                    <input
+                      type="date"
+                      value={novo.data}
+                      onChange={(e) => setNovo((n) => ({ ...n, data: e.target.value }))}
+                      style={fieldStyle}
+                    />
+                  </div>
+                </>
+              )}
               <div>
                 <FieldLabel>Vigência Desde *</FieldLabel>
                 <input
@@ -443,6 +470,7 @@ export function FuncionarioFormPage() {
   const isRhOuAdmin = isAdmin || hasRole("RH_AUDITORIA");
   const isNovo = !id;
   const grid = isMobile ? "1fr" : "1fr 1fr";
+  const gridCols = (n: number) => (isMobile ? "1fr" : `repeat(${n}, 1fr)`);
 
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
@@ -628,13 +656,16 @@ export function FuncionarioFormPage() {
   /* Chefe de coordenação (subseção contém "coordenação"): substituto é da mesma
      subseção, não da gerência inteira — espelha a exceção do backend. */
   const ehChefeDeCoordenacao = form.isManager && !!form.subsecao && /coordena/i.test(form.subsecao);
-  const registroPontoSugestao = funcionarioSemRegistroPonto({
-    categoria: form.categoria,
-    isManager: form.isManager,
-    isFiscal: form.isFiscal
-  })
-    ? "Isento"
-    : "Obrigatório";
+
+  /* Categorias — cada seção do formulário varia por categoria (ver planejamento
+     de reorganização). "catComChefe" (Empregado/Comissionado) tem Chefe/Situação
+     no Cargo e Lotação; "catEstagio" (Estagiário/Jovem Aprendiz) usa a estrutura
+     de Supervisor em vez de Chefe. */
+  const catEmpregado = form.categoria === "CONCURSADO";
+  const catComissionado = form.categoria === "ASSESSOR";
+  const catEstagiario = form.categoria === "ESTAGIARIO";
+  const catJovemAprendiz = form.categoria === "MENOR_APRENDIZ";
+  const catComChefe = catEmpregado || catComissionado;
 
   function motivosBloqueio(): string[] {
     const m: string[] = [];
@@ -867,6 +898,50 @@ export function FuncionarioFormPage() {
     cursor: "pointer"
   };
 
+  /* "Situação" (ativo/inativo) é usada em duas seções (Geral e Cargo e Lotação
+     para Empregado/Comissionado) — extraído para não duplicar o JSX. */
+  function renderSituacaoToggle() {
+    return (
+      <div>
+        <FieldLabel>Situação</FieldLabel>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[true, false].map((v) => (
+            <button
+              key={String(v)}
+              type="button"
+              onClick={() =>
+                setForm((f) => ({
+                  ...f,
+                  ativo: v,
+                  dataDesligamento: v ? "" : f.dataDesligamento
+                }))
+              }
+              style={{
+                flex: 1,
+                padding: "8px",
+                borderRadius: "var(--radius-md)",
+                border: `2px solid ${form.ativo === v ? (v ? "var(--green)" : "var(--red)") : "rgba(122,30,38,0.12)"}`,
+                background:
+                  form.ativo === v
+                    ? v
+                      ? "rgba(47,125,79,0.08)"
+                      : "rgba(200,57,63,0.06)"
+                    : "transparent",
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                color: form.ativo === v ? (v ? "var(--green)" : "var(--red)") : "var(--ink-500)",
+                transition: "all 140ms"
+              }}
+            >
+              {v ? "● Ativo" : "○ Inativo"}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (!isRH) {
     return (
       <div style={{ maxWidth: 520, margin: "60px auto", padding: "0 16px" }}>
@@ -1014,8 +1089,16 @@ export function FuncionarioFormPage() {
       </div>
 
       <div className="card-flat" style={{ padding: isMobile ? 16 : 28 }}>
-        {/* Categoria */}
-        <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 24 }}>
+        {/* ══════════════════ GERAL ══════════════════ */}
+        <SectionTitle>Geral</SectionTitle>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: gridCols(catComChefe ? 3 : 2),
+            gap: 16,
+            marginBottom: 24
+          }}
+        >
           <div>
             <FieldLabel>Categoria *</FieldLabel>
             <SelectWrap>
@@ -1023,10 +1106,19 @@ export function FuncionarioFormPage() {
                 value={form.categoria}
                 onChange={(e) => {
                   const cat = e.target.value as Categoria;
+                  const chefeElegivel = cat === "CONCURSADO" || cat === "ASSESSOR";
                   setForm((f) => ({
                     ...f,
                     categoria: cat,
-                    ...(isCategoriaEstagio(cat) ? {} : { supervisorEstagioId: "" })
+                    ...(isCategoriaEstagio(cat) ? {} : { supervisorEstagioId: "" }),
+                    ...(chefeElegivel
+                      ? {}
+                      : {
+                          isManager: false,
+                          substitutoId: "",
+                          substitutoDataInicio: "",
+                          substitutoDataFim: ""
+                        })
                   }));
                 }}
                 style={selectStyle}
@@ -1039,43 +1131,46 @@ export function FuncionarioFormPage() {
               </select>
             </SelectWrap>
           </div>
-          <div>
-            <FieldLabel>Chefe</FieldLabel>
-            <button
-              type="button"
-              aria-pressed={form.isManager}
-              onClick={() =>
-                setForm((f) => ({
-                  ...f,
-                  isManager: !f.isManager,
-                  ...(f.isManager
-                    ? { substitutoId: "", substitutoDataInicio: "", substitutoDataFim: "" }
-                    : {})
-                }))
-              }
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                width: "100%",
-                padding: "9px 12px",
-                borderRadius: "var(--radius-md)",
-                border: `2px solid ${form.isManager ? "var(--burgundy-600)" : "rgba(122,30,38,0.12)"}`,
-                background: form.isManager ? "rgba(122,30,38,0.06)" : "transparent",
-                cursor: "pointer",
-                fontSize: 13,
-                fontWeight: 600,
-                color: form.isManager ? "var(--burgundy-600)" : "var(--ink-700)"
-              }}
-            >
-              <CrownIcon size={16} />
-              {form.isManager ? "É Chefe desta Lotação/Setor" : "Marcar como Chefe"}
-            </button>
-            <Hint>
-              Característica combinável com qualquer categoria — não altera a categoria do
-              funcionário.
-            </Hint>
-          </div>
+          {!isNovo && renderSituacaoToggle()}
+          {catComChefe && (
+            <div>
+              <FieldLabel>Chefe</FieldLabel>
+              <button
+                type="button"
+                aria-pressed={form.isManager}
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    isManager: !f.isManager,
+                    ...(f.isManager
+                      ? { substitutoId: "", substitutoDataInicio: "", substitutoDataFim: "" }
+                      : {})
+                  }))
+                }
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "9px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: `2px solid ${form.isManager ? "var(--burgundy-600)" : "rgba(122,30,38,0.12)"}`,
+                  background: form.isManager ? "rgba(122,30,38,0.06)" : "transparent",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: form.isManager ? "var(--burgundy-600)" : "var(--ink-700)"
+                }}
+              >
+                <CrownIcon size={16} />
+                {form.isManager ? "É Chefe desta Lotação/Setor" : "Marcar como Chefe"}
+              </button>
+              <Hint>
+                Característica combinável com qualquer categoria — não altera a categoria do
+                funcionário.
+              </Hint>
+            </div>
+          )}
         </div>
 
         {isCategoriaEstagio(form.categoria) && (
@@ -1245,14 +1340,18 @@ export function FuncionarioFormPage() {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 8 }}>
+        {/* ══════════════════ IDENTIFICAÇÃO ══════════════════ */}
+        <SectionTitle>Identificação</SectionTitle>
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+        >
           <div>
-            <FieldLabel>Nome completo *</FieldLabel>
+            <FieldLabel>Nome e último nome *</FieldLabel>
             <input
               type="text"
               value={form.nome}
               onChange={(e) => setForm((f) => ({ ...f, nome: e.target.value }))}
-              placeholder="Ex: João da Silva"
+              placeholder="Nome completo"
               style={fieldStyle}
             />
           </div>
@@ -1265,20 +1364,6 @@ export function FuncionarioFormPage() {
               placeholder="Ex: 00123 ou EST01"
               style={fieldStyle}
             />
-          </div>
-          <div>
-            <FieldLabel>E-mail institucional</FieldLabel>
-            <input
-              type="email"
-              value={form.email}
-              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-              onBlur={() =>
-                setForm((f) => ({ ...f, email: emailInstitucional(f.email) || f.email }))
-              }
-              placeholder="nome@cfo.org.br"
-              style={fieldStyle}
-            />
-            <Hint>Domínio institucional @cfo.org.br (máscaras de login SSO são convertidas).</Hint>
           </div>
           <div>
             <FieldLabel>CPF</FieldLabel>
@@ -1315,151 +1400,11 @@ export function FuncionarioFormPage() {
               </p>
             )}
           </div>
-          <div>
-            <FieldLabel>Gerência *</FieldLabel>
-            <SelectWrap>
-              <select
-                value={form.gerenciaId}
-                onChange={(e) => setForm((f) => ({ ...f, gerenciaId: e.target.value }))}
-                style={{
-                  ...selectStyle,
-                  color: form.gerenciaId ? "var(--ink-900)" : "var(--ink-500)"
-                }}
-              >
-                <option value="">Selecione uma gerência…</option>
-                {gerencias.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.nome}
-                  </option>
-                ))}
-              </select>
-            </SelectWrap>
-          </div>
-          {form.gerenciaId && subsecoesDisponiveis.length > 0 && (
-            <div>
-              <FieldLabel>Subseção</FieldLabel>
-              <SelectWrap>
-                <select
-                  value={form.subsecao}
-                  onChange={(e) => setForm((f) => ({ ...f, subsecao: e.target.value }))}
-                  style={{
-                    ...selectStyle,
-                    color: form.subsecao ? "var(--ink-900)" : "var(--ink-500)"
-                  }}
-                >
-                  <option value="">Sem subseção (membro direto da gerência)</option>
-                  {subsecoesDisponiveis.map((s) => (
-                    <option key={s} value={s}>
-                      {slugLabel(s)}
-                    </option>
-                  ))}
-                </select>
-              </SelectWrap>
-              <Hint>
-                Define a hierarquia completa exibida:{" "}
-                <strong>
-                  {nomeGerencia(gerencias, form.gerenciaId)}
-                  {form.subsecao ? ` / ${slugLabel(form.subsecao)}` : ""}
-                </strong>
-              </Hint>
-            </div>
-          )}
-          {isRhOuAdmin && (
-            <div>
-              <FieldLabel>Jornada de Trabalho</FieldLabel>
-              <SelectWrap>
-                <select
-                  value={form.jornadaPeriodoId}
-                  onChange={(e) => setForm((f) => ({ ...f, jornadaPeriodoId: e.target.value }))}
-                  style={selectStyle}
-                >
-                  <option value="">Usar jornada padrão do sistema</option>
-                  {jornadasDisponiveis
-                    .filter((j) => j)
-                    .map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.nome}
-                        {j.ePadrao ? " (Padrão)" : ""}
-                      </option>
-                    ))}
-                </select>
-              </SelectWrap>
-              <Hint>
-                Jornadas configuradas em{" "}
-                <a href="/ponto/configuracoes" style={{ color: "var(--burgundy-600)" }}>
-                  Configurações → Períodos
-                </a>
-                .
-              </Hint>
-            </div>
-          )}
-          <div>
-            <FieldLabel>Data de Nascimento</FieldLabel>
-            <input
-              type="date"
-              value={form.dataNascimento}
-              onChange={(e) => setForm((f) => ({ ...f, dataNascimento: e.target.value }))}
-              style={fieldStyle}
-            />
-            <Hint>Necessário para liberar o Day Off de Aniversário.</Hint>
-          </div>
-          {isRhOuAdmin && (
-            <div>
-              <FieldLabel>Data de Admissão</FieldLabel>
-              <input
-                type="date"
-                value={form.dataAdmissao}
-                onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
-                style={fieldStyle}
-              />
-              <Hint>Usada para calcular os ciclos de férias do funcionário.</Hint>
-            </div>
-          )}
-          {!isNovo && (
-            <div>
-              <FieldLabel>Situação</FieldLabel>
-              <div style={{ display: "flex", gap: 8 }}>
-                {[true, false].map((v) => (
-                  <button
-                    key={String(v)}
-                    type="button"
-                    onClick={() =>
-                      setForm((f) => ({
-                        ...f,
-                        ativo: v,
-                        dataDesligamento: v ? "" : f.dataDesligamento
-                      }))
-                    }
-                    style={{
-                      flex: 1,
-                      padding: "8px",
-                      borderRadius: "var(--radius-md)",
-                      border: `2px solid ${form.ativo === v ? (v ? "var(--green)" : "var(--red)") : "rgba(122,30,38,0.12)"}`,
-                      background:
-                        form.ativo === v
-                          ? v
-                            ? "rgba(47,125,79,0.08)"
-                            : "rgba(200,57,63,0.06)"
-                          : "transparent",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color:
-                        form.ativo === v ? (v ? "var(--green)" : "var(--red)") : "var(--ink-500)",
-                      transition: "all 140ms"
-                    }}
-                  >
-                    {v ? "● Ativo" : "○ Inativo"}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* ── Identificação ── */}
-        <SectionTitle>Identificação</SectionTitle>
-        <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 8 }}>
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(4), gap: 16, marginBottom: 16 }}
+        >
           <div>
             <FieldLabel>RG</FieldLabel>
             <input
@@ -1470,13 +1415,26 @@ export function FuncionarioFormPage() {
             />
           </div>
           <div>
-            <FieldLabel>Órgão Emissor do RG</FieldLabel>
+            <FieldLabel>Órgão Emissor</FieldLabel>
             <input
               type="text"
               value={form.rgOrgaoEmissor}
               onChange={(e) => setForm((f) => ({ ...f, rgOrgaoEmissor: e.target.value }))}
-              placeholder="SSP/DF"
+              placeholder="SSP"
               style={fieldStyle}
+            />
+          </div>
+          <div>
+            <FieldLabel>UF do Órgão Emissor</FieldLabel>
+            <input
+              type="text"
+              value={form.rgUf}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, rgUf: e.target.value.toUpperCase().slice(0, 2) }))
+              }
+              placeholder="DF"
+              maxLength={2}
+              style={{ ...fieldStyle, textTransform: "uppercase" }}
             />
           </div>
           <div>
@@ -1487,6 +1445,21 @@ export function FuncionarioFormPage() {
               onChange={(e) => setForm((f) => ({ ...f, rgDataEmissao: e.target.value }))}
               style={fieldStyle}
             />
+          </div>
+        </div>
+
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+        >
+          <div>
+            <FieldLabel>Data de Nascimento</FieldLabel>
+            <input
+              type="date"
+              value={form.dataNascimento}
+              onChange={(e) => setForm((f) => ({ ...f, dataNascimento: e.target.value }))}
+              style={fieldStyle}
+            />
+            <Hint>Necessário para liberar o Day Off de Aniversário.</Hint>
           </div>
           <div>
             <FieldLabel>Raça</FieldLabel>
@@ -1522,6 +1495,25 @@ export function FuncionarioFormPage() {
               </select>
             </SelectWrap>
           </div>
+        </div>
+
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 8 }}
+        >
+          <div>
+            <FieldLabel>E-mail institucional</FieldLabel>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              onBlur={() =>
+                setForm((f) => ({ ...f, email: emailInstitucional(f.email) || f.email }))
+              }
+              placeholder="nome@cfo.org.br"
+              style={fieldStyle}
+            />
+            <Hint>Domínio institucional @cfo.org.br (máscaras de login SSO são convertidas).</Hint>
+          </div>
           <div>
             <FieldLabel>E-mail pessoal</FieldLabel>
             <input
@@ -1547,6 +1539,20 @@ export function FuncionarioFormPage() {
         {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
           <div style={{ marginBottom: 20 }}>
             <FieldLabel>Dependentes (Filhos)</FieldLabel>
+            {form.dependentes.length > 0 && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                <div style={{ flex: 2 }}>
+                  <FieldLabel>Nome</FieldLabel>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <FieldLabel>CPF</FieldLabel>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <FieldLabel>Data de Nascimento</FieldLabel>
+                </div>
+                <div style={{ width: 32, flexShrink: 0 }} />
+              </div>
+            )}
             {form.dependentes.map((d, idx) => (
               <div
                 key={idx}
@@ -1644,10 +1650,17 @@ export function FuncionarioFormPage() {
           </div>
         )}
 
-        {/* ── Jornada / características ── */}
-        <SectionTitle>Jornada</SectionTitle>
-        <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 8 }}>
-          {isCategoriaEstagio(form.categoria) && (
+        {/* ══════════════════ CARGO E LOTAÇÃO ══════════════════ */}
+        <SectionTitle>Cargo e Lotação</SectionTitle>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: gridCols(catEmpregado || catComissionado ? 3 : 2),
+            gap: 16,
+            marginBottom: 16
+          }}
+        >
+          {(catEmpregado || catComissionado) && (
             <div>
               <FieldLabel>Cargo</FieldLabel>
               <input
@@ -1658,21 +1671,136 @@ export function FuncionarioFormPage() {
               />
             </div>
           )}
-          {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
+          <div>
+            <FieldLabel>Departamento *</FieldLabel>
+            <SelectWrap>
+              <select
+                value={form.gerenciaId}
+                onChange={(e) => setForm((f) => ({ ...f, gerenciaId: e.target.value }))}
+                style={{
+                  ...selectStyle,
+                  color: form.gerenciaId ? "var(--ink-900)" : "var(--ink-500)"
+                }}
+              >
+                <option value="">Selecione um departamento…</option>
+                {gerencias.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.nome}
+                  </option>
+                ))}
+              </select>
+            </SelectWrap>
+          </div>
+          {form.gerenciaId && subsecoesDisponiveis.length > 0 && (
             <div>
-              <FieldLabel>Data de Desligamento</FieldLabel>
-              <input
-                type="date"
-                value={form.dataDesligamento}
-                onChange={(e) => setForm((f) => ({ ...f, dataDesligamento: e.target.value }))}
-                style={fieldStyle}
-              />
-              <Hint>
-                Preenchida (hoje ou no passado) desativa o funcionário na hora; no futuro, desativa
-                sozinho na data.
-              </Hint>
+              <FieldLabel>Coordenação</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.subsecao}
+                  onChange={(e) => setForm((f) => ({ ...f, subsecao: e.target.value }))}
+                  style={{
+                    ...selectStyle,
+                    color: form.subsecao ? "var(--ink-900)" : "var(--ink-500)"
+                  }}
+                >
+                  <option value="">Sem coordenação (membro direto do departamento)</option>
+                  {subsecoesDisponiveis.map((s) => (
+                    <option key={s} value={s}>
+                      {slugLabel(s)}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
             </div>
           )}
+        </div>
+
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 8 }}
+        >
+          <div>
+            <FieldLabel>Lotação</FieldLabel>
+            <input
+              type="text"
+              disabled
+              value={`${nomeGerencia(gerencias, form.gerenciaId)}${form.subsecao ? ` / ${slugLabel(form.subsecao)}` : ""}`}
+              style={{ ...fieldStyle, color: "var(--ink-500)", background: "var(--cream-50)" }}
+            />
+            {catComChefe && (
+              <Hint>
+                Chefe: {funcionarioAtual ? chefeDaLotacao(funcionarioAtual) : "—"} (somente leitura)
+              </Hint>
+            )}
+          </div>
+          <div>
+            <FieldLabel>Data Início</FieldLabel>
+            <input
+              type="date"
+              value={form.lotacaoInicio}
+              onChange={(e) => setForm((f) => ({ ...f, lotacaoInicio: e.target.value }))}
+              style={fieldStyle}
+            />
+          </div>
+          <div>
+            <FieldLabel>Data Fim</FieldLabel>
+            <input
+              type="date"
+              value={form.lotacaoTermino}
+              onChange={(e) => setForm((f) => ({ ...f, lotacaoTermino: e.target.value }))}
+              style={fieldStyle}
+            />
+          </div>
+        </div>
+
+        {!isNovo && id && (
+          <HistoricoLotacaoAccordion
+            funcionarioId={id}
+            gerencias={gerencias}
+            onRegistrado={(mov) =>
+              setForm((f) => ({
+                ...f,
+                cargo: mov.cargo ?? f.cargo,
+                gerenciaId: mov.gerenciaId || f.gerenciaId,
+                subsecao: mov.subsecao ?? f.subsecao,
+                cargoData: mov.cargoData || f.cargoData,
+                lotacaoInicio: mov.lotacaoInicio,
+                lotacaoTermino: ""
+              }))
+            }
+            apenasSetorLotacao={catEmpregado}
+          />
+        )}
+
+        {/* ══════════════════ JORNADA ══════════════════ */}
+        <SectionTitle>Jornada</SectionTitle>
+        <div
+          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+        >
+          {isRhOuAdmin && (
+            <div>
+              <FieldLabel>Data de Admissão</FieldLabel>
+              <input
+                type="date"
+                value={form.dataAdmissao}
+                onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
+                style={fieldStyle}
+              />
+              <Hint>Usada para calcular os ciclos de férias do funcionário.</Hint>
+            </div>
+          )}
+          <div>
+            <FieldLabel>Data de Desligamento</FieldLabel>
+            <input
+              type="date"
+              value={form.dataDesligamento}
+              onChange={(e) => setForm((f) => ({ ...f, dataDesligamento: e.target.value }))}
+              style={fieldStyle}
+            />
+            <Hint>
+              Preenchida (hoje ou no passado) desativa o funcionário na hora; no futuro, desativa
+              sozinho na data.
+            </Hint>
+          </div>
           <div>
             <FieldLabel>Atividade</FieldLabel>
             <SelectWrap>
@@ -1692,7 +1820,17 @@ export function FuncionarioFormPage() {
               </select>
             </SelectWrap>
           </div>
-          {form.categoria === "CONCURSADO" && (
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: gridCols(catEmpregado ? 3 : 2),
+            gap: 16,
+            marginBottom: 8
+          }}
+        >
+          {catEmpregado && (
             <div>
               <FieldLabel>É fiscal?</FieldLabel>
               <div style={{ paddingTop: 8 }}>
@@ -1705,32 +1843,33 @@ export function FuncionarioFormPage() {
               <Hint>Fiscal fica automaticamente isento de registro de ponto, como o Chefe.</Hint>
             </div>
           )}
-          {(form.categoria === "CONCURSADO" ||
-            form.categoria === "ESTAGIARIO" ||
-            form.categoria === "MENOR_APRENDIZ") && (
+          {(catEmpregado || catEstagiario || catJovemAprendiz) && isRhOuAdmin && (
             <div>
               <FieldLabel>Registro de Ponto</FieldLabel>
               <SelectWrap>
                 <select
-                  value={
-                    form.registroPontoObrigatorio === null
-                      ? ""
-                      : String(form.registroPontoObrigatorio)
-                  }
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      registroPontoObrigatorio:
-                        e.target.value === "" ? null : e.target.value === "true"
-                    }))
-                  }
+                  value={form.jornadaPeriodoId}
+                  onChange={(e) => setForm((f) => ({ ...f, jornadaPeriodoId: e.target.value }))}
                   style={selectStyle}
                 >
-                  <option value="">Sugestão automática ({registroPontoSugestao})</option>
-                  <option value="true">Obrigatório</option>
-                  <option value="false">Isento</option>
+                  <option value="">Usar jornada padrão do sistema</option>
+                  {jornadasDisponiveis
+                    .filter((j) => j)
+                    .map((j) => (
+                      <option key={j.id} value={j.id}>
+                        {j.nome}
+                        {j.ePadrao ? " (Padrão)" : ""}
+                      </option>
+                    ))}
                 </select>
               </SelectWrap>
+              <Hint>
+                Jornadas configuradas em{" "}
+                <a href="/ponto/configuracoes" style={{ color: "var(--burgundy-600)" }}>
+                  Configurações → Períodos
+                </a>
+                .
+              </Hint>
             </div>
           )}
           <div>
@@ -1743,147 +1882,39 @@ export function FuncionarioFormPage() {
               />
             </div>
           </div>
-          {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
-            <div>
-              <FieldLabel>Chefe</FieldLabel>
-              <input
-                type="text"
-                value={funcionarioAtual ? chefeDaLotacao(funcionarioAtual) : "—"}
-                disabled
-                style={{ ...fieldStyle, color: "var(--ink-500)", background: "var(--cream-50)" }}
-              />
-              <Hint>Responsável oficial da Lotação — somente leitura.</Hint>
-            </div>
-          )}
-          {form.categoria === "MENOR_APRENDIZ" && (
-            <>
-              <div>
-                <FieldLabel>Data de Início</FieldLabel>
-                <input
-                  type="date"
-                  value={form.contratoInicio}
-                  onChange={(e) => setForm((f) => ({ ...f, contratoInicio: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Data de Término</FieldLabel>
-                <input
-                  type="date"
-                  value={form.contratoTermino}
-                  onChange={(e) => setForm((f) => ({ ...f, contratoTermino: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Carga Horária</FieldLabel>
-                <input
-                  type="text"
-                  value={form.cargaHoraria}
-                  onChange={(e) => setForm((f) => ({ ...f, cargaHoraria: e.target.value }))}
-                  placeholder="Ex: 20h semanais"
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Dias da Semana</FieldLabel>
-                <input
-                  type="text"
-                  value={form.diasSemana}
-                  onChange={(e) => setForm((f) => ({ ...f, diasSemana: e.target.value }))}
-                  placeholder="Ex: Seg a Sex"
-                  style={fieldStyle}
-                />
-              </div>
-            </>
-          )}
         </div>
 
-        {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
-          <>
-            <SectionTitle>Cargo e Lotação</SectionTitle>
-            <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 8 }}>
-              <div>
-                <FieldLabel>Cargo</FieldLabel>
-                <input
-                  type="text"
-                  value={form.cargo}
-                  onChange={(e) => setForm((f) => ({ ...f, cargo: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Data</FieldLabel>
-                <input
-                  type="date"
-                  value={form.cargoData}
-                  onChange={(e) => setForm((f) => ({ ...f, cargoData: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Início da Lotação</FieldLabel>
-                <input
-                  type="date"
-                  value={form.lotacaoInicio}
-                  onChange={(e) => setForm((f) => ({ ...f, lotacaoInicio: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Término da Lotação</FieldLabel>
-                <input
-                  type="date"
-                  value={form.lotacaoTermino}
-                  onChange={(e) => setForm((f) => ({ ...f, lotacaoTermino: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-            </div>
-
-            {!isNovo && id && (
-              <HistoricoLotacaoAccordion
-                funcionarioId={id}
-                gerencias={gerencias}
-                onRegistrado={(mov) =>
-                  setForm((f) => ({
-                    ...f,
-                    cargo: mov.cargo,
-                    gerenciaId: mov.gerenciaId || f.gerenciaId,
-                    subsecao: mov.subsecao ?? f.subsecao,
-                    cargoData: mov.cargoData || f.cargoData,
-                    lotacaoInicio: mov.lotacaoInicio,
-                    lotacaoTermino: ""
-                  }))
-                }
-              />
-            )}
-          </>
-        )}
-
-        {form.categoria === "ESTAGIARIO" && (
-          <>
-            <SectionTitle>Dados do Estágio</SectionTitle>
-            <div style={{ display: "grid", gridTemplateColumns: grid, gap: 16, marginBottom: 8 }}>
-              <div>
-                <FieldLabel>Curso</FieldLabel>
-                <input
-                  type="text"
-                  value={form.curso}
-                  onChange={(e) => setForm((f) => ({ ...f, curso: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <FieldLabel>Bolsa-auxílio</FieldLabel>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={form.bolsaAuxilio}
-                  onChange={(e) => setForm((f) => ({ ...f, bolsaAuxilio: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
+        {(catEstagiario || catJovemAprendiz) && (
+          <div style={{ marginTop: 16 }}>
+            <FieldLabel>
+              Dados do Contrato de {catEstagiario ? "Estágio" : "Jovem Aprendiz"}
+            </FieldLabel>
+            <div
+              style={{ display: "grid", gridTemplateColumns: gridCols(4), gap: 16, marginTop: 8 }}
+            >
+              {catEstagiario && (
+                <>
+                  <div>
+                    <FieldLabel>Curso</FieldLabel>
+                    <input
+                      type="text"
+                      value={form.curso}
+                      onChange={(e) => setForm((f) => ({ ...f, curso: e.target.value }))}
+                      style={fieldStyle}
+                    />
+                  </div>
+                  <div>
+                    <FieldLabel>Bolsa-auxílio</FieldLabel>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={form.bolsaAuxilio}
+                      onChange={(e) => setForm((f) => ({ ...f, bolsaAuxilio: e.target.value }))}
+                      style={fieldStyle}
+                    />
+                  </div>
+                </>
+              )}
               <div>
                 <FieldLabel>Data de Início</FieldLabel>
                 <input
@@ -1894,7 +1925,7 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div>
-                <FieldLabel>Data de Término *</FieldLabel>
+                <FieldLabel>Data de Término{catEstagiario ? " *" : ""}</FieldLabel>
                 <input
                   type="date"
                   value={form.contratoTermino}
@@ -1923,248 +1954,243 @@ export function FuncionarioFormPage() {
                 />
               </div>
             </div>
-          </>
+          </div>
         )}
 
-        {(form.categoria === "CONCURSADO" ||
-          form.categoria === "ASSESSOR" ||
-          form.categoria === "ESTAGIARIO") && (
-          <>
-            <SectionTitle>Capacitação</SectionTitle>
+        {/* ══════════════════ CAPACITAÇÃO ══════════════════ */}
+        <SectionTitle>Capacitação</SectionTitle>
 
-            <div style={{ marginBottom: 20 }}>
-              <FieldLabel>Formação Acadêmica</FieldLabel>
-              {form.formacoesAcademicas.map((fa, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr 1.4fr 1fr auto",
-                    gap: 8,
-                    marginBottom: 8,
-                    alignItems: "center"
-                  }}
+        <div style={{ marginBottom: 20 }}>
+          <FieldLabel>Formação Acadêmica</FieldLabel>
+          {form.formacoesAcademicas.map((fa, idx) => (
+            <div
+              key={idx}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr 1.4fr 1fr auto",
+                gap: 8,
+                marginBottom: 8,
+                alignItems: "center"
+              }}
+            >
+              <SelectWrap>
+                <select
+                  value={fa.grauEscolaridade ?? ""}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                        i === idx ? { ...x, grauEscolaridade: e.target.value } : x
+                      )
+                    }))
+                  }
+                  style={selectStyleBase}
                 >
-                  <SelectWrap>
-                    <select
-                      value={fa.grauEscolaridade ?? ""}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                            i === idx ? { ...x, grauEscolaridade: e.target.value } : x
-                          )
-                        }))
-                      }
-                      style={selectStyleBase}
-                    >
-                      <option value="">Grau</option>
-                      {GRAU_ESCOLARIDADE_OPCOES.map((g) => (
-                        <option key={g} value={g}>
-                          {g}
-                        </option>
-                      ))}
-                    </select>
-                  </SelectWrap>
-                  <input
-                    type="text"
-                    value={fa.curso}
-                    placeholder="Curso"
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                          i === idx ? { ...x, curso: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <input
-                    type="text"
-                    value={fa.instituicao ?? ""}
-                    placeholder="Instituição"
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                          i === idx ? { ...x, instituicao: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <input
-                    type="date"
-                    value={fa.conclusao ?? ""}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                          i === idx ? { ...x, conclusao: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setForm((f) => ({
-                        ...f,
-                        formacoesAcademicas: f.formacoesAcademicas.filter((_, i) => i !== idx)
-                      }))
-                    }
-                    aria-label="Remover formação"
-                    style={{
-                      padding: 8,
-                      borderRadius: "var(--radius-md)",
-                      border: "1px solid rgba(200,57,63,0.25)",
-                      background: "transparent",
-                      color: "var(--red)",
-                      cursor: "pointer",
-                      display: "flex",
-                      flexShrink: 0
-                    }}
-                  >
-                    <TrashIcon size={14} />
-                  </button>
-                </div>
-              ))}
+                  <option value="">Grau</option>
+                  {GRAU_ESCOLARIDADE_OPCOES.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
+              <input
+                type="text"
+                value={fa.curso}
+                placeholder="Curso"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                      i === idx ? { ...x, curso: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
+              <input
+                type="text"
+                value={fa.instituicao ?? ""}
+                placeholder="Instituição"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                      i === idx ? { ...x, instituicao: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
+              <input
+                type="date"
+                value={fa.conclusao ?? ""}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                      i === idx ? { ...x, conclusao: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
               <button
                 type="button"
                 onClick={() =>
                   setForm((f) => ({
                     ...f,
-                    formacoesAcademicas: [
-                      ...f.formacoesAcademicas,
-                      { grauEscolaridade: "", curso: "", instituicao: "", conclusao: "" }
-                    ]
+                    formacoesAcademicas: f.formacoesAcademicas.filter((_, i) => i !== idx)
                   }))
                 }
+                aria-label="Remover formação"
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "7px 12px",
+                  padding: 8,
                   borderRadius: "var(--radius-md)",
-                  border: "1px dashed rgba(122,30,38,0.28)",
+                  border: "1px solid rgba(200,57,63,0.25)",
                   background: "transparent",
-                  color: "var(--burgundy-600)",
+                  color: "var(--red)",
                   cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600
+                  display: "flex",
+                  flexShrink: 0
                 }}
               >
-                <PlusIcon size={13} /> Adicionar formação
+                <TrashIcon size={14} />
               </button>
             </div>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              setForm((f) => ({
+                ...f,
+                formacoesAcademicas: [
+                  ...f.formacoesAcademicas,
+                  { grauEscolaridade: "", curso: "", instituicao: "", conclusao: "" }
+                ]
+              }))
+            }
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              borderRadius: "var(--radius-md)",
+              border: "1px dashed rgba(122,30,38,0.28)",
+              background: "transparent",
+              color: "var(--burgundy-600)",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600
+            }}
+          >
+            <PlusIcon size={13} /> Adicionar formação
+          </button>
+        </div>
 
-            <div style={{ marginBottom: 8 }}>
-              <FieldLabel>Cursos / Capacitações</FieldLabel>
-              {form.capacitacoes.map((c, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr" : "2fr 1.4fr 1fr auto",
-                    gap: 8,
-                    marginBottom: 8,
-                    alignItems: "center"
-                  }}
-                >
-                  <input
-                    type="text"
-                    value={c.nome}
-                    placeholder="Nome do curso/capacitação"
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        capacitacoes: f.capacitacoes.map((x, i) =>
-                          i === idx ? { ...x, nome: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <input
-                    type="text"
-                    value={c.instituicao ?? ""}
-                    placeholder="Instituição"
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        capacitacoes: f.capacitacoes.map((x, i) =>
-                          i === idx ? { ...x, instituicao: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <input
-                    type="date"
-                    value={c.conclusao ?? ""}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        capacitacoes: f.capacitacoes.map((x, i) =>
-                          i === idx ? { ...x, conclusao: e.target.value } : x
-                        )
-                      }))
-                    }
-                    style={fieldStyle}
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setForm((f) => ({
-                        ...f,
-                        capacitacoes: f.capacitacoes.filter((_, i) => i !== idx)
-                      }))
-                    }
-                    aria-label="Remover capacitação"
-                    style={{
-                      padding: 8,
-                      borderRadius: "var(--radius-md)",
-                      border: "1px solid rgba(200,57,63,0.25)",
-                      background: "transparent",
-                      color: "var(--red)",
-                      cursor: "pointer",
-                      display: "flex",
-                      flexShrink: 0
-                    }}
-                  >
-                    <TrashIcon size={14} />
-                  </button>
-                </div>
-              ))}
+        <div style={{ marginBottom: 8 }}>
+          <FieldLabel>Cursos / Capacitações</FieldLabel>
+          {form.capacitacoes.map((c, idx) => (
+            <div
+              key={idx}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr" : "2fr 1.4fr 1fr auto",
+                gap: 8,
+                marginBottom: 8,
+                alignItems: "center"
+              }}
+            >
+              <input
+                type="text"
+                value={c.nome}
+                placeholder="Nome do curso/capacitação"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    capacitacoes: f.capacitacoes.map((x, i) =>
+                      i === idx ? { ...x, nome: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
+              <input
+                type="text"
+                value={c.instituicao ?? ""}
+                placeholder="Instituição"
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    capacitacoes: f.capacitacoes.map((x, i) =>
+                      i === idx ? { ...x, instituicao: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
+              <input
+                type="date"
+                value={c.conclusao ?? ""}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    capacitacoes: f.capacitacoes.map((x, i) =>
+                      i === idx ? { ...x, conclusao: e.target.value } : x
+                    )
+                  }))
+                }
+                style={fieldStyle}
+              />
               <button
                 type="button"
                 onClick={() =>
                   setForm((f) => ({
                     ...f,
-                    capacitacoes: [...f.capacitacoes, { nome: "", instituicao: "", conclusao: "" }]
+                    capacitacoes: f.capacitacoes.filter((_, i) => i !== idx)
                   }))
                 }
+                aria-label="Remover capacitação"
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "7px 12px",
+                  padding: 8,
                   borderRadius: "var(--radius-md)",
-                  border: "1px dashed rgba(122,30,38,0.28)",
+                  border: "1px solid rgba(200,57,63,0.25)",
                   background: "transparent",
-                  color: "var(--burgundy-600)",
+                  color: "var(--red)",
                   cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: 600
+                  display: "flex",
+                  flexShrink: 0
                 }}
               >
-                <PlusIcon size={13} /> Adicionar curso/capacitação
+                <TrashIcon size={14} />
               </button>
             </div>
-          </>
-        )}
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              setForm((f) => ({
+                ...f,
+                capacitacoes: [...f.capacitacoes, { nome: "", instituicao: "", conclusao: "" }]
+              }))
+            }
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 12px",
+              borderRadius: "var(--radius-md)",
+              border: "1px dashed rgba(122,30,38,0.28)",
+              background: "transparent",
+              color: "var(--burgundy-600)",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 600
+            }}
+          >
+            <PlusIcon size={13} /> Adicionar curso/capacitação
+          </button>
+        </div>
 
         {isRhOuAdmin && (
           <>
@@ -2175,88 +2201,9 @@ export function FuncionarioFormPage() {
                 margin: "20px 0 20px"
               }}
             />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 12,
-                gap: 12,
-                flexWrap: "wrap"
-              }}
-            >
-              <p
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  letterSpacing: "0.07em",
-                  textTransform: "uppercase",
-                  color: "var(--burgundy-600)",
-                  margin: 0
-                }}
-              >
-                Modalidade de Trabalho Remoto
-              </p>
-              {!isNovo && (
-                <button
-                  type="button"
-                  onClick={() => void solicitarEndereco()}
-                  disabled={enviandoReq}
-                  title="Solicitar ao funcionário que preencha o endereço residencial"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "5px 11px",
-                    borderRadius: "var(--radius-md)",
-                    border: "1px solid rgba(122,30,38,0.22)",
-                    background:
-                      requerimentoAtual?.status === "PENDENTE"
-                        ? "rgba(247,196,55,0.12)"
-                        : "transparent",
-                    cursor: enviandoReq ? "wait" : "pointer",
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    fontFamily: "var(--font-body)",
-                    color: requerimentoAtual?.status === "PENDENTE" ? "#8a6a00" : "var(--ink-600)",
-                    opacity: enviandoReq ? 0.6 : 1
-                  }}
-                >
-                  <MapPinIcon size={13} />
-                  {enviandoReq
-                    ? "Enviando…"
-                    : requerimentoAtual?.status === "PENDENTE"
-                      ? "Aguardando resposta"
-                      : requerimentoAtual?.status === "RESPONDIDO"
-                        ? "Reenviar solicitação"
-                        : "Solicitar Endereço"}
-                </button>
-              )}
-            </div>
-            {requerimentoAtual && (
-              <div
-                style={{
-                  marginBottom: 12,
-                  padding: "8px 12px",
-                  borderRadius: "var(--radius-md)",
-                  fontSize: 12,
-                  background:
-                    requerimentoAtual.status === "PENDENTE"
-                      ? "rgba(247,196,55,0.10)"
-                      : "rgba(47,125,79,0.07)",
-                  border: `1px solid ${
-                    requerimentoAtual.status === "PENDENTE"
-                      ? "rgba(247,196,55,0.30)"
-                      : "rgba(47,125,79,0.18)"
-                  }`,
-                  color: requerimentoAtual.status === "PENDENTE" ? "#8a6a00" : "var(--green)"
-                }}
-              >
-                {requerimentoAtual.status === "PENDENTE"
-                  ? `⏳ Solicitação enviada em ${new Date(requerimentoAtual.criadoEm).toLocaleDateString("pt-BR")} — aguardando o funcionário preencher o endereço.`
-                  : `✓ Funcionário respondeu a solicitação.`}
-              </div>
-            )}
+
+            {/* ══════════════════ MODALIDADES DE TRABALHO REMOTO ══════════════════ */}
+            <SectionTitle>Modalidades de Trabalho Remoto</SectionTitle>
 
             <div
               style={{
@@ -2337,18 +2284,79 @@ export function FuncionarioFormPage() {
               ))}
             </div>
 
-            <p
+            {/* ══════════════════ ENDEREÇO ══════════════════ */}
+            <div
               style={{
-                fontSize: 12,
-                fontWeight: 700,
-                letterSpacing: "0.07em",
-                textTransform: "uppercase",
-                color: "var(--burgundy-600)",
-                margin: "20px 0 12px"
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginTop: 20,
+                marginBottom: 12,
+                gap: 12,
+                flexWrap: "wrap"
               }}
             >
-              Endereço Residencial
-            </p>
+              <SectionTitle>Endereço</SectionTitle>
+              {!isNovo && (
+                <button
+                  type="button"
+                  onClick={() => void solicitarEndereco()}
+                  disabled={enviandoReq}
+                  title="Solicitar ao funcionário que preencha o endereço residencial"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "5px 11px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(122,30,38,0.22)",
+                    background:
+                      requerimentoAtual?.status === "PENDENTE"
+                        ? "rgba(247,196,55,0.12)"
+                        : "transparent",
+                    cursor: enviandoReq ? "wait" : "pointer",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    fontFamily: "var(--font-body)",
+                    color: requerimentoAtual?.status === "PENDENTE" ? "#8a6a00" : "var(--ink-600)",
+                    opacity: enviandoReq ? 0.6 : 1
+                  }}
+                >
+                  <MapPinIcon size={13} />
+                  {enviandoReq
+                    ? "Enviando…"
+                    : requerimentoAtual?.status === "PENDENTE"
+                      ? "Aguardando resposta"
+                      : requerimentoAtual?.status === "RESPONDIDO"
+                        ? "Reenviar solicitação"
+                        : "Solicitar Endereço"}
+                </button>
+              )}
+            </div>
+            {requerimentoAtual && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "8px 12px",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: 12,
+                  background:
+                    requerimentoAtual.status === "PENDENTE"
+                      ? "rgba(247,196,55,0.10)"
+                      : "rgba(47,125,79,0.07)",
+                  border: `1px solid ${
+                    requerimentoAtual.status === "PENDENTE"
+                      ? "rgba(247,196,55,0.30)"
+                      : "rgba(47,125,79,0.18)"
+                  }`,
+                  color: requerimentoAtual.status === "PENDENTE" ? "#8a6a00" : "var(--green)"
+                }}
+              >
+                {requerimentoAtual.status === "PENDENTE"
+                  ? `⏳ Solicitação enviada em ${new Date(requerimentoAtual.criadoEm).toLocaleDateString("pt-BR")} — aguardando o funcionário preencher o endereço.`
+                  : `✓ Funcionário respondeu a solicitação.`}
+              </div>
+            )}
             <p
               style={{ fontSize: 11.5, color: "var(--ink-500)", marginBottom: 14, lineHeight: 1.5 }}
             >

@@ -22,6 +22,11 @@ model User {
   /// Data/hora do último login (última chamada de /auth/me) — usado para indicar
   /// na Gestão se o funcionário já fez login hoje.
   ultimoLoginEm      DateTime?
+  /// Data/hora do PRIMEIRO login real (gravada uma única vez, nunca sobrescrita).
+  /// É o marco de "início de atividades" do funcionário — dias anteriores a ela não
+  /// contam falta nem saldo negativo no histórico/banco de horas/auditoria, pois o
+  /// funcionário pode ter sido cadastrado pelo RH bem antes do seu primeiro acesso.
+  primeiroLoginEm    DateTime?
   memberships        Membership[]
   chatSession        ChatSession[]
   funcionario        Funcionario?
@@ -676,6 +681,7 @@ model Funcionario {
   // ── Dados pessoais (RH) ──────────────────────────────────────────────
   rg                        String?
   rgOrgaoEmissor            String?
+  rgUf                      String?
   rgDataEmissao             DateTime?                  @db.Date
   raca                      String?
   genero                    String?

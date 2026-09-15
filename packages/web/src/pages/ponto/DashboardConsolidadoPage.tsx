@@ -241,10 +241,8 @@ export function DashboardConsolidadoPage() {
       </div>
 
       <div
+        className="dashboard-categoria-nav"
         style={{
-          display: "flex",
-          gap: 2,
-          flexWrap: "nowrap",
           marginBottom: 20,
           borderBottom: "2px solid rgba(122,30,38,0.08)"
         }}
@@ -252,9 +250,9 @@ export function DashboardConsolidadoPage() {
         {CATEGORIAS.map((c) => (
           <button
             key={c.id}
+            className="dashboard-categoria-nav-item"
             onClick={() => setCategoria(c.id)}
             style={{
-              flex: "1 1 0",
               minWidth: 0,
               padding: "8px 6px",
               borderRadius: "var(--radius-md) var(--radius-md) 0 0",

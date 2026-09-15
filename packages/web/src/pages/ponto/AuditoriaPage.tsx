@@ -4304,7 +4304,8 @@ function buildHistorico(
   feriadoPct = 200,
   jornada: JornadaHistorico = JORNADA_PADRAO_AUD,
   periodosSemObrigacao: Array<{ inicio: string; fim: string | null }> = [],
-  exigirIntervalo = true
+  exigirIntervalo = true,
+  inicioAtividades?: string | null
 ): DiaHist[] {
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
@@ -4364,6 +4365,23 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: jornadaMinDia(isoKey, jornada),
         status: "FUTURO"
+      });
+      continue;
+    }
+
+    /* Antes do primeiro login real do funcionário: não conta falta. */
+    if (inicioAtividades && isoKey < inicioAtividades && (byDay[isoKey]?.length ?? 0) === 0) {
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "FOLGA",
+        obs: "Anterior ao primeiro acesso"
       });
       continue;
     }
@@ -5914,6 +5932,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           jornada?: JornadaHistorico;
           periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
           feriados?: ApiFeriadoH[];
+          inicioAtividades?: string | null;
         }>(`/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`, token),
         api.get<{ afastamentos: ApiAfast[] }>(
           `/auditoria/afastamentos?funcionarioId=${funcionarioId}&limit=200`,
@@ -5979,7 +5998,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           feriadoPct,
           jornada,
           periodosSemObrigacao,
-          exigirIntervalo
+          exigirIntervalo,
+          regsRaw?.inicioAtividades
         )
       );
 
@@ -8074,6 +8094,28 @@ function TabLogs({ token }: { token: string }) {
   useEffect(() => {
     carregar(1);
   }, [carregar]);
+
+  /* Esta aba nunca teve atualização ao vivo (só carregava ao montar/filtrar) —
+     um poll leve mantém a página 1 (mais recente) em dia sem exigir acesso ao
+     stream SSE de /api/logs (restrito a Super Admin). Só atualiza com a aba
+     visível e na página 1, para não interromper quem está navegando páginas
+     antigas nem gastar requisições com a aba em segundo plano. */
+  const paginaLogsRef = useRef(page);
+  useEffect(() => {
+    paginaLogsRef.current = page;
+  }, [page]);
+  const carregarLogsRef = useRef(carregar);
+  useEffect(() => {
+    carregarLogsRef.current = carregar;
+  }, [carregar]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (paginaLogsRef.current === 1 && document.visibilityState === "visible") {
+        void carregarLogsRef.current(1);
+      }
+    }, 20000);
+    return () => clearInterval(interval);
+  }, []);
 
   function exportar() {
     exportCSV(

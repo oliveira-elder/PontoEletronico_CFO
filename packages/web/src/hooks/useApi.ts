@@ -6,32 +6,66 @@ const MAX_GATEWAY_RETRIES = 3;
 
 export { setAccessTokenProvider as setAuthTokenProvider } from "../auth/accessToken";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function isRequestAborted(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }
+
+function abortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError");
+  }
+  return Object.assign(new Error("Aborted"), { name: "AbortError" });
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+type ReqFlags = { authRetried: boolean; gatewayRetries: number; signal?: AbortSignal };
 
 async function req<T>(
   method: string,
   path: string,
   body?: unknown,
   explicitToken?: string,
-  flags = { authRetried: false, gatewayRetries: 0 }
+  flags: ReqFlags = { authRetried: false, gatewayRetries: 0 }
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (body) headers["Content-Type"] = "application/json";
 
   const tk = await resolveAccessToken(explicitToken);
+  if (flags.signal?.aborted) throw abortError();
   if (tk) headers["Authorization"] = `Bearer ${tk}`;
 
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
-    credentials: "include"
+    credentials: "include",
+    signal: flags.signal
   });
 
   if (GATEWAY_RETRY_STATUSES.has(res.status) && flags.gatewayRetries < MAX_GATEWAY_RETRIES) {
-    await sleep(1000 * (flags.gatewayRetries + 1));
+    await sleep(1000 * (flags.gatewayRetries + 1), flags.signal);
     return req<T>(method, path, body, explicitToken, {
       ...flags,
       gatewayRetries: flags.gatewayRetries + 1
@@ -96,7 +130,8 @@ async function downloadFile(path: string, filename: string, explicitToken?: stri
 }
 
 export const api = {
-  get: <T>(path: string, token?: string) => req<T>("GET", path, undefined, token),
+  get: <T>(path: string, token?: string, signal?: AbortSignal) =>
+    req<T>("GET", path, undefined, token, { authRetried: false, gatewayRetries: 0, signal }),
   put: <T>(path: string, body: unknown, token?: string) => req<T>("PUT", path, body, token),
   post: <T>(path: string, body: unknown, token?: string) => req<T>("POST", path, body, token),
   patch: <T>(path: string, body?: unknown, token?: string) => req<T>("PATCH", path, body, token),

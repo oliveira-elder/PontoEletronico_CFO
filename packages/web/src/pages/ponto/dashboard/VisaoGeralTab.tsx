@@ -185,7 +185,7 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
         </StatGroup>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Distribuição por Categoria">
           <MiniDonut
             data={stats.porCategoria.map((c) => ({
@@ -253,7 +253,7 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
         )}
       </DashboardPanel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-3">
         <DashboardPanel title="Modalidade de Trabalho">
           <MiniDonut
             data={[

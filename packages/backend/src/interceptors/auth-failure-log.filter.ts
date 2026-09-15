@@ -83,7 +83,12 @@ export class AuthFailureLogFilter implements ExceptionFilter {
       durationMs: null,
       ipAddress,
       userAgent,
-      payload: { message: exception.message, motivo: "acesso_negado" }
+      payload: { message: exception.message, motivo: "acesso_negado" },
+      /* Guard barrou antes do handler — não há corpo/formulário do requisitante
+         aqui, só o header Authorization (já refletido em actorUserId/username
+         via decodeJwtPayloadUnsafe acima). O `payload` acima é uma descrição
+         interna fixa, não conteúdo enviado por quem fez a requisição. */
+      hasTraceableContent: false
     });
   }
 }

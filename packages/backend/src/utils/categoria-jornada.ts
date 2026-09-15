@@ -12,7 +12,8 @@ export function categoriaSemIntervaloAlmoco(categoria: string | null | undefined
 
 /**
  * Categorias que não visualizam banco de horas (self-service / relatórios do próprio funcionário).
- * O cálculo continua no backend; RH/auditoria mantém acesso.
+ * GET /ponto/historico e /ponto/relatorio pulam o cálculo do ciclo nessas categorias;
+ * RH/auditoria usa calcularBancoHorasAdmin.
  */
 export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
 

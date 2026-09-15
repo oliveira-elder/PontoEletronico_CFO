@@ -10,7 +10,7 @@ import {
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
-import { api } from "../../hooks/useApi";
+import { api, isRequestAborted } from "../../hooks/useApi";
 import { gerarRelatorioPdf } from "../../utils/relatorioPdf";
 import {
   type HistoricoApiResponse,
@@ -58,8 +58,17 @@ const EMPTY: RelatorioMes = {
   ocultarBancoHoras: false
 };
 
-async function carregarResumoMes(m: number, a: number, tk: string): Promise<RelatorioMes> {
-  const data = await api.get<HistoricoApiResponse>(`/ponto/historico?mes=${m}&ano=${a}`, tk);
+async function carregarResumoMes(
+  m: number,
+  a: number,
+  tk: string,
+  signal?: AbortSignal
+): Promise<RelatorioMes> {
+  const data = await api.get<HistoricoApiResponse>(
+    `/ponto/historico?mes=${m}&ano=${a}`,
+    tk,
+    signal
+  );
   const resumo = resumoFromHistoricoApi(data, m, a);
   const ocultarBancoHoras =
     !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria);
@@ -205,6 +214,7 @@ export function RelatoriosPage() {
       return;
     }
 
+    const ac = new AbortController();
     setLoading(true);
     const trendMeses = Array.from({ length: 6 }, (_, i) => {
       let m = mes - 5 + i,
@@ -216,18 +226,31 @@ export function RelatoriosPage() {
       return { m, a };
     });
 
-    Promise.all([
-      carregarResumoMes(mes, ano, tk),
-      ...trendMeses.map(({ m, a }) =>
-        carregarResumoMes(m, a, tk).catch(() => ({ ...EMPTY, mes: m, ano: a }))
-      )
-    ])
-      .then(([relData, ...trendData]) => {
+    (async () => {
+      try {
+        const relData = await carregarResumoMes(mes, ano, tk, ac.signal);
+        if (ac.signal.aborted) return;
         setRel(relData ?? EMPTY);
+        setLoading(false);
+        const trendData = await Promise.all(
+          trendMeses.map(({ m, a }) =>
+            m === mes && a === ano
+              ? Promise.resolve(relData)
+              : carregarResumoMes(m, a, tk, ac.signal).catch((err: unknown) => {
+                  if (isRequestAborted(err)) throw err;
+                  return { ...EMPTY, mes: m, ano: a };
+                })
+          )
+        );
+        if (ac.signal.aborted) return;
         setTrend(trendData as RelatorioMes[]);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      } catch (err: unknown) {
+        if (isRequestAborted(err) || ac.signal.aborted) return;
+        setLoading(false);
+      }
+    })();
+
+    return () => ac.abort();
   }, [mes, ano]);
 
   function navMes(dir: -1 | 1) {

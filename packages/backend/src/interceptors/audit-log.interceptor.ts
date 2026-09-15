@@ -124,7 +124,8 @@ export class AuditLogInterceptor implements NestInterceptor<any, any> {
       durationMs,
       ipAddress: ipAddress || null,
       userAgent,
-      payload
+      payload,
+      hasTraceableContent: !!payload
     });
   }
 

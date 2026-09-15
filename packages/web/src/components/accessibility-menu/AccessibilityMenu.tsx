@@ -311,10 +311,11 @@ function readCssPx(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function clampIconTop(top: number, buttonSize: number): number {
+function clampIconTop(top: number, buttonSize: number, isMobile: boolean): number {
   const topbar = readCssPx("--topbar-h", 132);
   const minTop = topbar + TOP_GAP_PX;
-  const maxTop = Math.max(minTop, window.innerHeight - buttonSize - BOTTOM_GAP_PX);
+  const bottomReserve = isMobile ? readCssPx("--bottom-nav-h", 64) + BOTTOM_GAP_PX : BOTTOM_GAP_PX;
+  const maxTop = Math.max(minTop, window.innerHeight - buttonSize - bottomReserve);
   return Math.min(Math.max(top, minTop), maxTop);
 }
 
@@ -338,7 +339,11 @@ function saveIconTop(storageKey: string, top: number) {
   }
 }
 
-function useVerticalIconPosition(storageKey: string, menuRef: RefObject<HTMLDivElement>) {
+function useVerticalIconPosition(
+  storageKey: string,
+  menuRef: RefObject<HTMLDivElement>,
+  isMobile: boolean
+) {
   const [top, setTop] = useState<number | null>(() => readStoredIconTop(storageKey));
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef({
@@ -356,21 +361,23 @@ function useVerticalIconPosition(storageKey: string, menuRef: RefObject<HTMLDivE
 
   const applyTop = useCallback(
     (nextTop: number) => {
-      const clamped = clampIconTop(nextTop, measureButtonSize());
+      const clamped = clampIconTop(nextTop, measureButtonSize(), isMobile);
       setTop(clamped);
       return clamped;
     },
-    [measureButtonSize]
+    [measureButtonSize, isMobile]
   );
 
   useEffect(() => {
     const clampNow = () => {
-      setTop((current) => (current == null ? current : clampIconTop(current, measureButtonSize())));
+      setTop((current) =>
+        current == null ? current : clampIconTop(current, measureButtonSize(), isMobile)
+      );
     };
     clampNow();
     window.addEventListener("resize", clampNow);
     return () => window.removeEventListener("resize", clampNow);
-  }, [measureButtonSize]);
+  }, [measureButtonSize, isMobile]);
 
   const onPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -431,8 +438,8 @@ export function AccessibilityMenu({ storageKey = DEFAULT_STORAGE_KEY }: Accessib
   const settings = useAccessibilitySettings(storageKey);
   const menuRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile(768);
-  const position = useVerticalIconPosition(storageKey, menuRef);
-  const useCustomTop = !isMobile && position.top != null;
+  const position = useVerticalIconPosition(storageKey, menuRef, isMobile);
+  const useCustomTop = position.top != null;
 
   useEffect(() => {
     if (!isMobile || !panel.isOpen) return;
@@ -444,7 +451,7 @@ export function AccessibilityMenu({ storageKey = DEFAULT_STORAGE_KEY }: Accessib
   }, [isMobile, panel.isOpen]);
 
   const onTriggerClick = (event: MouseEvent<HTMLButtonElement>) => {
-    if (!isMobile && position.consumeSuppressedClick()) {
+    if (position.consumeSuppressedClick()) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -464,7 +471,7 @@ export function AccessibilityMenu({ storageKey = DEFAULT_STORAGE_KEY }: Accessib
   const className = [
     "intranet-a11y-menu",
     panel.isOpen ? "intranet-a11y-menu--open" : "",
-    !isMobile && position.dragging ? "intranet-a11y-menu--dragging" : "",
+    position.dragging ? "intranet-a11y-menu--dragging" : "",
     useCustomTop ? "intranet-a11y-menu--custom-y" : "",
     panel.isOpen && openDownward ? "intranet-a11y-menu--panel-below" : ""
   ]
@@ -485,16 +492,16 @@ export function AccessibilityMenu({ storageKey = DEFAULT_STORAGE_KEY }: Accessib
           ref={panel.triggerRef}
           type="button"
           onClick={onTriggerClick}
-          onPointerDown={isMobile ? undefined : position.onPointerDown}
-          onPointerMove={isMobile ? undefined : position.onPointerMove}
-          onPointerUp={isMobile ? undefined : position.onPointerUp}
-          onPointerCancel={isMobile ? undefined : position.onPointerUp}
+          onPointerDown={position.onPointerDown}
+          onPointerMove={position.onPointerMove}
+          onPointerUp={position.onPointerUp}
+          onPointerCancel={position.onPointerUp}
           aria-label={
             panel.isOpen ? "Fechar opções de acessibilidade" : "Abrir opções de acessibilidade"
           }
           aria-controls={PANEL_ID}
           aria-expanded={panel.isOpen}
-          title={isMobile ? "Opções de acessibilidade" : "Arraste na vertical para reposicionar"}
+          title="Arraste na vertical para reposicionar"
           className="intranet-a11y-trigger"
         >
           <Accessibility size={22} strokeWidth={2.2} aria-hidden="true" />

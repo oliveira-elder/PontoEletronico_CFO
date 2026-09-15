@@ -57,7 +57,7 @@ export function PerfilDiversidadeTab({ stats }: { stats: GestaoDashboardStats })
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Escolaridade (formações cadastradas)">
           <MiniBarChart
             data={stats.porEscolaridade.map((e) => ({
@@ -78,7 +78,7 @@ export function PerfilDiversidadeTab({ stats }: { stats: GestaoDashboardStats })
         </DashboardPanel>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Diversidade — Gênero">
           <MiniDonut
             data={stats.porGenero.map((g) => ({ name: g.chave, value: g.total }))}

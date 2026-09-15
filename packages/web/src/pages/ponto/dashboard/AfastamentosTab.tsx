@@ -141,7 +141,7 @@ export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
         />
       </DashboardPanel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Afastamentos por Tipo">
           <MiniDonut data={donutAfastamentosPorTipo} />
         </DashboardPanel>

@@ -260,8 +260,17 @@ export class AuthService {
     }
 
     // Registra o login (usado na Gestão para indicar quem já acessou o sistema hoje).
+    // primeiroLoginEm só é gravado uma única vez — é o marco usado para não contar
+    // falta/saldo negativo em dias anteriores ao primeiro acesso real do funcionário.
+    const agora = new Date();
     await this.prisma.user
-      .update({ where: { id: user.id }, data: { ultimoLoginEm: new Date() } })
+      .update({
+        where: { id: user.id },
+        data: {
+          ultimoLoginEm: agora,
+          ...(user.primeiroLoginEm ? {} : { primeiroLoginEm: agora })
+        }
+      })
       .catch(() => null);
 
     const enriched = await this.enrichRoles(ctx);

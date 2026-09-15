@@ -468,12 +468,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return groups.some((g) => g === group || g === `/${group}` || g.endsWith(`/${group}`));
   }
 
-  function token() {
+  /* useCallback com deps vazias: só lê refs/singleton estável (keycloak, devTokenRef),
+     nunca estado reativo — identidade estável evita que consumidores (ex.: EventSource
+     de streams SSE) reabram a conexão a cada re-render do AuthProvider. */
+  const token = useCallback(() => {
     if (devTokenRef.current) return devTokenRef.current;
     if (!keycloak.token) return undefined;
     if (tokenEstaExpirado(5)) return undefined;
     return keycloak.token;
-  }
+  }, []);
 
   useEffect(() => {
     setAccessTokenProvider(token);

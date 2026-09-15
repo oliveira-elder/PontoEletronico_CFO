@@ -28,6 +28,7 @@ import { appendObservacao } from "../../utils/registro-observacoes";
 import { montarRelatorioQuadro } from "../../utils/historico-quadro";
 import { previsaoInicioAlmoco } from "../../utils/previsao-registros";
 import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
+import { inicioAtividadesUsuario } from "../../utils/inicio-atividades";
 import {
   jornadaEsperadaMin,
   resolverJornadaHistoricoContexto,
@@ -1598,13 +1599,13 @@ export class PontoService {
   ) {
     const user = await this.prisma.user.findUnique({
       where: { externalId: keycloakSub },
-      select: { createdAt: true }
+      select: { createdAt: true, primeiroLoginEm: true }
     });
     if (!user) {
       throw new NotFoundException("Perfil não sincronizado. Faça logout e login novamente.");
     }
     const func = await this.getFuncionario(keycloakSub);
-    const inicioAtividades = dataBrasiliaISO(user.createdAt);
+    const inicioAtividades = inicioAtividadesUsuario(user);
     const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
     const dataInicioProducao = await getDataInicioProducao(this.prisma);
     const { periodoTeste } = assertMesAposGoLive({
@@ -1722,49 +1723,6 @@ export class PontoService {
 
     const jornada = await this.getJornadaHistoricoContexto(func.id);
 
-    const banco = await this.calcularBancoHoras(func.id, inicioAtividades);
-    const bancoMes = banco.dias.filter((d) => d.data.startsWith(mesPrefix));
-    const bancoPorDia: Record<
-      string,
-      {
-        horasTrabalhadasMinutos: number;
-        saldoDiaMinutos: number;
-        saldoAcumuladoMinutos: number;
-        jornadaEsperadaMinutos: number;
-        observacao?: string;
-        neutro: boolean;
-      }
-    > = {};
-    for (const d of bancoMes) {
-      bancoPorDia[d.data] = {
-        horasTrabalhadasMinutos: d.horasTrabalhadasMinutos,
-        saldoDiaMinutos: d.saldoDiaMinutos,
-        saldoAcumuladoMinutos: d.saldoAcumuladoMinutos,
-        jornadaEsperadaMinutos: d.jornadaEsperadaMinutos,
-        observacao: d.observacao,
-        /* Neutro só quando o saldo não deve aparecer (afastamento integral / isento /
-           feriado sem trabalho). Atestado parcial e feriado parcial mostram saldo. */
-        neutro:
-          !!d.observacao &&
-          (d.observacao === "Afastamento" ||
-            d.observacao.startsWith("Isento") ||
-            (d.observacao.startsWith("Feriado:") && d.horasTrabalhadasMinutos === 0))
-      };
-    }
-    const saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
-    const saldoAcumuladoMes = bancoMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
-    const mesPrefixInicio = `${mesPrefix}-01`;
-    const diasAntesDoMes = banco.dias
-      .filter((d) => d.data < mesPrefixInicio)
-      .sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
-    /* Fim do mês anterior no ciclo; se o ciclo começa no mês atual, deriva do 1º dia. */
-    const saldoAcumuladoMesAnterior =
-      diasAntesDoMes.length > 0
-        ? (diasAntesDoMes.at(-1)?.saldoAcumuladoMinutos ?? 0)
-        : bancoMes.length > 0
-          ? bancoMes[0].saldoAcumuladoMinutos - bancoMes[0].saldoDiaMinutos
-          : 0;
-
     const pontoObrigatorioDesde = func.pontoObrigatorioDesde
       ? dataCivilISO(func.pontoObrigatorioDesde)
       : null;
@@ -1779,7 +1737,59 @@ export class PontoService {
     });
 
     const ocultarBancoHoras = categoriaSemVisibilidadeBancoHoras(func.categoria);
-    const exporBancoHoras = opts?.exporBancoHoras === true || !ocultarBancoHoras;
+    /* Estagiário/aprendiz não veem banco: pular o ciclo inteiro. RH/auditoria usa
+       calcularBancoHorasAdmin. opts.exporBancoHoras força o cálculo (legado). */
+    const precisaBanco = opts?.exporBancoHoras === true || !ocultarBancoHoras;
+    const exporBancoHoras = precisaBanco;
+
+    const bancoPorDia: Record<
+      string,
+      {
+        horasTrabalhadasMinutos: number;
+        saldoDiaMinutos: number;
+        saldoAcumuladoMinutos: number;
+        jornadaEsperadaMinutos: number;
+        observacao?: string;
+        neutro: boolean;
+      }
+    > = {};
+    let saldoMesBanco = 0;
+    let saldoAcumuladoMes = 0;
+    let saldoAcumuladoMesAnterior = 0;
+
+    if (precisaBanco) {
+      const banco = await this.calcularBancoHoras(func.id, inicioAtividades);
+      const bancoMes = banco.dias.filter((d) => d.data.startsWith(mesPrefix));
+      for (const d of bancoMes) {
+        bancoPorDia[d.data] = {
+          horasTrabalhadasMinutos: d.horasTrabalhadasMinutos,
+          saldoDiaMinutos: d.saldoDiaMinutos,
+          saldoAcumuladoMinutos: d.saldoAcumuladoMinutos,
+          jornadaEsperadaMinutos: d.jornadaEsperadaMinutos,
+          observacao: d.observacao,
+          /* Neutro só quando o saldo não deve aparecer (afastamento integral / isento /
+             feriado sem trabalho). Atestado parcial e feriado parcial mostram saldo. */
+          neutro:
+            !!d.observacao &&
+            (d.observacao === "Afastamento" ||
+              d.observacao.startsWith("Isento") ||
+              (d.observacao.startsWith("Feriado:") && d.horasTrabalhadasMinutos === 0))
+        };
+      }
+      saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
+      saldoAcumuladoMes = bancoMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
+      const mesPrefixInicio = `${mesPrefix}-01`;
+      const diasAntesDoMes = banco.dias
+        .filter((d) => d.data < mesPrefixInicio)
+        .sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
+      /* Fim do mês anterior no ciclo; se o ciclo começa no mês atual, deriva do 1º dia. */
+      saldoAcumuladoMesAnterior =
+        diasAntesDoMes.length > 0
+          ? (diasAntesDoMes.at(-1)?.saldoAcumuladoMinutos ?? 0)
+          : bancoMes.length > 0
+            ? bancoMes[0].saldoAcumuladoMinutos - bancoMes[0].saldoDiaMinutos
+            : 0;
+    }
 
     return {
       mes,
@@ -1817,9 +1827,7 @@ export class PontoService {
   /* ─── Relatório mensal ─── */
 
   async getRelatorio(keycloakSub: string, mes: number, ano: number, isSuperAdmin = false) {
-    const historico = await this.getHistorico(keycloakSub, mes, ano, isSuperAdmin, {
-      exporBancoHoras: true
-    });
+    const historico = await this.getHistorico(keycloakSub, mes, ano, isSuperAdmin);
 
     const registrosCalc = historico.registros.filter((r) => !r.apenasInformativo);
     const afastamentosCalc = historico.afastamentos.filter((a) => !a.apenasInformativo);
@@ -1883,9 +1891,9 @@ export class PontoService {
     }
     const user = await this.prisma.user.findUnique({
       where: { id: func.userId },
-      select: { createdAt: true }
+      select: { primeiroLoginEm: true }
     });
-    const inicioAtividades = user?.createdAt ? dataBrasiliaISO(user.createdAt) : hojeBrasiliaISO();
+    const inicioAtividades = inicioAtividadesUsuario(user);
     const cicloInicio =
       cicloInicioQuery && /^\d{4}-\d{2}-\d{2}$/.test(cicloInicioQuery)
         ? cicloInicioQuery
@@ -1897,11 +1905,9 @@ export class PontoService {
   async calcularBancoHorasAdmin(funcionarioId: string) {
     const func = await this.prisma.funcionario.findUnique({
       where: { id: funcionarioId },
-      select: { user: { select: { createdAt: true } } }
+      select: { user: { select: { primeiroLoginEm: true } } }
     });
-    const inicioAtividades = func?.user?.createdAt
-      ? dataBrasiliaISO(func.user.createdAt)
-      : undefined;
+    const inicioAtividades = func?.user ? inicioAtividadesUsuario(func.user) : undefined;
     return this.calcularBancoHoras(funcionarioId, inicioAtividades);
   }
 
@@ -1955,9 +1961,9 @@ export class PontoService {
     if (!inicioLogin) {
       const funcUser = await this.prisma.funcionario.findUnique({
         where: { id: funcionarioId },
-        select: { user: { select: { createdAt: true } } }
+        select: { user: { select: { primeiroLoginEm: true } } }
       });
-      inicioLogin = funcUser?.user?.createdAt ? dataBrasiliaISO(funcUser.user.createdAt) : hojeIso;
+      inicioLogin = inicioAtividadesUsuario(funcUser?.user);
     }
 
     const ciclos = listarCiclosBancoHoras(marcos, inicioLogin, hojeIso, dataInicioProducao);
@@ -3468,7 +3474,7 @@ export class PontoService {
       select: {
         id: true,
         categoria: true,
-        user: { select: { createdAt: true } }
+        user: { select: { primeiroLoginEm: true } }
       }
     });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
@@ -3516,7 +3522,7 @@ export class PontoService {
       this.getJornadaHistoricoContexto(funcionarioId)
     ]);
 
-    const inicioAtividades = func.user?.createdAt ? dataBrasiliaISO(func.user.createdAt) : null;
+    const inicioAtividades = inicioAtividadesUsuario(func.user);
 
     const quadro = montarRelatorioQuadro(
       registros,

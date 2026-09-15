@@ -16,7 +16,7 @@ import {
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
-import { api } from "../../hooks/useApi";
+import { api, isRequestAborted } from "../../hooks/useApi";
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
 import {
   formatarDataExtensoPt,
@@ -26,6 +26,7 @@ import {
 import {
   transformarHistorico,
   marcarDiasFeriado,
+  resumoFromHistoricoApi,
   JORNADA_PADRAO,
   type HistoricoApiResponse,
   type ApiFeriado,
@@ -683,6 +684,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     let cancelled = false;
+    const ac = new AbortController();
     const timeout = setTimeout(() => {
       if (!cancelled) setLoading(false);
     }, 20_000);
@@ -691,17 +693,28 @@ export function DashboardPage() {
     const [ano, mes] = hojeIso.split("-").map(Number);
 
     Promise.all([
-      api.get<ApiStatus>("/ponto/status"),
-      api.get<ApiRelatorio>(`/ponto/relatorio?mes=${mes}&ano=${ano}`),
-      api.get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`),
-      api.get<ApiBancoHoras>("/ponto/banco-horas").catch(() => null),
-      api.get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`).catch(() => [] as ApiFeriado[])
+      api.get<ApiStatus>("/ponto/status", undefined, ac.signal),
+      api.get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`, undefined, ac.signal),
+      api
+        .get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`, undefined, ac.signal)
+        .catch((err: unknown) => {
+          if (isRequestAborted(err)) throw err;
+          return [] as ApiFeriado[];
+        })
     ])
-      .then(([statusData, relData, histData, bancoData, feriadosCfg]) => {
+      .then(async ([statusData, histData, feriadosCfg]) => {
         if (cancelled) return;
         setStatus(statusData);
-        setRelatorio(relData);
-        setBancoHoras(bancoData);
+        const ocultar =
+          !!histData?.ocultarBancoHoras ||
+          categoriaSemVisibilidadeBancoHoras(histData?.categoria ?? statusData?.categoria);
+        const resumo = resumoFromHistoricoApi(histData, mes, ano);
+        setRelatorio({
+          ...resumo,
+          ocultarBancoHoras: ocultar,
+          ...(ocultar ? { horasExtrasMinutos: 0, horasFaltaMinutos: 0, saldoMinutos: 0 } : {})
+        });
+        setBancoHoras(null);
         const feriados =
           Array.isArray(feriadosCfg) && feriadosCfg.length > 0
             ? feriadosCfg
@@ -727,8 +740,18 @@ export function DashboardPage() {
           histData?.bancoPorDia
         );
         setQuinzena(computeQuinzena(diasMes));
+        if (ocultar) return;
+        const bancoData = await api
+          .get<ApiBancoHoras>("/ponto/banco-horas", undefined, ac.signal)
+          .catch((err: unknown) => {
+            if (isRequestAborted(err)) throw err;
+            return null;
+          });
+        if (!cancelled) setBancoHoras(bancoData);
       })
-      .catch(() => {})
+      .catch((err: unknown) => {
+        if (isRequestAborted(err) || cancelled) return;
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
         clearTimeout(timeout);
@@ -736,6 +759,7 @@ export function DashboardPage() {
 
     return () => {
       cancelled = true;
+      ac.abort();
       clearTimeout(timeout);
     };
   }, []);

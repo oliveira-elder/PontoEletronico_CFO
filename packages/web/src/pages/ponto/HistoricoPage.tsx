@@ -16,7 +16,7 @@ import {
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
-import { api } from "../../hooks/useApi";
+import { api, isRequestAborted } from "../../hooks/useApi";
 import {
   type StatusDia,
   type ObservacaoRegistro,
@@ -1443,6 +1443,8 @@ export function HistoricoPage() {
   const [popupMes, setPopupMes] = useState(false);
   const [exportandoPdf, setExportandoPdf] = useState(false);
   const mesNavRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
 
   /* ── Assinatura ── */
   const [assinatura, setAssinatura] = useState<AssinaturaQuadro | null>(null);
@@ -1451,14 +1453,32 @@ export function HistoricoPage() {
   const [jornadaInfo, setJornadaInfo] = useState<JornadaHistorico | null>(null);
 
   const fetchHistorico = useCallback(
-    (silent = false) => {
+    (opts: { silent?: boolean; replace?: boolean } = {}) => {
+      const silent = !!opts.silent;
+      const replace = !!opts.replace;
+      if (!replace && inFlightRef.current) return;
+
+      if (replace) abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      inFlightRef.current = true;
       if (!silent) setLoading(true);
 
       Promise.all([
-        api.get<HistoricoApiResponse>(`/ponto/historico?mes=${mes}&ano=${ano}`),
-        api.get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`).catch(() => [] as ApiFeriado[])
+        api.get<HistoricoApiResponse>(
+          `/ponto/historico?mes=${mes}&ano=${ano}`,
+          undefined,
+          ac.signal
+        ),
+        api
+          .get<ApiFeriado[]>(`/ponto/config/feriados?ano=${ano}`, undefined, ac.signal)
+          .catch((err: unknown) => {
+            if (isRequestAborted(err)) throw err;
+            return [] as ApiFeriado[];
+          })
       ])
         .then(([data, feriadosCfg]) => {
+          if (ac.signal.aborted) return;
           const inicio = data?.inicioAtividades ?? null;
           setInicioAtividades(inicio);
           setDataInicioProducao(data?.dataInicioProducao ?? null);
@@ -1497,7 +1517,8 @@ export function HistoricoPage() {
             )
           );
         })
-        .catch(() => {
+        .catch((err: unknown) => {
+          if (isRequestAborted(err) || ac.signal.aborted) return;
           if (!silent) {
             setBancoPorDia({});
             setSaldoMesBanco(0);
@@ -1506,28 +1527,33 @@ export function HistoricoPage() {
             setRegistros(transformarHistorico([], [], mes, ano));
           }
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (abortRef.current !== ac) return;
+          inFlightRef.current = false;
+          if (!ac.signal.aborted) setLoading(false);
+        });
     },
     [mes, ano]
   );
 
-  /* Carrega ao montar e ao mudar mês/ano */
+  /* Carrega ao montar e ao mudar mês/ano — cancela a consulta anterior */
   useEffect(() => {
-    fetchHistorico(false);
+    fetchHistorico({ replace: true });
+    return () => abortRef.current?.abort();
   }, [fetchHistorico]);
 
-  /* Polling de 30s apenas no mês atual */
+  /* Polling de 30s apenas no mês atual; não empilha se a anterior ainda corre */
   useEffect(() => {
     if (!isMesAtual) return;
-    const id = setInterval(() => fetchHistorico(true), 30_000);
+    const id = setInterval(() => fetchHistorico({ silent: true }), 30_000);
     return () => clearInterval(id);
   }, [isMesAtual, fetchHistorico]);
 
-  /* Refresh imediato ao retornar à aba (visibilitychange) */
+  /* Refresh ao retornar à aba — ignora se já há consulta em voo */
   useEffect(() => {
     if (!isMesAtual) return;
     const onVisible = () => {
-      if (document.visibilityState === "visible") fetchHistorico(true);
+      if (document.visibilityState === "visible") fetchHistorico({ silent: true });
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
