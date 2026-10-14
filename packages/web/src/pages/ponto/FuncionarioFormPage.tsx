@@ -1,17 +1,28 @@
 import React, { useEffect, useState } from "react";
+import { ToleranciaFechamentoFuncionario } from "../../components/banco/ToleranciaFechamento";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { MapModal, MapResult } from "../../components/MapModal";
+import { MapModal, MapResult, textoBuscaEndereco } from "../../components/MapModal";
+import {
+  BotaoSolicitarRequerimento,
+  FaixaStatusRequerimento,
+  type StatusRequerimento
+} from "../../components/SolicitarRequerimento";
+import { REQUERIMENTO_INFO, type TipoRequerimentoCadastro } from "../../utils/requerimentos";
 import { geocodificarEndereco } from "../../utils/geocode";
 import {
   ArrowLeftIcon,
+  CheckIcon,
   ChevronDownIcon,
   CrownIcon,
   MapPinIcon,
+  MinusIcon,
+  PencilIcon,
   PlusIcon,
-  TrashIcon
+  TrashIcon,
+  XIcon
 } from "../../components/icons";
 import {
   CAT,
@@ -39,6 +50,10 @@ import {
   type Gerencia,
   type JornadaPeriodo
 } from "./gestaoShared";
+
+/** O cargo "A definir" é só texto de apoio: o campo fica vazio ao digitar. */
+const CARGO_A_DEFINIR = "A definir";
+const cargoParaCampo = (v: string) => (v.trim() === CARGO_A_DEFINIR ? "" : v);
 
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
@@ -101,6 +116,53 @@ function Toggle({
   );
 }
 
+const DIAS_UTEIS = ["Seg", "Ter", "Qua", "Qui", "Sex"] as const;
+
+/** Converte o texto salvo (ex.: "Seg, Qua" ou o legado "Seg a Sex") no conjunto de dias marcados. */
+function parseDiasSemana(valor: string): Set<string> {
+  const norm = valor
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const chaves = DIAS_UTEIS.map((d) => d.toLowerCase());
+  const intervalo = norm.match(/(seg|ter|qua|qui|sex)\w*\s*(?:a|-|ate)\s*(seg|ter|qua|qui|sex)/);
+  if (intervalo) {
+    const ini = chaves.indexOf(intervalo[1]);
+    const fim = chaves.indexOf(intervalo[2]);
+    if (ini <= fim) return new Set(DIAS_UTEIS.slice(ini, fim + 1));
+  }
+  const tokens = norm.split(/[^a-z]+/).map((t) => t.slice(0, 3));
+  return new Set(DIAS_UTEIS.filter((_, i) => tokens.includes(chaves[i])));
+}
+
+function DiasSemanaCheckboxes({
+  value,
+  onChange
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const marcados = parseDiasSemana(value);
+  const alternar = (dia: string, checked: boolean) => {
+    const novos = new Set(marcados);
+    if (checked) novos.add(dia);
+    else novos.delete(dia);
+    onChange(DIAS_UTEIS.filter((d) => novos.has(d)).join(", "));
+  };
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 20px", padding: "9px 0" }}>
+      {DIAS_UTEIS.map((dia) => (
+        <Toggle
+          key={dia}
+          label={dia}
+          checked={marcados.has(dia)}
+          onChange={(v) => alternar(dia, v)}
+        />
+      ))}
+    </div>
+  );
+}
+
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <p
@@ -142,314 +204,899 @@ type VigenciaLotacaoUI = {
   cargo: string;
   gerenciaId: string | null;
   subsecao: string | null;
-  situacaoAtiva: boolean;
-  data: string | null;
   vigenciaDesde: string;
   vigenciaAte: string | null;
   gerencia?: { id: string; nome: string; sigla: string } | null;
 };
 
-function HistoricoLotacaoAccordion({
-  funcionarioId,
+export type LinhaLotacaoValor = {
+  cargo: string;
+  gerenciaId: string;
+  subsecao: string;
+  vigenciaDesde: string;
+  vigenciaAte: string;
+};
+
+/** Coordenações conhecidas de um departamento (extraídas dos funcionários já lotados nele). */
+function subsecoesDaGerencia(funcionarios: Funcionario[], gerenciaId: string): string[] {
+  if (!gerenciaId) return [];
+  return [
+    ...new Set(
+      funcionarios.filter((f) => f.gerenciaId === gerenciaId && f.subsecao).map((f) => f.subsecao!)
+    )
+  ].sort();
+}
+
+const fmtData = (iso: string | null) =>
+  iso ? new Date(`${iso}T12:00:00`).toLocaleDateString("pt-BR") : "—";
+
+function hojeLocalIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function colunasLotacao(comCargo: boolean) {
+  return comCargo
+    ? "minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1.2fr) 140px 140px 76px"
+    : "minmax(0,1.6fr) minmax(0,1.3fr) 140px 140px 76px";
+}
+
+function BotaoAcao({
+  titulo,
+  onClick,
+  disabled,
+  perigo,
+  children
+}: {
+  titulo: string;
+  onClick: () => void;
+  disabled?: boolean;
+  perigo?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={titulo}
+      aria-label={titulo}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        width: 32,
+        height: 32,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: "var(--radius-md)",
+        border: `1px solid ${perigo ? "rgba(200,57,63,0.25)" : "rgba(122,30,38,0.20)"}`,
+        background: "transparent",
+        color: perigo ? "var(--red)" : "var(--burgundy-600)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
+        flexShrink: 0
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Campos editáveis de uma linha de lotação (também usado no cadastro novo). */
+function LinhaLotacaoCampos({
+  valor,
+  onChange,
+  comCargo,
+  fimEditavel,
+  fimCalculado,
   gerencias,
-  onRegistrado,
-  apenasSetorLotacao
+  funcionarios,
+  isMobile,
+  comRotulos,
+  acoes
+}: {
+  valor: LinhaLotacaoValor;
+  onChange: (v: LinhaLotacaoValor) => void;
+  comCargo: boolean;
+  fimEditavel: boolean;
+  fimCalculado?: string | null;
+  gerencias: Gerencia[];
+  funcionarios: Funcionario[];
+  isMobile: boolean;
+  /** Mostra o rótulo acima de cada campo (sem a linha de cabeçalho da lista). */
+  comRotulos?: boolean;
+  acoes?: React.ReactNode;
+}) {
+  const subsecoes = subsecoesDaGerencia(funcionarios, valor.gerenciaId);
+  const set = (p: Partial<LinhaLotacaoValor>) => onChange({ ...valor, ...p });
+  const rotulo = (t: string) => (isMobile || comRotulos ? <FieldLabel>{t}</FieldLabel> : null);
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: isMobile
+          ? "1fr"
+          : acoes
+            ? colunasLotacao(comCargo)
+            : colunasLotacao(comCargo).replace(/ 76px$/, ""),
+        gap: isMobile ? 10 : 8,
+        alignItems: "end",
+        padding: "8px 0"
+      }}
+    >
+      {comCargo && (
+        <div>
+          {rotulo("Cargo")}
+          <input
+            type="text"
+            value={cargoParaCampo(valor.cargo)}
+            placeholder={CARGO_A_DEFINIR}
+            onChange={(e) => set({ cargo: e.target.value })}
+            style={fieldStyle}
+          />
+        </div>
+      )}
+      <div>
+        {rotulo("Departamento *")}
+        <SelectWrap>
+          <select
+            value={valor.gerenciaId}
+            onChange={(e) => set({ gerenciaId: e.target.value, subsecao: "" })}
+            style={{
+              ...selectStyleBase,
+              color: valor.gerenciaId ? "var(--ink-900)" : "var(--ink-500)"
+            }}
+          >
+            <option value="">Selecione…</option>
+            {gerencias.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.nome}
+              </option>
+            ))}
+          </select>
+        </SelectWrap>
+      </div>
+      <div>
+        {rotulo("Coordenação")}
+        <SelectWrap>
+          <select
+            value={valor.subsecao}
+            disabled={subsecoes.length === 0}
+            onChange={(e) => set({ subsecao: e.target.value })}
+            style={{
+              ...selectStyleBase,
+              color: valor.subsecao ? "var(--ink-900)" : "var(--ink-500)"
+            }}
+          >
+            <option value="">{subsecoes.length ? "Sem coordenação" : "—"}</option>
+            {subsecoes.map((s) => (
+              <option key={s} value={s}>
+                {slugLabel(s)}
+              </option>
+            ))}
+          </select>
+        </SelectWrap>
+      </div>
+      <div>
+        {rotulo("Início *")}
+        <input
+          type="date"
+          value={valor.vigenciaDesde}
+          onChange={(e) => set({ vigenciaDesde: e.target.value })}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        {rotulo("Fim")}
+        {fimEditavel ? (
+          <input
+            type="date"
+            value={valor.vigenciaAte}
+            onChange={(e) => set({ vigenciaAte: e.target.value })}
+            style={fieldStyle}
+          />
+        ) : (
+          <input
+            type="text"
+            disabled
+            value={fimCalculado ? fmtData(fimCalculado) : "automático"}
+            title="Calculado pelo início da lotação seguinte"
+            style={{ ...fieldStyle, color: "var(--ink-500)", background: "var(--cream-50)" }}
+          />
+        )}
+      </div>
+      {acoes && <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>{acoes}</div>}
+    </div>
+  );
+}
+
+/**
+ * Períodos de lotação do funcionário, sempre visíveis: cada linha tem editar (✎) e
+ * remover (−), e "+" acrescenta um novo período. Cada ação grava na hora e devolve o
+ * funcionário já sincronizado com a lotação vigente.
+ */
+function LotacaoLinhas({
+  funcionarioId,
+  comCargo,
+  gerencias,
+  funcionarios,
+  isMobile,
+  onSincronizado,
+  somenteLeitura = false
 }: {
   funcionarioId: string;
+  comCargo: boolean;
   gerencias: Gerencia[];
-  onRegistrado: (novo: {
-    cargo?: string;
-    gerenciaId: string | null;
-    subsecao: string | null;
-    cargoData: string;
-    lotacaoInicio: string;
-  }) => void;
-  /** Empregado: histórico só mostra/edita Setor e Lotação (+ datas) — sem Cargo,
-   *  Situação nem Data do Ato, que ficam com o valor já vigente do funcionário. */
-  apenasSetorLotacao?: boolean;
+  funcionarios: Funcionario[];
+  isMobile: boolean;
+  onSincronizado: (f: Funcionario) => void;
+  /** Perfil do RH sem a função "Lotação": só consulta. */
+  somenteLeitura?: boolean;
 }) {
-  const [aberto, setAberto] = useState(false);
-  const [carregado, setCarregado] = useState(false);
-  const [historico, setHistorico] = useState<VigenciaLotacaoUI[]>([]);
-  const [mostrarForm, setMostrarForm] = useState(false);
-  const [novo, setNovo] = useState({
-    cargo: "",
-    gerenciaId: "",
-    subsecao: "",
-    situacaoAtiva: true,
-    data: "",
-    vigenciaDesde: ""
-  });
+  const [linhas, setLinhas] = useState<VigenciaLotacaoUI[] | null>(null);
+  const [editando, setEditando] = useState<string | null>(null); // id | "nova"
+  const [rascunho, setRascunho] = useState<LinhaLotacaoValor | null>(null);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
 
-  async function carregar() {
-    const lista = await api
-      .get<VigenciaLotacaoUI[]>(`/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico`)
-      .catch(() => []);
-    setHistorico(lista ?? []);
-    setCarregado(true);
-  }
+  const ordenar = (l: VigenciaLotacaoUI[]) =>
+    [...l].sort((a, b) => a.vigenciaDesde.localeCompare(b.vigenciaDesde));
 
-  function toggle() {
-    setAberto((a) => {
-      if (!a && !carregado) void carregar();
-      return !a;
+  useEffect(() => {
+    let cancel = false;
+    api
+      .get<VigenciaLotacaoUI[]>(`/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico`)
+      .then((l) => !cancel && setLinhas(ordenar(l ?? [])))
+      .catch(() => !cancel && setLinhas([]));
+    return () => {
+      cancel = true;
+    };
+  }, [funcionarioId]);
+
+  const hoje = hojeLocalIso();
+  const lista = linhas ?? [];
+  const ultima = lista[lista.length - 1];
+
+  function iniciarEdicao(l: VigenciaLotacaoUI) {
+    setErro("");
+    setEditando(l.id);
+    setRascunho({
+      cargo: l.cargo ?? "",
+      gerenciaId: l.gerenciaId ?? "",
+      subsecao: l.subsecao ?? "",
+      vigenciaDesde: l.vigenciaDesde,
+      vigenciaAte: l.vigenciaAte ?? ""
     });
   }
 
-  async function salvar() {
-    if ((!apenasSetorLotacao && !novo.cargo.trim()) || !novo.vigenciaDesde) {
-      setErro(
-        apenasSetorLotacao
-          ? "Informe a data de início da vigência."
-          : "Informe cargo e data de início da vigência."
-      );
-      return;
-    }
+  function iniciarNova() {
+    setErro("");
+    setEditando("nova");
+    setRascunho({
+      cargo: ultima?.cargo ?? "",
+      gerenciaId: "",
+      subsecao: "",
+      vigenciaDesde: hoje,
+      vigenciaAte: ""
+    });
+  }
+
+  function cancelar() {
+    setEditando(null);
+    setRascunho(null);
+    setErro("");
+  }
+
+  async function executar(
+    req: () => Promise<{ historico: VigenciaLotacaoUI[]; funcionario: Funcionario }>
+  ) {
     setSalvando(true);
     setErro("");
     try {
-      await api.post(`/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico`, {
-        cargo: apenasSetorLotacao ? undefined : novo.cargo.trim(),
-        gerenciaId: novo.gerenciaId || null,
-        subsecao: novo.subsecao || null,
-        situacaoAtiva: novo.situacaoAtiva,
-        data: novo.data || null,
-        vigenciaDesde: novo.vigenciaDesde
-      });
-      await carregar();
-      const hoje = new Date().toISOString().slice(0, 10);
-      if (novo.vigenciaDesde <= hoje) {
-        onRegistrado({
-          ...(apenasSetorLotacao ? {} : { cargo: novo.cargo.trim() }),
-          gerenciaId: novo.gerenciaId || null,
-          subsecao: novo.subsecao || null,
-          cargoData: novo.data,
-          lotacaoInicio: novo.vigenciaDesde
-        });
-      }
-      setMostrarForm(false);
-      setNovo({
-        cargo: "",
-        gerenciaId: "",
-        subsecao: "",
-        situacaoAtiva: true,
-        data: "",
-        vigenciaDesde: ""
-      });
+      const r = await req();
+      setLinhas(ordenar(r.historico));
+      onSincronizado(r.funcionario);
+      cancelar();
     } catch (e) {
-      setErro((e as Error)?.message ?? "Erro ao registrar movimentação.");
+      setErro((e as Error)?.message ?? "Erro ao salvar a lotação.");
     } finally {
       setSalvando(false);
     }
   }
 
-  return (
-    <div style={{ marginTop: 4, marginBottom: 20 }}>
-      <button
-        type="button"
-        onClick={toggle}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "7px 12px",
-          borderRadius: "var(--radius-md)",
-          border: "1px solid rgba(122,30,38,0.20)",
-          background: "transparent",
-          color: "var(--burgundy-600)",
-          cursor: "pointer",
-          fontSize: 12,
-          fontWeight: 600
-        }}
-      >
-        <ChevronDownIcon
-          size={13}
-          style={{ transform: aberto ? "rotate(180deg)" : "none", transition: "transform 140ms" }}
-        />
-        Histórico de Cargo e Lotação
-      </button>
+  function confirmar() {
+    if (!rascunho) return;
+    if (!rascunho.gerenciaId || !rascunho.vigenciaDesde) {
+      setErro("Informe o departamento e a data de início.");
+      return;
+    }
+    const eUltima = editando === "nova" || editando === ultima?.id;
+    const body = {
+      ...(comCargo ? { cargo: rascunho.cargo.trim() || CARGO_A_DEFINIR } : {}),
+      gerenciaId: rascunho.gerenciaId,
+      subsecao: rascunho.subsecao || null,
+      vigenciaDesde: rascunho.vigenciaDesde,
+      ...(eUltima ? { vigenciaAte: rascunho.vigenciaAte || null } : {})
+    };
+    const base = `/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico`;
+    void executar(() =>
+      editando === "nova" ? api.post(base, body) : api.patch(`${base}/${editando}`, body)
+    );
+  }
 
-      {aberto && (
+  function remover(l: VigenciaLotacaoUI) {
+    if (!window.confirm("Remover este período de lotação?")) return;
+    void executar(() =>
+      api.delete(`/ponto/gestao/funcionarios/${funcionarioId}/lotacao-historico/${l.id}`)
+    );
+  }
+
+  const acoesEdicao = (
+    <>
+      <BotaoAcao titulo="Confirmar" onClick={confirmar} disabled={salvando}>
+        <CheckIcon size={14} />
+      </BotaoAcao>
+      <BotaoAcao titulo="Cancelar" onClick={cancelar} disabled={salvando} perigo>
+        <XIcon size={14} />
+      </BotaoAcao>
+    </>
+  );
+
+  const cabecalho = (t: string) => (
+    <span style={{ ...labelStyle, marginBottom: 0, fontSize: 11 }}>{t}</span>
+  );
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {!isMobile && (
         <div
           style={{
-            marginTop: 10,
-            padding: 14,
-            borderRadius: "var(--radius-md)",
-            border: "1px solid rgba(122,30,38,0.14)",
-            background: "var(--cream-50)"
+            display: "grid",
+            gridTemplateColumns: colunasLotacao(comCargo),
+            gap: 8,
+            paddingBottom: 6,
+            borderBottom: "1px solid rgba(122,30,38,0.10)"
           }}
         >
-          {!carregado ? (
-            <p style={{ fontSize: 12, color: "var(--ink-500)" }}>Carregando…</p>
-          ) : historico.length === 0 ? (
-            <p style={{ fontSize: 12, color: "var(--ink-500)" }}>Sem movimentações registradas.</p>
-          ) : (
-            historico.map((h) => (
-              <div
-                key={h.id}
-                style={{
-                  padding: "8px 0",
-                  borderBottom: "1px solid rgba(122,30,38,0.08)",
-                  fontSize: 12.5
-                }}
-              >
-                {apenasSetorLotacao ? (
-                  <strong>
-                    {h.gerencia?.nome ?? "—"}
-                    {h.subsecao ? ` / ${slugLabel(h.subsecao)}` : ""}
-                  </strong>
-                ) : (
-                  <>
-                    <strong>{h.cargo || "—"}</strong>
-                    {h.gerencia ? ` — ${h.gerencia.nome}` : ""}
-                    {h.subsecao ? ` / ${slugLabel(h.subsecao)}` : ""}
-                  </>
-                )}
-                <div style={{ color: "var(--ink-500)", marginTop: 2 }}>
-                  Data Início: {new Date(`${h.vigenciaDesde}T12:00:00`).toLocaleDateString("pt-BR")}
-                  {" · "}Data Fim:{" "}
-                  {h.vigenciaAte
-                    ? new Date(`${h.vigenciaAte}T12:00:00`).toLocaleDateString("pt-BR")
-                    : "atual"}
-                  {!apenasSetorLotacao && (
-                    <>
-                      {" · "}
-                      {h.situacaoAtiva ? "Ativo" : "Inativo"}
-                      {h.data
-                        ? ` · Ato de ${new Date(`${h.data}T12:00:00`).toLocaleDateString("pt-BR")}`
-                        : ""}
-                    </>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-
-          {!mostrarForm ? (
-            <button
-              type="button"
-              onClick={() => setMostrarForm(true)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                marginTop: 12,
-                padding: "7px 12px",
-                borderRadius: "var(--radius-md)",
-                border: "1px dashed rgba(122,30,38,0.28)",
-                background: "transparent",
-                color: "var(--burgundy-600)",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 600
-              }}
-            >
-              <PlusIcon size={13} /> Registrar nova movimentação
-            </button>
-          ) : (
-            <div
-              style={{ marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
-            >
-              {!apenasSetorLotacao && (
-                <div>
-                  <FieldLabel>Cargo *</FieldLabel>
-                  <input
-                    type="text"
-                    value={novo.cargo}
-                    onChange={(e) => setNovo((n) => ({ ...n, cargo: e.target.value }))}
-                    style={fieldStyle}
-                  />
-                </div>
-              )}
-              <div>
-                <FieldLabel>Lotação</FieldLabel>
-                <SelectWrap>
-                  <select
-                    value={novo.gerenciaId}
-                    onChange={(e) => setNovo((n) => ({ ...n, gerenciaId: e.target.value }))}
-                    style={selectStyleBase}
-                  >
-                    <option value="">Sem alteração de lotação</option>
-                    {gerencias.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.nome}
-                      </option>
-                    ))}
-                  </select>
-                </SelectWrap>
-              </div>
-              <div>
-                <FieldLabel>Setor</FieldLabel>
-                <input
-                  type="text"
-                  value={novo.subsecao}
-                  onChange={(e) => setNovo((n) => ({ ...n, subsecao: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              {!apenasSetorLotacao && (
-                <>
-                  <div>
-                    <FieldLabel>Situação</FieldLabel>
-                    <div style={{ paddingTop: 8 }}>
-                      <Toggle
-                        checked={novo.situacaoAtiva}
-                        onChange={(v) => setNovo((n) => ({ ...n, situacaoAtiva: v }))}
-                        label="Ativo nesta movimentação"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <FieldLabel>Data do Ato</FieldLabel>
-                    <input
-                      type="date"
-                      value={novo.data}
-                      onChange={(e) => setNovo((n) => ({ ...n, data: e.target.value }))}
-                      style={fieldStyle}
-                    />
-                  </div>
-                </>
-              )}
-              <div>
-                <FieldLabel>Vigência Desde *</FieldLabel>
-                <input
-                  type="date"
-                  value={novo.vigenciaDesde}
-                  onChange={(e) => setNovo((n) => ({ ...n, vigenciaDesde: e.target.value }))}
-                  style={fieldStyle}
-                />
-              </div>
-              {erro && (
-                <p style={{ gridColumn: "1 / -1", color: "var(--red)", fontSize: 12, margin: 0 }}>
-                  {erro}
-                </p>
-              )}
-              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => void salvar()}
-                  disabled={salvando}
-                  className="btn btn-primary"
-                  style={{ flex: 1 }}
-                >
-                  {salvando ? "Salvando…" : "Salvar movimentação"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMostrarForm(false)}
-                  className="btn btn-ghost"
-                  style={{ flex: 1 }}
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          )}
+          {comCargo && cabecalho("Cargo")}
+          {cabecalho("Departamento")}
+          {cabecalho("Coordenação")}
+          {cabecalho("Início")}
+          {cabecalho("Fim")}
+          <span />
         </div>
       )}
+
+      {linhas === null ? (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", padding: "10px 0" }}>Carregando…</p>
+      ) : (
+        lista.map((l, i) => {
+          if (editando === l.id && rascunho) {
+            return (
+              <LinhaLotacaoCampos
+                key={l.id}
+                valor={rascunho}
+                onChange={setRascunho}
+                comCargo={comCargo}
+                fimEditavel={l.id === ultima?.id}
+                fimCalculado={l.vigenciaAte}
+                gerencias={gerencias}
+                funcionarios={funcionarios}
+                isMobile={isMobile}
+                acoes={acoesEdicao}
+              />
+            );
+          }
+          const atual = l.vigenciaDesde <= hoje && (!l.vigenciaAte || l.vigenciaAte >= hoje);
+          const departamento = l.gerencia?.nome ?? nomeGerencia(gerencias, l.gerenciaId) ?? "—";
+          return (
+            <div
+              key={l.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr auto" : colunasLotacao(comCargo),
+                gap: 8,
+                alignItems: "center",
+                padding: "10px 0",
+                borderBottom: i < lista.length - 1 ? "1px solid rgba(122,30,38,0.08)" : undefined,
+                fontSize: 13.5,
+                color: "var(--ink-900)"
+              }}
+            >
+              {isMobile ? (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {comCargo && l.cargo ? `${l.cargo} — ` : ""}
+                    {departamento}
+                    {atual && <SeloAtual />}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>
+                    {l.subsecao ? `${slugLabel(l.subsecao)} · ` : ""}
+                    {fmtData(l.vigenciaDesde)} – {l.vigenciaAte ? fmtData(l.vigenciaAte) : "atual"}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {comCargo && <span>{l.cargo || "—"}</span>}
+                  <span>
+                    {departamento}
+                    {atual && <SeloAtual />}
+                  </span>
+                  <span>{l.subsecao ? slugLabel(l.subsecao) : "—"}</span>
+                  <span>{fmtData(l.vigenciaDesde)}</span>
+                  <span>{fmtData(l.vigenciaAte)}</span>
+                </>
+              )}
+              {somenteLeitura ? (
+                <span />
+              ) : (
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <BotaoAcao
+                    titulo="Editar"
+                    onClick={() => iniciarEdicao(l)}
+                    disabled={salvando || editando !== null}
+                  >
+                    <PencilIcon size={14} />
+                  </BotaoAcao>
+                  <BotaoAcao
+                    titulo={lista.length === 1 ? "É preciso ter ao menos um período" : "Remover"}
+                    onClick={() => remover(l)}
+                    disabled={salvando || editando !== null || lista.length === 1}
+                    perigo
+                  >
+                    <MinusIcon size={14} />
+                  </BotaoAcao>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {editando === "nova" && rascunho && (
+        <LinhaLotacaoCampos
+          valor={rascunho}
+          onChange={setRascunho}
+          comCargo={comCargo}
+          fimEditavel
+          gerencias={gerencias}
+          funcionarios={funcionarios}
+          isMobile={isMobile}
+          acoes={acoesEdicao}
+        />
+      )}
+
+      {erro && <p style={{ color: "var(--red)", fontSize: 12, margin: "6px 0 0" }}>{erro}</p>}
+
+      {editando === null && linhas !== null && !somenteLeitura && (
+        <button
+          type="button"
+          onClick={iniciarNova}
+          disabled={salvando}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 10,
+            padding: "7px 12px",
+            borderRadius: "var(--radius-md)",
+            border: "1px dashed rgba(122,30,38,0.28)",
+            background: "transparent",
+            color: "var(--burgundy-600)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600
+          }}
+        >
+          <PlusIcon size={13} /> Nova lotação
+        </button>
+      )}
     </div>
+  );
+}
+
+type CessaoUI = {
+  id: string;
+  inicio: string;
+  fim: string | null; // null = em aberto
+  orgaoOrigem: string;
+  orgaoDestino: string;
+};
+
+type CessaoValor = { inicio: string; fim: string; orgaoOrigem: string; orgaoDestino: string };
+
+const COLUNAS_CESSAO = "140px 140px minmax(0,1fr) minmax(0,1fr) 76px";
+
+/** Campos editáveis de um período de cessão (também usado no cadastro novo). */
+function CessaoCampos({
+  valor,
+  onChange,
+  isMobile,
+  comRotulos,
+  acoes
+}: {
+  valor: CessaoValor;
+  onChange: (v: CessaoValor) => void;
+  isMobile: boolean;
+  comRotulos?: boolean;
+  acoes?: React.ReactNode;
+}) {
+  const set = (p: Partial<CessaoValor>) => onChange({ ...valor, ...p });
+  const rotulo = (t: string) => (isMobile || comRotulos ? <FieldLabel>{t}</FieldLabel> : null);
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: isMobile
+          ? "1fr"
+          : acoes
+            ? COLUNAS_CESSAO
+            : "repeat(4, minmax(0, 1fr))",
+        gap: isMobile ? 10 : comRotulos ? 16 : 8,
+        alignItems: "end",
+        padding: "8px 0"
+      }}
+    >
+      <div>
+        {rotulo("Data de Início da Cessão *")}
+        <input
+          type="date"
+          value={valor.inicio}
+          onChange={(e) => set({ inicio: e.target.value })}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        {rotulo("Data de Fim da Cessão")}
+        <input
+          type="date"
+          value={valor.fim}
+          onChange={(e) => set({ fim: e.target.value })}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        {rotulo("Órgão de Origem *")}
+        <input
+          type="text"
+          value={valor.orgaoOrigem}
+          placeholder="Ex: CFO"
+          onChange={(e) => set({ orgaoOrigem: e.target.value })}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        {rotulo("Órgão de Destino *")}
+        <input
+          type="text"
+          value={valor.orgaoDestino}
+          placeholder="Ex: CRO-SP"
+          onChange={(e) => set({ orgaoDestino: e.target.value })}
+          style={fieldStyle}
+        />
+      </div>
+      {acoes && <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>{acoes}</div>}
+    </div>
+  );
+}
+
+function pendenciasCessao(v: CessaoValor): string[] {
+  return [
+    !v.inicio && "Data de Início da Cessão",
+    !v.orgaoOrigem.trim() && "Órgão de Origem",
+    !v.orgaoDestino.trim() && "Órgão de Destino",
+    !!v.inicio && !!v.fim && v.fim < v.inicio && "Data de Fim da Cessão anterior ao início"
+  ].filter((x): x is string => !!x);
+}
+
+export type ResumoCessoes = { total: number; emAberto: number };
+
+/** Períodos sem data de fim (em aberto) impedem desmarcar a cessão. */
+function resumirCessoes(l: CessaoUI[]): ResumoCessoes {
+  return { total: l.length, emAberto: l.filter((c) => !c.fim).length };
+}
+
+/**
+ * Histórico de cessões do Empregado, no mesmo padrão da lotação: cada linha tem
+ * editar (✎) e remover (−), "+" acrescenta um período; cada ação grava na hora.
+ * Com a cessão desmarcada, o histórico continua visível apenas para consulta.
+ */
+function CessaoLinhas({
+  funcionarioId,
+  isMobile,
+  somenteLeitura: somenteLeituraCessao,
+  somenteLeituraPerfil = false,
+  onResumo,
+  onSincronizado
+}: {
+  funcionarioId: string;
+  isMobile: boolean;
+  somenteLeitura: boolean;
+  /** Perfil do RH sem a função "Cessão": só consulta. */
+  somenteLeituraPerfil?: boolean;
+  onResumo: (r: ResumoCessoes) => void;
+  onSincronizado: (f: Funcionario) => void;
+}) {
+  const somenteLeitura = somenteLeituraCessao || somenteLeituraPerfil;
+  const [linhas, setLinhas] = useState<CessaoUI[] | null>(null);
+  const [editando, setEditando] = useState<string | null>(null); // id | "nova"
+  const [rascunho, setRascunho] = useState<CessaoValor | null>(null);
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  useEffect(() => {
+    let cancel = false;
+    api
+      .get<CessaoUI[]>(`/ponto/gestao/funcionarios/${funcionarioId}/cessoes`)
+      .then((l) => {
+        if (cancel) return;
+        setLinhas(l ?? []);
+        onResumo(resumirCessoes(l ?? []));
+      })
+      .catch(() => !cancel && setLinhas([]));
+    return () => {
+      cancel = true;
+    };
+  }, [funcionarioId]);
+
+  const lista = linhas ?? [];
+  const hoje = hojeLocalIso();
+
+  // Cessão marcada sem nenhum período: já abre a primeira linha para preenchimento.
+  // Ao desmarcar, descarta qualquer edição em andamento (histórico só para consulta).
+  useEffect(() => {
+    if (somenteLeitura) {
+      if (editando !== null) cancelar();
+    } else if (linhas !== null && linhas.length === 0 && editando === null) {
+      iniciarNova();
+    }
+  }, [linhas, somenteLeitura]);
+
+  function iniciarNova() {
+    setErro("");
+    setEditando("nova");
+    const ultima = lista[lista.length - 1];
+    setRascunho({
+      inicio: "",
+      fim: "",
+      orgaoOrigem: ultima?.orgaoOrigem ?? "",
+      orgaoDestino: ""
+    });
+  }
+
+  function iniciarEdicao(c: CessaoUI) {
+    setErro("");
+    setEditando(c.id);
+    setRascunho({
+      inicio: c.inicio,
+      fim: c.fim ?? "",
+      orgaoOrigem: c.orgaoOrigem,
+      orgaoDestino: c.orgaoDestino
+    });
+  }
+
+  function cancelar() {
+    setEditando(null);
+    setRascunho(null);
+    setErro("");
+  }
+
+  async function executar(req: () => Promise<{ cessoes: CessaoUI[]; funcionario: Funcionario }>) {
+    setSalvando(true);
+    setErro("");
+    try {
+      const r = await req();
+      setLinhas(r.cessoes);
+      onResumo(resumirCessoes(r.cessoes));
+      onSincronizado(r.funcionario);
+      cancelar();
+    } catch (e) {
+      setErro((e as Error)?.message ?? "Erro ao salvar a cessão.");
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  function confirmar() {
+    if (!rascunho) return;
+    const faltando = pendenciasCessao(rascunho);
+    if (faltando.length) {
+      setErro(`Preencha: ${faltando.join(", ")}.`);
+      return;
+    }
+    const base = `/ponto/gestao/funcionarios/${funcionarioId}/cessoes`;
+    const body = { ...rascunho, fim: rascunho.fim || null };
+    void executar(() =>
+      editando === "nova" ? api.post(base, body) : api.patch(`${base}/${editando}`, body)
+    );
+  }
+
+  function remover(c: CessaoUI) {
+    if (!window.confirm("Remover este período de cessão?")) return;
+    void executar(() => api.delete(`/ponto/gestao/funcionarios/${funcionarioId}/cessoes/${c.id}`));
+  }
+
+  const acoesEdicao = (
+    <>
+      <BotaoAcao titulo="Confirmar" onClick={confirmar} disabled={salvando}>
+        <CheckIcon size={14} />
+      </BotaoAcao>
+      <BotaoAcao
+        titulo="Cancelar"
+        onClick={cancelar}
+        disabled={salvando || lista.length === 0}
+        perigo
+      >
+        <XIcon size={14} />
+      </BotaoAcao>
+    </>
+  );
+
+  const cabecalho = (t: string) => (
+    <span style={{ ...labelStyle, marginBottom: 0, fontSize: 11 }}>{t}</span>
+  );
+
+  // Desmarcada e sem histórico: nada a mostrar.
+  if (somenteLeitura && lista.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {somenteLeitura && (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: "0 0 6px" }}>
+          Histórico de cessões (somente consulta). Marque a opção acima para registrar uma nova
+          cessão.
+        </p>
+      )}
+      {!isMobile && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: COLUNAS_CESSAO,
+            gap: 8,
+            paddingBottom: 6,
+            borderBottom: "1px solid rgba(122,30,38,0.10)"
+          }}
+        >
+          {cabecalho("Início *")}
+          {cabecalho("Fim")}
+          {cabecalho("Órgão de Origem *")}
+          {cabecalho("Órgão de Destino *")}
+          <span />
+        </div>
+      )}
+
+      {linhas === null ? (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", padding: "10px 0" }}>Carregando…</p>
+      ) : (
+        lista.map((c, i) => {
+          if (editando === c.id && rascunho) {
+            return (
+              <CessaoCampos
+                key={c.id}
+                valor={rascunho}
+                onChange={setRascunho}
+                isMobile={isMobile}
+                acoes={acoesEdicao}
+              />
+            );
+          }
+          const atual = c.inicio <= hoje && (!c.fim || hoje <= c.fim);
+          return (
+            <div
+              key={c.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr auto" : COLUNAS_CESSAO,
+                gap: 8,
+                alignItems: "center",
+                padding: "10px 0",
+                borderBottom: i < lista.length - 1 ? "1px solid rgba(122,30,38,0.08)" : undefined,
+                fontSize: 13.5,
+                color: "var(--ink-900)"
+              }}
+            >
+              {isMobile ? (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {c.orgaoOrigem} → {c.orgaoDestino}
+                    {atual && <SeloAtual />}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>
+                    {fmtData(c.inicio)} – {c.fim ? fmtData(c.fim) : "em aberto"}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <span>{fmtData(c.inicio)}</span>
+                  <span>{c.fim ? fmtData(c.fim) : "Em aberto"}</span>
+                  <span>{c.orgaoOrigem}</span>
+                  <span>
+                    {c.orgaoDestino}
+                    {atual && <SeloAtual />}
+                  </span>
+                </>
+              )}
+              {somenteLeitura ? (
+                <span />
+              ) : (
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <BotaoAcao
+                    titulo="Editar"
+                    onClick={() => iniciarEdicao(c)}
+                    disabled={salvando || editando !== null}
+                  >
+                    <PencilIcon size={14} />
+                  </BotaoAcao>
+                  <BotaoAcao
+                    titulo="Remover"
+                    onClick={() => remover(c)}
+                    disabled={salvando || editando !== null}
+                    perigo
+                  >
+                    <MinusIcon size={14} />
+                  </BotaoAcao>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {editando === "nova" && rascunho && (
+        <CessaoCampos
+          valor={rascunho}
+          onChange={setRascunho}
+          isMobile={isMobile}
+          acoes={acoesEdicao}
+        />
+      )}
+
+      {erro && <p style={{ color: "var(--red)", fontSize: 12, margin: "6px 0 0" }}>{erro}</p>}
+
+      {editando === null && linhas !== null && !somenteLeitura && (
+        <button
+          type="button"
+          onClick={iniciarNova}
+          disabled={salvando}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 10,
+            padding: "7px 12px",
+            borderRadius: "var(--radius-md)",
+            border: "1px dashed rgba(122,30,38,0.28)",
+            background: "transparent",
+            color: "var(--burgundy-600)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600
+          }}
+        >
+          <PlusIcon size={13} /> Nova cessão
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SeloAtual() {
+  return (
+    <span
+      style={{
+        marginLeft: 8,
+        padding: "1px 7px",
+        borderRadius: 999,
+        fontSize: 10.5,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        background: "rgba(122,30,38,0.08)",
+        color: "var(--burgundy-600)",
+        verticalAlign: "middle"
+      }}
+    >
+      Atual
+    </span>
   );
 }
 
@@ -464,7 +1111,20 @@ export function FuncionarioFormPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const isMobile = useIsMobile(768);
-  const { user, hasRole, refreshProfile } = useAuth();
+  const { user, hasRole, refreshProfile, podeRh } = useAuth();
+  /* Perfil do RH: restringe só quem acessa como RH (não Gerente de RH/super admin nem gestor). */
+  const restritoPerfilRh =
+    !user?.isSuperAdmin &&
+    !hasRole("ponto-admin") &&
+    !hasRole("PONTO_ADMIN") &&
+    !hasRole("gestor") &&
+    !hasRole("GESTOR_APROVACAO") &&
+    hasRole("RH_AUDITORIA");
+  const podeFuncao = (recurso: string) => !restritoPerfilRh || podeRh(recurso);
+  const podeEditarCadastro = podeFuncao("gestao.funcionarios.editar");
+  const podeLotacao = podeFuncao("gestao.funcionarios.lotacao");
+  const podeCessao = podeFuncao("gestao.funcionarios.cessao");
+  const podeRequerimento = podeFuncao("gestao.funcionarios.requerimento");
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
   const isRhOuAdmin = isAdmin || hasRole("RH_AUDITORIA");
@@ -480,18 +1140,28 @@ export function FuncionarioFormPage() {
   const [naoEncontrado, setNaoEncontrado] = useState(false);
   const [salvando, setSalvando] = useState(false);
 
-  const [requerimentoAtual, setRequerimentoAtual] = useState<{
-    status: string;
-    criadoEm: string;
-  } | null>(null);
+  const [requerimentoAtual, setRequerimentoAtual] = useState<StatusRequerimento>(null);
   const [enviandoReq, setEnviandoReq] = useState(false);
+  /** Requerimentos de cadastro (dependentes, formação, cursos) — status por tipo. */
+  const [reqsCadastro, setReqsCadastro] = useState<
+    Partial<Record<TipoRequerimentoCadastro, StatusRequerimento>>
+  >({});
+  const [enviandoReqCadastro, setEnviandoReqCadastro] = useState<TipoRequerimentoCadastro | null>(
+    null
+  );
   const [modalidade, setModalidade] = useState({ modoHomeOffice: false, modoHibridoLocal: false });
   const [endereco, setEndereco] = useState<EnderecoResidencial>({ raioMetros: 20 });
   const [mapaAberto, setMapaAberto] = useState(false);
+  /** Buscando as coordenadas do endereço antes de abrir o mapa ("Definir no Mapa"). */
+  const [localizandoEndereco, setLocalizandoEndereco] = useState(false);
   const [cepLoading, setCepLoading] = useState(false);
   const [hibridoMaxDias, setHibridoMaxDias] = useState(2);
   const [erroSalvar, setErroSalvar] = useState("");
   const [funcionarioAtual, setFuncionarioAtual] = useState<Funcionario | null>(null);
+  /** Resumo do histórico de cessão (null = ainda não carregado). */
+  const [resumoCessoes, setResumoCessoes] = useState<ResumoCessoes | null>(null);
+  /* Só dá para desmarcar a cessão quando todos os períodos têm data de fim. */
+  const cessaoEmAberto = (resumoCessoes?.emAberto ?? 0) > 0;
   const [lookupApi, setLookupApi] = useState<{
     found: boolean;
     name?: string;
@@ -556,6 +1226,9 @@ export function FuncionarioFormPage() {
           modoHibridoLocal: f.modoHibridoLocal ?? false
         });
         setRequerimentoAtual(f.requerimentoEndereco ?? null);
+        setReqsCadastro(
+          Object.fromEntries((f.requerimentosCadastro ?? []).map((r) => [r.tipo, r]))
+        );
         setCarregando(false);
       })
       .catch(() => {
@@ -649,10 +1322,31 @@ export function FuncionarioFormPage() {
   const cpfCompleto = form.cpf.replace(/\D/g, "").length === 11;
   const cpfValido = cpfCompleto && isValidCpf(form.cpf);
   const cpfInvalido = cpfPreenchido && cpfCompleto && !cpfValido;
-  /* Só bloqueia CPF completo e inválido — incompleto não impede o restante do cadastro. */
-  const cpfBloqueio = cpfInvalido;
+  /* CPF é obrigatório para todas as categorias: vazio, incompleto ou inválido bloqueia. */
+  const cpfBloqueio = !cpfValido;
+  /* Cessão marcada (só Empregado): datas e órgãos passam a ser obrigatórios. */
+  /* Cessão marcada (só Empregado): no cadastro novo os campos do 1º período são
+     obrigatórios; no existente, é preciso ter ao menos um período no histórico. */
+  const cessaoAtiva = form.categoria === "CONCURSADO" && form.cedido;
+  const cessaoPendencias: string[] = !cessaoAtiva
+    ? []
+    : isNovo
+      ? pendenciasCessao({
+          inicio: form.cessaoInicio,
+          fim: form.cessaoFim,
+          orgaoOrigem: form.cessaoOrgaoOrigem,
+          orgaoDestino: form.cessaoOrgaoDestino
+        })
+      : resumoCessoes?.total === 0
+        ? ["ao menos um período de Cessão do Empregado"]
+        : [];
   const podeSalvar =
-    !!form.nome.trim() && !!form.matricula.trim() && !!form.gerenciaId && !cpfBloqueio && !salvando;
+    !!form.nome.trim() &&
+    !!form.matricula.trim() &&
+    !!form.gerenciaId &&
+    !cpfBloqueio &&
+    cessaoPendencias.length === 0 &&
+    !salvando;
   /* Chefe de coordenação (subseção contém "coordenação"): substituto é da mesma
      subseção, não da gerência inteira — espelha a exceção do backend. */
   const ehChefeDeCoordenacao = form.isManager && !!form.subsecao && /coordena/i.test(form.subsecao);
@@ -672,7 +1366,9 @@ export function FuncionarioFormPage() {
     if (!form.nome.trim()) m.push("Nome completo");
     if (!form.matricula.trim()) m.push("Matrícula");
     if (!form.gerenciaId) m.push("Gerência");
-    if (cpfInvalido) m.push("CPF inválido");
+    if (!cpfPreenchido) m.push("CPF");
+    else if (!cpfValido) m.push("CPF inválido ou incompleto");
+    m.push(...cessaoPendencias);
     return m;
   }
 
@@ -695,6 +1391,57 @@ export function FuncionarioFormPage() {
     navigate("/ponto/gestao");
   }
 
+  async function solicitarCadastro(tipo: TipoRequerimentoCadastro) {
+    if (!id) return;
+    setEnviandoReqCadastro(tipo);
+    try {
+      const res = await api.post<NonNullable<StatusRequerimento>>(
+        `/ponto/gestao/funcionarios/${id}/requerimento-cadastro/${tipo}`,
+        {}
+      );
+      setReqsCadastro((r) => ({ ...r, [tipo]: res }));
+    } catch (e) {
+      alert("Não foi possível enviar a solicitação: " + ((e as Error)?.message ?? ""));
+    } finally {
+      setEnviandoReqCadastro(null);
+    }
+  }
+
+  /** Título de lista (Dependentes, Formação, Cursos) com o botão de solicitar ao funcionário. */
+  function cabecalhoComRequerimento(titulo: string, tipo: TipoRequerimentoCadastro) {
+    return (
+      <>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+            marginBottom: 6
+          }}
+        >
+          <FieldLabel>{titulo}</FieldLabel>
+          {!isNovo && id && podeRequerimento && (
+            <BotaoSolicitarRequerimento
+              status={reqsCadastro[tipo] ?? null}
+              enviando={enviandoReqCadastro === tipo}
+              onSolicitar={() => void solicitarCadastro(tipo)}
+              rotulo="Solicitar ao funcionário"
+              titulo={`Solicitar ao funcionário que informe: ${REQUERIMENTO_INFO[tipo].rotulo}`}
+            />
+          )}
+        </div>
+        {!isNovo && (
+          <FaixaStatusRequerimento
+            status={reqsCadastro[tipo] ?? null}
+            oQue={`informar ${REQUERIMENTO_INFO[tipo].rotulo.toLowerCase()}`}
+          />
+        )}
+      </>
+    );
+  }
+
   async function solicitarEndereco() {
     if (!id) return;
     setEnviandoReq(true);
@@ -711,6 +1458,7 @@ export function FuncionarioFormPage() {
 
   async function abrirMapaComGeocode() {
     if (!endereco.lat || !endereco.lng) {
+      setLocalizandoEndereco(true);
       const result = await geocodificarEndereco({
         logradouro: endereco.logradouro ?? undefined,
         numero: endereco.numero ?? undefined,
@@ -718,7 +1466,7 @@ export function FuncionarioFormPage() {
         cidade: endereco.cidade ?? undefined,
         uf: endereco.uf ?? undefined,
         cep: endereco.cep ?? undefined
-      });
+      }).finally(() => setLocalizandoEndereco(false));
       if (result) setEndereco((e) => ({ ...e, lat: result.lat, lng: result.lng }));
     }
     setMapaAberto(true);
@@ -801,15 +1549,42 @@ export function FuncionarioFormPage() {
       atividade: form.atividade || null,
       rgDataEmissao: form.rgDataEmissao || null,
       cargoData: form.cargoData || null,
+      nivelCargo: catEmpregado && form.nivelCargo ? form.nivelCargo : null,
       lotacaoInicio: form.lotacaoInicio || null,
       lotacaoTermino: form.lotacaoTermino || null,
       contratoInicio: form.contratoInicio || null,
+      /* Cessão: a marcação vai sempre; os dados do período só no cadastro novo (no
+         existente, os períodos são gravados pelo histórico de cessões). */
+      cedido: catEmpregado && form.cedido,
+      ...(isNovo && catEmpregado && form.cedido
+        ? {
+            cessaoInicio: form.cessaoInicio || null,
+            cessaoFim: form.cessaoFim || null,
+            cessaoOrgaoOrigem: form.cessaoOrgaoOrigem || null,
+            cessaoOrgaoDestino: form.cessaoOrgaoDestino || null
+          }
+        : {}),
       contratoTermino: form.contratoTermino || null,
       bolsaAuxilio: bolsaAuxilio || null,
       dependentes: form.dependentes.filter((d) => d.nome.trim()),
       formacoesAcademicas: form.formacoesAcademicas.filter((f) => f.curso.trim()),
       capacitacoes: form.capacitacoes.filter((c) => c.nome.trim())
     };
+
+    if (!isNovo) {
+      /* Lotação de funcionário existente é gravada pelas linhas (histórico); não
+         reenviar evita sobrescrever a vigência com valores antigos do formulário. */
+      delete payload.gerenciaId;
+      delete payload.subsecao;
+      delete payload.lotacaoInicio;
+      delete payload.lotacaoTermino;
+      delete payload.cargoData;
+      delete payload.cessaoInicio;
+      delete payload.cessaoFim;
+      delete payload.cessaoOrgaoOrigem;
+      delete payload.cessaoOrgaoDestino;
+      if (catComissionado) delete payload.cargo;
+    }
 
     if (isCategoriaEstagio(form.categoria)) {
       payload.supervisorEstagioId = supervisorEstagioId || null;
@@ -880,16 +1655,6 @@ export function FuncionarioFormPage() {
       setSalvando(false);
     }
   }
-
-  const subsecoesDisponiveis = form.gerenciaId
-    ? [
-        ...new Set(
-          funcionarios
-            .filter((f) => f.gerenciaId === form.gerenciaId && f.subsecao)
-            .map((f) => f.subsecao!)
-        )
-      ].sort()
-    : [];
 
   const selectStyle: React.CSSProperties = {
     ...fieldStyle,
@@ -1173,75 +1938,6 @@ export function FuncionarioFormPage() {
           )}
         </div>
 
-        {isCategoriaEstagio(form.categoria) && (
-          <div
-            style={{
-              marginBottom: 24,
-              padding: "16px 16px 8px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(30,74,122,0.22)",
-              background: "rgba(30,74,122,0.04)"
-            }}
-          >
-            <p
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--blue-ink)",
-                margin: "0 0 6px"
-              }}
-            >
-              Supervisor de Estágio
-            </p>
-            <p
-              style={{
-                fontSize: 12,
-                color: "var(--ink-500)",
-                margin: "0 0 12px",
-                lineHeight: 1.45
-              }}
-            >
-              Qualquer pessoa da mesma gerência (incluindo o chefe) pode supervisionar — exceto
-              estagiário e jovem aprendiz. Solicitações deste{" "}
-              {form.categoria === "ESTAGIARIO" ? "estagiário" : "jovem aprendiz"} serão enviadas ao
-              supervisor, não ao chefe da área — salvo se o chefe também for o supervisor.
-            </p>
-            <div style={{ marginBottom: 12 }}>
-              <FieldLabel>Supervisor *</FieldLabel>
-              <select
-                value={form.supervisorEstagioId}
-                onChange={(e) => setForm((f) => ({ ...f, supervisorEstagioId: e.target.value }))}
-                disabled={!form.gerenciaId}
-                style={fieldStyle}
-              >
-                <option value="">Selecione o supervisor</option>
-                {funcionarios
-                  .filter(
-                    (f) =>
-                      f.gerenciaId === form.gerenciaId &&
-                      f.id !== id &&
-                      f.ativo &&
-                      f.categoria !== "ESTAGIARIO" &&
-                      f.categoria !== "MENOR_APRENDIZ"
-                  )
-                  .map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.user?.name ?? f.matricula}
-                      {f.isManager ? " (Chefe)" : ""}
-                      {" — "}
-                      {CAT[f.categoria]?.label ?? f.categoria}
-                    </option>
-                  ))}
-              </select>
-              {!form.gerenciaId && (
-                <Hint>Selecione a gerência antes de escolher o supervisor.</Hint>
-              )}
-            </div>
-          </div>
-        )}
-
         {form.isManager && (
           <div
             style={{
@@ -1340,6 +2036,158 @@ export function FuncionarioFormPage() {
           </div>
         )}
 
+        {/* Observações: linha própria, abaixo de Categoria/Situação/Chefe e do Chefe Substituto. */}
+        <div style={{ marginBottom: 24 }}>
+          <FieldLabel>Observações</FieldLabel>
+          <textarea
+            value={form.observacoes}
+            onChange={(e) => setForm((f) => ({ ...f, observacoes: e.target.value }))}
+            rows={2}
+            maxLength={2000}
+            placeholder="Anotações sobre o funcionário"
+            style={{ ...fieldStyle, resize: "vertical", minHeight: 40, lineHeight: 1.45 }}
+          />
+        </div>
+
+        {catEmpregado && (
+          <div style={{ marginBottom: 24 }}>
+            <label
+              style={{
+                ...labelStyle,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 0,
+                cursor: "pointer"
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={form.cedido}
+                disabled={!isNovo && form.cedido && cessaoEmAberto}
+                title={
+                  !isNovo && form.cedido && cessaoEmAberto
+                    ? "Há cessão em aberto: informe a data de fim para desmarcar"
+                    : undefined
+                }
+                onChange={(e) => setForm((f) => ({ ...f, cedido: e.target.checked }))}
+                style={{ width: 16, height: 16, accentColor: "var(--burgundy-600)" }}
+              />
+              Cessão do Empregado
+            </label>
+            {isNovo || !id ? (
+              form.cedido && (
+                <CessaoCampos
+                  valor={{
+                    inicio: form.cessaoInicio,
+                    fim: form.cessaoFim,
+                    orgaoOrigem: form.cessaoOrgaoOrigem,
+                    orgaoDestino: form.cessaoOrgaoDestino
+                  }}
+                  onChange={(v) =>
+                    setForm((f) => ({
+                      ...f,
+                      cessaoInicio: v.inicio,
+                      cessaoFim: v.fim,
+                      cessaoOrgaoOrigem: v.orgaoOrigem,
+                      cessaoOrgaoDestino: v.orgaoDestino
+                    }))
+                  }
+                  isMobile={isMobile}
+                  comRotulos
+                />
+              )
+            ) : (
+              <CessaoLinhas
+                funcionarioId={id}
+                isMobile={isMobile}
+                somenteLeituraPerfil={!podeCessao}
+                somenteLeitura={!form.cedido}
+                onResumo={setResumoCessoes}
+                onSincronizado={(atualizado) => {
+                  const n = formFromFuncionario(atualizado);
+                  setForm((f) => ({
+                    ...f,
+                    cessaoInicio: n.cessaoInicio,
+                    cessaoFim: n.cessaoFim,
+                    cessaoOrgaoOrigem: n.cessaoOrgaoOrigem,
+                    cessaoOrgaoDestino: n.cessaoOrgaoDestino
+                  }));
+                }}
+              />
+            )}
+          </div>
+        )}
+
+        {isCategoriaEstagio(form.categoria) && (
+          <div
+            style={{
+              marginBottom: 24,
+              padding: "16px 16px 8px",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid rgba(30,74,122,0.22)",
+              background: "rgba(30,74,122,0.04)"
+            }}
+          >
+            <p
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--blue-ink)",
+                margin: "0 0 6px"
+              }}
+            >
+              Supervisor de Estágio
+            </p>
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--ink-500)",
+                margin: "0 0 12px",
+                lineHeight: 1.45
+              }}
+            >
+              Qualquer pessoa da mesma gerência (incluindo o chefe) pode supervisionar — exceto
+              estagiário e jovem aprendiz. Solicitações deste{" "}
+              {form.categoria === "ESTAGIARIO" ? "estagiário" : "jovem aprendiz"} serão enviadas ao
+              supervisor, não ao chefe da área — salvo se o chefe também for o supervisor.
+            </p>
+            <div style={{ marginBottom: 12 }}>
+              <FieldLabel>Supervisor *</FieldLabel>
+              <select
+                value={form.supervisorEstagioId}
+                onChange={(e) => setForm((f) => ({ ...f, supervisorEstagioId: e.target.value }))}
+                disabled={!form.gerenciaId}
+                style={fieldStyle}
+              >
+                <option value="">Selecione o supervisor</option>
+                {funcionarios
+                  .filter(
+                    (f) =>
+                      f.gerenciaId === form.gerenciaId &&
+                      f.id !== id &&
+                      f.ativo &&
+                      f.categoria !== "ESTAGIARIO" &&
+                      f.categoria !== "MENOR_APRENDIZ"
+                  )
+                  .map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.user?.name ?? f.matricula}
+                      {f.isManager ? " (Chefe)" : ""}
+                      {" — "}
+                      {CAT[f.categoria]?.label ?? f.categoria}
+                    </option>
+                  ))}
+              </select>
+              {!form.gerenciaId && (
+                <Hint>Selecione a gerência antes de escolher o supervisor.</Hint>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ══════════════════ IDENTIFICAÇÃO ══════════════════ */}
         <SectionTitle>Identificação</SectionTitle>
         <div
@@ -1366,7 +2214,9 @@ export function FuncionarioFormPage() {
             />
           </div>
           <div>
-            <FieldLabel>CPF</FieldLabel>
+            <FieldLabel>
+              CPF <span style={{ color: "var(--red)" }}>*</span>
+            </FieldLabel>
             <input
               type="text"
               value={form.cpf}
@@ -1385,6 +2235,13 @@ export function FuncionarioFormPage() {
                 style={{ margin: "4px 0 0", fontSize: 11.5, color: "var(--red)", fontWeight: 500 }}
               >
                 CPF inválido. Verifique os dígitos.
+              </p>
+            )}
+            {!cpfPreenchido && (
+              <p
+                style={{ margin: "4px 0 0", fontSize: 11.5, color: "var(--red)", fontWeight: 500 }}
+              >
+                O CPF é obrigatório.
               </p>
             )}
             {cpfValido && (
@@ -1411,6 +2268,7 @@ export function FuncionarioFormPage() {
               type="text"
               value={form.rg}
               onChange={(e) => setForm((f) => ({ ...f, rg: formatRg(e.target.value) }))}
+              maxLength={15}
               style={fieldStyle}
             />
           </div>
@@ -1538,7 +2396,7 @@ export function FuncionarioFormPage() {
 
         {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
           <div style={{ marginBottom: 20 }}>
-            <FieldLabel>Dependentes (Filhos)</FieldLabel>
+            {cabecalhoComRequerimento("Dependentes (Filhos)", "DEPENDENTES")}
             {form.dependentes.length > 0 && (
               <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
                 <div style={{ flex: 2 }}>
@@ -1652,123 +2510,107 @@ export function FuncionarioFormPage() {
 
         {/* ══════════════════ CARGO E LOTAÇÃO ══════════════════ */}
         <SectionTitle>Cargo e Lotação</SectionTitle>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: gridCols(catEmpregado || catComissionado ? 3 : 2),
-            gap: 16,
-            marginBottom: 16
-          }}
-        >
-          {(catEmpregado || catComissionado) && (
+        {catEmpregado && (
+          <div
+            style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+          >
             <div>
               <FieldLabel>Cargo</FieldLabel>
               <input
                 type="text"
-                value={form.cargo}
+                value={cargoParaCampo(form.cargo)}
+                placeholder={CARGO_A_DEFINIR}
                 onChange={(e) => setForm((f) => ({ ...f, cargo: e.target.value }))}
                 style={fieldStyle}
               />
             </div>
-          )}
-          <div>
-            <FieldLabel>Departamento *</FieldLabel>
-            <SelectWrap>
-              <select
-                value={form.gerenciaId}
-                onChange={(e) => setForm((f) => ({ ...f, gerenciaId: e.target.value }))}
-                style={{
-                  ...selectStyle,
-                  color: form.gerenciaId ? "var(--ink-900)" : "var(--ink-500)"
-                }}
-              >
-                <option value="">Selecione um departamento…</option>
-                {gerencias.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.nome}
-                  </option>
-                ))}
-              </select>
-            </SelectWrap>
-          </div>
-          {form.gerenciaId && subsecoesDisponiveis.length > 0 && (
             <div>
-              <FieldLabel>Coordenação</FieldLabel>
+              <FieldLabel>Nível do cargo</FieldLabel>
               <SelectWrap>
                 <select
-                  value={form.subsecao}
-                  onChange={(e) => setForm((f) => ({ ...f, subsecao: e.target.value }))}
-                  style={{
-                    ...selectStyle,
-                    color: form.subsecao ? "var(--ink-900)" : "var(--ink-500)"
-                  }}
+                  value={form.nivelCargo}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      nivelCargo: e.target.value as "" | "MEDIO" | "SUPERIOR"
+                    }))
+                  }
+                  style={selectStyle}
                 >
-                  <option value="">Sem coordenação (membro direto do departamento)</option>
-                  {subsecoesDisponiveis.map((s) => (
-                    <option key={s} value={s}>
-                      {slugLabel(s)}
-                    </option>
-                  ))}
+                  <option value="">Selecione…</option>
+                  <option value="MEDIO">Médio</option>
+                  <option value="SUPERIOR">Superior</option>
                 </select>
               </SelectWrap>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        <div
-          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 8 }}
-        >
-          <div>
-            <FieldLabel>Lotação</FieldLabel>
-            <input
-              type="text"
-              disabled
-              value={`${nomeGerencia(gerencias, form.gerenciaId)}${form.subsecao ? ` / ${slugLabel(form.subsecao)}` : ""}`}
-              style={{ ...fieldStyle, color: "var(--ink-500)", background: "var(--cream-50)" }}
-            />
-            {catComChefe && (
-              <Hint>
-                Chefe: {funcionarioAtual ? chefeDaLotacao(funcionarioAtual) : "—"} (somente leitura)
-              </Hint>
-            )}
-          </div>
-          <div>
-            <FieldLabel>Data Início</FieldLabel>
-            <input
-              type="date"
-              value={form.lotacaoInicio}
-              onChange={(e) => setForm((f) => ({ ...f, lotacaoInicio: e.target.value }))}
-              style={fieldStyle}
-            />
-          </div>
-          <div>
-            <FieldLabel>Data Fim</FieldLabel>
-            <input
-              type="date"
-              value={form.lotacaoTermino}
-              onChange={(e) => setForm((f) => ({ ...f, lotacaoTermino: e.target.value }))}
-              style={fieldStyle}
-            />
-          </div>
-        </div>
-
-        {!isNovo && id && (
-          <HistoricoLotacaoAccordion
-            funcionarioId={id}
-            gerencias={gerencias}
-            onRegistrado={(mov) =>
+        {isNovo || !id ? (
+          /* Cadastro novo: uma única linha ligada ao formulário; o histórico nasce ao salvar. */
+          <LinhaLotacaoCampos
+            valor={{
+              cargo: form.cargo,
+              gerenciaId: form.gerenciaId,
+              subsecao: form.subsecao,
+              vigenciaDesde: form.lotacaoInicio,
+              vigenciaAte: form.lotacaoTermino
+            }}
+            onChange={(v) =>
               setForm((f) => ({
                 ...f,
-                cargo: mov.cargo ?? f.cargo,
-                gerenciaId: mov.gerenciaId || f.gerenciaId,
-                subsecao: mov.subsecao ?? f.subsecao,
-                cargoData: mov.cargoData || f.cargoData,
-                lotacaoInicio: mov.lotacaoInicio,
-                lotacaoTermino: ""
+                cargo: v.cargo,
+                gerenciaId: v.gerenciaId,
+                subsecao: v.subsecao,
+                lotacaoInicio: v.vigenciaDesde,
+                lotacaoTermino: v.vigenciaAte
               }))
             }
-            apenasSetorLotacao={catEmpregado}
+            comCargo={catComissionado}
+            fimEditavel
+            comRotulos
+            gerencias={gerencias}
+            funcionarios={funcionarios}
+            isMobile={isMobile}
           />
+        ) : (
+          <LotacaoLinhas
+            funcionarioId={id}
+            somenteLeitura={!podeLotacao}
+            comCargo={catComissionado}
+            gerencias={gerencias}
+            funcionarios={funcionarios}
+            isMobile={isMobile}
+            onSincronizado={(atualizado) => {
+              const n = formFromFuncionario(atualizado);
+              setForm((f) => ({
+                ...f,
+                cargo: n.cargo,
+                gerenciaId: n.gerenciaId,
+                subsecao: n.subsecao,
+                lotacaoInicio: n.lotacaoInicio,
+                lotacaoTermino: n.lotacaoTermino
+              }));
+              setFuncionarioAtual((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      gerenciaId: atualizado.gerenciaId,
+                      subsecao: atualizado.subsecao,
+                      gerencia: atualizado.gerencia
+                    }
+                  : atualizado
+              );
+            }}
+          />
+        )}
+        {catComChefe && (
+          <div style={{ marginBottom: 20 }}>
+            <Hint>
+              Chefe atual: {funcionarioAtual ? chefeDaLotacao(funcionarioAtual) : "—"} (somente
+              leitura)
+            </Hint>
+          </div>
         )}
 
         {/* ══════════════════ JORNADA ══════════════════ */}
@@ -1832,15 +2674,15 @@ export function FuncionarioFormPage() {
         >
           {catEmpregado && (
             <div>
-              <FieldLabel>É fiscal?</FieldLabel>
+              <FieldLabel>É assessor?</FieldLabel>
               <div style={{ paddingTop: 8 }}>
                 <Toggle
                   checked={form.isFiscal}
                   onChange={(v) => setForm((f) => ({ ...f, isFiscal: v }))}
-                  label="Funcionário é fiscal"
+                  label="Funcionário é assessor"
                 />
               </div>
-              <Hint>Fiscal fica automaticamente isento de registro de ponto, como o Chefe.</Hint>
+              <Hint>Assessor fica automaticamente isento de registro de ponto, como o Chefe.</Hint>
             </div>
           )}
           {(catEmpregado || catEstagiario || catJovemAprendiz) && isRhOuAdmin && (
@@ -1884,13 +2726,28 @@ export function FuncionarioFormPage() {
           </div>
         </div>
 
+        {id && isRhOuAdmin && (
+          <ToleranciaFechamentoFuncionario
+            funcionarioId={id}
+            somenteLeitura={!podeFuncao("gestao.funcionarios.banco-horas")}
+          />
+        )}
+
         {(catEstagiario || catJovemAprendiz) && (
           <div style={{ marginTop: 16 }}>
             <FieldLabel>
               Dados do Contrato de {catEstagiario ? "Estágio" : "Jovem Aprendiz"}
             </FieldLabel>
             <div
-              style={{ display: "grid", gridTemplateColumns: gridCols(4), gap: 16, marginTop: 8 }}
+              style={{
+                display: "grid",
+                // Jovem Aprendiz: datas, carga horária e dias numa única linha; a coluna
+                // dos dias usa só a largura dos checkboxes e o resto fica para os rótulos
+                gridTemplateColumns:
+                  isMobile || catEstagiario ? gridCols(4) : "repeat(3, minmax(0, 1fr)) auto",
+                gap: 16,
+                marginTop: 8
+              }}
             >
               {catEstagiario && (
                 <>
@@ -1916,7 +2773,7 @@ export function FuncionarioFormPage() {
                 </>
               )}
               <div>
-                <FieldLabel>Data de Início</FieldLabel>
+                <FieldLabel>Data de Início {catEstagiario ? "do Curso" : "da Jornada"}</FieldLabel>
                 <input
                   type="date"
                   value={form.contratoInicio}
@@ -1925,7 +2782,9 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div>
-                <FieldLabel>Data de Término{catEstagiario ? " *" : ""}</FieldLabel>
+                <FieldLabel>
+                  Data de Término {catEstagiario ? "do Curso *" : "da Jornada"}
+                </FieldLabel>
                 <input
                   type="date"
                   value={form.contratoTermino}
@@ -1934,7 +2793,7 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div>
-                <FieldLabel>Carga Horária</FieldLabel>
+                <FieldLabel>Carga Horária da Jornada</FieldLabel>
                 <input
                   type="text"
                   value={form.cargaHoraria}
@@ -1943,14 +2802,11 @@ export function FuncionarioFormPage() {
                   style={fieldStyle}
                 />
               </div>
-              <div>
-                <FieldLabel>Dias da Semana</FieldLabel>
-                <input
-                  type="text"
+              <div style={{ gridColumn: !isMobile && catEstagiario ? "span 2" : undefined }}>
+                <FieldLabel>Dias da Semana da Jornada</FieldLabel>
+                <DiasSemanaCheckboxes
                   value={form.diasSemana}
-                  onChange={(e) => setForm((f) => ({ ...f, diasSemana: e.target.value }))}
-                  placeholder="Ex: Seg a Sex"
-                  style={fieldStyle}
+                  onChange={(v) => setForm((f) => ({ ...f, diasSemana: v }))}
                 />
               </div>
             </div>
@@ -1958,239 +2814,243 @@ export function FuncionarioFormPage() {
         )}
 
         {/* ══════════════════ CAPACITAÇÃO ══════════════════ */}
-        <SectionTitle>Capacitação</SectionTitle>
+        {(catEmpregado || catComissionado) && (
+          <>
+            <SectionTitle>Capacitação</SectionTitle>
 
-        <div style={{ marginBottom: 20 }}>
-          <FieldLabel>Formação Acadêmica</FieldLabel>
-          {form.formacoesAcademicas.map((fa, idx) => (
-            <div
-              key={idx}
-              style={{
-                display: "grid",
-                gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr 1.4fr 1fr auto",
-                gap: 8,
-                marginBottom: 8,
-                alignItems: "center"
-              }}
-            >
-              <SelectWrap>
-                <select
-                  value={fa.grauEscolaridade ?? ""}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                        i === idx ? { ...x, grauEscolaridade: e.target.value } : x
-                      )
-                    }))
-                  }
-                  style={selectStyleBase}
+            <div style={{ marginBottom: 20 }}>
+              {cabecalhoComRequerimento("Formação Acadêmica", "FORMACAO_ACADEMICA")}
+              {form.formacoesAcademicas.map((fa, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr 1.4fr 1fr auto",
+                    gap: 8,
+                    marginBottom: 8,
+                    alignItems: "center"
+                  }}
                 >
-                  <option value="">Grau</option>
-                  {GRAU_ESCOLARIDADE_OPCOES.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
-              </SelectWrap>
-              <input
-                type="text"
-                value={fa.curso}
-                placeholder="Curso"
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                      i === idx ? { ...x, curso: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
-              <input
-                type="text"
-                value={fa.instituicao ?? ""}
-                placeholder="Instituição"
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                      i === idx ? { ...x, instituicao: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
-              <input
-                type="date"
-                value={fa.conclusao ?? ""}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
-                      i === idx ? { ...x, conclusao: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
+                  <SelectWrap>
+                    <select
+                      value={fa.grauEscolaridade ?? ""}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                            i === idx ? { ...x, grauEscolaridade: e.target.value } : x
+                          )
+                        }))
+                      }
+                      style={selectStyleBase}
+                    >
+                      <option value="">Grau</option>
+                      {GRAU_ESCOLARIDADE_OPCOES.map((g) => (
+                        <option key={g} value={g}>
+                          {g}
+                        </option>
+                      ))}
+                    </select>
+                  </SelectWrap>
+                  <input
+                    type="text"
+                    value={fa.curso}
+                    placeholder="Curso"
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                          i === idx ? { ...x, curso: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <input
+                    type="text"
+                    value={fa.instituicao ?? ""}
+                    placeholder="Instituição"
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                          i === idx ? { ...x, instituicao: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <input
+                    type="date"
+                    value={fa.conclusao ?? ""}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        formacoesAcademicas: f.formacoesAcademicas.map((x, i) =>
+                          i === idx ? { ...x, conclusao: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        formacoesAcademicas: f.formacoesAcademicas.filter((_, i) => i !== idx)
+                      }))
+                    }
+                    aria-label="Remover formação"
+                    style={{
+                      padding: 8,
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(200,57,63,0.25)",
+                      background: "transparent",
+                      color: "var(--red)",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexShrink: 0
+                    }}
+                  >
+                    <TrashIcon size={14} />
+                  </button>
+                </div>
+              ))}
               <button
                 type="button"
                 onClick={() =>
                   setForm((f) => ({
                     ...f,
-                    formacoesAcademicas: f.formacoesAcademicas.filter((_, i) => i !== idx)
+                    formacoesAcademicas: [
+                      ...f.formacoesAcademicas,
+                      { grauEscolaridade: "", curso: "", instituicao: "", conclusao: "" }
+                    ]
                   }))
                 }
-                aria-label="Remover formação"
                 style={{
-                  padding: 8,
-                  borderRadius: "var(--radius-md)",
-                  border: "1px solid rgba(200,57,63,0.25)",
-                  background: "transparent",
-                  color: "var(--red)",
-                  cursor: "pointer",
                   display: "flex",
-                  flexShrink: 0
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "7px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px dashed rgba(122,30,38,0.28)",
+                  background: "transparent",
+                  color: "var(--burgundy-600)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600
                 }}
               >
-                <TrashIcon size={14} />
+                <PlusIcon size={13} /> Adicionar formação
               </button>
             </div>
-          ))}
-          <button
-            type="button"
-            onClick={() =>
-              setForm((f) => ({
-                ...f,
-                formacoesAcademicas: [
-                  ...f.formacoesAcademicas,
-                  { grauEscolaridade: "", curso: "", instituicao: "", conclusao: "" }
-                ]
-              }))
-            }
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px dashed rgba(122,30,38,0.28)",
-              background: "transparent",
-              color: "var(--burgundy-600)",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 600
-            }}
-          >
-            <PlusIcon size={13} /> Adicionar formação
-          </button>
-        </div>
 
-        <div style={{ marginBottom: 8 }}>
-          <FieldLabel>Cursos / Capacitações</FieldLabel>
-          {form.capacitacoes.map((c, idx) => (
-            <div
-              key={idx}
-              style={{
-                display: "grid",
-                gridTemplateColumns: isMobile ? "1fr" : "2fr 1.4fr 1fr auto",
-                gap: 8,
-                marginBottom: 8,
-                alignItems: "center"
-              }}
-            >
-              <input
-                type="text"
-                value={c.nome}
-                placeholder="Nome do curso/capacitação"
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    capacitacoes: f.capacitacoes.map((x, i) =>
-                      i === idx ? { ...x, nome: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
-              <input
-                type="text"
-                value={c.instituicao ?? ""}
-                placeholder="Instituição"
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    capacitacoes: f.capacitacoes.map((x, i) =>
-                      i === idx ? { ...x, instituicao: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
-              <input
-                type="date"
-                value={c.conclusao ?? ""}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    capacitacoes: f.capacitacoes.map((x, i) =>
-                      i === idx ? { ...x, conclusao: e.target.value } : x
-                    )
-                  }))
-                }
-                style={fieldStyle}
-              />
+            <div style={{ marginBottom: 8 }}>
+              {cabecalhoComRequerimento("Cursos / Capacitações", "CAPACITACOES")}
+              {form.capacitacoes.map((c, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isMobile ? "1fr" : "2fr 1.4fr 1fr auto",
+                    gap: 8,
+                    marginBottom: 8,
+                    alignItems: "center"
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={c.nome}
+                    placeholder="Nome do curso/capacitação"
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        capacitacoes: f.capacitacoes.map((x, i) =>
+                          i === idx ? { ...x, nome: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <input
+                    type="text"
+                    value={c.instituicao ?? ""}
+                    placeholder="Instituição"
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        capacitacoes: f.capacitacoes.map((x, i) =>
+                          i === idx ? { ...x, instituicao: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <input
+                    type="date"
+                    value={c.conclusao ?? ""}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        capacitacoes: f.capacitacoes.map((x, i) =>
+                          i === idx ? { ...x, conclusao: e.target.value } : x
+                        )
+                      }))
+                    }
+                    style={fieldStyle}
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        capacitacoes: f.capacitacoes.filter((_, i) => i !== idx)
+                      }))
+                    }
+                    aria-label="Remover capacitação"
+                    style={{
+                      padding: 8,
+                      borderRadius: "var(--radius-md)",
+                      border: "1px solid rgba(200,57,63,0.25)",
+                      background: "transparent",
+                      color: "var(--red)",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexShrink: 0
+                    }}
+                  >
+                    <TrashIcon size={14} />
+                  </button>
+                </div>
+              ))}
               <button
                 type="button"
                 onClick={() =>
                   setForm((f) => ({
                     ...f,
-                    capacitacoes: f.capacitacoes.filter((_, i) => i !== idx)
+                    capacitacoes: [...f.capacitacoes, { nome: "", instituicao: "", conclusao: "" }]
                   }))
                 }
-                aria-label="Remover capacitação"
                 style={{
-                  padding: 8,
-                  borderRadius: "var(--radius-md)",
-                  border: "1px solid rgba(200,57,63,0.25)",
-                  background: "transparent",
-                  color: "var(--red)",
-                  cursor: "pointer",
                   display: "flex",
-                  flexShrink: 0
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "7px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px dashed rgba(122,30,38,0.28)",
+                  background: "transparent",
+                  color: "var(--burgundy-600)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600
                 }}
               >
-                <TrashIcon size={14} />
+                <PlusIcon size={13} /> Adicionar curso/capacitação
               </button>
             </div>
-          ))}
-          <button
-            type="button"
-            onClick={() =>
-              setForm((f) => ({
-                ...f,
-                capacitacoes: [...f.capacitacoes, { nome: "", instituicao: "", conclusao: "" }]
-              }))
-            }
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px dashed rgba(122,30,38,0.28)",
-              background: "transparent",
-              color: "var(--burgundy-600)",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 600
-            }}
-          >
-            <PlusIcon size={13} /> Adicionar curso/capacitação
-          </button>
-        </div>
+          </>
+        )}
 
         {isRhOuAdmin && (
           <>
@@ -2283,6 +3143,17 @@ export function FuncionarioFormPage() {
                 </div>
               ))}
             </div>
+            <p
+              style={{
+                fontSize: 11.5,
+                color: "var(--ink-500)",
+                margin: "0 0 8px",
+                lineHeight: 1.5
+              }}
+            >
+              A modalidade vale <strong>a partir do dia em que for alterada</strong>: o ponto, o
+              banco de horas e a hora extra dos dias anteriores continuam calculados como eram.
+            </p>
 
             {/* ══════════════════ ENDEREÇO ══════════════════ */}
             <div
@@ -2297,66 +3168,18 @@ export function FuncionarioFormPage() {
               }}
             >
               <SectionTitle>Endereço</SectionTitle>
-              {!isNovo && (
-                <button
-                  type="button"
-                  onClick={() => void solicitarEndereco()}
-                  disabled={enviandoReq}
-                  title="Solicitar ao funcionário que preencha o endereço residencial"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 5,
-                    padding: "5px 11px",
-                    borderRadius: "var(--radius-md)",
-                    border: "1px solid rgba(122,30,38,0.22)",
-                    background:
-                      requerimentoAtual?.status === "PENDENTE"
-                        ? "rgba(247,196,55,0.12)"
-                        : "transparent",
-                    cursor: enviandoReq ? "wait" : "pointer",
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    fontFamily: "var(--font-body)",
-                    color: requerimentoAtual?.status === "PENDENTE" ? "#8a6a00" : "var(--ink-600)",
-                    opacity: enviandoReq ? 0.6 : 1
-                  }}
-                >
-                  <MapPinIcon size={13} />
-                  {enviandoReq
-                    ? "Enviando…"
-                    : requerimentoAtual?.status === "PENDENTE"
-                      ? "Aguardando resposta"
-                      : requerimentoAtual?.status === "RESPONDIDO"
-                        ? "Reenviar solicitação"
-                        : "Solicitar Endereço"}
-                </button>
+              {!isNovo && podeRequerimento && (
+                <BotaoSolicitarRequerimento
+                  status={requerimentoAtual}
+                  enviando={enviandoReq}
+                  onSolicitar={() => void solicitarEndereco()}
+                  rotulo="Solicitar Endereço"
+                  titulo="Solicitar ao funcionário que preencha o endereço residencial"
+                  icone={<MapPinIcon size={13} />}
+                />
               )}
             </div>
-            {requerimentoAtual && (
-              <div
-                style={{
-                  marginBottom: 12,
-                  padding: "8px 12px",
-                  borderRadius: "var(--radius-md)",
-                  fontSize: 12,
-                  background:
-                    requerimentoAtual.status === "PENDENTE"
-                      ? "rgba(247,196,55,0.10)"
-                      : "rgba(47,125,79,0.07)",
-                  border: `1px solid ${
-                    requerimentoAtual.status === "PENDENTE"
-                      ? "rgba(247,196,55,0.30)"
-                      : "rgba(47,125,79,0.18)"
-                  }`,
-                  color: requerimentoAtual.status === "PENDENTE" ? "#8a6a00" : "var(--green)"
-                }}
-              >
-                {requerimentoAtual.status === "PENDENTE"
-                  ? `⏳ Solicitação enviada em ${new Date(requerimentoAtual.criadoEm).toLocaleDateString("pt-BR")} — aguardando o funcionário preencher o endereço.`
-                  : `✓ Funcionário respondeu a solicitação.`}
-              </div>
-            )}
+            <FaixaStatusRequerimento status={requerimentoAtual} oQue="preencher o endereço" />
             <p
               style={{ fontSize: 11.5, color: "var(--ink-500)", marginBottom: 14, lineHeight: 1.5 }}
             >
@@ -2479,6 +3302,7 @@ export function FuncionarioFormPage() {
                 <button
                   type="button"
                   onClick={() => void abrirMapaComGeocode()}
+                  disabled={localizandoEndereco}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -2487,7 +3311,7 @@ export function FuncionarioFormPage() {
                     borderRadius: "var(--radius-md)",
                     border: "1.5px solid rgba(122,30,38,0.22)",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: localizandoEndereco ? "wait" : "pointer",
                     color: "var(--ink-700)",
                     fontSize: 13,
                     fontWeight: 500,
@@ -2496,7 +3320,11 @@ export function FuncionarioFormPage() {
                   }}
                 >
                   <MapPinIcon size={14} />
-                  {endereco.lat ? "Ajustar no Mapa" : "Definir no Mapa"}
+                  {localizandoEndereco
+                    ? "Localizando endereço…"
+                    : endereco.lat
+                      ? "Ajustar no Mapa"
+                      : "Definir no Mapa"}
                 </button>
               </div>
             </div>
@@ -2587,14 +3415,16 @@ export function FuncionarioFormPage() {
         <button className="btn btn-ghost" onClick={voltar}>
           Cancelar
         </button>
-        <button
-          className="btn btn-primary"
-          onClick={() => void salvar()}
-          disabled={salvando}
-          style={{ opacity: podeSalvar ? 1 : 0.55 }}
-        >
-          {salvando ? "Salvando…" : isNovo ? "Cadastrar Funcionário" : "Salvar Alterações"}
-        </button>
+        {(isNovo || podeEditarCadastro) && (
+          <button
+            className="btn btn-primary"
+            onClick={() => void salvar()}
+            disabled={salvando}
+            style={{ opacity: podeSalvar ? 1 : 0.55 }}
+          >
+            {salvando ? "Salvando…" : isNovo ? "Cadastrar Funcionário" : "Salvar Alterações"}
+          </button>
+        )}
       </div>
       {!podeSalvar && !salvando && motivosBloqueio().length > 0 && (
         <p style={{ textAlign: "right", marginTop: 8, fontSize: 12, color: "var(--red)" }}>
@@ -2608,6 +3438,7 @@ export function FuncionarioFormPage() {
           lng={endereco.lng ?? -47.904}
           raio={endereco.raioMetros ?? 20}
           titulo="Localização Residencial"
+          buscaInicial={textoBuscaEndereco(endereco)}
           minRaio={10}
           maxRaio={500}
           onConfirm={onMapaConfirm}

@@ -41,6 +41,19 @@ export function textoAjusteHorario(params: {
   solicitacaoId: string;
   acao: "CORRIGIR" | "INCLUIR";
   autorRH?: string; // quando definido, indica correção iniciada pelo RH
+  /** Complemento ao final do texto (ex.: aviso de interjornada aprovado pelo chefe e RH). */
+  textoExtra?: string;
+}): string {
+  const base = textoAjusteHorarioBase(params);
+  return params.textoExtra ? `${base} ${params.textoExtra}` : base;
+}
+
+function textoAjusteHorarioBase(params: {
+  tipoRegistro: string;
+  horarioAnterior?: string | null;
+  horarioNovo: string;
+  acao: "CORRIGIR" | "INCLUIR";
+  autorRH?: string;
 }): string {
   const label = TIPO_PONTO_LABEL[params.tipoRegistro] ?? params.tipoRegistro;
 
@@ -71,6 +84,7 @@ export function criarObservacaoAjuste(params: {
   solicitacaoId: string;
   acao: "CORRIGIR" | "INCLUIR";
   autorRH?: string;
+  textoExtra?: string;
 }): ObservacaoRegistro {
   return {
     data: new Date().toISOString(),

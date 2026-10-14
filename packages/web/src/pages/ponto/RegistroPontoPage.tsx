@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
 import { Link } from "react-router-dom";
 import {
   CheckCircleIcon,
@@ -176,9 +177,6 @@ function obsForcaSemIntervalo(observacoes?: ObservacaoRegistro[]): ObservacaoReg
 }
 
 /** Estagiário: carga horária corrida — sem intervalo de almoço. */
-function categoriaSemIntervaloAlmoco(categoria: string | null | undefined): boolean {
-  return categoria === "ESTAGIARIO";
-}
 
 /* ─── Informações visuais de cada tipo de registro ─── */
 interface AcaoInfo {
@@ -965,9 +963,11 @@ export function RegistroPontoPage() {
   }>({ loaded: false });
 
   /* ── Feriado hoje ── */
-  const [feriadoHoje, setFeriadoHoje] = useState<{ bloqueado: boolean; nome?: string } | null>(
-    null
-  );
+  const [feriadoHoje, setFeriadoHoje] = useState<{
+    bloqueado: boolean;
+    abono?: boolean;
+    nome?: string;
+  } | null>(null);
 
   /* Modo detectado pelo viewport */
   const modo: ModoRegistro = isMobile ? "MOBILE" : "DESKTOP";
@@ -1029,7 +1029,7 @@ export function RegistroPontoPage() {
     const tk = token();
     if (!tk) return;
     api
-      .get<{ bloqueado: boolean; nome?: string }>("/ponto/feriado-hoje", tk)
+      .get<{ bloqueado: boolean; abono?: boolean; nome?: string }>("/ponto/feriado-hoje", tk)
       .then((data) => {
         if (data) setFeriadoHoje(data);
       })
@@ -1044,6 +1044,21 @@ export function RegistroPontoPage() {
     label: string;
     dataInicio: string;
     dataFim: string;
+  } | null>(null);
+
+  /* ── Descanso de interjornada em curso (Entrada bloqueada até `liberadoEmTexto`) ── */
+  const [interjornada, setInterjornada] = useState<{
+    descansoMin: number;
+    minimoMin: number;
+    liberadoEmTexto: string;
+  } | null>(null);
+
+  /* ── Em casa, a Saída só é aceita depois do intervalo de almoço (ciclo completo) ── */
+  const [saidaExigeIntervalo, setSaidaExigeIntervalo] = useState(false);
+  /* ── Presencial: o dia exige o intervalo e ele ainda não foi registrado (só aviso) ── */
+  const [intervaloPendente, setIntervaloPendente] = useState<{
+    modo: "ALMOCO" | "ALMOCO_OU_PAUSA";
+    minimoMin: number;
   } | null>(null);
 
   /* ── Carrega registros de hoje + dados de home office do backend ── */
@@ -1075,9 +1090,23 @@ export function RegistroPontoPage() {
         almocoMinMin?: number;
         previsaoInicioAlmoco?: string | null;
         acoesPermitidas?: string[];
+        saidaExigeIntervalo?: boolean;
+        intervaloPendenteParaFechar?: {
+          modo: "ALMOCO" | "ALMOCO_OU_PAUSA";
+          minimoMin: number;
+        } | null;
+        interjornada?: {
+          ativa: boolean;
+          descansoMin: number;
+          minimoMin: number;
+          liberadoEmTexto: string;
+        } | null;
       }>("/ponto/status", tk)
       .then((status) => {
         setStatusCarregado(true);
+        setInterjornada(status?.interjornada?.ativa ? status.interjornada : null);
+        setSaidaExigeIntervalo(!!status?.saidaExigeIntervalo);
+        setIntervaloPendente(status?.intervaloPendenteParaFechar ?? null);
         if (status?.acoesPermitidas) setAcoesPermitidasApi(status.acoesPermitidas);
         setAfastamentoHoje(status?.afastamentoHoje ?? null);
         if (status?.categoria) setCategoriaFuncional(status.categoria);
@@ -1346,6 +1375,12 @@ export function RegistroPontoPage() {
   );
 
   async function handleAcao(tipo: TipoRegistro) {
+    if (tipo === "ENTRADA" && interjornada) {
+      setErro(
+        `Descanso de interjornada: você poderá registrar a entrada a partir de ${interjornada.liberadoEmTexto}.`
+      );
+      return;
+    }
     if (afastamentoHoje) {
       setErro(`Você está em ${afastamentoHoje.label} hoje. Não é possível registrar ponto.`);
       return;
@@ -1761,7 +1796,7 @@ export function RegistroPontoPage() {
             ) : (
               <>
                 Hoje ainda não há obrigação de registro de ponto. Após deixar a condição de{" "}
-                <strong>Comissionado, Chefe ou Fiscal</strong> para uma categoria com ponto, a
+                <strong>Comissionado, Chefe ou Assessor</strong> para uma categoria com ponto, a
                 obrigação começa apenas no <strong>dia seguinte</strong>.
               </>
             )}
@@ -1779,12 +1814,14 @@ export function RegistroPontoPage() {
             textAlign: "center"
           }}
         >
-          <p style={{ fontSize: 22, marginBottom: 10 }}>🎉</p>
+          <p style={{ fontSize: 22, marginBottom: 10 }}>{feriadoHoje.abono ? "✋" : "🎉"}</p>
           <p style={{ fontSize: 15, fontWeight: 700, color: "#8a6a00", marginBottom: 8 }}>
-            Hoje é feriado: {feriadoHoje.nome}
+            {/* Abono do RH não é feriado: mostra só o nome cadastrado. */}
+            {feriadoHoje.abono ? feriadoHoje.nome : `Hoje é feriado: ${feriadoHoje.nome}`}
           </p>
           <p style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 0, lineHeight: 1.6 }}>
-            O registro de ponto está suspenso. Em caso de dúvidas, fale com o RH.
+            {feriadoHoje.abono ? "Dia abonado pelo RH. " : ""}O registro de ponto está suspenso. Em
+            caso de dúvidas, fale com o RH.
           </p>
         </div>
       ) : afastamentoHoje ? (
@@ -1885,6 +1922,79 @@ export function RegistroPontoPage() {
             marginBottom: 14
           }}
         >
+          {/* Descanso de interjornada: a Entrada fica bloqueada até completar o descanso mínimo */}
+          {interjornada && slots.some((sl) => sl.tipo === "ENTRADA") && (
+            <div
+              role="status"
+              style={{
+                marginBottom: 12,
+                padding: "12px 14px",
+                background: "rgba(247,196,55,0.12)",
+                border: "1px solid rgba(247,196,55,0.45)",
+                borderRadius: "var(--radius-md)",
+                color: "#6b5200",
+                fontSize: 13,
+                lineHeight: 1.55
+              }}
+            >
+              <strong>😴 Descanso de interjornada</strong>
+              <br />
+              Entre uma jornada e outra é preciso descansar pelo menos{" "}
+              <strong>
+                {interjornada.minimoMin % 60 === 0
+                  ? `${interjornada.minimoMin / 60}h`
+                  : `${Math.floor(interjornada.minimoMin / 60)}h${String(interjornada.minimoMin % 60).padStart(2, "0")}`}
+              </strong>
+              . Você poderá registrar a entrada a partir de{" "}
+              <strong>{interjornada.liberadoEmTexto}</strong>. Se precisar registrar antes, solicite
+              a <strong>Correção de ponto</strong> no dia seguinte (análise do chefe e do RH).
+            </div>
+          )}
+
+          {/* Presencial: o intervalo exigido pela jornada ainda não foi registrado */}
+          {intervaloPendente && !saidaExigeIntervalo && slots.some((sl) => sl.tipo === "SAIDA") && (
+            <div
+              role="note"
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: "rgba(247,196,55,0.12)",
+                border: "1px solid rgba(247,196,55,0.45)",
+                borderRadius: "var(--radius-md)",
+                color: "#6b5200",
+                fontSize: 12.5,
+                lineHeight: 1.55
+              }}
+            >
+              🕒 <strong>Registre o intervalo antes de encerrar.</strong>{" "}
+              {intervaloPendente.modo === "ALMOCO"
+                ? `A sua jornada exige o intervalo de almoço (mínimo de ${intervaloPendente.minimoMin % 60 === 0 ? `${intervaloPendente.minimoMin / 60} h` : `${intervaloPendente.minimoMin} min`}): registre o Início e o Fim do intervalo.`
+                : `A sua jornada exige um intervalo (mínimo de ${intervaloPendente.minimoMin} min): registre o Início e o Fim do intervalo ou uma pausa (Interromper e Reiniciar).`}{" "}
+              Sem ele, o dia fica pendente e só se regulariza por Correção de ponto.
+            </div>
+          )}
+
+          {/* Em casa: o dia só fica OK com Entrada, Início/Fim do intervalo e Saída */}
+          {saidaExigeIntervalo && slots.some((sl) => sl.tipo === "INICIO_INTERVALO") && (
+            <div
+              role="note"
+              style={{
+                marginBottom: 12,
+                padding: "10px 14px",
+                background: "rgba(37,99,235,0.05)",
+                border: "1px solid rgba(37,99,235,0.15)",
+                borderRadius: "var(--radius-md)",
+                color: "#1e40af",
+                fontSize: 12.5,
+                lineHeight: 1.55
+              }}
+            >
+              🏠 <strong>Em casa, registre o intervalo de almoço</strong> (Início e Fim) antes de
+              encerrar a jornada. A Saída só é aceita depois dele; sem o ciclo completo o dia fica
+              pendente.
+            </div>
+          )}
+
           {/* Validações — mesmo componente em mobile e desktop */}
           <ValidacoesPanel items={validacoes} />
 
@@ -1913,7 +2023,7 @@ export function RegistroPontoPage() {
                   key={slot.tipo}
                   className="btn btn-primary"
                   onClick={() => handleAcao(slot.tipo)}
-                  disabled={regLoading}
+                  disabled={regLoading || (slot.tipo === "ENTRADA" && !!interjornada)}
                   title={slot.iconOnly ? info.label : undefined}
                   aria-label={slot.iconOnly ? info.label : undefined}
                   style={{

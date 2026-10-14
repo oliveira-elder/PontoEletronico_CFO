@@ -127,13 +127,26 @@ function AniversariantesChart({ stats }: { stats: GestaoDashboardStats }) {
   );
 }
 
-const FAIXAS_URGENCIA = [
-  { chave: "ate30", label: "≤ 30 dias", max: 30, color: "var(--red)" },
-  { chave: "31a60", label: "31–60 dias", max: 60, color: "#c67f00" },
-  { chave: "61a90", label: "61–90 dias", max: 90, color: PALETTE[2] }
-] as const;
+/** Faixas de urgência: o prazo configurado dividido em três (90 dias → 30/60/90). */
+function faixasUrgencia(prazoDias: number) {
+  const a = Math.max(1, Math.round(prazoDias / 3));
+  const b = Math.max(a, Math.round((prazoDias * 2) / 3));
+  return [
+    { chave: "f1", label: `≤ ${a} dias`, min: 0, max: a, color: "var(--red)" },
+    { chave: "f2", label: `${a + 1}–${b} dias`, min: a + 1, max: b, color: "#c67f00" },
+    {
+      chave: "f3",
+      label: `${b + 1}–${prazoDias} dias`,
+      min: b + 1,
+      max: prazoDias,
+      color: PALETTE[2]
+    }
+  ].filter((f) => f.min <= f.max);
+}
 
 function ContratosAVencerChart({ stats }: { stats: GestaoDashboardStats }) {
+  const prazoDias = stats.contratoAvisoDias ?? 90;
+  const FAIXAS_URGENCIA = useMemo(() => faixasUrgencia(prazoDias), [prazoDias]);
   const hoje = hojeBrasiliaISO();
   const hojeMs = Date.parse(`${hoje}T12:00:00-03:00`);
 
@@ -142,10 +155,12 @@ function ContratosAVencerChart({ stats }: { stats: GestaoDashboardStats }) {
       stats.contratosAVencer.map((c) => {
         const termMs = Date.parse(`${c.contratoTermino}T12:00:00-03:00`);
         const diasRestantes = Math.round((termMs - hojeMs) / 86_400_000);
-        const faixa = diasRestantes <= 30 ? "ate30" : diasRestantes <= 60 ? "31a60" : "61a90";
+        const faixa =
+          FAIXAS_URGENCIA.find((f) => diasRestantes <= f.max)?.chave ??
+          FAIXAS_URGENCIA[FAIXAS_URGENCIA.length - 1].chave;
         return { ...c, diasRestantes, faixa };
       }),
-    [stats.contratosAVencer, hojeMs]
+    [stats.contratosAVencer, hojeMs, FAIXAS_URGENCIA]
   );
 
   const [faixaSelecionada, setFaixaSelecionada] = useState<string | null>(null);
@@ -164,7 +179,7 @@ function ContratosAVencerChart({ stats }: { stats: GestaoDashboardStats }) {
   const faixaInfo = FAIXAS_URGENCIA.find((f) => f.chave === faixaSelecionada);
 
   return (
-    <DashboardPanel title="Contratos a Vencer (Estágio/Jovem Aprendiz — 90 dias)">
+    <DashboardPanel title={`Contratos a Vencer (Estágio/Jovem Aprendiz — ${prazoDias} dias)`}>
       {stats.contratosAVencer.length === 0 ? (
         <div
           style={{
@@ -176,7 +191,7 @@ function ContratosAVencerChart({ stats }: { stats: GestaoDashboardStats }) {
             fontSize: 12.5
           }}
         >
-          Nenhum contrato a vencer nos próximos 90 dias.
+          Nenhum contrato a vencer nos próximos {prazoDias} dias.
         </div>
       ) : (
         <>

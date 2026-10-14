@@ -1,4 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { SaudeOcupacionalPage } from "./SaudeOcupacionalPage";
+import { FolhasAssinadasLista } from "../../components/assinatura/FolhasAssinadasLista";
+import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
+import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
+import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -17,6 +22,7 @@ import {
   ChevronDownIcon,
   TrendingUpIcon,
   CheckCircleIcon,
+  ActivityIcon,
   Edit2Icon,
   FileTextIcon,
   DatabaseIcon,
@@ -28,7 +34,34 @@ import {
 } from "../../components/icons";
 import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "../../utils/calcHorasTrabalhadas";
 import {
+  ehDiaAbonado,
+  rotuloFeriado,
+  type ExigenciaCicloPresencial
+} from "../../utils/historicoTransform";
+import {
+  cicloCompleto,
+  cicloCompletoEmCasa,
+  textoCicloIncompleto
+} from "../../utils/cicloCompleto";
+import { FormFeriasRh, type CicloFeriasRh } from "../../components/ferias/FormFeriasRh";
+import { NovaModal as NovaSolicitacaoModal } from "./SolicitacoesPage";
+import { CotaAbonoCard } from "../../components/abono/CotaAbonoCard";
+import { LiberarBancoHorasRh } from "../../components/banco/LiberarBancoHorasRh";
+import {
+  aplicarRegraHoraExtra,
+  contextoDoDia,
+  observacaoHoraExtra,
+  observacaoInterjornada,
+  TIPO_OBS_HORA_EXTRA,
+  TIPO_OBS_INTERJORNADA,
+  type InterjornadaDia,
+  type ContextoHoraExtraPeriodo
+} from "../../utils/horaExtraDecisao";
+import {
   FeriasDetalheBlock,
+  LinksDocumentosFerias,
+  AbonoDetalheBlock,
+  AvisoInterjornadaBlock,
   LinkDocumentoAnexado,
   LogTimelineGestor,
   SolicitacaoResumo,
@@ -36,12 +69,15 @@ import {
 } from "./solicitacaoUi";
 import { InputHorario } from "../../components/ponto/InputHorario";
 import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
+import { ModalGerarAssinaturas } from "../../components/ponto/ModalGerarAssinaturas";
 import {
   normalizarHorarioParcial,
   hojeBrasiliaISO,
   dataBrasiliaISO,
-  dataCivilISO
+  dataCivilISO,
+  dataCivilPeriodo
 } from "../../utils/horario-brasilia";
+import { SemAcessoRh } from "../../components/SemAcessoRh";
 
 /* ═══════════════════════════════════════════════
    TIPOS
@@ -217,6 +253,7 @@ interface Solicitacao extends SolicitacaoResumo {
 interface Afastamento {
   id: string;
   tipo: string;
+  rotulo?: string | null;
   dataInicio: string;
   dataFim: string;
   justificativa: string | null;
@@ -242,7 +279,8 @@ interface SaldoFerias {
   totalVencido: number;
   obrigatorio: boolean;
   mesesTotal: number;
-  ciclos: Array<{ numero: number; inicio: string; fim: string }>;
+  isEstagiario?: boolean;
+  ciclos: CicloFeriasRh[];
 }
 
 interface Periodo {
@@ -277,6 +315,8 @@ interface BancoHorasDia {
   saldoDiaMinutos: number;
   saldoAcumuladoMinutos: number;
   observacao?: string;
+  /** Linha afetada por liberação/revogação de tempo do banco pelo RH. */
+  liberacaoRh?: boolean;
 }
 
 interface BancoHorasItem {
@@ -596,7 +636,8 @@ type Aba =
   | "afastamentos"
   | "periodos"
   | "logs"
-  | "validacoes";
+  | "validacoes"
+  | "saude";
 
 /* ═══════════════════════════════════════════════
    UTILITÁRIOS
@@ -1396,6 +1437,7 @@ function DetalhesFuncionario({
     | "afastamentos"
     | "bancoHoras"
     | "documentos"
+    | "folhasAssinadas"
     | "ferias"
   >("registros");
   const [mes, setMes] = useState(String(new Date().getMonth() + 1));
@@ -1536,7 +1578,11 @@ function DetalhesFuncionario({
         Ajustado: r.ajustado ? "Sim" : "Não",
         Observacao: r.observacao ?? ""
       })),
-      `registros_${funcionario.matricula}_${mes}_${ano}.csv`
+      nomeArquivoRelatorioMes(Number(mes), Number(ano), {
+        prefixo: "Relatório registros",
+        extensao: "csv",
+        nomePessoa: funcionario.user.name
+      })
     );
   }
 
@@ -1787,6 +1833,12 @@ function DetalhesFuncionario({
               label: "Documentos",
               cor: "#475569",
               icone: <FileTextIcon size={13} />
+            },
+            {
+              id: "folhasAssinadas",
+              label: "Folhas assinadas",
+              cor: "#15803d",
+              icone: <CheckCircleIcon size={13} />
             }
           ] as const
         ).map((a) => {
@@ -1845,17 +1897,45 @@ function DetalhesFuncionario({
       ) : subAba === "historico" ? (
         <TabHistoricoFunc funcionarioId={funcionario.id} token={token} />
       ) : subAba === "solicitacoes" ? (
-        <TabelaSolicitacoes solicitacoes={solicitacoes} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <PainelNovaSolicitacaoRh
+            funcionarioId={funcionario.id}
+            nome={funcionario.user.name}
+            onCriada={carregarSolicitacoes}
+          />
+          <CotaAbonoCard
+            url={`/auditoria/funcionarios/${funcionario.id}/abono/cota`}
+            token={token}
+          />
+          <TabelaSolicitacoes solicitacoes={solicitacoes} />
+        </div>
       ) : subAba === "ferias" ? (
         <PainelFerias
           saldo={feriasSaldo}
           historico={feriasHistorico}
           onRecarregar={carregarFerias}
+          funcionarioId={funcionario.id}
+          token={token}
         />
       ) : subAba === "afastamentos" ? (
         <TabelaAfastamentos afastamentos={afastamentos} />
       ) : subAba === "bancoHoras" && bancoHoras ? (
-        <BancoHorasDiasTabela dados={bancoHoras} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <PainelLiberacaoBancoRh
+            funcionarioId={funcionario.id}
+            token={token}
+            onAtualizado={carregarBancoHoras}
+          />
+          <FechamentosSituacaoCard funcionarioId={funcionario.id} token={token} />
+          <BancoHorasDiasTabela dados={bancoHoras} />
+        </div>
+      ) : subAba === "folhasAssinadas" ? (
+        <FolhasAssinadasLista
+          listaUrl={`/auditoria/funcionarios/${funcionario.id}/folhas-assinadas`}
+          downloadUrl={(id) => `/auditoria/assinaturas/${id}/pdf`}
+          token={token}
+          nomePessoa={funcionario.user.name}
+        />
       ) : subAba === "documentos" ? (
         <TabelaDocumentosRh
           documentos={documentosRh}
@@ -3269,7 +3349,7 @@ function TabSolicitacoes({
             { value: "CORRECAO_PONTO", label: "Correção de Ponto" },
             { value: "ATESTADO", label: "Atestado" },
             { value: "FERIAS", label: "Férias" },
-            { value: "LICENCA", label: "Licença" },
+            { value: "LICENCA", label: "Licença e Outros" },
             { value: "ABONO", label: "Abono" },
             { value: "DAY_OFF", label: "Day Off de Aniversário" },
             { value: "HORA_EXTRA", label: "Hora Extra" },
@@ -3309,6 +3389,155 @@ function TabSolicitacoes({
 }
 
 /* ─── Tabela de solicitações (com ações de admin para AGUARDANDO_GESTOR_RH) ─── */
+/** RH: completa ou corrige o grupo do CID de um atestado já enviado (com justificativa). */
+function AlterarCidRh({
+  solicitacaoId,
+  meta
+}: {
+  solicitacaoId: string;
+  meta: Record<string, unknown> | null | undefined;
+}) {
+  const { user, hasRole } = useAuth();
+  const podeAuditoria = usePodeAuditoria();
+  const papelRh =
+    !!user?.isSuperAdmin ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN") ||
+    hasRole("RH_AUDITORIA");
+  const [aberto, setAberto] = useState(false);
+  const [grupos, setGrupos] = useState<Array<{ id: string; codigo: string; descricao: string }>>(
+    []
+  );
+  const [grupoId, setGrupoId] = useState("");
+  const [just, setJust] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState(false);
+  const atual = meta?.cidGrupo as { codigo?: string; descricao?: string } | undefined;
+
+  if (!papelRh || !podeAuditoria("auditoria.solicitacoes.alterar-cid")) return null;
+
+  async function abrir() {
+    setAberto(true);
+    if (!grupos.length) {
+      try {
+        setGrupos(await api.get("/ponto/config/cid-grupos"));
+      } catch {
+        setGrupos([]);
+      }
+    }
+  }
+
+  async function salvar() {
+    setSalvando(true);
+    setErro(null);
+    try {
+      await api.patch(`/auditoria/rh/solicitacoes/${solicitacaoId}/cid`, {
+        cidGrupoId: grupoId,
+        justificativa: just.trim()
+      });
+      const g = grupos.find((x) => x.id === grupoId);
+      setMsg(`CID atualizado${g ? ` para ${g.codigo}` : ""}. Recarregue a lista para ver.`);
+      setAberto(false);
+    } catch (e) {
+      setErro((e as Error).message || "Não foi possível salvar.");
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      {msg && <span style={{ color: "var(--green)" }}>✓ {msg}</span>}
+      {!aberto && !msg && (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void abrir()}>
+          🩺 {atual?.codigo ? "Alterar CID" : "Informar CID"}
+        </button>
+      )}
+      {aberto && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <select value={grupoId} onChange={(e) => setGrupoId(e.target.value)}>
+            <option value="">Grupo do CID…</option>
+            {grupos.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.codigo} — {g.descricao}
+              </option>
+            ))}
+          </select>
+          <input
+            placeholder="Justificativa (mín. 10 caracteres)"
+            value={just}
+            onChange={(e) => setJust(e.target.value)}
+            style={{ minWidth: 240 }}
+          />
+          <button
+            className="btn btn-primary btn-sm"
+            disabled={salvando || !grupoId || just.trim().length < 10}
+            onClick={() => void salvar()}
+          >
+            Salvar
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setAberto(false)}>
+            Cancelar
+          </button>
+          {erro && <span style={{ color: "var(--red)" }}>⚠ {erro}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** RH: abre uma solicitação em nome do funcionário (mesmo fluxo; fica marcada como do RH). */
+function PainelNovaSolicitacaoRh({
+  funcionarioId,
+  nome,
+  onCriada
+}: {
+  funcionarioId: string;
+  nome: string;
+  onCriada: () => void;
+}) {
+  const { user, hasRole } = useAuth();
+  const podeAuditoria = usePodeAuditoria();
+  const [aberto, setAberto] = useState(false);
+  const papelRh =
+    !!user?.isSuperAdmin ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN") ||
+    hasRole("RH_AUDITORIA");
+  if (!papelRh || !podeAuditoria("auditoria.funcionarios.solicitar")) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+        padding: "10px 14px",
+        border: "1px dashed rgba(122,30,38,0.30)",
+        borderRadius: "var(--radius-lg)",
+        background: "rgba(122,30,38,0.02)"
+      }}
+    >
+      <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-600)", flex: 1, minWidth: 240 }}>
+        🏢 Abra uma solicitação em nome do funcionário (atestado, licença, abono, day off, hora
+        extra ou envio de documento). Segue o mesmo fluxo e fica marcada como feita pelo RH.
+      </p>
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => setAberto(true)}>
+        ＋ Nova solicitação (pelo RH)
+      </button>
+      {aberto && (
+        <NovaSolicitacaoModal
+          rhFuncionario={{ id: funcionarioId, nome }}
+          onClose={() => setAberto(false)}
+          onCriada={() => onCriada()}
+        />
+      )}
+    </div>
+  );
+}
+
 function TabelaSolicitacoes({
   solicitacoes,
   loading = false,
@@ -3436,7 +3665,20 @@ function TabelaSolicitacoes({
                 <TextoComSetaHorario texto={resumo} />
               </p>
               {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
-              {(s.tipo === "ATESTADO" || s.tipo === "ENVIO_DOCUMENTO_RH") &&
+              {[
+                "ABONO",
+                "LICENCA",
+                "ATESTADO",
+                "DAY_OFF",
+                "HORA_EXTRA",
+                "ENVIO_DOCUMENTO_RH"
+              ].includes(s.tipo) && <AbonoDetalheBlock meta={s.metadados} />}
+              {s.tipo === "ATESTADO" && <AlterarCidRh solicitacaoId={s.id} meta={s.metadados} />}
+              {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
+              {(s.tipo === "ATESTADO" ||
+                s.tipo === "ENVIO_DOCUMENTO_RH" ||
+                s.tipo === "ABONO" ||
+                s.tipo === "LICENCA") &&
                 typeof meta?.documentoUrl === "string" && (
                   <LinkDocumentoAnexado
                     href={meta.documentoUrl as string}
@@ -3652,7 +3894,7 @@ function TabAfastamentos({ token }: { token: string }) {
       afastamentos.map((a) => ({
         Funcionario: a.funcionario.user.name,
         Matricula: a.funcionario.matricula,
-        Tipo: tipoAfastamentoLabel(a.tipo),
+        Tipo: a.rotulo || tipoAfastamentoLabel(a.tipo),
         Inicio: fmtDate(a.dataInicio),
         Fim: fmtDate(a.dataFim),
         Justificativa: a.justificativa ?? "",
@@ -3712,6 +3954,7 @@ type StatusDia =
   | "OK"
   | "FALTA"
   | "PENDENTE"
+  | "INCONSISTENTE"
   | "AFASTAMENTO"
   | "FERIADO"
   | "FUTURO"
@@ -3731,6 +3974,7 @@ interface JornadaHistorico {
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
   atestadoTempoRetornoMin?: number;
+  atestadoTempoIdaMin?: number;
   vigenciaDesde: string | null;
 }
 
@@ -3747,7 +3991,8 @@ const JORNADA_PADRAO_AUD: JornadaHistorico = {
   toleranciaSaidaMin: 5,
   toleranciaCalculoMin: 0,
   horaExtraLimiteAuto: 120,
-  atestadoTempoRetornoMin: 60
+  atestadoTempoRetornoMin: 60,
+  atestadoTempoIdaMin: 60
 };
 
 function jornadaMinDia(isoKey: string, jornada: JornadaHistorico): number {
@@ -3792,6 +4037,8 @@ interface DiaHist {
     fimReferencia: string;
     minimoMin: number;
   };
+  /** HE não creditada (sem aprovação/rejeitada): minutos retirados do saldo do dia (ACT). */
+  heRejeitadoMin?: number;
 }
 
 interface ApiRegHist {
@@ -3810,6 +4057,7 @@ interface ApiRegHist {
 }
 interface ApiAfast {
   tipo: string;
+  rotulo?: string | null;
   dataInicio: string;
   dataFim: string;
   horarioInicio?: string | null;
@@ -3818,6 +4066,8 @@ interface ApiAfast {
 interface ApiFeriadoH {
   data: string;
   nome: string;
+  /** "ABONO" = abono do RH (não é feriado): dia neutro, status = nome. */
+  tipo?: string | null;
   marcoHorario?: string | null;
   marcoLado?: string | null;
 }
@@ -3838,6 +4088,7 @@ function normalizarFeriadosH(raw: unknown): ApiFeriadoH[] {
       date?: string;
       nome?: string;
       name?: string;
+      tipo?: string | null;
       marcoHorario?: string | null;
       marcoLado?: string | null;
     };
@@ -3847,6 +4098,7 @@ function normalizarFeriadosH(raw: unknown): ApiFeriadoH[] {
     out.push({
       data,
       nome,
+      tipo: o.tipo ?? null,
       marcoHorario: o.marcoHorario ?? null,
       marcoLado: o.marcoLado ?? null
     });
@@ -3889,7 +4141,10 @@ function abonarFeriadosNoRelatorio(
     const trab = d.horasTrabalhadasMinutos ?? 0;
     const saldo = d.saldoDiaMinutos ?? 0;
     const jornada = d.jornadaEsperadaMinutos ?? 0;
-    const jaAbonado = saldo === 0 && jornada === 0 && (d.observacao ?? "").startsWith("Feriado:");
+    const jaAbonado =
+      saldo === 0 &&
+      jornada === 0 &&
+      ((d.observacao ?? "").startsWith("Feriado:") || (d as { abono?: boolean }).abono === true);
     if (jaAbonado || trab > 0) continue;
     if (saldo < 0) ajusteFalta += Math.abs(saldo);
     ajusteSaldo -= saldo;
@@ -3916,20 +4171,15 @@ const TIPO_AFAST_LABEL: Record<string, string> = {
   ABONO: "Abono"
 };
 
-function labelParcialAfast(tipo: string | undefined, hi: string, hf: string): string {
-  const nome =
-    tipo === "ABONO"
-      ? "Abono parcial"
-      : tipo === "ATESTADO"
-        ? "Atestado médico parcial"
-        : "Afastamento parcial";
-  return `${nome} (${hi}–${hf})`;
+/** Rótulo curto do status do dia com afastamento parcial (sem "parcial" nem horário). */
+function labelParcialAfast(tipo: string | undefined): string {
+  return tipo === "ABONO" ? "Abono" : tipo === "ATESTADO" ? "Atestado médico" : "Afastamento";
 }
 
 function badgeLabelParcialH(obs?: string): string {
-  if (obs?.startsWith("Abono parcial")) return "Abono parcial";
-  if (obs?.startsWith("Afastamento parcial")) return "Afastamento parcial";
-  return "Atestado parcial";
+  if (obs?.startsWith("Abono")) return "Abono";
+  if (obs?.startsWith("Afastamento")) return "Afastamento";
+  return "Atestado médico";
 }
 
 function toMinH(h: string) {
@@ -4281,6 +4531,36 @@ function calcularCreditoDeslocamentoAtestadoH(
   const hf = toMinH(horarioFim);
   return Math.max(0, Math.min(retorno.minuto - hf, toleranciaMin));
 }
+/** Tipos de registro que representam sair do trabalho (candidatos a "ida" antes do atestado). */
+const TIPOS_SAIDA_TRABALHOH = new Set(["SAIDA", "INTERROMPER_EXPEDIENTE", "INICIO_INTERVALO"]);
+
+/**
+ * Crédito de deslocamento (min) na IDA: da última atividade antes do horarioInicio do
+ * atestado — se for saída/interrupção/início do almoço — até o início, limitado à
+ * tolerância. Saída para o almoço desconta o almoço mínimo. Espelha
+ * calcularCreditoDeslocamentoIda do backend (jornada-historico.ts).
+ */
+function calcularCreditoDeslocamentoIdaH(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioInicio: string,
+  toleranciaMin: number,
+  almocoMinMin = 60,
+  janelaAlmoco: { podeIniciarA?: string; podeIniciarAte?: string } = {}
+): number {
+  if (toleranciaMin <= 0) return 0;
+  const hi = toMinH(horarioInicio);
+  const saida = registros.filter((r) => r.minuto < hi).sort((a, b) => b.minuto - a.minuto)[0];
+  if (!saida || !TIPOS_SAIDA_TRABALHOH.has(saida.tipo)) return 0;
+  let deslocamento = hi - saida.minuto;
+  /* Almoço só é descontado se o início do intervalo caiu na janela de almoço da jornada. */
+  const ehAlmoco =
+    saida.tipo === "INICIO_INTERVALO" &&
+    saida.minuto >= toMinH(janelaAlmoco.podeIniciarA ?? "11:30") &&
+    saida.minuto <= toMinH(janelaAlmoco.podeIniciarAte ?? "13:00");
+  if (ehAlmoco) deslocamento -= Math.max(0, almocoMinMin);
+  return Math.max(0, Math.min(deslocamento, toleranciaMin));
+}
+
 function textoObsLeg(t: string) {
   return t.replace(/\s*\(#[a-z0-9]+\)/gi, "").replace(/\s*#[a-z0-9]+\.?/gi, ".");
 }
@@ -4305,7 +4585,13 @@ function buildHistorico(
   jornada: JornadaHistorico = JORNADA_PADRAO_AUD,
   periodosSemObrigacao: Array<{ inicio: string; fim: string | null }> = [],
   exigirIntervalo = true,
-  inicioAtividades?: string | null
+  inicioAtividades?: string | null,
+  /** Cessão a outro órgão: dias neutros com o rótulo "Isento — Cedido". */
+  periodosCessao: Array<{ inicio: string; fim: string | null }> = [],
+  /** Dias em casa que exigem o ciclo completo de batidas para serem "OK". */
+  diasCicloCompleto: string[] = [],
+  /** Ponto presencial: dias que exigem o ciclo, com o tipo de intervalo pela jornada. */
+  exigenciasPresencial: Record<string, ExigenciaCicloPresencial> = {}
 ): DiaHist[] {
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
@@ -4321,7 +4607,10 @@ function buildHistorico(
     if (key) feriadoMap[key] = f;
   }
 
+  const diaCedido = (isoKey: string) =>
+    periodosCessao.some((p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim));
   const diaIsento = (isoKey: string) =>
+    diaCedido(isoKey) ||
     periodosSemObrigacao.some((p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim));
 
   function calcJornadaParcial(
@@ -4353,7 +4642,6 @@ function buildHistorico(
     const isoKey = `${ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const dataStr = `${String(d).padStart(2, "0")}/${String(mes).padStart(2, "0")}/${ano}`;
     const feriadoDia = feriadoMap[isoKey];
-    const nomeFeriado = feriadoDia?.nome;
     if (isFuture) {
       result.push({
         data: dataStr,
@@ -4365,6 +4653,29 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: jornadaMinDia(isoKey, jornada),
         status: "FUTURO"
+      });
+      continue;
+    }
+
+    /* Abono do RH: dia neutro para todos (batidas visíveis, sem contar horas);
+       status = nome cadastrado. Fim de semana sem batidas segue como Sem Expediente. */
+    if (ehDiaAbonado(feriadoDia) && !(fimDeSemana && (byDay[isoKey]?.length ?? 0) === 0)) {
+      const regsAb = byDay[isoKey] ?? [];
+      const horaAb = (tipo: string) => {
+        const r = regsAb.find((x) => x.tipo === tipo);
+        return r ? fmtHoraH(r.dataHora) : null;
+      };
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: horaAb("ENTRADA"),
+        inicioIntervalo: horaAb("INICIO_INTERVALO"),
+        fimIntervalo: horaAb("FIM_INTERVALO"),
+        saida: horaAb("SAIDA"),
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "FERIADO",
+        obs: feriadoDia.nome
       });
       continue;
     }
@@ -4401,7 +4712,7 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "ISENTO",
-        obs: "Isento — Comissionado/Chefe",
+        obs: diaCedido(isoKey) ? "Isento — Cedido" : "Isento — Comissionado/Chefe",
         observacoes: dayRegsIsento.flatMap((r) => r.observacoes ?? [])
       });
       continue;
@@ -4419,7 +4730,7 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "AFASTAMENTO",
-        obs: TIPO_AFAST_LABEL[af.tipo] ?? "Afastamento justificado"
+        obs: af.rotulo || (TIPO_AFAST_LABEL[af.tipo] ?? "Afastamento justificado")
       });
       continue;
     }
@@ -4437,7 +4748,7 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "FOLGA",
-        obs: nomeFeriado ? `Sem Expediente — Feriado: ${nomeFeriado}` : "Sem Expediente"
+        obs: feriadoDia ? `Sem Expediente — ${rotuloFeriado(feriadoDia)}` : "Sem Expediente"
       });
       continue;
     }
@@ -4490,11 +4801,7 @@ function buildHistorico(
           horasMin: 0,
           jornadaMin: jornadaMandatoria,
           status: jornadaMandatoria > 0 ? "FALTA" : "AFASTAMENTO",
-          obs: labelParcialAfast(
-            atestadoParcial.tipo,
-            atestadoParcial.horarioInicio!,
-            atestadoParcial.horarioFim!
-          ),
+          obs: labelParcialAfast(atestadoParcial!.tipo),
           atestadoParcial: true,
           atestadoParcialHorario: `${atestadoParcial.horarioInicio}–${atestadoParcial.horarioFim}`,
           semIntervalo: true,
@@ -4623,15 +4930,30 @@ function buildHistorico(
       else if (isHoje) status = "PENDENTE";
       else status = "FALTA";
       if (!obs) {
-        obs = labelParcialAfast(
-          atestadoParcial!.tipo,
-          atestadoParcial!.horarioInicio!,
-          atestadoParcial!.horarioFim!
-        );
+        obs = labelParcialAfast(atestadoParcial!.tipo);
       }
     } else if (entrada && saida) {
       horasMin = calcHorasH(dayRegsHoras, undefined, calcOptsH);
       status = "OK";
+      /* Mesma regra de /ponto/historico: dia em casa só é OK com o ciclo completo. */
+      if (diasCicloCompleto.includes(isoKey)) {
+        const ciclo = cicloCompletoEmCasa(dayRegs, {
+          semIntervalo: !exigirIntervaloDia || !!feriadoDia?.marcoHorario
+        });
+        if (!ciclo.completo) {
+          status = "INCONSISTENTE";
+          obs = textoCicloIncompleto(ciclo.faltas);
+        }
+      } else if (exigenciasPresencial[isoKey] && !feriadoDia?.marcoHorario) {
+        /* Presencial: OK só com o intervalo que a jornada exige (turno sem almoço aceita pausa). */
+        const ciclo = cicloCompleto(dayRegs, {
+          modoIntervalo: semAlmocoDia ? "ALMOCO_OU_PAUSA" : exigenciasPresencial[isoKey].modo
+        });
+        if (!ciclo.completo) {
+          status = "INCONSISTENTE";
+          obs = textoCicloIncompleto(ciclo.faltas, false);
+        }
+      }
     } else if (entrada && isHoje) {
       horasMin = calcHorasH(dayRegsHoras, hoje.getHours() * 60 + hoje.getMinutes(), calcOptsH);
       status = "PENDENTE";
@@ -4645,7 +4967,7 @@ function buildHistorico(
     } else if (entrada) {
       horasMin = 0;
       status = "FALTA";
-      obs = "Apenas entrada registrada — dia considerado falta";
+      obs = "Apenas a entrada foi registrada — registro incompleto";
     } else {
       status = "PENDENTE";
     }
@@ -4666,8 +4988,23 @@ function buildHistorico(
         creditoDeslocamentoH > 0
           ? fmtMinDiaH(toMinH(atestadoParcial.horarioFim!) + creditoDeslocamentoH)
           : atestadoParcial.horarioFim!;
-      const jornadaRef = calcJornadaAtestadoParcial(
+      /* Ida: saída do trabalho antes do início do atestado (espelha o backend). */
+      const creditoIdaH = calcularCreditoDeslocamentoIdaH(
+        regsMinParaCreditoH,
         atestadoParcial.horarioInicio!,
+        jornada.atestadoTempoIdaMin ?? 60,
+        jornada.almocoMinMin ?? 60,
+        {
+          podeIniciarA: jornada.almocoPodeIniciarA,
+          podeIniciarAte: jornada.almocoPodeIniciarAte
+        }
+      );
+      const horarioInicioEfetivoH =
+        creditoIdaH > 0
+          ? fmtMinDiaH(Math.max(0, toMinH(atestadoParcial.horarioInicio!) - creditoIdaH))
+          : atestadoParcial.horarioInicio!;
+      const jornadaRef = calcJornadaAtestadoParcial(
+        horarioInicioEfetivoH,
         horarioFimEfetivoH,
         jornadaMin,
         jornada.horaEntrada ?? "08:00",
@@ -4695,11 +5032,7 @@ function buildHistorico(
         jornadaMin = Math.max(0, jornadaRef - creditoAlmoco);
       }
       if (!obs) {
-        obs = labelParcialAfast(
-          atestadoParcial.tipo,
-          atestadoParcial.horarioInicio!,
-          atestadoParcial.horarioFim!
-        );
+        obs = labelParcialAfast(atestadoParcial!.tipo);
       }
     } else if (fimDeSemana || feriadoDia) {
       if (feriadoDia?.marcoHorario && !fimDeSemana) {
@@ -4715,7 +5048,7 @@ function buildHistorico(
       } else {
         const pct = feriadoDia ? feriadoPct : dow === 6 ? sabadoPct : domingoPct;
         jornadaMin = Math.round(horasMin * (1 - pct / 100));
-        const tipo = feriadoDia ? `Feriado: ${feriadoDia.nome}` : dow === 6 ? "Sábado" : "Domingo";
+        const tipo = feriadoDia ? rotuloFeriado(feriadoDia) : dow === 6 ? "Sábado" : "Domingo";
         if (!obs) obs = `${tipo} — banco de horas: ${pct}%`;
       }
     }
@@ -4759,6 +5092,13 @@ function buildHistorico(
       const m = min % 60;
       return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
     };
+    /* Registro iniciado e não completado = Inconsistente (não é falta nem pendência): a Falta é
+       só o dia útil sem nenhum registro. O dia de hoje, em andamento, segue Pendente. */
+    if (dayRegs.length > 0) {
+      if (status === "FALTA") status = "INCONSISTENTE";
+      else if (status === "PENDENTE" && !isHoje) status = "INCONSISTENTE";
+    }
+
     result.push({
       data: dataStr,
       diaSemana: NOMES[dow],
@@ -4808,17 +5148,19 @@ function StatusPillH({
   obs,
   atestadoParcial,
   atestadoParcialHorario,
-  onClickAtestado
+  onClickAtestado,
+  modalidade
 }: {
   status: StatusDia;
   obs?: string;
+  modalidade?: string;
   atestadoParcial?: boolean;
   atestadoParcialHorario?: string;
   onClickAtestado?: () => void;
 }) {
   if (atestadoParcial) {
     const label = badgeLabelParcialH(obs);
-    const clicavel = label === "Atestado parcial" && !!onClickAtestado;
+    const clicavel = label === "Atestado médico" && !!onClickAtestado;
     return (
       <span
         className="badge badge-blue"
@@ -4844,7 +5186,8 @@ function StatusPillH({
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
-    PENDENTE: { label: "Pendente", cls: "badge-amber" },
+    PENDENTE: { label: "Em andamento", cls: "badge-amber" },
+    INCONSISTENTE: { label: "Inconsistente", cls: "badge-orange" },
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
@@ -4856,14 +5199,16 @@ function StatusPillH({
   return (
     <span className={`badge ${cls}`} title={titulo}>
       {status === "ISENTO"
-        ? "Isento — Comissionado/Chefe"
+        ? obs || "Isento — Comissionado/Chefe"
         : status === "AFASTAMENTO" && obs
           ? obs
           : status === "FERIADO" && obs
             ? obs
             : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
               ? obs
-              : label}
+              : status === "OK" && modalidade
+                ? `OK - ${modalidade}`
+                : label}
     </span>
   );
 }
@@ -5000,11 +5345,17 @@ function HorasCellH({ min, status }: { min: number; status: StatusDia }) {
 function SaldoCellH({
   trabMin,
   jornadaMin,
-  status
+  status,
+  descontoMin = 0,
+  saldoBancoMin
 }: {
   trabMin: number;
   jornadaMin: number;
   status: StatusDia;
+  /** Minutos de HE rejeitada que não entram no saldo. */
+  descontoMin?: number;
+  /** Saldo do banco de horas (fonte única): quando presente, é o que se mostra. */
+  saldoBancoMin?: number;
 }) {
   if (
     status === "FUTURO" ||
@@ -5015,15 +5366,16 @@ function SaldoCellH({
   )
     return <span style={{ color: "var(--ink-500)" }}>—</span>;
   if (status === "FALTA") {
-    const h = Math.floor(jornadaMin / 60);
-    const m = jornadaMin % 60;
+    const falta = saldoBancoMin !== undefined ? Math.abs(saldoBancoMin) : jornadaMin;
+    const h = Math.floor(falta / 60);
+    const m = falta % 60;
     return (
       <span style={{ color: "var(--red)" }}>
         −{h}h{String(m).padStart(2, "0")}
       </span>
     );
   }
-  const s = trabMin - jornadaMin;
+  const s = saldoBancoMin ?? trabMin - jornadaMin - descontoMin;
   return (
     <span
       style={{
@@ -5064,7 +5416,7 @@ function ModalObsH({
   onClose
 }: {
   dia: string;
-  observacoes: { data: string; texto: string }[];
+  observacoes: { data: string; texto: string; tipo?: string }[];
   onClose: () => void;
 }) {
   return (
@@ -5132,7 +5484,11 @@ function ModalObsH({
                 {textoObsLeg(o.texto)}
               </p>
               <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--ink-400)" }}>
-                Registrado em {fmtObsDt(o.data)}
+                {o.tipo === TIPO_OBS_HORA_EXTRA
+                  ? "Banco de horas · hora extra"
+                  : o.tipo === TIPO_OBS_INTERJORNADA
+                    ? "Descanso de interjornada"
+                    : `Registrado em ${fmtObsDt(o.data)}`}
               </p>
             </div>
           ))}
@@ -5161,6 +5517,14 @@ interface AtestadoDetalheH {
     creditoMin: number;
     toleranciaMin: number;
     horaRetorno: string;
+  } | null;
+  /** Ida: saída do trabalho antes do início do atestado. */
+  deslocamentoIda?: {
+    deslocamentoRealMin: number;
+    creditoMin: number;
+    toleranciaMin: number;
+    horaSaida: string;
+    paraAlmoco: boolean;
   } | null;
 }
 
@@ -5348,9 +5712,24 @@ function ModalAtestadoDetalheH({
                     : "—"
                 }
               />
+              {a.deslocamentoIda && (
+                <LinhaDetalheAtestadoH
+                  label="Deslocamento (ida)"
+                  valor={
+                    `Saída registrada às ${a.deslocamentoIda.horaSaida}` +
+                    (a.deslocamentoIda.paraAlmoco
+                      ? " (para o almoço; almoço mínimo descontado)"
+                      : "") +
+                    ` — creditados ${a.deslocamentoIda.creditoMin} min` +
+                    (a.deslocamentoIda.deslocamentoRealMin > a.deslocamentoIda.creditoMin
+                      ? ` (deslocamento real de ${a.deslocamentoIda.deslocamentoRealMin} min, limitado pela tolerância de ${a.deslocamentoIda.toleranciaMin} min)`
+                      : "")
+                  }
+                />
+              )}
               {a.deslocamento && (
                 <LinhaDetalheAtestadoH
-                  label="Tempo de deslocamento"
+                  label="Deslocamento (volta)"
                   valor={
                     `Retorno registrado às ${a.deslocamento.horaRetorno} — creditados ${a.deslocamento.creditoMin} min` +
                     (a.deslocamento.atrasoRealMin > a.deslocamento.creditoMin
@@ -5903,13 +6282,106 @@ function ModalCorrecaoRH({
   );
 }
 
+/**
+ * Perfil do RH na Auditoria: restringe só quem acessa como RH (não gestor, não Gerente de
+ * RH/super admin) — chefes continuam usando a Auditoria para a própria equipe.
+ */
+function usePodeAuditoria(): (recurso: string) => boolean {
+  const { user, hasRole, podeRh } = useAuth();
+  const admin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  const gestor = hasRole("gestor") || hasRole("GESTOR_APROVACAO");
+  const restrito = !admin && !gestor && hasRole("RH_AUDITORIA");
+  return (recurso: string) => !restrito || podeRh(recurso);
+}
+
+/** Fechamentos do banco por mudança de situação (virou chefe/fiscal/assessor ou voltou a bater). */
+function FechamentosSituacaoCard({
+  funcionarioId,
+  token
+}: {
+  funcionarioId: string;
+  token: string;
+}) {
+  const [lista, setLista] = useState<Array<{
+    id: string;
+    dataMudanca: string;
+    de: string;
+    para: string;
+    paraSemRegistro: boolean;
+    saldoMinutos: number;
+    alteradoPorNome: string | null;
+  }> | null>(null);
+  useEffect(() => {
+    api
+      .get<NonNullable<typeof lista>>(
+        `/auditoria/funcionarios/${funcionarioId}/fechamentos-situacao`,
+        token
+      )
+      .then(setLista)
+      .catch(() => setLista([]));
+  }, [funcionarioId, token]);
+  if (!lista || lista.length === 0) return null;
+  const hm = (m: number) =>
+    `${m < 0 ? "-" : ""}${Math.floor(Math.abs(m) / 60)}h${String(Math.abs(m) % 60).padStart(2, "0")}`;
+  return (
+    <div
+      style={{
+        padding: "10px 14px",
+        border: "1px solid rgba(122,30,38,0.12)",
+        borderRadius: "var(--radius-lg)",
+        background: "var(--cream-50)",
+        fontSize: 12.5
+      }}
+    >
+      <p style={{ margin: "0 0 6px", fontWeight: 700, color: "var(--burgundy-600)" }}>
+        🔒 Fechamentos por mudança de situação
+      </p>
+      {lista.map((f) => (
+        <p key={f.id} style={{ margin: "0 0 4px", color: "var(--ink-700)" }}>
+          <strong>{f.dataMudanca.split("-").reverse().join("/")}</strong>: {f.de} → {f.para} · saldo
+          do banco na data <strong>{hm(f.saldoMinutos)}</strong>
+          {f.alteradoPorNome ? ` · por ${f.alteradoPorNome}` : ""}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/** Liberação de tempo do banco para abono: só para o RH com a função no perfil. */
+function PainelLiberacaoBancoRh({
+  funcionarioId,
+  token,
+  onAtualizado
+}: {
+  funcionarioId: string;
+  token: string;
+  onAtualizado: () => void;
+}) {
+  const { user, hasRole } = useAuth();
+  const podeAuditoria = usePodeAuditoria();
+  const papelRh =
+    !!user?.isSuperAdmin ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN") ||
+    hasRole("RH_AUDITORIA");
+  if (!papelRh || !podeAuditoria("auditoria.funcionarios.liberar-banco-horas")) return null;
+  return (
+    <LiberarBancoHorasRh funcionarioId={funcionarioId} token={token} onAtualizado={onAtualizado} />
+  );
+}
+
 function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; token: string }) {
+  const podeAuditoria = usePodeAuditoria();
+  const podeCorrigirPonto = podeAuditoria("auditoria.funcionarios.corrigir-ponto");
   const hoje = new Date();
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
   const [dias, setDias] = useState<DiaHist[]>([]);
+  /* Saldo por dia do banco de horas do mês (mesma conta da página do funcionário). */
+  const [bancoMesDias, setBancoMesDias] = useState<Record<string, number>>({});
   const [rawPorDia, setRawPorDia] = useState<Record<string, ApiRegHist[]>>({});
   const [periodoLocked, setPeriodoLocked] = useState(false);
+  const [rotuloModalidadePorDia, setRotuloModalidadePorDia] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [modalObs, setModalObs] = useState<{
     dia: string;
@@ -5925,14 +6397,35 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
     setLoading(true);
     setFeedbackEnviada(false);
     try {
+      api
+        .get<{
+          dias: Array<{ data: string; saldoDiaMinutos: number; movimentoRhMinutos?: number }>;
+        }>(`/auditoria/funcionarios/${funcionarioId}/banco-horas/mes?mes=${mes}&ano=${ano}`, token)
+        .then((b) =>
+          setBancoMesDias(
+            Object.fromEntries(
+              (b?.dias ?? []).map((d) => [d.data, d.saldoDiaMinutos - (d.movimentoRhMinutos ?? 0)])
+            )
+          )
+        )
+        .catch(() => setBancoMesDias({}));
       const [regsRaw, afastsRaw, assinData, feriadosRaw, cfgRaw] = await Promise.all([
         api.get<{
           registros: ApiRegHist[];
           categoria?: string | null;
           jornada?: JornadaHistorico;
           periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+          periodosCessao?: Array<{ inicio: string; fim: string | null }>;
           feriados?: ApiFeriadoH[];
           inicioAtividades?: string | null;
+          contextoHoraExtra?: ContextoHoraExtraPeriodo;
+          interjornadaPorDia?: Record<string, InterjornadaDia>;
+          rotuloModalidadePorDia?: Record<string, string>;
+          cicloCompletoEmCasa?: { desde: string | null; dias: string[] };
+          cicloCompletoPresencial?: {
+            desde: string | null;
+            porDia: Record<string, ExigenciaCicloPresencial>;
+          };
         }>(`/auditoria/funcionarios/${funcionarioId}/registros?mes=${mes}&ano=${ano}`, token),
         api.get<{ afastamentos: ApiAfast[] }>(
           `/auditoria/afastamentos?funcionarioId=${funcionarioId}&limit=200`,
@@ -5966,7 +6459,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       const regs = regsRaw?.registros ?? [];
       const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
       const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
-      const exigirIntervalo = regsRaw?.categoria !== "ESTAGIARIO";
+      const exigirIntervalo = !categoriaSemIntervaloAlmoco(regsRaw?.categoria);
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
       const feriados = normalizarFeriadosH(
         (regsRaw?.feriados && regsRaw.feriados.length > 0 ? regsRaw.feriados : null) ?? feriadosRaw
@@ -5986,6 +6479,12 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       }
       setRawPorDia(byDay);
 
+      const interjornadaDias = regsRaw?.interjornadaPorDia ?? {};
+      setRotuloModalidadePorDia(regsRaw?.rotuloModalidadePorDia ?? {});
+      const contextoHe: ContextoHoraExtraPeriodo = regsRaw?.contextoHoraExtra ?? {
+        dias: {},
+        padrao: { situacao: "SEM_SOLICITACAO", remoto: false }
+      };
       setDias(
         buildHistorico(
           regs,
@@ -5999,8 +6498,41 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           jornada,
           periodosSemObrigacao,
           exigirIntervalo,
-          regsRaw?.inicioAtividades
-        )
+          regsRaw?.inicioAtividades,
+          regsRaw?.periodosCessao ?? [],
+          regsRaw?.cicloCompletoEmCasa?.dias ?? [],
+          regsRaw?.cicloCompletoPresencial?.porDia ?? {}
+        ).map((dia) => {
+          const [dd, mm, aa] = dia.data.split("/");
+          const iso = `${aa}-${mm}-${dd}`;
+          let d = dia;
+          /* Mesma regra do banco de horas: sem aprovação, em casa nada entra e no
+             presencial só até o limite; aprovada, entra tudo. */
+          if (
+            (d.status === "OK" || d.status === "PENDENTE" || d.status === "INCONSISTENTE") &&
+            d.jornadaMin > 0
+          ) {
+            const { ajuste } = aplicarRegraHoraExtra(
+              d.horasMin - d.jornadaMin,
+              contextoDoDia(contextoHe, iso),
+              jornada.horaExtraLimiteAuto
+            );
+            if (ajuste) {
+              d = {
+                ...d,
+                heRejeitadoMin: ajuste.naoCreditadoMin,
+                observacoes: [...(d.observacoes ?? []), observacaoHoraExtra(ajuste)]
+              };
+            }
+          }
+          /* Entrada com descanso de interjornada abaixo do mínimo (se a correção aprovada
+             já deixou a nota no registro, não repete). */
+          const inter = interjornadaDias[iso];
+          if (inter && !(d.observacoes ?? []).some((o) => /interjornada/i.test(o.texto))) {
+            d = { ...d, observacoes: [...(d.observacoes ?? []), observacaoInterjornada(inter)] };
+          }
+          return d;
+        })
       );
 
       // Bloqueia edição se o período estiver concluído (assinado pelos dois)
@@ -6042,10 +6574,11 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
     year: "numeric"
   });
   const totalTrab = dias
-    .filter((r) => r.status === "OK" || r.status === "PENDENTE")
+    .filter((r) => r.status === "OK" || r.status === "PENDENTE" || r.status === "INCONSISTENTE")
     .reduce((s, r) => s + r.horasMin, 0);
   const totalOK = dias.filter((r) => r.status === "OK").length;
   const totalFaltas = dias.filter((r) => r.status === "FALTA").length;
+  const totalInconsistentes = dias.filter((r) => r.status === "INCONSISTENTE").length;
   const totalAfasts = dias.filter((r) => r.status === "AFASTAMENTO").length;
   const totalUteis = dias.filter(
     (r) =>
@@ -6211,6 +6744,14 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
         </button>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <span className="badge badge-green">{totalOK} dias OK</span>
+          {totalInconsistentes > 0 && (
+            <span
+              className="badge badge-orange"
+              title="Dias com registro iniciado e não completado"
+            >
+              {totalInconsistentes} inconsistente{totalInconsistentes !== 1 ? "s" : ""}
+            </span>
+          )}
           {totalFaltas > 0 && (
             <span className="badge badge-red">
               {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
@@ -6290,6 +6831,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                   return `${a}-${m}-${d}`;
                 })();
                 const podeEditar =
+                  podeCorrigirPonto &&
                   !periodoLocked &&
                   !isHoje &&
                   r.status !== "FUTURO" &&
@@ -6399,6 +6941,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                         trabMin={r.horasMin}
                         jornadaMin={r.jornadaMin}
                         status={r.status}
+                        descontoMin={r.heRejeitadoMin}
+                        saldoBancoMin={bancoMesDias[isoKey]}
                       />
                     </td>
                     <td className="cell-status">
@@ -6416,6 +6960,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                           atestadoParcial={r.atestadoParcial}
                           atestadoParcialHorario={r.atestadoParcialHorario}
                           onClickAtestado={() => setModalAtestado({ data: isoKey })}
+                          modalidade={rotuloModalidadePorDia[isoKey]}
                         />
                         <BotaoObsH
                           observacoes={r.observacoes ?? []}
@@ -6495,7 +7040,17 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                     {Math.floor(totalTrab / 60)}h{String(totalTrab % 60).padStart(2, "0")}
                   </td>
                   <td>
-                    <SaldoCellH trabMin={totalTrab} jornadaMin={totalJornadaMin} status="OK" />
+                    <SaldoCellH
+                      trabMin={totalTrab}
+                      jornadaMin={totalJornadaMin}
+                      status="OK"
+                      descontoMin={dias.reduce((s, r) => s + (r.heRejeitadoMin ?? 0), 0)}
+                      saldoBancoMin={
+                        Object.keys(bancoMesDias).length
+                          ? Object.values(bancoMesDias).reduce((s, v) => s + v, 0)
+                          : undefined
+                      }
+                    />
                   </td>
                   <td colSpan={2} />
                 </tr>
@@ -6509,10 +7064,14 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
         <InfoIcon size={13} style={{ color: "var(--ink-500)" }} />
         {[
-          { cls: "badge-green", l: "Jornada completa" },
-          { cls: "badge-amber", l: "Pendente (saída não registrada)" },
-          { cls: "badge-red", l: "Falta" },
-          { cls: "badge-blue", l: "Afastamento / Atestado médico parcial" },
+          {
+            cls: "badge-green",
+            l: "OK / OK - Home Office / OK - Híbrido (ciclo de batidas completo)"
+          },
+          { cls: "badge-amber", l: "Em andamento (dia de hoje)" },
+          { cls: "badge-orange", l: "Inconsistente (registro iniciado e não completado)" },
+          { cls: "badge-red", l: "Falta (nenhum registro no dia)" },
+          { cls: "badge-blue", l: "Afastamento / Atestado médico" },
           { cls: "badge-gray", l: "Feriado ou sem expediente" }
         ].map((item) => (
           <span
@@ -6538,15 +7097,70 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
 }
 
 /* ─── Painel de Férias do funcionário (sub-aba) ─── */
+const STATUS_FERIAS_AJUSTAVEIS = [
+  "APROVADA",
+  "PENDENTE",
+  "AGUARDANDO_RH",
+  "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+  "AGUARDANDO_GESTOR_RH"
+];
+
 function PainelFerias({
   saldo,
   historico,
-  onRecarregar
+  onRecarregar,
+  funcionarioId,
+  token
 }: {
   saldo: SaldoFerias | null;
   historico: Solicitacao[];
   onRecarregar: () => void;
+  funcionarioId: string;
+  token: string;
 }) {
+  /* Configuração pelo RH: perfil com a função "Agendar, alterar e cancelar férias". */
+  const { user: usuarioAtual, hasRole } = useAuth();
+  const papelRh =
+    !!usuarioAtual?.isSuperAdmin ||
+    hasRole("ponto-admin") ||
+    hasRole("PONTO_ADMIN") ||
+    hasRole("RH_AUDITORIA");
+  const podeAuditoriaFerias = usePodeAuditoria();
+  const podeConfigurar = papelRh && podeAuditoriaFerias("auditoria.funcionarios.ferias");
+  const [formRh, setFormRh] = useState<{ alterar: Solicitacao | null } | null>(null);
+  const [cancelando, setCancelando] = useState<Solicitacao | null>(null);
+  const [justCancel, setJustCancel] = useState("");
+  const [enviandoCancel, setEnviandoCancel] = useState(false);
+  const [msgRh, setMsgRh] = useState<{ ok: boolean; texto: string } | null>(null);
+
+  /* O formulário (alterar/agendar) e a confirmação de cancelamento ficam no topo do painel,
+     longe dos botões do histórico: leva a tela até eles para o clique ter efeito visível. */
+  const painelRhRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (formRh || cancelando) {
+      painelRhRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [formRh, cancelando]);
+
+  async function confirmarCancelamento() {
+    if (!cancelando) return;
+    setEnviandoCancel(true);
+    try {
+      await api.post(
+        `/auditoria/rh/funcionarios/${funcionarioId}/ferias/${cancelando.id}/cancelar`,
+        { justificativa: justCancel.trim() },
+        token
+      );
+      setMsgRh({ ok: true, texto: "Férias canceladas. O funcionário e o chefe foram avisados." });
+      setCancelando(null);
+      setJustCancel("");
+      onRecarregar();
+    } catch (e) {
+      setMsgRh({ ok: false, texto: (e as Error).message || "Não foi possível cancelar." });
+    } finally {
+      setEnviandoCancel(false);
+    }
+  }
   const statusBadge: Record<string, { label: string; cls: string }> = {
     PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
@@ -6560,6 +7174,143 @@ function PainelFerias({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Configuração de férias pelo RH */}
+      {podeConfigurar && (
+        <div
+          ref={painelRhRef}
+          style={{
+            scrollMarginTop: 80,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: "12px 14px",
+            border: "1px dashed rgba(122,30,38,0.30)",
+            borderRadius: "var(--radius-lg)",
+            background: "rgba(122,30,38,0.02)"
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap"
+            }}
+          >
+            <div>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--burgundy-600)" }}>
+                🏢 Configuração de férias pelo RH
+              </p>
+              <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
+                Agende, altere ou cancele as férias deste funcionário. Fica no histórico com a tag
+                “Feito pelo RH” e o funcionário e o chefe são avisados.
+              </p>
+            </div>
+            {!formRh && saldo && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  setMsgRh(null);
+                  setFormRh({ alterar: null });
+                }}
+              >
+                ＋ Agendar férias
+              </button>
+            )}
+          </div>
+          {msgRh && (
+            <p
+              style={{
+                margin: 0,
+                fontSize: 12.5,
+                color: msgRh.ok ? "var(--green)" : "var(--red)"
+              }}
+            >
+              {msgRh.ok ? "✓ " : ""}
+              {msgRh.texto}
+            </p>
+          )}
+          {formRh && saldo && (
+            <FormFeriasRh
+              key={formRh.alterar?.id ?? "novo"}
+              funcionarioId={funcionarioId}
+              token={token}
+              ciclos={saldo.ciclos ?? []}
+              isEstagiario={!!saldo.isEstagiario}
+              alterar={
+                formRh.alterar
+                  ? {
+                      id: formRh.alterar.id,
+                      metadados: formRh.alterar.metadados as Record<string, unknown> | null
+                    }
+                  : null
+              }
+              onCancelar={() => setFormRh(null)}
+              onConcluido={(texto) => {
+                setFormRh(null);
+                setMsgRh({ ok: true, texto });
+                onRecarregar();
+              }}
+            />
+          )}
+          {cancelando && (
+            <div
+              style={{
+                padding: "10px 12px",
+                border: "1px solid rgba(200,57,63,0.25)",
+                background: "rgba(200,57,63,0.04)",
+                borderRadius: "var(--radius-md)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8
+              }}
+            >
+              <strong style={{ fontSize: 12.5, color: "var(--red)" }}>
+                Cancelar estas férias? Os afastamentos serão removidos e o saldo liberado.
+              </strong>
+              <textarea
+                rows={2}
+                value={justCancel}
+                onChange={(e) => setJustCancel(e.target.value)}
+                placeholder="Justificativa do RH (obrigatória, mín. 10 caracteres)"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "8px 10px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  fontSize: 12.5
+                }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ background: "var(--red)", color: "#fff" }}
+                  disabled={enviandoCancel || justCancel.trim().length < 10}
+                  onClick={() => void confirmarCancelamento()}
+                >
+                  {enviandoCancel ? "Cancelando…" : "Confirmar cancelamento"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={enviandoCancel}
+                  onClick={() => {
+                    setCancelando(null);
+                    setJustCancel("");
+                  }}
+                >
+                  Voltar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Saldo */}
       {saldo ? (
         <div
@@ -6751,14 +7502,13 @@ function PainelFerias({
                       }}
                     >
                       {s.guiaMedicoUrl && (
-                        <LinkDocumentoAnexado
-                          href={s.guiaMedicoUrl}
-                          label="Ver documento — Folha de pagamento de férias"
-                          variant="folha"
+                        <LinksDocumentosFerias
+                          meta={s.metadados as Record<string, unknown> | null}
+                          guiaMedicoUrl={s.guiaMedicoUrl}
                           style={{ marginTop: 0 }}
                         />
                       )}
-                      {s.documentoRetornoUrl && (
+                      {s.documentoRetornoUrl && !Array.isArray(meta?.documentosFerias) && (
                         <LinkDocumentoAnexado
                           href={s.documentoRetornoUrl}
                           label="Ver documento — Folha assinada"
@@ -6793,6 +7543,74 @@ function PainelFerias({
                     </p>
                   )}
                 </div>
+                {meta?.origem === "RH" && s.status === "PENDENTE" && (
+                  <p
+                    style={{
+                      margin: 0,
+                      flexBasis: "100%",
+                      fontSize: 12,
+                      color: "#8a6a00",
+                      background: "rgba(247,196,55,0.10)",
+                      border: "1px solid rgba(247,196,55,0.30)",
+                      borderRadius: "var(--radius-md)",
+                      padding: "6px 10px"
+                    }}
+                  >
+                    Próximo passo: o <strong>chefe imediato</strong> precisa aprovar esta
+                    programação. Depois, em{" "}
+                    <Link to="/ponto/aprovacoes" style={{ color: "var(--burgundy-600)" }}>
+                      Aprovações (etapa RH)
+                    </Link>
+                    , anexar o Aviso e o Recibo de Férias para a assinatura do funcionário.
+                  </p>
+                )}
+                {meta?.origem === "RH" && s.status === "AGUARDANDO_RH" && (
+                  <p
+                    style={{
+                      margin: 0,
+                      flexBasis: "100%",
+                      fontSize: 12,
+                      color: "#8a6a00",
+                      background: "rgba(247,196,55,0.10)",
+                      border: "1px solid rgba(247,196,55,0.30)",
+                      borderRadius: "var(--radius-md)",
+                      padding: "6px 10px"
+                    }}
+                  >
+                    Próximo passo: em{" "}
+                    <Link to="/ponto/aprovacoes" style={{ color: "var(--burgundy-600)" }}>
+                      Aprovações (etapa RH)
+                    </Link>
+                    , anexar o Aviso e o Recibo de Férias para a assinatura do funcionário.
+                  </p>
+                )}
+                {podeConfigurar && STATUS_FERIAS_AJUSTAVEIS.includes(s.status) && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setMsgRh(null);
+                        setCancelando(null);
+                        setFormRh({ alterar: s });
+                      }}
+                    >
+                      Alterar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: "var(--red)" }}
+                      onClick={() => {
+                        setMsgRh(null);
+                        setFormRh(null);
+                        setCancelando(s);
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -7010,7 +7828,12 @@ function TabelaAfastamentos({
         const cor = corTipo[a.tipo] ?? "#6b7280";
         const inicio = new Date(a.dataInicio);
         const fim = new Date(a.dataFim);
-        const dias = Math.ceil((fim.getTime() - inicio.getTime()) / 86400000) + 1;
+        /* Dias do calendário de Brasília (o fim é 23:59:59 do último dia). */
+        const dias = (() => {
+          const [y1, m1, d1] = dataCivilPeriodo(a.dataInicio).split("-").map(Number);
+          const [y2, m2, d2] = dataCivilPeriodo(a.dataFim).split("-").map(Number);
+          return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000) + 1;
+        })();
         const hoje = new Date();
         const ativo = inicio <= hoje && fim >= hoje;
         return (
@@ -7043,7 +7866,7 @@ function TabelaAfastamentos({
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: cor }}>
-                  {tipoAfastamentoLabel(a.tipo)}
+                  {a.rotulo || tipoAfastamentoLabel(a.tipo)}
                 </span>
                 {ativo && <Badge label="Ativo" bg="rgba(47,125,79,0.12)" color="#2f7d4f" />}
                 <span style={{ fontSize: 11, color: "var(--ink-500)" }}>
@@ -7315,11 +8138,15 @@ function BancoHorasDiasTabela({ dados }: { dados: BancoHorasFuncionarioDetalhe }
               </thead>
               <tbody>
                 {diasMes.map((d) => {
-                  const neutro = !!d.observacao;
+                  const neutro = !!d.observacao && !d.liberacaoRh;
                   return (
                     <tr
                       key={d.data}
-                      style={neutro ? { background: "rgba(247,196,55,0.06)" } : undefined}
+                      style={
+                        neutro || d.liberacaoRh
+                          ? { background: "rgba(247,196,55,0.06)" }
+                          : undefined
+                      }
                     >
                       <td style={{ textTransform: "capitalize" }}>
                         {fmtDataCurta(d.data)}
@@ -7657,6 +8484,7 @@ function TabBancoHorasGeral({ token }: { token: string }) {
 ═══════════════════════════════════════════════ */
 
 function TabPeriodos({ token }: { token: string }) {
+  const podePeriodos = usePodeAuditoria()("auditoria.banco-horas.periodos");
   const [subTab, setSubTab] = useState<"saldo" | "fechamento">("saldo");
   const [periodos, setPeriodos] = useState<Periodo[]>([]);
   const [total, setTotal] = useState(0);
@@ -7714,6 +8542,9 @@ function TabPeriodos({ token }: { token: string }) {
       );
       setModalPeriodo(null);
       carregar(page);
+    } catch (e) {
+      /* Ex.: tentativa de fechar/aprovar o próprio período — o backend recusa. */
+      alert((e as Error).message || "Não foi possível atualizar o período.");
     } finally {
       setSalvando(false);
     }
@@ -7911,7 +8742,7 @@ function TabPeriodos({ token }: { token: string }) {
                     </span>
                     <Badge label={sb.label} bg={sb.bg} color={sb.color} />
                     <div style={{ display: "flex", gap: 4 }}>
-                      {p.status === "ABERTO" && (
+                      {podePeriodos && p.status === "ABERTO" && (
                         <button
                           onClick={() => setModalPeriodo({ p, acao: "FECHADO" })}
                           style={{
@@ -7929,7 +8760,7 @@ function TabPeriodos({ token }: { token: string }) {
                           Fechar
                         </button>
                       )}
-                      {p.status === "FECHADO" && (
+                      {podePeriodos && p.status === "FECHADO" && (
                         <button
                           onClick={() => setModalPeriodo({ p, acao: "APROVADO" })}
                           style={{
@@ -8742,6 +9573,7 @@ const TD_ELLIPSIS = {
 };
 
 function TabValidacoes({ token }: { token: string }) {
+  const podeGerarAssinaturas = usePodeAuditoria()("auditoria.validacoes.gerar");
   const agora = new Date();
   const [gerencias, setGerencias] = useState<{ id: string; nome: string; sigla: string }[]>([]);
   const [assinaturas, setAssinaturas] = useState<AssinaturaRH[]>([]);
@@ -8761,7 +9593,8 @@ function TabValidacoes({ token }: { token: string }) {
     null
   );
   const [erroCodigo, setErroCodigo] = useState("");
-  const [gerandoMes, setGerandoMes] = useState(false);
+  /* Geração manual: abre a prévia com quem está apto (ou não) a receber a assinatura. */
+  const [modalGerar, setModalGerar] = useState(false);
   const [msgGerar, setMsgGerar] = useState("");
 
   const buscandoPorCodigo = codigoBusca.trim().length > 0;
@@ -8826,26 +9659,8 @@ function TabValidacoes({ token }: { token: string }) {
       .catch(() => setGerencias([]));
   }, [token]);
 
-  async function gerarSolicitacoes() {
-    setGerandoMes(true);
-    setMsgGerar("");
-    try {
-      const r = await api.post<{ criadas: number; ignoradas: number }>(
-        "/auditoria/assinaturas/gerar-mes",
-        { mes, ano },
-        token
-      );
-      setMsgGerar(`${r.criadas} assinaturas criadas, ${r.ignoradas} já existiam.`);
-      carregar();
-    } catch (e) {
-      setMsgGerar("Erro: " + ((e as Error).message ?? "desconhecido"));
-    } finally {
-      setGerandoMes(false);
-    }
-  }
-
-  function baixarPdf(id: string, matricula: string, m: number, a: number) {
-    const filename = `quadro-${matricula}-${String(m).padStart(2, "0")}-${a}.pdf`;
+  function baixarPdf(id: string, nomePessoa: string, m: number, a: number) {
+    const filename = nomeArquivoRelatorioMes(m, a, { nomePessoa });
     api
       .download(`/auditoria/assinaturas/${id}/pdf`, filename, token)
       .catch((e: unknown) =>
@@ -9019,21 +9834,40 @@ function TabValidacoes({ token }: { token: string }) {
           <button className="btn btn-ghost btn-sm" onClick={carregar} style={{ gap: 5 }}>
             <RefreshCwIcon size={13} /> Atualizar
           </button>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={gerarSolicitacoes}
-            disabled={gerandoMes}
-            style={{
-              gap: 5,
-              background: "var(--burgundy-700)",
-              borderColor: "var(--burgundy-700)"
-            }}
-          >
-            <Edit2Icon size={13} />
-            {gerandoMes ? "Gerando…" : `Gerar Assinaturas ${String(mes).padStart(2, "0")}/${ano}`}
-          </button>
+          {podeGerarAssinaturas && (
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                setMsgGerar("");
+                setModalGerar(true);
+              }}
+              style={{
+                gap: 5,
+                background: "var(--burgundy-700)",
+                borderColor: "var(--burgundy-700)"
+              }}
+            >
+              <Edit2Icon size={13} />
+              {`Gerar Assinaturas ${String(mes).padStart(2, "0")}/${ano}`}
+            </button>
+          )}
         </div>
       </div>
+
+      {modalGerar && (
+        <ModalGerarAssinaturas
+          mes={mes}
+          ano={ano}
+          token={token}
+          gerencias={gerencias}
+          onClose={() => setModalGerar(false)}
+          onGerado={(msg) => {
+            setModalGerar(false);
+            setMsgGerar(msg);
+            carregar();
+          }}
+        />
+      )}
 
       {msgGerar && (
         <div
@@ -9152,7 +9986,7 @@ function TabValidacoes({ token }: { token: string }) {
                         className="btn btn-ghost btn-sm"
                         title="Baixar PDF do quadro"
                         onClick={() =>
-                          baixarPdf(r.id, r.matricula ?? r.id, r.periodo!.mes, r.periodo!.ano)
+                          baixarPdf(r.id, r.funcionarioNome, r.periodo!.mes, r.periodo!.ano)
                         }
                         style={{ gap: 5 }}
                       >
@@ -9307,7 +10141,7 @@ function TabValidacoes({ token }: { token: string }) {
                         onClick={() =>
                           baixarPdf(
                             a.id,
-                            a.periodo.funcionario.matricula ?? a.id,
+                            a.periodo.funcionario.user.name,
                             a.periodo.mes,
                             a.periodo.ano
                           )
@@ -9376,11 +10210,13 @@ const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
   { id: "afastamentos", label: "Afastamentos", icon: <CalendarIcon size={14} /> },
   { id: "periodos", label: "Banco de Horas", icon: <TrendingUpIcon size={14} /> },
   { id: "logs", label: "Logs", icon: <ShieldCheckIcon size={14} /> },
-  { id: "validacoes", label: "Validações", icon: <CheckCircleIcon size={14} /> }
+  { id: "validacoes", label: "Validações", icon: <CheckCircleIcon size={14} /> },
+  { id: "saude", label: "Saúde Ocupacional", icon: <ActivityIcon size={14} /> }
 ];
 
 export function AuditoriaPage() {
-  const { user, token, hasRole } = useAuth();
+  const { user, token, hasRole, permissoesRhCarregadas } = useAuth();
+  const podeAuditoria = usePodeAuditoria();
   const [aba, setAba] = useState<Aba>("funcionarios");
   const [funcionariosStatusPonto, setFuncionariosStatusPonto] = useState<
     "" | "presente" | "ausente"
@@ -9396,6 +10232,24 @@ export function AuditoriaPage() {
   const isPontoAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
 
   const temAcesso = isRH || hasRole("gestor") || hasRole("GESTOR_APROVACAO");
+
+  /* Perfil do RH: só as abas liberadas (a aba "periodos" é o Banco de Horas no catálogo). */
+  const recursoDaAba: Record<Aba, string> = {
+    funcionarios: "auditoria.funcionarios",
+    registros: "auditoria.registros",
+    solicitacoes: "auditoria.solicitacoes",
+    afastamentos: "auditoria.afastamentos",
+    periodos: "auditoria.banco-horas",
+    logs: "auditoria.logs",
+    validacoes: "auditoria.validacoes",
+    saude: "saude.exames"
+  };
+  const abasPermitidas = ABAS.filter((a) => podeAuditoria(recursoDaAba[a.id]));
+  useEffect(() => {
+    if (abasPermitidas.length && !abasPermitidas.some((a) => a.id === aba)) {
+      setAba(abasPermitidas[0].id);
+    }
+  }, [abasPermitidas.map((a) => a.id).join(","), aba]);
 
   if (!temAcesso) {
     return (
@@ -9416,6 +10270,10 @@ export function AuditoriaPage() {
 
   if (!tk) {
     return <Loading />;
+  }
+
+  if (permissoesRhCarregadas && abasPermitidas.length === 0) {
+    return <SemAcessoRh pagina="Auditoria" />;
   }
 
   return (
@@ -9452,7 +10310,7 @@ export function AuditoriaPage() {
           paddingBottom: 0
         }}
       >
-        {ABAS.map((a) => (
+        {abasPermitidas.map((a) => (
           <button
             key={a.id}
             onClick={() => {
@@ -9497,6 +10355,7 @@ export function AuditoriaPage() {
       {aba === "periodos" && <TabPeriodos token={tk} />}
       {aba === "logs" && <TabLogs token={tk} />}
       {aba === "validacoes" && <TabValidacoes token={tk} />}
+      {aba === "saude" && <SaudeOcupacionalPage embutida />}
     </div>
   );
 }

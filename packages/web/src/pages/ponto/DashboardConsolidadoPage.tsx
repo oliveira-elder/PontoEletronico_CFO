@@ -18,6 +18,7 @@ import { PontoFrequenciaTab } from "./dashboard/PontoFrequenciaTab";
 import { AfastamentosTab } from "./dashboard/AfastamentosTab";
 import { SolicitacoesTab } from "./dashboard/SolicitacoesTab";
 import type { GestaoDashboardStats, AuditoriaDashboardData } from "./dashboard/types";
+import { SemAcessoRh } from "../../components/SemAcessoRh";
 
 type Categoria =
   | "visao-geral"
@@ -133,7 +134,7 @@ function ErroBox({ msg }: { msg: string }) {
 }
 
 export function DashboardConsolidadoPage() {
-  const { user, token, hasRole } = useAuth();
+  const { user, token, hasRole, podeRh, permissoesRhCarregadas } = useAuth();
   const tk = token();
   const isRH =
     !!user?.isSuperAdmin ||
@@ -142,6 +143,19 @@ export function DashboardConsolidadoPage() {
     hasRole("PONTO_ADMIN");
 
   const [categoria, setCategoria] = useState<Categoria>("visao-geral");
+  /* Perfil do RH: só as abas liberadas aparecem; os dados só são buscados se usados. */
+  const categoriasPermitidas = CATEGORIAS.filter((c) => podeRh(`dashboard.${c.id}`));
+  const usaGestao = categoriasPermitidas.some((c) =>
+    ["visao-geral", "perfil-diversidade", "alertas-eventos"].includes(c.id)
+  );
+  const usaAuditoria = categoriasPermitidas.some((c) =>
+    ["ponto-frequencia", "afastamentos", "solicitacoes"].includes(c.id)
+  );
+  useEffect(() => {
+    if (categoriasPermitidas.length && !categoriasPermitidas.some((c) => c.id === categoria)) {
+      setCategoria(categoriasPermitidas[0].id);
+    }
+  }, [categoriasPermitidas.map((c) => c.id).join(","), categoria]);
 
   const [gestaoStats, setGestaoStats] = useState<GestaoDashboardStats | null>(null);
   const [gestaoErro, setGestaoErro] = useState<string | null>(null);
@@ -157,7 +171,7 @@ export function DashboardConsolidadoPage() {
   const [auditoriaLoading, setAuditoriaLoading] = useState(true);
 
   const carregarGestao = useCallback(async () => {
-    if (!tk) return;
+    if (!tk || !usaGestao) return;
     setGestaoLoading(true);
     setGestaoErro(null);
     try {
@@ -168,10 +182,10 @@ export function DashboardConsolidadoPage() {
     } finally {
       setGestaoLoading(false);
     }
-  }, [tk]);
+  }, [tk, usaGestao]);
 
   const carregarAuditoria = useCallback(async () => {
-    if (!tk) return;
+    if (!tk || !usaAuditoria) return;
     setAuditoriaLoading(true);
     setAuditoriaErro(null);
     try {
@@ -187,7 +201,7 @@ export function DashboardConsolidadoPage() {
     } finally {
       setAuditoriaLoading(false);
     }
-  }, [tk, dataInicio, dataFim]);
+  }, [tk, dataInicio, dataFim, usaAuditoria]);
 
   useEffect(() => {
     void carregarGestao();
@@ -196,6 +210,10 @@ export function DashboardConsolidadoPage() {
   useEffect(() => {
     void carregarAuditoria();
   }, [carregarAuditoria]);
+
+  if (isRH && permissoesRhCarregadas && categoriasPermitidas.length === 0) {
+    return <SemAcessoRh pagina="Dashboard" />;
+  }
 
   if (!isRH) {
     return (
@@ -247,7 +265,7 @@ export function DashboardConsolidadoPage() {
           borderBottom: "2px solid rgba(122,30,38,0.08)"
         }}
       >
-        {CATEGORIAS.map((c) => (
+        {categoriasPermitidas.map((c) => (
           <button
             key={c.id}
             className="dashboard-categoria-nav-item"

@@ -1,4 +1,5 @@
-import { Injectable, Logger, BadRequestException } from "@nestjs/common";
+import { Injectable, Logger, BadRequestException, Optional } from "@nestjs/common";
+import { SeloIcpService } from "../selo-icp/selo-icp.service";
 import { join } from "path";
 import { mkdir, writeFile, unlink, readFile } from "fs/promises";
 import { existsSync, readFileSync } from "fs";
@@ -71,6 +72,17 @@ function formatDateTimeBr(d: Date): string {
 
 @Injectable()
 export class DocumentoService {
+  constructor(@Optional() private readonly seloIcp?: SeloIcpService) {}
+
+  /** Aplica o selo ICP-Brasil (e-CNPJ A1) ao PDF assinado, quando houver certificado. */
+  private async selarSeConfigurado(bytes: Uint8Array): Promise<Uint8Array> {
+    if (!this.seloIcp) return bytes;
+    const r = await this.seloIcp.selarPdf(Buffer.from(bytes), {
+      razaoSocial: "Conselho Federal de Odontologia"
+    });
+    return r.selado ? r.pdf : bytes;
+  }
+
   private readonly logger = new Logger(DocumentoService.name);
 
   private get baseDir(): string {
@@ -150,6 +162,39 @@ export class DocumentoService {
     await writeFile(join(dirPath, filename), buffer);
     const relUrl = `${this.urlPrefix}/guias-medicas/${filename}`;
     this.logger.log(`Guia médica salva → ${relUrl}`);
+    return relUrl;
+  }
+
+  /**
+   * Documento de férias enviado pelo RH (aviso, recibo, outros). Cada arquivo tem nome
+   * próprio — a folha antiga usava `<id>.pdf` e um envio sobrescreveria o outro.
+   */
+  async salvarDocumentoFerias(params: {
+    solicitacaoId: string;
+    ordem: number;
+    tipo: string;
+    arquivoBase64: string;
+    mimeType?: string;
+  }): Promise<string> {
+    const dirPath = join(this.baseDir, "folhas-ferias");
+    if (!existsSync(dirPath)) {
+      await mkdir(dirPath, { recursive: true });
+    }
+    const mime =
+      params.mimeType ??
+      /^data:([^;]+);base64,/.exec(params.arquivoBase64)?.[1] ??
+      "application/pdf";
+    const ext = mime.includes("png")
+      ? "png"
+      : mime.includes("jpeg") || mime.includes("jpg")
+        ? "jpg"
+        : "pdf";
+    const base64Data = params.arquivoBase64.replace(/^data:[^;]+;base64,/, "");
+    const tipo = params.tipo.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const filename = `${params.solicitacaoId}-${params.ordem}-${tipo}-${Date.now()}.${ext}`;
+    await writeFile(join(dirPath, filename), Buffer.from(base64Data, "base64"));
+    const relUrl = `${this.urlPrefix}/folhas-ferias/${filename}`;
+    this.logger.log(`Documento de férias salvo → ${relUrl}`);
     return relUrl;
   }
 
@@ -276,7 +321,7 @@ export class DocumentoService {
 
     const pdfFilename = `${solicitacaoId}.pdf`;
     const pdfPath = join(dirPath, pdfFilename);
-    const pdfBytes = await pdfDoc.save();
+    const pdfBytes = await this.selarSeConfigurado(await pdfDoc.save());
     await writeFile(pdfPath, pdfBytes);
 
     // Remove arquivo anterior se o path mudou (ex.: .jpg → .pdf ou id temporário)
@@ -289,12 +334,49 @@ export class DocumentoService {
     return relUrl;
   }
 
+  /**
+   * Funcionário assina pelo sistema um documento de férias enviado pelo RH: aplica o selo
+   * de assinatura digital (nome, data/hora de Brasília, IP, navegador, código) em todas as
+   * páginas e salva uma cópia assinada — o original do RH é mantido.
+   */
+  async assinarDocumentoFerias(params: {
+    documentoUrl: string;
+    solicitacaoId: string;
+    ordem: number;
+    assinatura: CienciaGestorAssinaturaMeta;
+  }): Promise<string> {
+    const filePath = this.resolveDocumentoPath(params.documentoUrl);
+    if (!existsSync(filePath)) {
+      throw new BadRequestException("Documento de férias não encontrado para assinatura.");
+    }
+    const fileBuf = await readFile(filePath);
+    const lower = params.documentoUrl.toLowerCase();
+    const pdfDoc = lower.endsWith(".pdf")
+      ? await PDFDocument.load(fileBuf, { ignoreEncryption: true })
+      : await this.imagemParaPdf(fileBuf, lower, "RODAPE");
+    await this.aplicarSeloCienciaGestor(pdfDoc, params.assinatura, "Assinado por", "RODAPE");
+
+    const dirPath = join(this.baseDir, "folhas-ferias");
+    if (!existsSync(dirPath)) {
+      await mkdir(dirPath, { recursive: true });
+    }
+    const filename = `${params.solicitacaoId}-${params.ordem}-assinado-${Date.now()}.pdf`;
+    await writeFile(join(dirPath, filename), await this.selarSeConfigurado(await pdfDoc.save()));
+    const relUrl = `${this.urlPrefix}/folhas-ferias/${filename}`;
+    this.logger.log(`Documento de férias assinado → ${relUrl}`);
+    return relUrl;
+  }
+
   private resolveDocumentoPath(url: string): string {
     const relative = url.replace(/^\/uploads\/documentos\//, "");
     return join(this.baseDir, relative);
   }
 
-  private async imagemParaPdf(imageBuf: Buffer, urlLower: string): Promise<PDFDocument> {
+  private async imagemParaPdf(
+    imageBuf: Buffer,
+    urlLower: string,
+    posicaoSelo: "TOPO" | "RODAPE" = "TOPO"
+  ): Promise<PDFDocument> {
     const pdfDoc = await PDFDocument.create();
     const isPng = urlLower.endsWith(".png");
     const embedded = isPng ? await pdfDoc.embedPng(imageBuf) : await pdfDoc.embedJpg(imageBuf);
@@ -303,8 +385,9 @@ export class DocumentoService {
     const A4_W = 595.28;
     const A4_H = 841.89;
     const marginX = 28;
-    const marginTop = 88; // espaço para selo/ciência no topo
-    const marginBottom = 28;
+    /* Espaço livre para o selo: no topo (atestado) ou no rodapé (documentos de férias). */
+    const marginTop = posicaoSelo === "TOPO" ? 88 : 28;
+    const marginBottom = posicaoSelo === "RODAPE" ? 88 : 28;
     const maxW = A4_W - marginX * 2;
     const maxH = A4_H - marginTop - marginBottom;
     const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
@@ -320,11 +403,15 @@ export class DocumentoService {
 
   private async aplicarSeloCienciaGestor(
     pdfDoc: PDFDocument,
-    assinatura: CienciaGestorAssinaturaMeta
+    assinatura: CienciaGestorAssinaturaMeta,
+    /** Rótulo da 1ª linha do selo: "Ciência" (chefe) ou "Assinado por" (funcionário). */
+    rotulo = "Ciência",
+    /** Topo (atestado) ou rodapé (documentos de férias), no canto esquerdo. */
+    posicao: "TOPO" | "RODAPE" = "TOPO"
   ): Promise<void> {
     const pages = pdfDoc.getPages();
     if (!pages.length) {
-      throw new BadRequestException("PDF do atestado não possui páginas.");
+      throw new BadRequestException("O PDF não possui páginas.");
     }
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -351,7 +438,7 @@ export class DocumentoService {
     const linhas: { text: string; size: number; bold?: boolean; color: ReturnType<typeof rgb> }[] =
       [
         {
-          text: `Ciência: ${assinatura.gestorNome}`,
+          text: `${rotulo}: ${assinatura.gestorNome}`,
           size: 7,
           bold: true,
           color: ink
@@ -373,10 +460,11 @@ export class DocumentoService {
         }
       ];
 
-    // Mesmo atesto em todas as páginas, canto superior esquerdo, sem fundo branco
+    // Mesmo atesto em todas as páginas, canto esquerdo (topo ou rodapé), sem fundo branco
     for (const page of pages) {
       const { height: pageH } = page.getSize();
-      const boxBottom = pageH - marginTop - boxH;
+      /* Rodapé: 24pt acima da borda para não cortar na impressão. */
+      const boxBottom = posicao === "RODAPE" ? 24 : pageH - marginTop - boxH;
 
       let textStartY = boxBottom + boxH - 12;
       if (selo) {

@@ -1,3 +1,5 @@
+import { parseObservacoes } from "./registro-observacoes";
+import { ehDiaAbonado } from "./feriado-rotulo";
 import {
   dataBrasiliaISO,
   dataCivilISO,
@@ -24,6 +26,8 @@ import {
 import { calcHorasTrabalhadasMinutos } from "./calc-horas-trabalhadas";
 import { observacaoForcaSemIntervalo } from "./turno-entrada";
 import { horarioParaMinutos } from "./horario-brasilia";
+import { cicloCompleto, cicloCompletoEmCasa, textoCicloIncompleto } from "./ciclo-completo";
+import type { ExigenciaCiclo } from "./ciclo-completo-presencial";
 
 export type { JornadaHistoricoContext };
 export { resolverJornadaHistoricoContexto };
@@ -45,6 +49,8 @@ export interface AfastamentoHistorico {
 export interface FeriadoHistorico {
   data: Date | string;
   nome: string;
+  /** "ABONO" = abono do RH (não é feriado): dia neutro, status = nome. */
+  tipo?: string | null;
   marcoHorario?: string | null;
   marcoLado?: string | null;
 }
@@ -54,7 +60,20 @@ export interface PausaPar {
   fim: string | null;
 }
 
-export type StatusDiaQuadro = "OK" | "FALTA" | "PENDENTE" | "AFASTAMENTO" | "FUTURO" | "FOLGA";
+/**
+ * FALTA = não houve nenhum registro no dia útil (o funcionário optou por faltar; o banco desconta).
+ * INCONSISTENTE = o registro foi iniciado e não foi completado corretamente (só entrada, intervalo
+ * ou pausa sem retorno, sem saída, intervalo exigido não registrado…). Impede assinar a folha.
+ * PENDENTE = dia de hoje, ainda em andamento.
+ */
+export type StatusDiaQuadro =
+  | "OK"
+  | "FALTA"
+  | "PENDENTE"
+  | "INCONSISTENTE"
+  | "AFASTAMENTO"
+  | "FUTURO"
+  | "FOLGA";
 
 export interface DiaQuadroPdf {
   iso: string;
@@ -71,6 +90,24 @@ export interface DiaQuadroPdf {
   statusInterno: StatusDiaQuadro;
   /** Multiplicador aplicado ao banco de horas neste dia (ex.: 200 = dobro). 100 = normal. */
   multiplicadorPct?: number;
+  /** Dia em casa sem o ciclo completo de batidas (o que falta, em texto). */
+  cicloIncompleto?: string;
+  /**
+   * Dia útil remunerado sem batidas (atestado, férias, licença, abono, isenção/cessão): conta
+   * como dia trabalhado. Falta, inconsistência, feriado e fim de semana não.
+   */
+  remunerado?: boolean;
+  /** Correções/inclusões aprovadas nas batidas do dia (texto "alterado de X para Y"). */
+  ajustes?: string[];
+  /** Mesmas correções, estruturadas: tipo da batida, horário anterior (null = inclusão) e novo. */
+  ajustesDetalhe?: Array<{ tipoRegistro: string; anterior: string | null; novo: string }>;
+  /** Hora extra creditada ao banco no dia (apuração do banco, com a regra de autorização). */
+  heAutorizadaMin?: number;
+  /** Hora extra apurada que não foi creditada (sem aprovação / acima do limite). */
+  heNaoAutorizadaMin?: number;
+  /** Débito e crédito do dia no banco de horas. */
+  debitoMin?: number;
+  creditoMin?: number;
 }
 
 export interface RelatorioQuadroMensal {
@@ -131,6 +168,38 @@ function calcHorasMinutosDia(
   );
 }
 
+/** Correções/inclusões aprovadas das batidas do dia, estruturadas. */
+function ajustesDetalheDoDia(
+  regs: RegistroHistorico[]
+): Array<{ tipoRegistro: string; anterior: string | null; novo: string }> {
+  const out: Array<{ tipoRegistro: string; anterior: string | null; novo: string }> = [];
+  for (const r of regs) {
+    for (const o of parseObservacoes(r.observacoes)) {
+      if ((o.tipo === "AJUSTE_HORARIO" || o.tipo === "INCLUSAO_PONTO") && o.horarioNovo) {
+        out.push({
+          tipoRegistro: o.tipoRegistro ?? r.tipo,
+          anterior: o.horarioAnterior ?? null,
+          novo: o.horarioNovo
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Textos das correções/inclusões aprovadas registradas nas batidas do dia. */
+function ajustesDoDia(regs: RegistroHistorico[]): string[] {
+  const out: string[] = [];
+  for (const r of regs) {
+    for (const o of parseObservacoes(r.observacoes)) {
+      if ((o.tipo === "AJUSTE_HORARIO" || o.tipo === "INCLUSAO_PONTO") && o.texto) {
+        out.push(o.texto);
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+
 function afastamentosDoDia(
   isoKey: string,
   afastamentos: AfastamentoHistorico[]
@@ -162,7 +231,9 @@ function statusPdfDe(status: StatusDiaQuadro, semRegistros: boolean): string {
     case "OK":
       return "Trabalhado";
     case "PENDENTE":
-      return "Pendente";
+      return "Em andamento";
+    case "INCONSISTENTE":
+      return "Inconsistente";
     case "FALTA":
       return semRegistros ? "Sem registro" : "Falta";
     case "AFASTAMENTO":
@@ -181,6 +252,18 @@ function statusPdfDe(status: StatusDiaQuadro, semRegistros: boolean): string {
  * - Feriados COM registros em dia útil → saldo multiplicado (feriadoPct).
  * - Feriados em dia útil sem registros → saldo neutro (0).
  */
+/**
+ * ÚNICA regra de "dias trabalhados" do sistema (modal de assinatura, folha, PDF, relatórios e
+ * PeriodoPonto): conta o dia com situação OK (inclui atestado parcial com horas trabalhadas) e
+ * o dia útil remunerado sem batidas (atestado, férias, licença, abono, isenção/cessão).
+ * Não contam: falta, inconsistente, em andamento, feriado, fim de semana e folga.
+ */
+export function contarDiasTrabalhados(
+  dias: Array<{ statusInterno: string; remunerado?: boolean }>
+): number {
+  return dias.filter((d) => d.statusInterno === "OK" || d.remunerado === true).length;
+}
+
 export function montarRelatorioQuadro(
   registros: RegistroHistorico[],
   afastamentos: AfastamentoHistorico[],
@@ -192,9 +275,53 @@ export function montarRelatorioQuadro(
   domingoPct = 200,
   feriadoPct = 200,
   inicioAtividades?: string | null,
-  opts?: { forcarSemIntervalo?: boolean }
+  opts?: {
+    forcarSemIntervalo?: boolean;
+    /** Dias em casa que exigem o ciclo completo de batidas para serem "OK". */
+    diasCicloCompletoEmCasa?: string[];
+    /** Ponto presencial: dias que exigem o ciclo (e o tipo de intervalo) pela jornada, com a lei. */
+    exigenciasCicloPresencial?: Record<string, ExigenciaCiclo>;
+    /** Dia sem obrigação de ponto (cessão/isenção): devolve o rótulo, ou null. */
+    diaNeutro?: (iso: string) => string | null;
+    /** Rótulo "Home Office"/"Híbrido" por dia (só quando bateu em casa). */
+    rotuloModalidadePorDia?: Record<string, string>;
+  }
 ): RelatorioQuadroMensal {
   const forcarSemIntervalo = !!opts?.forcarSemIntervalo;
+  const exigeCiclo = new Set(opts?.diasCicloCompletoEmCasa ?? []);
+  /* Dia em casa com as batidas incompletas deixa de ser OK (fica Pendente até regularizar). */
+  const aplicarCiclo = (
+    iso: string,
+    regs: RegistroHistorico[],
+    status: StatusDiaQuadro,
+    semIntervalo: boolean
+  ): { status: StatusDiaQuadro; cicloIncompleto?: string } => {
+    if (status !== "OK" || !exigeCiclo.has(iso)) return { status };
+    const r = cicloCompletoEmCasa(regs, { semIntervalo });
+    return r.completo
+      ? { status }
+      : { status: "INCONSISTENTE", cicloIncompleto: textoCicloIncompleto(r.faltas) };
+  };
+  const exigePresencial = opts?.exigenciasCicloPresencial ?? {};
+  /* Presencial: o dia só é OK com o intervalo que a jornada exige (almoço, ou almoço/pausa na
+     jornada curta e no turno que começa após a janela). Atestado que cobre o almoço e feriado
+     parcial dispensam. O intervalo automático do registro não conta como batida real. */
+  const aplicarCicloPresencial = (
+    iso: string,
+    regs: RegistroHistorico[],
+    status: StatusDiaQuadro,
+    dispensado: boolean,
+    turnoSemIntervalo: boolean
+  ): { status: StatusDiaQuadro; cicloIncompleto?: string } => {
+    const ex = exigePresencial[iso];
+    if (status !== "OK" || !ex || dispensado) return { status };
+    const r = cicloCompleto(regs, {
+      modoIntervalo: turnoSemIntervalo ? "ALMOCO_OU_PAUSA" : ex.modo
+    });
+    return r.completo
+      ? { status }
+      : { status: "INCONSISTENTE", cicloIncompleto: textoCicloIncompleto(r.faltas, false) };
+  };
   const hojeIso = hojeBrasiliaISO();
   const [hY, hM, hD] = hojeIso.split("-").map(Number);
   const hoje = new Date(hY, hM - 1, hD);
@@ -209,7 +336,12 @@ export function montarRelatorioQuadro(
   const feriadoMap = new Map(
     feriados.map((f) => [
       dataCivilISO(f.data),
-      { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
+      {
+        nome: f.nome,
+        abono: ehDiaAbonado(f),
+        marcoHorario: f.marcoHorario,
+        marcoLado: f.marcoLado
+      }
     ])
   );
 
@@ -225,6 +357,8 @@ export function montarRelatorioQuadro(
     const isHoje = iso === hojeIso;
     const feriadoDia = feriadoMap.get(iso);
     const dayRegs = byDay.get(iso) ?? [];
+    /* Dia de expediente da jornada (não é fim de semana/folga nem feriado). */
+    const diaUtilRemunerado = !fimDeSemana && jornadaEsperadaMin(iso, jornada) > 0 && !feriadoDia;
 
     if (isFuture) {
       dias.push({
@@ -263,6 +397,27 @@ export function montarRelatorioQuadro(
       continue;
     }
 
+    /* Cessão / período isento: dia neutro, sem falta nem saldo (mesma regra do banco). */
+    const rotuloNeutro = opts?.diaNeutro?.(iso) ?? null;
+    if (rotuloNeutro && !(fimDeSemana && dayRegs.length === 0)) {
+      dias.push({
+        iso,
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        pausas: [],
+        horasMin: 0,
+        horasFormatado: "—",
+        saldoMin: null,
+        saldoFormatado: "—",
+        status: rotuloNeutro,
+        statusInterno: "AFASTAMENTO",
+        remunerado: diaUtilRemunerado
+      });
+      continue;
+    }
+
     const afastamentosDia = afastamentosDoDia(iso, afastamentos);
     const afastamentoIntegral = afastamentosDia.find((a) => !isAfastamentoParcial(a));
     if (afastamentoIntegral) {
@@ -278,7 +433,29 @@ export function montarRelatorioQuadro(
         saldoMin: null,
         saldoFormatado: "—",
         status: "Afastamento",
-        statusInterno: "AFASTAMENTO"
+        statusInterno: "AFASTAMENTO",
+        /* Falta injustificada não é remunerada. */
+        remunerado: diaUtilRemunerado && afastamentoIntegral.tipo !== "FALTA_INJUSTIFICADA"
+      });
+      continue;
+    }
+
+    /* Abono do RH: dia neutro (mesmo com batidas) e status = nome cadastrado. */
+    if (feriadoDia?.abono) {
+      dias.push({
+        iso,
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        pausas: [],
+        horasMin: 0,
+        horasFormatado: "—",
+        saldoMin: null,
+        saldoFormatado: "—",
+        status: feriadoDia.nome,
+        statusInterno: "AFASTAMENTO",
+        remunerado: !fimDeSemana && jornadaEsperadaMin(iso, jornada) > 0
       });
       continue;
     }
@@ -339,11 +516,18 @@ export function montarRelatorioQuadro(
         statusInterno = "PENDENTE";
       } else if (entrada && inicioIntervalo) {
         horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
-        statusInterno = "PENDENTE";
+        statusInterno = "INCONSISTENTE";
       } else {
         horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
-        statusInterno = "PENDENTE";
+        statusInterno = isHoje ? "PENDENTE" : "INCONSISTENTE";
       }
+      const cicloFds = aplicarCiclo(
+        iso,
+        dayRegs,
+        statusInterno,
+        forcarSemIntervaloDia || !!feriadoDia?.marcoHorario
+      );
+      statusInterno = cicloFds.status;
       horasMin = Math.max(0, horasMin);
       // jornadaMin = 0 (não há jornada esperada no fim de semana); saldo = horas * multiplicador
       const saldoMin = Math.round((horasMin * pct) / 100);
@@ -361,7 +545,8 @@ export function montarRelatorioQuadro(
         saldoFormatado: fmtSaldoMin(saldoMin),
         status: `Trabalhado (${tipoLabel})`,
         statusInterno,
-        multiplicadorPct: pct
+        multiplicadorPct: pct,
+        ...(cicloFds.cicloIncompleto ? { cicloIncompleto: cicloFds.cicloIncompleto } : {})
       });
       continue;
     }
@@ -414,7 +599,8 @@ export function montarRelatorioQuadro(
           saldoMin: -jornadaMin,
           saldoFormatado: jornadaMin === 0 ? "—" : fmtSaldoMin(-jornadaMin),
           status: labelAtestadosParciais(parciais),
-          statusInterno: jornadaMin > 0 ? "FALTA" : "AFASTAMENTO"
+          statusInterno: jornadaMin > 0 ? "FALTA" : "AFASTAMENTO",
+          remunerado: jornadaMin === 0 && diaUtilRemunerado
         });
       } else {
         const jornadaMin = jornadaEsperadaMin(iso, jornada);
@@ -451,6 +637,7 @@ export function montarRelatorioQuadro(
 
     let horasMin = 0;
     let statusInterno: StatusDiaQuadro;
+    let saldoComoFalta = false;
 
     if (entrada && saida) {
       horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
@@ -460,14 +647,32 @@ export function montarRelatorioQuadro(
       statusInterno = "PENDENTE";
     } else if (entrada && (inicioIntervalo || temPausaAberta(dayRegs))) {
       horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
-      statusInterno = "PENDENTE";
+      statusInterno = "INCONSISTENTE";
     } else if (entrada) {
+      /* Só a entrada, em dia passado: registro iniciado e não concluído. O saldo continua
+         descontando a jornada (como a falta), mas o status é Inconsistente. */
       horasMin = 0;
-      statusInterno = "FALTA";
+      statusInterno = "INCONSISTENTE";
+      saldoComoFalta = true;
     } else {
       horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
-      statusInterno = "PENDENTE";
+      statusInterno = isHoje ? "PENDENTE" : "INCONSISTENTE";
     }
+    const cicloDia = aplicarCiclo(
+      iso,
+      dayRegs,
+      statusInterno,
+      forcarSemIntervaloDia || !!feriadoDia?.marcoHorario
+    );
+    statusInterno = cicloDia.status;
+    const cicloPres = aplicarCicloPresencial(
+      iso,
+      dayRegs,
+      statusInterno,
+      semAlmocoParcial || !!feriadoDia?.marcoHorario,
+      !!observacaoForcaSemIntervalo(dayRegs.find((r) => r.tipo === "ENTRADA")?.observacoes)
+    );
+    statusInterno = cicloPres.status;
 
     horasMin = Math.max(0, horasMin);
 
@@ -483,11 +688,13 @@ export function montarRelatorioQuadro(
         : [];
     const janelasEfetivasParciais =
       parciais.length > 0
-        ? calcularJanelasEfetivasComCreditoDeslocamento(
-            janelasParciais,
-            regsMinParaCredito,
-            jornada.atestadoTempoRetornoMin ?? 60
-          )
+        ? calcularJanelasEfetivasComCreditoDeslocamento(janelasParciais, regsMinParaCredito, {
+            toleranciaRetornoMin: jornada.atestadoTempoRetornoMin ?? 60,
+            toleranciaIdaMin: jornada.atestadoTempoIdaMin ?? 60,
+            almocoMinMin: jornada.almocoMinMin ?? 60,
+            almocoPodeIniciarA: jornada.almocoPodeIniciarA,
+            almocoPodeIniciarAte: jornada.almocoPodeIniciarAte
+          })
         : janelasParciais;
     const jornadaMin =
       parciais.length > 0
@@ -512,7 +719,10 @@ export function montarRelatorioQuadro(
             jornadaDiariaMin: jornadaBase
           }
         );
-        saldoMin = statusInterno === "FALTA" ? -jornadaMandatoria : horasMin - jornadaMandatoria;
+        saldoMin =
+          statusInterno === "FALTA" || saldoComoFalta
+            ? -jornadaMandatoria
+            : horasMin - jornadaMandatoria;
       } else {
         // Feriado dia todo: saldo = horas * feriadoPct%
         saldoMin = Math.round((horasMin * feriadoPct) / 100);
@@ -557,7 +767,7 @@ export function montarRelatorioQuadro(
       if (statusInterno !== "OK" && (saida || temSaidaParcialSemRetorno(dayRegs)) && !isHoje) {
         statusInterno = "OK";
       }
-    } else if (statusInterno === "FALTA") {
+    } else if (statusInterno === "FALTA" || saldoComoFalta) {
       saldoMin = -jornadaMin;
     } else {
       saldoMin = horasMin - jornadaMin;
@@ -589,19 +799,25 @@ export function montarRelatorioQuadro(
             ? feriadoDia.marcoHorario
               ? `Trabalhado (Feriado parcial: ${feriadoDia.nome})`
               : `Trabalhado (Feriado: ${feriadoDia.nome})`
-            : statusPdfDe(statusInterno, false),
+            : statusInterno === "OK" && opts?.rotuloModalidadePorDia?.[iso]
+              ? `${statusPdfDe(statusInterno, false)} - ${opts.rotuloModalidadePorDia[iso]}`
+              : statusPdfDe(statusInterno, false),
       statusInterno,
-      multiplicadorPct
+      multiplicadorPct,
+      ...(ajustesDoDia(dayRegs).length
+        ? { ajustes: ajustesDoDia(dayRegs), ajustesDetalhe: ajustesDetalheDoDia(dayRegs) }
+        : {}),
+      ...(cicloDia.cicloIncompleto || cicloPres.cicloIncompleto
+        ? { cicloIncompleto: cicloDia.cicloIncompleto ?? cicloPres.cicloIncompleto }
+        : {})
     });
   }
 
   const horasTrabalhadasMinutos = dias
-    .filter((d) => d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+    .filter((d) => ["OK", "PENDENTE", "INCONSISTENTE"].includes(d.statusInterno))
     .reduce((s, d) => s + d.horasMin, 0);
 
-  const diasTrabalhados = dias.filter(
-    (d) => d.horasMin > 0 && (d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
-  ).length;
+  const diasTrabalhados = contarDiasTrabalhados(dias);
 
   const horasEsperadasMinutos = dias.reduce((s, d) => {
     if (d.statusInterno === "FUTURO" || d.statusInterno === "FOLGA") return s;

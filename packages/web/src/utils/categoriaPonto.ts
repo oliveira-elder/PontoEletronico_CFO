@@ -36,7 +36,7 @@ export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | un
 
 export function labelSemRegistroPonto(s: SituacaoRegistroPonto): string {
   if (s.isManager) return "Chefe";
-  if (s.isFiscal) return "Fiscal";
+  if (s.isFiscal) return "Assessor";
   return "Comissionado";
 }
 
@@ -55,4 +55,9 @@ export function diaEmPeriodoSemObrigacao(
   if (fallback?.semRegistroPonto) return true;
   if (fallback?.pontoObrigatorioDesde && isoKey < fallback.pontoObrigatorioDesde) return true;
   return false;
+}
+
+/** Estagiário e jovem aprendiz: carga horária corrida, sem intervalo de almoço no ponto. */
+export function categoriaSemIntervaloAlmoco(categoria: string | null | undefined): boolean {
+  return categoria === "ESTAGIARIO" || categoria === "MENOR_APRENDIZ";
 }

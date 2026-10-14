@@ -1,3 +1,4 @@
+import { podeVerCid, removerCid } from "../../utils/privacidade-cid";
 import {
   Controller,
   Get,
@@ -15,7 +16,14 @@ import {
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
-import { AuditoriaService, GestorCienciaMeta } from "./auditoria.service";
+import { PermissaoRhGuard } from "../auth/permissao-rh.guard";
+import { RecursoRh } from "../auth/recurso-rh.decorator";
+import {
+  AuditoriaService,
+  DocumentoFeriasEntrada,
+  FeriasRhEntrada,
+  GestorCienciaMeta
+} from "./auditoria.service";
 
 interface AuthRequest {
   user: { sub: string; name?: string; email?: string; roles: string[]; isSuperAdmin?: boolean };
@@ -52,18 +60,20 @@ function getCienciaMeta(req: AuthRequest): GestorCienciaMeta {
 }
 
 @Controller("auditoria")
-@UseGuards(AuthGuard("jwt"), RolesGuard)
+@UseGuards(AuthGuard("jwt"), RolesGuard, PermissaoRhGuard)
 @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN", "gestor", "GESTOR_APROVACAO")
 export class AuditoriaController {
   constructor(private readonly auditoriaService: AuditoriaService) {}
 
   /* ─── Dashboard ─── */
 
+  @RecursoRh("dashboard.ponto-frequencia", "dashboard.afastamentos", "dashboard.solicitacoes")
   @Get("dashboard")
   getDashboard(@Query("dataInicio") dataInicio?: string, @Query("dataFim") dataFim?: string) {
     return this.auditoriaService.getDashboard({ dataInicio, dataFim });
   }
 
+  @RecursoRh("dashboard.ponto-frequencia")
   @Get("dashboard/registros-hora")
   getRegistrosPorHora(@Query("data") data?: string) {
     return this.auditoriaService.getRegistrosPorHora(data);
@@ -71,6 +81,17 @@ export class AuditoriaController {
 
   /* ─── Funcionários ─── */
 
+  @RecursoRh(
+    "auditoria.funcionarios",
+    "auditoria.registros",
+    "auditoria.solicitacoes",
+    "auditoria.afastamentos",
+    "auditoria.banco-horas",
+    "auditoria.logs",
+    "auditoria.validacoes",
+    "configuracoes.notificacoes",
+    "dashboard.ponto-frequencia"
+  )
   @Get("funcionarios")
   getFuncionarios(
     @Query("busca") busca?: string,
@@ -94,11 +115,13 @@ export class AuditoriaController {
     });
   }
 
+  @RecursoRh("auditoria.funcionarios", "auditoria.registros", "auditoria.banco-horas")
   @Get("funcionarios/:id")
   getFuncionarioDetalhe(@Param("id") id: string) {
     return this.auditoriaService.getFuncionarioDetalhe(id);
   }
 
+  @RecursoRh("auditoria.funcionarios", "auditoria.registros", "dashboard.ponto-frequencia")
   @Get("funcionarios/:id/registros")
   getRegistrosFuncionario(
     @Request() req: AuthRequest,
@@ -123,6 +146,7 @@ export class AuditoriaController {
     return this.auditoriaService.getAtestadoDoDia(id, data);
   }
 
+  @RecursoRh("auditoria.funcionarios", "auditoria.banco-horas")
   @Get("funcionarios/:id/relatorio")
   getRelatorioMensal(
     @Request() req: AuthRequest,
@@ -139,16 +163,110 @@ export class AuditoriaController {
     );
   }
 
+  /** Banco de horas de um mês (mesma conta da página do funcionário), para o histórico do RH. */
+  @RecursoRh("auditoria.funcionarios", "auditoria.banco-horas")
+  @Get("funcionarios/:id/banco-horas/mes")
+  getBancoHorasMesFuncionario(
+    @Param("id") id: string,
+    @Query("mes") mes: string,
+    @Query("ano") ano: string
+  ) {
+    const m = Math.min(12, Math.max(1, parseInt(mes) || 1));
+    const y = parseInt(ano) || new Date().getFullYear();
+    const mm = String(m).padStart(2, "0");
+    const ultimo = String(new Date(y, m, 0).getDate()).padStart(2, "0");
+    return this.auditoriaService.bancoHorasDoIntervalo(id, `${y}-${mm}-01`, `${y}-${mm}-${ultimo}`);
+  }
+
+  @RecursoRh("auditoria.funcionarios", "auditoria.banco-horas")
   @Get("funcionarios/:id/banco-horas")
   getBancoHorasFuncionario(@Param("id") id: string) {
     return this.auditoriaService.getBancoHorasFuncionario(id);
   }
 
+  /* ─── RH abre solicitação em nome do funcionário ─── */
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Post("rh/funcionarios/:id/solicitacoes")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  criarSolicitacaoPeloRh(
+    @Param("id") id: string,
+    @Body()
+    body: Parameters<AuditoriaService["criarSolicitacaoPeloRh"]>[1],
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.criarSolicitacaoPeloRh(id, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Get("rh/funcionarios/:id/solicitar/perfil")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getPerfilSolicitacaoRh(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.auditoriaService.getPerfilSolicitacaoRh(id, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Get("rh/funcionarios/:id/solicitar/credito-banco")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getCreditoBancoRh(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.auditoriaService.getCreditoBancoRh(id, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Post("rh/funcionarios/:id/solicitar/credito-banco/simular")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  simularCreditoBancoRh(
+    @Param("id") id: string,
+    @Body() body: Parameters<AuditoriaService["simularCreditoBancoRh"]>[1],
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.simularCreditoBancoRh(id, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Get("rh/funcionarios/:id/solicitar/abono-cota")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getCotaAbonoRh(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.auditoriaService.getCotaAbonoRh(id, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.solicitar")
+  @Get("rh/funcionarios/:id/solicitar/licenca-tipos")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getTiposLicencaRh(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.auditoriaService.getTiposLicencaRh(id, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.solicitacoes.alterar-cid")
+  @Patch("rh/solicitacoes/:id/cid")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  alterarCidAtestado(
+    @Param("id") id: string,
+    @Body() body: { cidGrupoId?: string; justificativa?: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.alterarCidAtestado(id, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios", "auditoria.banco-horas")
+  @Get("funcionarios/:id/fechamentos-situacao")
+  getFechamentosSituacao(@Param("id") id: string) {
+    return this.auditoriaService.listarFechamentosSituacao(id);
+  }
+
+  @RecursoRh("auditoria.funcionarios")
+  @Get("funcionarios/:id/abono/cota")
+  getCotaAbonoFuncionario(@Param("id") id: string) {
+    return this.auditoriaService.getCotaAbonoFuncionario(id);
+  }
+
+  @RecursoRh("auditoria.funcionarios")
   @Get("funcionarios/:id/documentos-rh")
   getDocumentosRhFuncionario(@Param("id") id: string) {
     return this.auditoriaService.getDocumentosRhFuncionario(id);
   }
 
+  @RecursoRh("auditoria.funcionarios.excluir-documento")
   @Delete("funcionarios/:funcionarioId/documentos-rh/:documentoId")
   excluirDocumentoRhFuncionario(
     @Param("funcionarioId") funcionarioId: string,
@@ -163,6 +281,7 @@ export class AuditoriaController {
 
   /* ─── Registros ─── */
 
+  @RecursoRh("auditoria.registros", "dashboard.ponto-frequencia")
   @Get("registros")
   getRegistros(
     @Query("funcionarioId") funcionarioId?: string,
@@ -191,7 +310,8 @@ export class AuditoriaController {
   /* ─── Solicitações ─── */
 
   @Get("solicitacoes")
-  getSolicitacoes(
+  async getSolicitacoes(
+    @Request() req: AuthRequest,
     @Query("status") status?: string,
     @Query("tipo") tipo?: string,
     @Query("funcionarioId") funcionarioId?: string,
@@ -201,7 +321,7 @@ export class AuditoriaController {
     @Query("page") page?: string,
     @Query("limit") limit?: string
   ) {
-    return this.auditoriaService.getSolicitacoes({
+    const r = await this.auditoriaService.getSolicitacoes({
       status,
       tipo,
       funcionarioId,
@@ -211,8 +331,10 @@ export class AuditoriaController {
       page: page ? parseInt(page) : undefined,
       limit: limit ? parseInt(limit) : undefined
     });
+    return podeVerCid(req.user) ? r : removerCid(r);
   }
 
+  @RecursoRh("auditoria.solicitacoes.alterar-status")
   @Put("solicitacoes/:id/status")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN", "gestor", "GESTOR_APROVACAO")
   atualizarStatusSolicitacao(
@@ -230,6 +352,7 @@ export class AuditoriaController {
 
   /* ─── Afastamentos ─── */
 
+  @RecursoRh("auditoria.afastamentos", "dashboard.afastamentos")
   @Get("afastamentos")
   getAfastamentos(
     @Query("funcionarioId") funcionarioId?: string,
@@ -255,6 +378,7 @@ export class AuditoriaController {
 
   /* ─── Períodos ─── */
 
+  @RecursoRh("auditoria.banco-horas")
   @Get("periodos")
   getPeriodos(
     @Query("mes") mes?: string,
@@ -274,6 +398,7 @@ export class AuditoriaController {
     });
   }
 
+  @RecursoRh("auditoria.banco-horas.periodos")
   @Put("periodos/:id/status")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   atualizarStatusPeriodo(
@@ -286,6 +411,7 @@ export class AuditoriaController {
 
   /* ─── Banco de Horas ─── */
 
+  @RecursoRh("auditoria.banco-horas")
   @Get("banco-horas")
   getBancoHorasGeral(
     @Query("busca") busca?: string,
@@ -319,7 +445,7 @@ export class AuditoriaController {
 
   @Get("gestao/solicitacoes")
   @Roles("GESTOR_APROVACAO", "gestor", "ponto-admin", "PONTO_ADMIN")
-  getSolicitacoesGestor(
+  async getSolicitacoesGestor(
     @Request() req: AuthRequest,
     @Query("status") status?: string,
     @Query("tipo") tipo?: string,
@@ -330,7 +456,7 @@ export class AuditoriaController {
   ) {
     const temRoleGestor =
       req.user.roles.includes("GESTOR_APROVACAO") || req.user.roles.includes("gestor");
-    return this.auditoriaService.getSolicitacoesGestor(
+    const r = await this.auditoriaService.getSolicitacoesGestor(
       req.user.sub,
       {
         status,
@@ -343,6 +469,8 @@ export class AuditoriaController {
       !!req.user.isSuperAdmin,
       temRoleGestor
     );
+    /* O chefe não vê o CID do atestado (dado de saúde); só o RH. */
+    return removerCid(r);
   }
 
   @Patch("gestao/solicitacoes/:id")
@@ -416,17 +544,78 @@ export class AuditoriaController {
     );
   }
 
+  @Get("rh/ferias/rodadas")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  rodadasFeriasPendentes() {
+    return this.auditoriaService.listarRodadasFeriasPendentes();
+  }
+
+  @Patch("rh/solicitacoes/:id/ferias/rodadas/:ordem/documentos")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  enviarRodadaFerias(
+    @Param("id") id: string,
+    @Param("ordem") ordem: string,
+    @Body() body: { documentos?: DocumentoFeriasEntrada[]; observacao?: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhEnviarRodadaFerias(
+      id,
+      Number(ordem),
+      { documentos: body.documentos },
+      body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
   @Patch("rh/solicitacoes/:id/enviar-folha-ferias")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   enviarFolhaFerias(
     @Param("id") id: string,
-    @Body() body: { folhaBase64: string; observacao?: string },
+    @Body()
+    body: { documentos?: DocumentoFeriasEntrada[]; folhaBase64?: string; observacao?: string },
     @Request() req: AuthRequest
   ) {
     return this.auditoriaService.rhEnviarFolhaFerias(
       id,
-      body.folhaBase64,
+      { documentos: body.documentos, folhaBase64: body.folhaBase64 },
       body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
+  /* ─── Tempo do banco de horas liberado pelo RH para abono ─── */
+
+  @RecursoRh("auditoria.funcionarios.liberar-banco-horas")
+  @Get("rh/funcionarios/:id/banco-horas/liberacoes")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getLiberacoesBancoRh(@Param("id") id: string) {
+    return this.auditoriaService.getLiberacoesBancoRh(id);
+  }
+
+  @RecursoRh("auditoria.funcionarios.liberar-banco-horas")
+  @Post("rh/funcionarios/:id/banco-horas/liberacoes")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  liberarBancoHorasRh(
+    @Param("id") id: string,
+    @Body() body: { minutos: number; validaAte: string; justificativa: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.liberarBancoHorasRh(id, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.liberar-banco-horas")
+  @Post("rh/funcionarios/:id/banco-horas/liberacoes/:liberacaoId/revogar")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  revogarLiberacaoBancoRh(
+    @Param("id") id: string,
+    @Param("liberacaoId") liberacaoId: string,
+    @Body() body: { justificativa: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.revogarLiberacaoBancoRh(
+      id,
+      liberacaoId,
+      body?.justificativa ?? "",
       req.user.sub
     );
   }
@@ -437,8 +626,62 @@ export class AuditoriaController {
     return this.auditoriaService.getSaldoFeriasFuncionario(id);
   }
 
+  /* ─── Férias agendadas pelo RH ─── */
+
+  @RecursoRh("auditoria.funcionarios.ferias")
+  @Get("rh/funcionarios/:id/ferias/calendario")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getCalendarioFeriasRh(
+    @Param("id") id: string,
+    @Query("de") de: string,
+    @Query("ate") ate: string
+  ) {
+    return this.auditoriaService.getCalendarioFeriasRh(id, de, ate);
+  }
+
+  @RecursoRh("auditoria.funcionarios.ferias")
+  @Post("rh/funcionarios/:id/ferias")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  agendarFeriasRh(
+    @Param("id") id: string,
+    @Body() body: FeriasRhEntrada,
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.agendarFeriasRh(id, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.ferias")
+  @Put("rh/funcionarios/:id/ferias/:solicitacaoId")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  alterarFeriasRh(
+    @Param("id") id: string,
+    @Param("solicitacaoId") solicitacaoId: string,
+    @Body() body: FeriasRhEntrada,
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.alterarFeriasRh(id, solicitacaoId, body, req.user.sub);
+  }
+
+  @RecursoRh("auditoria.funcionarios.ferias")
+  @Post("rh/funcionarios/:id/ferias/:solicitacaoId/cancelar")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  cancelarFeriasRh(
+    @Param("id") id: string,
+    @Param("solicitacaoId") solicitacaoId: string,
+    @Body() body: { justificativa: string },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.cancelarFeriasRh(
+      id,
+      solicitacaoId,
+      body?.justificativa ?? "",
+      req.user.sub
+    );
+  }
+
   /* ─── Recálculo histórico (almoço mínimo) ─── */
 
+  @RecursoRh("auditoria.banco-horas.recalcular")
   @Post("recalcular-historico-almoco")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   recalcularHistoricoAlmoco() {
@@ -447,6 +690,7 @@ export class AuditoriaController {
 
   /* ─── Correção de ponto pelo RH ─── */
 
+  @RecursoRh("auditoria.funcionarios.corrigir-ponto")
   @Post("rh/funcionarios/:id/correcao-ponto")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   criarCorrecaoRH(
@@ -485,6 +729,7 @@ export class AuditoriaController {
 
   /* ─── Logs ─── */
 
+  @RecursoRh("auditoria.logs")
   @Get("logs")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   getLogs(

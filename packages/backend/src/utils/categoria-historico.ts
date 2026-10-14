@@ -14,6 +14,8 @@ function toVigencia(
   rows: Array<{
     categoria: CategoriaFuncional;
     isManager: boolean;
+    isFiscal?: boolean;
+    registroPontoObrigatorio?: boolean | null;
     vigenciaDesde: Date;
     vigenciaAte: Date | null;
   }>
@@ -21,6 +23,8 @@ function toVigencia(
   return rows.map((r) => ({
     categoria: r.categoria,
     isManager: r.isManager,
+    isFiscal: r.isFiscal ?? false,
+    registroPontoObrigatorio: r.registroPontoObrigatorio ?? null,
     vigenciaDesde: dataCivilISO(r.vigenciaDesde),
     vigenciaAte: r.vigenciaAte ? dataCivilISO(r.vigenciaAte) : null
   }));
@@ -116,7 +120,13 @@ export async function ensureCategoriaHistorico(
   );
 }
 
-export type SituacaoCategoria = { categoria: CategoriaFuncional; isManager: boolean };
+export type SituacaoCategoria = {
+  categoria: CategoriaFuncional;
+  isManager: boolean;
+  /** Fiscal e override de registro de ponto (RH): quando informados, entram na vigência. */
+  isFiscal?: boolean;
+  registroPontoObrigatorio?: boolean | null;
+};
 
 /**
  * Datas de corte da mudança de situação (categoria e/ou isManager) no meio do dia:
@@ -156,15 +166,55 @@ export async function registrarMudancaSituacao(
   db: Tx,
   funcionarioId: string,
   novaSituacao: SituacaoCategoria,
-  dataRefIso: string = hojeBrasiliaISO()
+  dataRefIso: string = hojeBrasiliaISO(),
+  /**
+   * Fiscal/override ANTES da mudança: a vigência aberta passa a registrá-los, preservando o
+   * que já valia para o passado (antes eles não tinham histórico e valiam para todo o período).
+   */
+  flagsAnteriores?: { isFiscal: boolean; registroPontoObrigatorio: boolean | null }
 ): Promise<{ desdeNova: string }> {
   let aberta = await db.funcionarioCategoriaHistorico.findFirst({
     where: { funcionarioId, vigenciaAte: null },
     orderBy: { vigenciaDesde: "desc" }
   });
 
-  const mesmaSituacao = (a: { categoria: CategoriaFuncional; isManager: boolean }) =>
-    a.categoria === novaSituacao.categoria && a.isManager === novaSituacao.isManager;
+  const novoFiscal = novaSituacao.isFiscal;
+  const novoOverride = novaSituacao.registroPontoObrigatorio;
+  const compararFlags = novoFiscal !== undefined || novoOverride !== undefined;
+
+  /* Congela na vigência aberta os indicadores que valiam até agora. */
+  if (aberta && flagsAnteriores && compararFlags) {
+    if (
+      aberta.isFiscal !== flagsAnteriores.isFiscal ||
+      (aberta.registroPontoObrigatorio ?? null) !== flagsAnteriores.registroPontoObrigatorio
+    ) {
+      aberta = await db.funcionarioCategoriaHistorico.update({
+        where: { id: aberta.id },
+        data: {
+          isFiscal: flagsAnteriores.isFiscal,
+          registroPontoObrigatorio: flagsAnteriores.registroPontoObrigatorio
+        }
+      });
+    }
+  }
+
+  const mesmaSituacao = (a: {
+    categoria: CategoriaFuncional;
+    isManager: boolean;
+    isFiscal?: boolean;
+    registroPontoObrigatorio?: boolean | null;
+  }) =>
+    a.categoria === novaSituacao.categoria &&
+    a.isManager === novaSituacao.isManager &&
+    (novoFiscal === undefined || (a.isFiscal ?? false) === novoFiscal) &&
+    (novoOverride === undefined || (a.registroPontoObrigatorio ?? null) === novoOverride);
+
+  const dadosSituacao = {
+    categoria: novaSituacao.categoria,
+    isManager: novaSituacao.isManager,
+    ...(novoFiscal !== undefined ? { isFiscal: novoFiscal } : {}),
+    ...(novoOverride !== undefined ? { registroPontoObrigatorio: novoOverride } : {})
+  };
 
   if (aberta && mesmaSituacao(aberta)) {
     return { desdeNova: dataCivilISO(aberta.vigenciaDesde) };
@@ -182,7 +232,12 @@ export async function registrarMudancaSituacao(
   }
 
   const situacaoAnterior = aberta
-    ? { categoria: aberta.categoria, isManager: aberta.isManager }
+    ? {
+        categoria: aberta.categoria,
+        isManager: aberta.isManager,
+        isFiscal: aberta.isFiscal,
+        registroPontoObrigatorio: aberta.registroPontoObrigatorio
+      }
     : null;
   const { ateAnterior, desdeNova } = datasCorteMudancaSituacao(
     situacaoAnterior,
@@ -207,8 +262,7 @@ export async function registrarMudancaSituacao(
         await db.funcionarioCategoriaHistorico.create({
           data: {
             funcionarioId,
-            categoria: novaSituacao.categoria,
-            isManager: novaSituacao.isManager,
+            ...dadosSituacao,
             vigenciaDesde: new Date(`${diaSeguinteIso(dataRefIso)}T12:00:00-03:00`),
             vigenciaAte: null
           }
@@ -220,7 +274,7 @@ export async function registrarMudancaSituacao(
          (ex.: concursado → assessor, ou vira chefe, no mesmo dia → dia inteiro isento). */
       await db.funcionarioCategoriaHistorico.update({
         where: { id: aberta.id },
-        data: { categoria: novaSituacao.categoria, isManager: novaSituacao.isManager }
+        data: dadosSituacao
       });
       return { desdeNova: desdeAberta };
     }
@@ -234,8 +288,7 @@ export async function registrarMudancaSituacao(
   await db.funcionarioCategoriaHistorico.create({
     data: {
       funcionarioId,
-      categoria: novaSituacao.categoria,
-      isManager: novaSituacao.isManager,
+      ...dadosSituacao,
       vigenciaDesde: new Date(`${desdeNova}T12:00:00-03:00`),
       vigenciaAte: null
     }

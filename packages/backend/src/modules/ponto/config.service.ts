@@ -43,6 +43,89 @@ export class ConfigService {
       ...(data as Record<string, unknown>)
     });
     delete safe.dataInicioProducao;
+    if (safe.contratoAvisoAntecedenciaDias !== undefined) {
+      const dias = Number(safe.contratoAvisoAntecedenciaDias);
+      if (!Number.isInteger(dias) || dias < 1 || dias > 365) {
+        throw new BadRequestException(
+          "A antecedência do aviso de fim de contrato deve ser um número inteiro de 1 a 365 dias."
+        );
+      }
+      safe.contratoAvisoAntecedenciaDias = dias;
+    }
+
+    if (safe.cicloCompletoPresencialDesde !== undefined) {
+      const v = safe.cicloCompletoPresencialDesde;
+      if (v === null || v === "") {
+        safe.cicloCompletoPresencialDesde = null;
+      } else if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+        safe.cicloCompletoPresencialDesde = new Date(`${v.slice(0, 10)}T12:00:00-03:00`);
+      } else {
+        throw new BadRequestException(
+          "A data de vigência do ciclo completo presencial deve estar no formato AAAA-MM-DD (ou vazia para desligar)."
+        );
+      }
+    }
+    /* Limites do intervalo conforme a jornada (CLT art. 71): inteiros em minutos; o curto não
+       pode passar do longo. Valida contra o valor já gravado quando só um deles é enviado. */
+    const camposIntervalo = [
+      "intervaloLongoAcimaDeMin",
+      "intervaloCurtoAcimaDeMin",
+      "intervaloCurtoMinMin"
+    ] as const;
+    if (camposIntervalo.some((c) => safe[c] !== undefined)) {
+      const atual = await this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: {
+          intervaloLongoAcimaDeMin: true,
+          intervaloCurtoAcimaDeMin: true,
+          intervaloCurtoMinMin: true
+        }
+      });
+      const novo = {
+        intervaloLongoAcimaDeMin: atual?.intervaloLongoAcimaDeMin ?? 360,
+        intervaloCurtoAcimaDeMin: atual?.intervaloCurtoAcimaDeMin ?? 240,
+        intervaloCurtoMinMin: atual?.intervaloCurtoMinMin ?? 15
+      };
+      for (const c of camposIntervalo) {
+        if (safe[c] === undefined) continue;
+        const n = Number(safe[c]);
+        if (!Number.isInteger(n) || n < 0 || n > 1440) {
+          throw new BadRequestException(
+            "Os limites do intervalo conforme a jornada devem ser números inteiros de minutos entre 0 e 1440."
+          );
+        }
+        safe[c] = n;
+        novo[c] = n;
+      }
+      if (novo.intervaloCurtoAcimaDeMin > novo.intervaloLongoAcimaDeMin) {
+        throw new BadRequestException(
+          "O limite do intervalo curto não pode ser maior que o limite do intervalo de almoço (jornada longa)."
+        );
+      }
+    }
+
+    if (safe.cicloCompletoEmCasaDesde !== undefined) {
+      const v = safe.cicloCompletoEmCasaDesde;
+      if (v === null || v === "") {
+        safe.cicloCompletoEmCasaDesde = null;
+      } else if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+        safe.cicloCompletoEmCasaDesde = new Date(`${v.slice(0, 10)}T12:00:00-03:00`);
+      } else {
+        throw new BadRequestException(
+          "A data de vigência do ciclo completo em casa deve estar no formato AAAA-MM-DD (ou vazia para desligar)."
+        );
+      }
+    }
+
+    if (safe.interjornadaMin !== undefined) {
+      const min = Number(safe.interjornadaMin);
+      if (!Number.isInteger(min) || min < 0 || min > 1440) {
+        throw new BadRequestException(
+          "O descanso de interjornada deve ser um número inteiro de minutos entre 0 (desativado) e 1440 (24 h)."
+        );
+      }
+      safe.interjornadaMin = min;
+    }
 
     const updated = await this.prisma.configuracaoSistema.upsert({
       where: { id: "singleton" },
@@ -208,15 +291,38 @@ export class ConfigService {
       bancoHorasLimiteMin: number;
       bancoHorasVigenciaDias: number;
       horaExtraLimiteAuto: number;
+      paraEstagiarios: boolean;
     }>
   ) {
-    const normalized = this.normalizarToleranciasSimetricas({ ...data } as Record<string, unknown>);
+    const normalized = this.aplicarJornadaEstagiario(
+      this.normalizarToleranciasSimetricas({ ...data } as Record<string, unknown>)
+    );
     return this.prisma.jornadaPeriodo.create({ data: normalized as never });
   }
 
   async updateJornada(id: string, data: Record<string, unknown>) {
-    const normalized = this.normalizarToleranciasSimetricas(data);
+    const normalized = this.aplicarJornadaEstagiario(this.normalizarToleranciasSimetricas(data));
     return this.prisma.jornadaPeriodo.update({ where: { id }, data: normalized as never });
+  }
+
+  /**
+   * Jornada de estagiários/jovens aprendizes: carga corrida, sem almoço, banco de horas e hora
+   * extra — esses campos não se aplicam, então voltam ao padrão (e a descrição é limpa).
+   */
+  private aplicarJornadaEstagiario(data: Record<string, unknown>): Record<string, unknown> {
+    if (data.paraEstagiarios !== true) return data;
+    return {
+      ...data,
+      descricao: null,
+      tipoFlexibilidade: "FIXO",
+      almocoPodeIniciarA: "11:30",
+      almocoPodeIniciarAte: "13:00",
+      almocoMinMin: 60,
+      almocoMaxMin: 90,
+      bancoHorasLimiteMin: 120,
+      bancoHorasVigenciaDias: 30,
+      horaExtraLimiteAuto: 120
+    };
   }
 
   async deleteJornada(id: string) {

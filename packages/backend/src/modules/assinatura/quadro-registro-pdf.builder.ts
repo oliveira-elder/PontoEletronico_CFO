@@ -4,21 +4,6 @@ import type { RelatorioQuadroMensal } from "../../utils/historico-quadro";
 import { computeQuadroSignatoryHash, groupCodigoAssinatura } from "../../utils/assinatura-codigo";
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
 
-const MESES_PT = [
-  "Janeiro",
-  "Fevereiro",
-  "Março",
-  "Abril",
-  "Maio",
-  "Junho",
-  "Julho",
-  "Agosto",
-  "Setembro",
-  "Outubro",
-  "Novembro",
-  "Dezembro"
-];
-
 const CATEGORIA_LABEL: Record<string, string> = {
   CONCURSADO: "Empregado",
   ESTAGIARIO: "Estagiário",
@@ -36,8 +21,11 @@ function regimeLabel(
   return isManager ? `${base} — Chefe` : base;
 }
 
+/** Orientação do Espelho de Ponto: trocar aqui para "landscape" se o retrato ficar apertado. */
+const ORIENTACAO_PAGINA: "portrait" | "landscape" = "portrait";
+
 /** Largura útil A4 com margens [25, 22, 25, 28] */
-const PAGE_CONTENT_WIDTH = 545;
+const PAGE_CONTENT_WIDTH = ORIENTACAO_PAGINA === "portrait" ? 545 : 792;
 
 const TABLE_LAYOUT = {
   // i=0: borda topo da tabela suprimida; i=1: separador cabeçalho→1ª linha (mantido);
@@ -101,6 +89,12 @@ export interface QuadroPdfInput {
   logoBase64: string | null;
   certificadoBase64: string | null;
   resumoBadges?: ResumoBadgesPdf;
+  /** Verificação pública (QR Code/link) e estado do selo ICP-Brasil, para a página de declaração. */
+  verificacao?: VerificacaoDocumentoPdf;
+  /** Nº de registro da versão do conteúdo + QR selado por página (documento assinado). */
+  registro?: RegistroDocumentoPdf;
+  /** Dados do empregador e da jornada contratual (Espelho de Ponto, Portaria MTP 671/2021). */
+  espelho?: EspelhoExtrasPdf;
   /** Relatório de ciclo de banco de horas (período customizado). */
   cicloBancoHoras?: {
     inicio: string;
@@ -108,6 +102,36 @@ export interface QuadroPdfInput {
     /** Síntese mês a mês — espelha o card do front no rodapé do relatório. */
     mesesResumo?: MesCicloResumoPdf[];
   };
+}
+
+export interface RegistroDocumentoPdf {
+  /** Muda sempre que o conteúdo do documento muda (deriva da impressão digital dos dados). */
+  numero: string;
+  /** Link do QR da página, com selo criptográfico de registro + página + total de páginas. */
+  urlPagina: (pagina: number, total: number) => string;
+}
+
+export interface VerificacaoDocumentoPdf {
+  /** Link público de verificação (vazio quando o documento ainda não foi assinado). */
+  url: string | null;
+  /** Código de verificação (SHA-256 agrupado) da assinatura do funcionário. */
+  codigo: string | null;
+  /** Selo ICP-Brasil (e-CNPJ A1) será aplicado ao arquivo final. */
+  seloAtivo: boolean;
+}
+
+export interface EspelhoExtrasPdf {
+  razaoSocial: string;
+  cnpj: string | null;
+  /** CEI/CAEPF/CNO do empregador, quando houver. */
+  cadastroComplementar?: string | null;
+  dataAdmissao: Date | string | null;
+  /** Ex.: "7h00/dia – 35h semanais". */
+  jornadaContratual: string;
+  /** Ex.: "07:00 às 15:00". */
+  horarioContratual: string;
+  /** Multiplicadores do banco no mês (sáb/dom/feriado), quando aplicáveis. */
+  multiplicadores?: { sabadoPct: number; domingoPct: number; feriadoPct: number };
 }
 
 /** Linha da síntese mensal do ciclo (espelha Julho/Agosto do front). */
@@ -174,18 +198,9 @@ function diaNome(iso: string): string {
   return dias[new Date(y, m - 1, day).getDay()];
 }
 
-function horaOuTraco(h: string | null): string {
-  return h ?? "—";
-}
-
 export function formatPausas(pausas: PausaPar[]): string {
   if (!pausas.length) return "—";
   return pausas.map((p) => `${p.inicio}–${p.fim ?? "…"}`).join("\n");
-}
-
-function maskCpf(cpf: string | null): string {
-  if (!cpf) return "—";
-  return cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "***.$2.$3-**");
 }
 
 /** Resume um User-Agent em "Navegador • SO" legível para o quadro */
@@ -214,87 +229,58 @@ const groupCode = groupCodigoAssinatura;
 
 /* ─── Blocos do documento ─── */
 
-/** Altura fixa da faixa topbar — alinha logo, divisor e títulos no mesmo eixo vertical */
-const TOPBAR_ROW_HEIGHT = 46;
-
-/** Topbar centralizado — reproduz layout do sistema (Topbar.tsx): logo | gap | divisor | gap | títulos */
+/** Cabeçalho documental: logo do CFO + título lado a lado, filete vinho e texto introdutório. */
 function buildHeader(
   logoBase64: string | null,
-  docSubtitle = "QUADRO DE REGISTRO DE PONTO"
+  docSubtitle = "RELATÓRIO DE PONTO DO FUNCIONÁRIO"
 ): unknown {
-  const tituloStack = {
+  const titulo = {
+    width: "auto" as const,
     stack: [
-      { text: "Ponto Eletrônico", style: "orgTitle" },
+      { text: "Espelho de Ponto Eletrônico", style: "orgTitle" },
       { text: docSubtitle, style: "orgSubtitle" }
     ],
-    alignment: "left" as const
+    margin: [0, 2, 0, 0] as [number, number, number, number]
   };
 
-  const topbarInner = logoBase64
+  const linhaTopo = logoBase64
     ? {
-        table: {
-          widths: ["auto", 14, 6, 14, "auto"],
-          heights: [TOPBAR_ROW_HEIGHT],
-          body: [
-            [
+        columns: [
+          {
+            image: `data:image/png;base64,${logoBase64}`,
+            fit: [150, 40] as [number, number],
+            width: 150,
+            margin: [0, 5, 0, 0] as [number, number, number, number]
+          },
+          {
+            width: 12,
+            canvas: [
               {
-                image: `data:image/png;base64,${logoBase64}`,
-                fit: [118, 32] as [number, number],
-                alignment: "center" as const,
-                verticalAlignment: "middle" as const,
-                margin: [0, 0, 0, 0] as [number, number, number, number]
-              },
-              { text: "", verticalAlignment: "middle" as const },
-              {
-                verticalAlignment: "middle" as const,
-                alignment: "center" as const,
-                stack: [
-                  {
-                    canvas: [
-                      {
-                        type: "line",
-                        x1: 3,
-                        y1: 0,
-                        x2: 3,
-                        y2: TOPBAR_ROW_HEIGHT,
-                        lineWidth: 0.75,
-                        lineColor: "#EBE0E1"
-                      }
-                    ]
-                  }
-                ]
-              },
-              { text: "", verticalAlignment: "middle" as const },
-              {
-                ...tituloStack,
-                verticalAlignment: "middle" as const
+                type: "line",
+                x1: 6,
+                y1: 0,
+                x2: 6,
+                y2: 42,
+                lineWidth: 0.75,
+                lineColor: "#D9C7C9"
               }
             ]
-          ]
-        },
-        layout: "noBorders"
+          },
+          titulo
+        ],
+        columnGap: 4
       }
-    : {
-        stack: [
-          { text: "Ponto Eletrônico", style: "orgTitle", alignment: "center" as const },
-          {
-            text: docSubtitle,
-            style: "orgSubtitle",
-            alignment: "center" as const
-          }
-        ]
-      };
+    : { stack: titulo.stack };
+
+  /* Conjunto logo | títulos centralizado na horizontal da página. */
+  const linhaCentralizada = {
+    table: { widths: ["*", "auto", "*"], body: [[{ text: "" }, linhaTopo, { text: "" }]] },
+    layout: "noBorders"
+  };
 
   return {
     stack: [
-      {
-        table: {
-          widths: ["*", "auto", "*"],
-          body: [[{ text: "" }, topbarInner, { text: "" }]]
-        },
-        layout: "noBorders",
-        margin: [0, 0, 0, 4]
-      },
+      linhaCentralizada,
       {
         canvas: [
           {
@@ -306,435 +292,661 @@ function buildHeader(
             lineWidth: 1,
             lineColor: "#6B0F1A"
           }
-        ]
+        ],
+        margin: [0, 5, 0, 0] as [number, number, number, number]
+      },
+      {
+        text:
+          "Relatório que apresenta, de forma clara e completa, a jornada do trabalhador. " +
+          "Disponibilizado ao trabalhador e à fiscalização.",
+        fontSize: 6.5,
+        color: "#555",
+        alignment: "center" as const,
+        margin: [0, 4, 0, 0] as [number, number, number, number]
       }
     ],
-    margin: [0, 0, 0, 4]
+    margin: [0, 0, 0, 6]
   };
 }
 
+function fmtDataBr(v: Date | string | null | undefined): string {
+  if (!v) return "—";
+  const iso = typeof v === "string" ? v.slice(0, 10) : v.toISOString().slice(0, 10);
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function formatCpf(cpf: string | null): string {
+  if (!cpf) return "—";
+  const d = cpf.replace(/\D/g, "");
+  return d.length === 11 ? d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4") : cpf;
+}
+
+function formatCnpj(cnpj: string | null | undefined): string {
+  if (!cnpj) return "—";
+  const d = cnpj.replace(/\D/g, "");
+  return d.length === 14
+    ? d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5")
+    : cnpj;
+}
+
+/** Bloco de identificação em duas colunas rótulo/valor, com título de seção. */
+function blocoIdentificacao(titulo: string, linhas: Array<[string, string, string?, string?]>) {
+  const lab = (t: string) => ({
+    text: t,
+    style: "fieldLabel",
+    border: [false, false, false, false] as [boolean, boolean, boolean, boolean]
+  });
+  const val = (t: string) => ({
+    text: t,
+    style: "fieldValue",
+    border: [false, false, false, false] as [boolean, boolean, boolean, boolean]
+  });
+  return {
+    stack: [
+      { text: titulo, style: "sectionTitle" },
+      {
+        table: {
+          widths: [86, "*", 86, "*"],
+          body: linhas.map(([l1, v1, l2, v2]) => [lab(l1), val(v1), lab(l2 ?? ""), val(v2 ?? "")])
+        },
+        layout: {
+          hLineWidth: () => 0.4,
+          vLineWidth: () => 0,
+          hLineColor: () => "#E5E7EB",
+          paddingTop: () => 2,
+          paddingBottom: () => 2,
+          paddingLeft: () => 5,
+          paddingRight: () => 5,
+          fillColor: () => "#F8FAFC"
+        }
+      }
+    ],
+    margin: [0, 0, 0, 4] as [number, number, number, number]
+  };
+}
+
+/** Identificação do empregador, do trabalhador, período e jornada contratual (art. 84). */
 function buildFuncionarioCard(input: QuadroPdfInput): unknown {
-  const { funcionario, mes, ano, cicloBancoHoras } = input;
-  const nomeMes = MESES_PT[mes - 1];
+  const { funcionario, mes, ano, cicloBancoHoras, espelho } = input;
   const fmtBr = (iso: string) => {
     const [y, m, d] = iso.split("-");
     return `${d}/${m}/${y}`;
   };
-  const referencia = cicloBancoHoras
-    ? `Ciclo ${fmtBr(cicloBancoHoras.inicio)} – ${fmtBr(cicloBancoHoras.fim)}`
-    : `${nomeMes}/${ano}`;
   const periodoStr = cicloBancoHoras
     ? `${fmtBr(cicloBancoHoras.inicio)} a ${fmtBr(cicloBancoHoras.fim)}`
     : `01/${String(mes).padStart(2, "0")}/${ano} a ${new Date(ano, mes, 0).getDate()}/${String(mes).padStart(2, "0")}/${ano}`;
-  const jornadaLabel = funcionario.jornadaHorasDia ? `${funcionario.jornadaHorasDia}h/dia` : "—";
-
-  const labelCell = (txt: string) => ({
-    text: txt.toUpperCase(),
-    style: "fieldLabel",
-    border: [false, false, false, false] as [boolean, boolean, boolean, boolean]
-  });
-
-  const valueCell = (txt: string, bold = false) => ({
-    text: txt,
-    style: bold ? "fieldValueBold" : "fieldValue",
-    border: [false, false, false, false] as [boolean, boolean, boolean, boolean]
-  });
-
-  const formTable = {
-    table: {
-      widths: ["*"],
-      body: [
-        [
-          {
-            table: {
-              widths: [76, "*", 76, "*"],
-              body: [
-                [
-                  labelCell("Nome completo"),
-                  valueCell(funcionario.user.name, true),
-                  labelCell("Matrícula"),
-                  valueCell(funcionario.matricula ?? "—", true)
-                ],
-                [
-                  labelCell("CPF"),
-                  valueCell(maskCpf(funcionario.cpf)),
-                  labelCell("Cargo"),
-                  valueCell(funcionario.cargo || "—")
-                ],
-                [
-                  labelCell("Departamento"),
-                  valueCell(
-                    funcionario.gerencia
-                      ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})`
-                      : "—"
-                  ),
-                  labelCell("Seção"),
-                  valueCell(funcionario.section || "—")
-                ],
-                [
-                  labelCell("Regime"),
-                  valueCell(regimeLabel(funcionario.categoria, funcionario.isManager)),
-                  labelCell("Jornada"),
-                  valueCell(jornadaLabel)
-                ],
-                [
-                  labelCell("Referência"),
-                  valueCell(referencia),
-                  labelCell("Período"),
-                  valueCell(periodoStr)
-                ]
-              ]
-            },
-            layout: {
-              hLineWidth: () => 0.4,
-              vLineWidth: () => 0,
-              hLineColor: () => "#E5E7EB",
-              paddingTop: () => 2,
-              paddingBottom: () => 2,
-              paddingLeft: () => 6,
-              paddingRight: () => 6
-            }
-          }
-        ]
-      ]
-    },
-    layout: {
-      hLineWidth: () => 0.4,
-      vLineWidth: () => 0.4,
-      hLineColor: () => "#D1D5DB",
-      vLineColor: () => "#D1D5DB"
-    }
-  };
+  const emitido = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const lotacao = funcionario.gerencia
+    ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})${funcionario.section ? ` — ${funcionario.section}` : ""}`
+    : (funcionario.section ?? "—");
+  const jornada =
+    espelho?.jornadaContratual ??
+    (funcionario.jornadaHorasDia ? `${funcionario.jornadaHorasDia}h/dia` : "—");
 
   return {
-    stack: [{ text: "Dados do Funcionário", style: "sectionTitle" }, formTable],
-    margin: [0, 0, 0, 5]
+    stack: [
+      blocoIdentificacao("Identificação do empregador", [
+        [
+          "Razão social",
+          espelho?.razaoSocial ?? "Conselho Federal de Odontologia",
+          "CNPJ",
+          formatCnpj(espelho?.cnpj)
+        ],
+        ...(espelho?.cadastroComplementar
+          ? [["CEI/CAEPF/CNO", espelho.cadastroComplementar] as [string, string]]
+          : [])
+      ]),
+      blocoIdentificacao("Identificação do trabalhador", [
+        ["Nome", funcionario.user.name, "Matrícula", funcionario.matricula ?? "—"],
+        ["CPF", formatCpf(funcionario.cpf), "Cargo/Função", funcionario.cargo || "—"],
+        [
+          "Regime",
+          regimeLabel(funcionario.categoria, funcionario.isManager),
+          "Data de admissão",
+          fmtDataBr(espelho?.dataAdmissao)
+        ],
+        ["Lotação", lotacao]
+      ]),
+      blocoIdentificacao("Período e jornada", [
+        ["Período do relatório", periodoStr, "Data de emissão", emitido],
+        ["Jornada contratual", jornada, "Horário contratual", espelho?.horarioContratual ?? "—"]
+      ])
+    ]
   };
+}
+
+/** "08:00-11:30 12:30-16:00" (Entrada-Início do intervalo, Fim do intervalo-Saída). */
+function textoMarcacoes(m: {
+  entrada: string | null;
+  inicioIntervalo: string | null;
+  fimIntervalo: string | null;
+  saida: string | null;
+}): string {
+  if (!m.entrada && !m.inicioIntervalo && !m.fimIntervalo && !m.saida) return "—";
+  const h = (v: string | null) => v ?? "--:--";
+  return `${h(m.entrada)}-${h(m.inicioIntervalo)} ${h(m.fimIntervalo)}-${h(m.saida)}`;
+}
+
+/** Marcações originais do dia (antes das correções aprovadas) e as alteradas (vigentes). */
+function marcacoesOriginalEAlterada(dia: RelatorioMensalPdf["dias"][number]): {
+  original: string;
+  alterada: string;
+} {
+  const atuais = {
+    entrada: dia.entrada,
+    inicioIntervalo: dia.inicioIntervalo,
+    fimIntervalo: dia.fimIntervalo,
+    saida: dia.saida
+  };
+  const ajustes = dia.ajustesDetalhe ?? [];
+  if (!ajustes.length) return { original: textoMarcacoes(atuais), alterada: "—" };
+  const campo: Record<string, keyof typeof atuais> = {
+    ENTRADA: "entrada",
+    INICIO_INTERVALO: "inicioIntervalo",
+    FIM_INTERVALO: "fimIntervalo",
+    SAIDA: "saida"
+  };
+  const originais = { ...atuais };
+  for (const a of ajustes) {
+    const k = campo[a.tipoRegistro];
+    if (k) originais[k] = a.anterior; // inclusão: a batida não existia (null)
+  }
+  return { original: textoMarcacoes(originais), alterada: textoMarcacoes(atuais) };
 }
 
 function buildTabelaDias(input: QuadroPdfInput): unknown {
   const { relatorio, funcionario } = input;
   const ocultarBh = categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
+  const th = (t: string, extra: Record<string, unknown> = {}) => ({
+    text: t,
+    style: "thCell",
+    ...extra
+  });
+  const vazio = { text: "" };
 
-  const tableBody: unknown[][] = [
-    [
-      { text: "Data", style: "thCell" },
-      { text: "Dia", style: "thCell" },
-      { text: "Entrada", style: "thCell" },
-      { text: "Iníc. Interv.", style: "thCell" },
-      { text: "Fim Interv.", style: "thCell" },
-      { text: "Saída", style: "thCell" },
-      { text: "Pausa", style: "thCell" },
-      { text: "Horas", style: "thCell" },
-      ...(ocultarBh ? [] : [{ text: "Saldo", style: "thCell" }]),
-      { text: "Status", style: "thCell" }
-    ]
+  /* Cabeçalho em dois níveis (padrão da fiscalização): Marcações · Marcações Alteradas ·
+     H.Trab · Rendimento (H.E. aut./não aut.) · Banco de horas (Débito/Crédito) · Justificativa. */
+  const cab1: unknown[] = [
+    th("Data", { rowSpan: 2 }),
+    th("Dia", { rowSpan: 2 }),
+    th("Marcações\n(Ent-Int Inter-Saída)", { rowSpan: 2 }),
+    th("Marcações alteradas\n(Ent-Int Inter-Saída)", { rowSpan: 2 }),
+    th("H. Trab.", { rowSpan: 2 }),
+    ...(ocultarBh
+      ? []
+      : [th("Rendimento", { colSpan: 2 }), vazio, th("Banco de horas", { colSpan: 2 }), vazio]),
+    th("Justificativa", { rowSpan: 2 })
+  ];
+  const cab2: unknown[] = [
+    vazio,
+    vazio,
+    vazio,
+    vazio,
+    vazio,
+    ...(ocultarBh
+      ? []
+      : [th("H.E. autorizada"), th("H.E. não autorizada"), th("Débito"), th("Crédito")]),
+    vazio
   ];
 
+  const fmtH = (min: number | undefined) =>
+    min && min > 0 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}` : "—";
+
+  const tableBody: unknown[][] = [cab1, cab2];
   for (const [idx, dia] of relatorio.dias.entries()) {
     const bgColor = idx % 2 === 0 ? "#FFFFFF" : "#F7F7F7";
     const cellFill = dia.statusInterno === "AFASTAMENTO" ? "#EFF6FF" : bgColor;
-    const cell = (txt: string) => ({ text: txt, style: "tdCell", fillColor: cellFill });
+    const cell = (txt: string, extra: Record<string, unknown> = {}) => ({
+      text: txt,
+      style: "tdCell",
+      fillColor: cellFill,
+      ...extra
+    });
+    const { original, alterada } = marcacoesOriginalEAlterada(dia);
+    const pausas = dia.pausas.length
+      ? `\nPausa: ${formatPausas(dia.pausas).replace(/\n/g, "; ")}`
+      : "";
+    /* Sem decisão do banco (fora do relatório do banco): deriva do saldo apurado do dia. */
+    const saldo = dia.saldoMin ?? 0;
+    const heAut = dia.heAutorizadaMin ?? Math.max(0, saldo);
+    const heNao = dia.heNaoAutorizadaMin ?? 0;
+    const deb = dia.debitoMin ?? Math.max(0, -saldo);
+    const cred = dia.creditoMin ?? Math.max(0, saldo);
 
     tableBody.push([
       cell(dia.iso.split("-").reverse().join("/")),
       cell(diaNome(dia.iso)),
-      cell(horaOuTraco(dia.entrada)),
-      cell(horaOuTraco(dia.inicioIntervalo)),
-      cell(horaOuTraco(dia.fimIntervalo)),
-      cell(horaOuTraco(dia.saida)),
-      cell(formatPausas(dia.pausas)),
+      cell(original),
+      cell(alterada, alterada === "—" ? {} : { bold: true, color: "#6B0F1A" }),
       cell(dia.horasFormatado),
-      ...(ocultarBh ? [] : [cell(dia.saldoFormatado)]),
-      cell(dia.status)
+      ...(ocultarBh
+        ? []
+        : [
+            cell(fmtH(heAut), heAut > 0 ? { color: "#15803D", bold: true } : {}),
+            cell(fmtH(heNao), heNao > 0 ? { color: "#B45309", bold: true } : {}),
+            cell(fmtH(deb), deb > 0 ? { color: "#B91C1C", bold: true } : {}),
+            cell(fmtH(cred), cred > 0 ? { color: "#15803D", bold: true } : {})
+          ]),
+      cell(`${dia.status}${pausas}`, { alignment: "left" })
     ]);
   }
 
   return {
-    table: {
-      headerRows: 1,
-      // Colunas de largura fixa (caracteres de hora/data sempre do mesmo tamanho);
-      // Pausa e Status recebem o espaço restante (*) pois variam de tamanho.
-      //        Data  Dia  Entr  IInt  FInt  Saíd  Pausa Horas Saldo Status
-      widths: ocultarBh
-        ? [42, 22, 34, 34, 34, 34, "*", 40, "*"]
-        : [42, 22, 34, 34, 34, 34, "*", 34, 40, "*"],
-      body: tableBody
-    },
-    layout: TABLE_LAYOUT,
+    stack: [
+      {
+        table: {
+          headerRows: 2,
+          dontBreakRows: true,
+          //        Data Dia Marc  Alter HTrab [HEa HEn Déb Créd]  Justificativa
+          widths: ocultarBh ? [40, 24, 96, 96, 34, "*"] : [38, 22, 84, 84, 30, 28, 30, 28, 28, "*"],
+          body: tableBody
+        },
+        layout: {
+          ...TABLE_LAYOUT,
+          hLineWidth: (i: number, node: { table: { body: unknown[] } }) =>
+            i === 0 || i === node.table.body.length ? 0 : i <= 2 ? 0.6 : 0.4,
+          hLineColor: (i: number) => (i <= 2 ? "#9CA3AF" : "#E5E7EB"),
+          vLineWidth: (i: number, node: { table: { widths?: unknown[] } }) =>
+            i === 0 || i === (node.table.widths?.length ?? 0) ? 0 : 0.3,
+          vLineColor: () => "#E5E7EB"
+        }
+      },
+      {
+        text:
+          'Marcações (Ent-Int Inter-Saída): horários batidos; "--:--" = sem batida. ' +
+          "Marcações alteradas: horários vigentes após correção aprovada. " +
+          "H.E. autorizada: creditada ao banco; H.E. não autorizada: apurada e não creditada. ",
+        fontSize: 5.8,
+        color: "#6B7280",
+        margin: [0, 2, 0, 0] as [number, number, number, number]
+      }
+    ],
     margin: [0, 0, 0, 5]
   };
 }
 
+/** Atrasos = saldo negativo dos dias com batidas (falta inteira não é atraso). */
+function atrasosMinutos(dias: RelatorioMensalPdf["dias"]): number {
+  return dias
+    .filter((d) => d.horasMin > 0 && d.saldoMin !== null && d.saldoMin < 0)
+    .reduce((s, d) => s + Math.abs(d.saldoMin ?? 0), 0);
+}
+
+/** Horas extras = saldo positivo dos dias de jornada normal (multiplicador 100%). */
+function horasExtrasMinutos(dias: RelatorioMensalPdf["dias"]): number {
+  return dias
+    .filter((d) => d.saldoMin !== null && d.saldoMin > 0)
+    .reduce((s, d) => s + (d.saldoMin ?? 0), 0);
+}
+
 function buildTotais(input: QuadroPdfInput): unknown {
-  const { relatorio, assinatura, funcionario, resumoBadges } = input;
+  const { relatorio, assinatura, funcionario, resumoBadges, espelho } = input;
   const ocultarBh =
     resumoBadges?.ocultarBancoHoras ?? categoriaSemVisibilidadeBancoHoras(funcionario.categoria);
+  const b = resumoBadges;
+  const dias = relatorio.dias;
 
-  if (resumoBadges) {
-    const b = resumoBadges;
-    const linhas: { label: string; valor: string; color?: string }[] = [
-      { label: "Dias OK", valor: String(b.diasOk) },
-      ...(b.faltas > 0
-        ? [{ label: b.faltas === 1 ? "Falta" : "Faltas", valor: String(b.faltas) }]
-        : []),
-      ...(b.afastamentos > 0
-        ? [
-            {
-              label: b.afastamentos === 1 ? "Afastamento" : "Afastamentos",
-              valor: String(b.afastamentos)
-            }
-          ]
-        : []),
-      { label: "Horas trabalhadas", valor: formatHorasNeutro(b.horasTrabalhadasMinutos) }
+  const faltas = b?.faltas ?? dias.filter((d) => d.statusInterno === "FALTA").length;
+  const afastamentos =
+    b?.afastamentos ?? dias.filter((d) => d.statusInterno === "AFASTAMENTO").length;
+  const saldoMesBanco = b?.saldoMesMinutos ?? relatorio.saldoMinutos;
+  const saldoPeriodo = ocultarBh ? null : saldoMesBanco;
+
+  const esq: Array<[string, string]> = [
+    ["Dias trabalhados", String(relatorio.diasTrabalhados)],
+    ["Dias de afastamento", String(afastamentos)],
+    ["Faltas", String(faltas)],
+    ["Horas previstas", formatHorasNeutro(relatorio.horasEsperadasMinutos)]
+  ];
+  const dir: Array<[string, string]> = [
+    ["Horas realizadas", formatHorasNeutro(relatorio.horasTrabalhadasMinutos)],
+    ...(saldoPeriodo === null
+      ? []
+      : [["Saldo do período", formatBadgeHoras(saldoPeriodo)] as [string, string]]),
+    ["Atrasos", formatHorasNeutro(atrasosMinutos(dias))],
+    ...(ocultarBh
+      ? []
+      : [["Horas extras", formatHorasNeutro(horasExtrasMinutos(dias))] as [string, string]])
+  ];
+
+  const cellLabel = (t: string) => ({ text: t, style: "totalLabel", alignment: "left" as const });
+  const cellValor = (t: string) => ({ text: t, style: "totalValue", alignment: "right" as const });
+  const linhasResumo = Math.max(esq.length, dir.length);
+  const bodyResumo: unknown[][] = [];
+  for (let i = 0; i < linhasResumo; i++) {
+    const e = esq[i];
+    const d = dir[i];
+    bodyResumo.push([
+      e ? cellLabel(e[0]) : { text: "" },
+      e ? cellValor(e[1]) : { text: "" },
+      d ? cellLabel(d[0]) : { text: "" },
+      d ? cellValor(d[1]) : { text: "" }
+    ]);
+  }
+  const layoutLinhas = {
+    hLineWidth: () => 0.4,
+    vLineWidth: () => 0,
+    hLineColor: () => "#E5E7EB",
+    paddingTop: () => 3,
+    paddingBottom: () => 3,
+    paddingLeft: () => 4,
+    paddingRight: () => 4
+  };
+
+  const stack: unknown[] = [
+    { text: "Resumo do período", style: "sectionTitle", margin: [0, 4, 0, 2] },
+    {
+      table: { widths: ["*", 70, "*", 70], body: bodyResumo },
+      layout: layoutLinhas,
+      margin: [0, 0, 0, 6]
+    }
+  ];
+
+  /* Extrato de cálculo (banco de horas): só para quem tem visibilidade do banco. */
+  if (!ocultarBh) {
+    const verde = "#15803D";
+    const verm = "#B91C1C";
+    const cor = (n: number) => (n >= 0 ? verde : verm);
+    const he = horasExtrasMinutos(dias);
+    const debitos = dias
+      .filter((d) => d.saldoMin !== null && d.saldoMin < 0)
+      .reduce((s, d) => s + Math.abs(d.saldoMin ?? 0), 0);
+    const linhas: Array<{ label: string; valor: string; color?: string }> = [
+      {
+        label: "Horas trabalhadas no período",
+        valor: formatHorasNeutro(relatorio.horasTrabalhadasMinutos)
+      },
+      {
+        label: "Horas previstas (jornada × dias)",
+        valor: formatHorasNeutro(relatorio.horasEsperadasMinutos)
+      },
+      { label: "(+) Horas extras / créditos", valor: formatBadgeHoras(he), color: verde },
+      {
+        label: "(-) Débitos (faltas e atrasos)",
+        valor: `-${formatHorasNeutro(debitos)}`,
+        color: verm
+      },
+      {
+        label: "(=) Saldo do mês",
+        valor: formatBadgeHoras(saldoMesBanco),
+        color: cor(saldoMesBanco)
+      }
     ];
-    if (!ocultarBh) {
+    if (b) {
       linhas.push(
         {
           label: `Acumulado (${b.labelMesAnterior})`,
           valor: formatBadgeHoras(b.saldoAcumuladoMesAnteriorMinutos),
-          color: b.saldoAcumuladoMesAnteriorMinutos >= 0 ? "#15803D" : "#B91C1C"
+          color: cor(b.saldoAcumuladoMesAnteriorMinutos)
         },
         {
-          label: "Saldo do mês",
-          valor: formatBadgeHoras(b.saldoMesMinutos),
-          color: b.saldoMesMinutos >= 0 ? "#15803D" : "#B91C1C"
-        },
-        {
-          label: "Total (acumulado + saldo)",
+          label: "Banco de horas total (acumulado + saldo)",
           valor: formatBadgeHoras(b.totalAcumuladoMinutos),
-          color: b.totalAcumuladoMinutos >= 0 ? "#15803D" : "#B91C1C"
+          color: cor(b.totalAcumuladoMinutos)
         }
       );
+    } else {
+      linhas.push({
+        label: "Banco de horas total",
+        valor: formatBancoHoras(assinatura.bancoHorasSaldoTotalMinutos),
+        color: cor(assinatura.bancoHorasSaldoTotalMinutos)
+      });
     }
-
-    const half = Math.ceil(linhas.length / 2);
-    const colEsq = linhas.slice(0, half);
-    const colDir = linhas.slice(half);
-
-    const cellLabel = (t: string) => ({
-      text: t,
-      style: "totalLabel",
-      alignment: "left" as const
-    });
-    const cellValor = (t: string, color?: string) => ({
-      text: t,
-      style: "totalValue",
-      alignment: "right" as const,
-      ...(color ? { color } : {})
-    });
-
-    const maxRows = Math.max(colEsq.length, colDir.length);
-    const body: unknown[][] = [];
-    for (let i = 0; i < maxRows; i++) {
-      const e = colEsq[i];
-      const d = colDir[i];
-      body.push([
-        e ? cellLabel(e.label) : { text: "", border: [false, false, false, false] },
-        e ? cellValor(e.valor, e.color) : { text: "", border: [false, false, false, false] },
-        d ? cellLabel(d.label) : { text: "", border: [false, false, false, false] },
-        d ? cellValor(d.valor, d.color) : { text: "", border: [false, false, false, false] }
-      ]);
+    const bodyExtrato = linhas.map((l) => [
+      cellLabel(l.label),
+      { ...cellValor(l.valor), ...(l.color ? { color: l.color } : {}) }
+    ]);
+    const mult = espelho?.multiplicadores;
+    stack.push(
+      { text: "Extrato de cálculo de horas", style: "sectionTitle", margin: [0, 2, 0, 2] },
+      {
+        table: { widths: ["*", 90], body: bodyExtrato },
+        layout: layoutLinhas,
+        margin: [0, 0, 0, mult ? 2 : 6]
+      }
+    );
+    if (mult) {
+      stack.push({
+        text: `Multiplicadores do banco: sábado ${mult.sabadoPct}% · domingo ${mult.domingoPct}% · feriado ${mult.feriadoPct}%`,
+        fontSize: 6,
+        color: "#6B7280",
+        margin: [0, 0, 0, 6]
+      });
     }
-
-    return {
-      stack: [
-        { text: "Resumo do Período", style: "sectionTitle", margin: [0, 4, 0, 2] },
-        {
-          table: {
-            widths: ["*", 70, "*", 70],
-            body
-          },
-          layout: {
-            hLineWidth: () => 0.4,
-            vLineWidth: () => 0,
-            hLineColor: () => "#E5E7EB",
-            paddingTop: () => 3,
-            paddingBottom: () => 3,
-            paddingLeft: () => 4,
-            paddingRight: () => 4
-          },
-          margin: [0, 0, 0, 6]
-        }
-      ]
-    };
   }
 
-  if (ocultarBh) {
-    return {
-      table: {
-        widths: ["*", "*"],
-        body: [
-          [
-            { text: "Dias Trabalhados", style: "totalLabel", alignment: "center" },
-            { text: "Total Horas", style: "totalLabel", alignment: "center" }
-          ],
-          [
-            { text: String(relatorio.diasTrabalhados), style: "totalValue", alignment: "center" },
-            { text: relatorio.horasTrabalhadasFormatado, style: "totalValue", alignment: "center" }
+  return { stack };
+}
+
+/** Lista de ocorrências derivada dos dias (afastamento, feriado, falta, correções…). */
+function buildOcorrencias(input: QuadroPdfInput): unknown {
+  const itens: string[] = [];
+  for (const d of input.relatorio.dias) {
+    const data = d.iso.split("-").reverse().join("/");
+    if (d.statusInterno === "FUTURO" || d.statusInterno === "FOLGA") continue;
+    if (d.statusInterno === "OK" && !d.ajustes?.length && !/atestado/i.test(d.status)) continue;
+    if (d.statusInterno !== "OK" || /atestado/i.test(d.status)) {
+      itens.push(`${data} – ${d.status}`);
+    }
+    for (const a of d.ajustes ?? []) itens.push(`${data} – ${a}`);
+  }
+  if (!itens.length) return { text: "" };
+  return {
+    stack: [
+      { text: "Ocorrências do período", style: "sectionTitle", margin: [0, 2, 0, 2] },
+      {
+        ul: itens,
+        fontSize: 6.5,
+        color: "#374151",
+        margin: [4, 0, 0, 6] as [number, number, number, number]
+      },
+      ...(input.relatorio.dias.some((d) => d.ajustes?.length)
+        ? [
+            {
+              text: "Dias com marcações alteradas: a coluna “Marcações” mostra o horário original batido.",
+              fontSize: 6,
+              color: "#6B7280",
+              margin: [0, 0, 0, 4] as [number, number, number, number]
+            }
           ]
-        ]
-      },
-      layout: {
-        hLineWidth: () => 0.4,
-        vLineWidth: () => 0.4,
-        hLineColor: () => "#D1D5DB",
-        vLineColor: () => "#D1D5DB",
-        paddingTop: () => 4,
-        paddingBottom: () => 4,
-        paddingLeft: () => 4,
-        paddingRight: () => 4
-      },
-      margin: [0, 0, 0, 6]
-    };
-  }
-
-  return {
-    table: {
-      widths: ["*", "*", "*", "*"],
-      body: [
-        [
-          { text: "Dias Trabalhados", style: "totalLabel", alignment: "center" },
-          { text: "Total Horas", style: "totalLabel", alignment: "center" },
-          { text: "Saldo do Mês", style: "totalLabel", alignment: "center" },
-          { text: "Banco de Horas Total", style: "totalLabel", alignment: "center" }
-        ],
-        [
-          { text: String(relatorio.diasTrabalhados), style: "totalValue", alignment: "center" },
-          { text: relatorio.horasTrabalhadasFormatado, style: "totalValue", alignment: "center" },
-          {
-            text: relatorio.saldoFormatado,
-            style: "totalValue",
-            alignment: "center",
-            color: relatorio.saldoMinutos >= 0 ? "#15803D" : "#B91C1C"
-          },
-          {
-            text: formatBancoHoras(assinatura.bancoHorasSaldoTotalMinutos),
-            style: "totalValue",
-            alignment: "center",
-            color: assinatura.bancoHorasSaldoTotalMinutos >= 0 ? "#15803D" : "#B91C1C"
-          }
-        ]
-      ]
-    },
-    layout: {
-      hLineWidth: () => 0.4,
-      vLineWidth: () => 0.4,
-      hLineColor: () => "#D1D5DB",
-      vLineColor: () => "#D1D5DB",
-      paddingTop: () => 4,
-      paddingBottom: () => 4,
-      paddingLeft: () => 4,
-      paddingRight: () => 4
-    },
-    margin: [0, 0, 0, 6]
+        : [])
+    ]
   };
 }
 
-interface AssinaturaColunaMeta {
-  assinadoEm: Date | null;
-  ipReal: string | null;
-  ipGateway?: string | null;
-  userAgent?: string | null;
-}
+/** Última página: declaração de autenticidade, integridade e não repúdio (+ QR de verificação). */
+function buildPaginaDeclaracao(input: QuadroPdfInput, rascunho: boolean): unknown {
+  const { funcionario, assinatura, verificacao } = input;
+  const brData = (iso: string) => iso.split("-").reverse().join("/");
+  const periodo = input.cicloBancoHoras
+    ? `${brData(input.cicloBancoHoras.inicio)} a ${brData(input.cicloBancoHoras.fim)}`
+    : `${String(input.mes).padStart(2, "0")}/${input.ano}`;
+  const matricula = funcionario.matricula ?? "";
+  const periodoHash = input.cicloBancoHoras
+    ? `${input.cicloBancoHoras.inicio}/${input.cicloBancoHoras.fim}`
+    : `${input.mes}/${input.ano}`;
 
-/** Linha rótulo+valor compacta usada nos metadados de assinatura */
-function metaLinha(label: string, valor: string): unknown {
-  return {
-    columns: [
-      { text: label, width: 56, fontSize: 6, color: "#6B0F1A", bold: true },
-      { text: valor, width: "*", fontSize: 6, color: "#444" }
-    ],
-    margin: [0, 0.6, 0, 0] as [number, number, number, number]
+  const evidencia = (
+    papel: string,
+    nome: string,
+    em: Date | null,
+    ip: string | null,
+    gateway: string | null | undefined,
+    ua: string | null | undefined
+  ) => {
+    const ok = !!em && !rascunho;
+    return [
+      { text: papel, style: "fieldLabel" },
+      { text: nome, style: "fieldValue" },
+      { text: ok ? formatDateTime(em) : "Pendente", style: "fieldValue" },
+      { text: ok ? `${ip ?? "—"}${gateway ? ` / ${gateway}` : ""}` : "—", style: "fieldValue" },
+      { text: ok ? shortUserAgent(ua) : "—", style: "fieldValue" },
+      {
+        text: ok ? groupCode(computeSignatoryHash(matricula, periodoHash, em, ip)) : "—",
+        fontSize: 5.8,
+        bold: true
+      }
+    ];
   };
-}
-
-function buildAssinaturaColuna(
-  titulo: string,
-  tituloColor: string,
-  headerBg: string,
-  bodyBg: string,
-  nome: string,
-  subtitulo: string,
-  meta: AssinaturaColunaMeta,
-  certificadoBase64: string | null
-): unknown {
-  const assinado = !!meta.assinadoEm;
-
-  const infoStack: unknown[] = [
-    { text: nome, fontSize: 7.5, bold: true, color: "#111" },
-    {
-      text: subtitulo,
-      fontSize: 6.5,
-      color: "#555",
-      margin: [0, 1, 0, 2] as [number, number, number, number]
-    }
+  const linhasEvid: unknown[][] = [
+    ["Signatário", "Nome", "Assinado em", "IP (PC / borda)", "Dispositivo", "Código SHA-256"].map(
+      (t) => ({ text: t, style: "thCell" })
+    ),
+    evidencia(
+      "Funcionário",
+      funcionario.user.name,
+      assinatura.assinadoFuncionarioEm,
+      assinatura.assinadoFuncionarioIp,
+      assinatura.assinadoFuncionarioIpGateway,
+      assinatura.assinadoFuncionarioUserAgent
+    ),
+    ...(input.cicloBancoHoras
+      ? []
+      : [
+          evidencia(
+            "Gestor da área",
+            assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
+            assinatura.assinadoGestorEm,
+            assinatura.assinadoGestorIp,
+            assinatura.assinadoGestorIpGateway,
+            assinatura.assinadoGestorUserAgent
+          )
+        ])
   ];
 
-  if (assinado) {
-    infoStack.push(
-      metaLinha("Assinado em", formatDateTime(meta.assinadoEm)),
-      metaLinha("IP do PC", meta.ipReal ?? "—"),
-      metaLinha("Gateway borda", meta.ipGateway ?? "—"),
-      metaLinha("Dispositivo", shortUserAgent(meta.userAgent))
-    );
-  } else {
-    infoStack.push({
-      text: "Pendente de assinatura",
-      fontSize: 6.5,
-      color: "#9CA3AF",
-      italics: true,
-      margin: [0, 4, 0, 0] as [number, number, number, number]
-    });
-  }
+  const paragrafo = (t: string) => ({
+    text: t,
+    fontSize: 7,
+    color: "#374151",
+    lineHeight: 1.25,
+    margin: [0, 0, 0, 5] as [number, number, number, number]
+  });
+  const titulo = (t: string) => ({
+    text: t,
+    style: "sectionTitle",
+    margin: [0, 6, 0, 3] as [number, number, number, number]
+  });
 
-  const bodyContent: unknown =
-    assinado && certificadoBase64
-      ? {
-          columns: [
-            {
-              image: `data:image/png;base64,${certificadoBase64}`,
-              width: 32,
-              margin: [0, 0, 7, 0] as [number, number, number, number]
-            },
-            { stack: infoStack, width: "*" }
-          ]
-        }
-      : { stack: infoStack };
-
-  return {
-    table: {
-      widths: ["*"],
-      body: [
-        [
+  const qr = verificacao?.url
+    ? {
+        columns: [
+          { qr: verificacao.url, fit: 92, width: 100 },
           {
-            text: titulo,
-            bold: true,
-            fontSize: 7,
-            color: tituloColor,
-            fillColor: headerBg,
-            border: [true, true, true, false] as [boolean, boolean, boolean, boolean],
-            margin: [6, 3, 6, 3] as [number, number, number, number]
+            width: "*",
+            stack: [
+              {
+                text: "Verifique a validade deste documento",
+                fontSize: 8,
+                bold: true,
+                color: "#6B0F1A"
+              },
+              {
+                text: "Leia o QR Code ou acesse o endereço abaixo e informe o código de verificação. A página confirma a autenticidade, as assinaturas e a integridade do arquivo.",
+                fontSize: 6.8,
+                color: "#374151",
+                margin: [0, 2, 0, 4] as [number, number, number, number]
+              },
+              { text: verificacao.url, fontSize: 7, bold: true, color: "#1E40AF" },
+              {
+                text: `Código: ${verificacao.codigo ?? "—"}`,
+                fontSize: 6.5,
+                color: "#111",
+                margin: [0, 3, 0, 0] as [number, number, number, number]
+              }
+            ]
           }
         ],
-        [
-          {
-            ...(typeof bodyContent === "object" && bodyContent !== null
-              ? bodyContent
-              : { stack: infoStack }),
-            fillColor: bodyBg,
-            border: [true, false, true, true] as [boolean, boolean, boolean, boolean],
-            margin: [6, 5, 6, 5] as [number, number, number, number]
-          }
-        ]
-      ]
-    },
-    layout: {
-      hLineColor: () => "#D1D5DB",
-      vLineColor: () => "#D1D5DB"
-    }
+        columnGap: 10,
+        margin: [0, 0, 0, 4] as [number, number, number, number]
+      }
+    : {
+        text: rascunho
+          ? "Rascunho: o QR Code e o link de verificação são gerados quando o documento é assinado."
+          : "O QR Code e o link de verificação estarão disponíveis após a conclusão das assinaturas.",
+        fontSize: 6.8,
+        italics: true,
+        color: "#6B7280",
+        margin: [0, 0, 0, 4] as [number, number, number, number]
+      };
+
+  return {
+    pageBreak: "before",
+    stack: [
+      {
+        text: "Declaração de Autenticidade, Integridade e Não Repúdio",
+        fontSize: 11,
+        bold: true,
+        color: "#6B0F1A",
+        margin: [0, 0, 0, 4] as [number, number, number, number]
+      },
+      paragrafo(
+        `Documento: ${input.cicloBancoHoras ? "Relatório do ciclo do banco de horas" : "Espelho de Ponto Eletrônico (folha mensal)"} — ` +
+          `competência/período ${periodo} — ${funcionario.user.name}` +
+          `${matricula ? `, matrícula ${matricula}` : ""}.` +
+          (input.registro && !rascunho
+            ? ` Registro nº ${input.registro.numero} — muda sempre que o conteúdo muda; cada página traz um QR Code selado com este registro.`
+            : "")
+      ),
+      titulo("1. Assinaturas e evidências"),
+      {
+        table: {
+          headerRows: 1,
+          widths: [52, "*", 70, 78, 70, 120],
+          body: linhasEvid
+        },
+        layout: TABLE_LAYOUT,
+        margin: [0, 0, 0, 4] as [number, number, number, number]
+      },
+      titulo("2. Declaração"),
+      paragrafo(
+        "As assinaturas deste documento foram realizadas por meio de autenticação individual e " +
+          "intransferível no Sistema de Ponto Eletrônico do CFO, com registro de data e hora (horário " +
+          "de Brasília), endereço IP e dispositivo do signatário. O conteúdo é protegido por código de " +
+          "integridade (SHA-256), de modo que qualquer alteração posterior invalida os códigos de " +
+          "validação. O signatário reconhece a autoria do ato e a conformidade das informações com os " +
+          "registros apresentados, não podendo repudiá-lo (não repúdio)."
+      ),
+      titulo("3. Selo institucional ICP-Brasil"),
+      paragrafo(
+        verificacao?.seloAtivo
+          ? "Este arquivo recebe o selo digital do CFO com certificado e-CNPJ emitido no âmbito da " +
+              "ICP-Brasil (assinatura PAdES), nos termos do art. 10, §1º, da MP nº 2.200-2/2001, " +
+              "assegurando origem e integridade. A validade pode ser conferida no Verificador de " +
+              "Conformidade do ITI (https://validar.iti.gov.br)."
+          : "O selo digital do CFO com certificado e-CNPJ (ICP-Brasil) será aplicado a este " +
+              "documento assim que o certificado for instalado. Até lá, a autenticidade é comprovada " +
+              "pelas evidências acima e pelo código de verificação, nos termos do art. 10, §2º, da " +
+              "MP nº 2.200-2/2001 e da Lei nº 14.063/2020."
+      ),
+      titulo("4. Verificação"),
+      qr,
+      titulo("5. Confidencialidade e proteção de dados"),
+      paragrafo(
+        "Este documento contém dados pessoais tratados pelo CFO para controle de jornada, " +
+          "cumprimento de obrigação legal e gestão da relação de trabalho (Lei nº 13.709/2018 — " +
+          "LGPD). O acesso é restrito ao titular, à chefia imediata e ao RH, sendo vedado o " +
+          "compartilhamento indevido. A página pública de verificação exibe apenas dados mínimos."
+      ),
+      {
+        text: "Base normativa: MP nº 2.200-2/2001; Lei nº 14.063/2020; Portaria MTP nº 671/2021, art. 84.",
+        fontSize: 6,
+        color: "#6B7280",
+        italics: true
+      }
+    ]
   };
 }
+
+const NOTA_LEGAL = {
+  text:
+    "Documento gerado pelo sistema de Ponto Eletrônico do CFO, conforme art. 84 da Portaria " +
+    "MTP nº 671/2021.",
+  fontSize: 6,
+  color: "#6B7280",
+  italics: true,
+  margin: [0, 6, 0, 0] as [number, number, number, number]
+};
 
 /**
  * Síntese mês a mês do ciclo — espelha a estrutura do front (Julho / Agosto
@@ -808,242 +1020,231 @@ function buildSinteseMesesCiclo(meses: MesCicloResumoPdf[]): unknown {
   };
 }
 
-function buildAssinaturas(input: QuadroPdfInput): unknown {
-  const { funcionario, assinatura, certificadoBase64 } = input;
-  const soFuncionarioCiclo = !!input.cicloBancoHoras;
+/** Altura reservada no rodapé para a estrutura de assinatura (uma por página). */
+const ALTURA_RODAPE_ASSINATURA = 96;
 
-  const colunaFuncionario = {
-    width: "*" as const,
-    stack: [
-      buildAssinaturaColuna(
-        "FUNCIONÁRIO",
-        "#6B0F1A",
-        "#FFF5F5",
-        "#FFF5F5",
-        funcionario.user.name,
-        `Matrícula: ${funcionario.matricula ?? "—"}`,
-        {
-          assinadoEm: assinatura.assinadoFuncionarioEm,
-          ipReal: assinatura.assinadoFuncionarioIp,
-          ipGateway: assinatura.assinadoFuncionarioIpGateway,
-          userAgent: assinatura.assinadoFuncionarioUserAgent
-        },
-        certificadoBase64
-      )
-    ]
-  };
-
-  const colunaGestor = {
-    width: "*" as const,
-    stack: [
-      buildAssinaturaColuna(
-        "GESTOR DA ÁREA",
-        "#374151",
-        "#F8FAFC",
-        "#F8FAFC",
-        assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
-        funcionario.gerencia ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})` : "—",
-        {
-          assinadoEm: assinatura.assinadoGestorEm,
-          ipReal: assinatura.assinadoGestorIp,
-          ipGateway: assinatura.assinadoGestorIpGateway,
-          userAgent: assinatura.assinadoGestorUserAgent
-        },
-        certificadoBase64
-      )
-    ]
-  };
-
-  return {
-    stack: [
-      { text: "Assinaturas", style: "sectionTitle" },
-      ...(soFuncionarioCiclo
-        ? [
-            {
-              text: "Neste relatório de ciclo, apenas o funcionário assina. O documento assinado fica disponível ao RH.",
-              fontSize: 6.5,
-              color: "#6B7280",
-              margin: [0, 0, 0, 6] as [number, number, number, number]
-            }
-          ]
-        : []),
-      {
-        columns: soFuncionarioCiclo
-          ? [colunaFuncionario]
-          : [colunaFuncionario, { width: 8, text: "" }, colunaGestor]
-      },
-      buildAutenticidade(input)
-    ],
-    margin: [0, 0, 0, 0],
-    unbreakable: true
-  };
-}
-
-/** Bloco de autenticidade individual de um signatário */
-function buildAutenticidadeColuna(
-  titulo: string,
-  assinadoEm: Date | null,
-  ip: string | null,
-  matricula: string,
-  periodo: string
+/**
+ * Estrutura de assinatura da página — renderizada no rodapé de TODAS as páginas (uma por
+ * página, nunca mais). Cada página leva funcionário e gestor (ciclo: só funcionário), com
+ * data/hora, IP, dispositivo e o código SHA-256 de autenticidade.
+ */
+function buildAssinaturaRodape(
+  input: QuadroPdfInput,
+  paginaAtual: number,
+  totalPaginas: number,
+  rascunho = false
 ): unknown {
-  const assinado = !!assinadoEm;
-  const hash = assinado
-    ? groupCode(computeSignatoryHash(matricula, periodo, assinadoEm, ip))
-    : null;
-
-  const bodyStack: unknown[] = [
-    {
-      columns: [
-        {
-          text: titulo,
-          width: "*",
-          fontSize: 6,
-          bold: true,
-          color: "#6B0F1A",
-          characterSpacing: 0.4
-        },
-        {
-          text: assinado ? "ASSINADO" : "PENDENTE",
-          width: "auto",
-          fontSize: 5.5,
-          bold: true,
-          color: assinado ? "#15803D" : "#B45309"
-        }
-      ]
-    }
-  ];
-
-  if (hash) {
-    bodyStack.push({
-      columns: [
-        {
-          text: "SHA-256:",
-          width: 34,
-          fontSize: 5.5,
-          color: "#888",
-          bold: true,
-          margin: [0, 2, 0, 0] as [number, number, number, number]
-        },
-        {
-          text: hash,
-          width: "*",
-          fontSize: 5.5,
-          bold: true,
-          color: "#111",
-          characterSpacing: 0.3,
-          margin: [0, 2, 0, 0] as [number, number, number, number]
-        }
-      ]
-    });
-  } else {
-    bodyStack.push({
-      text: "Hash calculado após a assinatura",
-      fontSize: 5.5,
-      color: "#9CA3AF",
-      italics: true,
-      margin: [0, 2, 0, 0] as [number, number, number, number]
-    });
-  }
-
-  return {
-    table: {
-      widths: ["*"],
-      body: [
-        [
-          {
-            stack: bodyStack,
-            border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
-            margin: [6, 4, 6, 4] as [number, number, number, number]
-          }
-        ]
-      ]
-    },
-    layout: {
-      hLineWidth: () => 0.5,
-      vLineWidth: () => 0.5,
-      hLineColor: () => "#E5C9CC",
-      vLineColor: () => "#E5C9CC"
-    }
-  };
-}
-
-/** Faixa de autenticidade — um bloco por signatário (ciclo: só funcionário) */
-function buildAutenticidade(input: QuadroPdfInput): unknown {
-  const { assinatura, funcionario } = input;
+  const { funcionario, assinatura, certificadoBase64 } = input;
+  const soFuncionario = !!input.cicloBancoHoras;
   const periodo = input.cicloBancoHoras
     ? `${input.cicloBancoHoras.inicio}/${input.cicloBancoHoras.fim}`
     : `${input.mes}/${input.ano}`;
   const matricula = funcionario.matricula ?? "";
-  const soFuncionarioCiclo = !!input.cicloBancoHoras;
 
-  const colunaFunc = {
-    width: "*" as const,
-    stack: [
-      buildAutenticidadeColuna(
-        "AUTENTICIDADE — FUNCIONÁRIO",
-        assinatura.assinadoFuncionarioEm,
-        assinatura.assinadoFuncionarioIp,
-        matricula,
-        periodo
-      )
-    ]
+  const coluna = (
+    titulo: string,
+    cor: string,
+    fundo: string,
+    nome: string,
+    assinadoEm: Date | null,
+    ip: string | null,
+    ipGateway: string | null | undefined,
+    userAgent: string | null | undefined
+  ) => {
+    const assinado = !!assinadoEm && !rascunho;
+    const hash = assinado
+      ? groupCode(computeSignatoryHash(matricula, periodo, assinadoEm, ip))
+      : null;
+    const linhas: unknown[] = [
+      { text: titulo, fontSize: 6, bold: true, color: cor, characterSpacing: 0.4 },
+      { text: nome, fontSize: 7.5, bold: true, color: "#111", margin: [0, 1, 0, 0] }
+    ];
+    if (rascunho) {
+      linhas.push(
+        {
+          canvas: [
+            { type: "line", x1: 0, y1: 0, x2: 200, y2: 0, lineWidth: 0.6, lineColor: "#9CA3AF" }
+          ],
+          margin: [0, 14, 0, 2]
+        },
+        { text: "Assinatura", fontSize: 5.5, color: "#888" }
+      );
+    } else if (assinado) {
+      linhas.push(
+        {
+          text: `Assinado eletronicamente em ${formatDateTime(assinadoEm)} · IP ${ip ?? "—"}${ipGateway ? ` · borda ${ipGateway}` : ""} · ${shortUserAgent(userAgent)}`,
+          fontSize: 5.8,
+          color: "#444",
+          margin: [0, 1, 0, 0]
+        },
+        {
+          text: `SHA-256: ${hash}`,
+          fontSize: 5.5,
+          bold: true,
+          color: "#111",
+          characterSpacing: 0.3,
+          margin: [0, 2, 0, 0]
+        }
+      );
+    } else {
+      linhas.push({
+        text: "Pendente de assinatura",
+        fontSize: 6.5,
+        italics: true,
+        color: "#9CA3AF",
+        margin: [0, 4, 0, 0]
+      });
+    }
+    const corpo =
+      assinado && certificadoBase64
+        ? {
+            columns: [
+              {
+                image: `data:image/png;base64,${certificadoBase64}`,
+                width: 24,
+                margin: [0, 2, 6, 0]
+              },
+              { stack: linhas, width: "*" }
+            ]
+          }
+        : { stack: linhas };
+    return {
+      table: { widths: ["*"], body: [[{ ...corpo, margin: [6, 4, 6, 4] }]] },
+      layout: {
+        hLineWidth: () => 0.5,
+        vLineWidth: () => 0.5,
+        hLineColor: () => "#E5C9CC",
+        vLineColor: () => "#E5C9CC",
+        fillColor: () => fundo
+      }
+    };
   };
 
-  const colunaGestor = {
-    width: "*" as const,
-    stack: [
-      buildAutenticidadeColuna(
-        "AUTENTICIDADE — GESTOR DA ÁREA",
-        assinatura.assinadoGestorEm,
-        assinatura.assinadoGestorIp,
-        matricula,
-        periodo
-      )
-    ]
-  };
+  const colFunc = coluna(
+    "FUNCIONÁRIO",
+    "#6B0F1A",
+    "#FFF5F5",
+    funcionario.user.name,
+    assinatura.assinadoFuncionarioEm,
+    assinatura.assinadoFuncionarioIp,
+    assinatura.assinadoFuncionarioIpGateway,
+    assinatura.assinadoFuncionarioUserAgent
+  );
+  const colGestor = coluna(
+    "GESTOR DA ÁREA",
+    "#374151",
+    "#F8FAFC",
+    assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
+    assinatura.assinadoGestorEm,
+    assinatura.assinadoGestorIp,
+    assinatura.assinadoGestorIpGateway,
+    assinatura.assinadoGestorUserAgent
+  );
 
   return {
+    margin: [25, 4, 25, 0],
     stack: [
       {
-        columns: soFuncionarioCiclo
-          ? [colunaFunc]
-          : [colunaFunc, { width: 8, text: "" }, colunaGestor]
+        columns: [
+          ...(soFuncionario
+            ? [{ width: "*", ...colFunc }]
+            : [
+                { width: "*", ...colFunc },
+                { width: 8, text: "" },
+                { width: "*", ...colGestor }
+              ]),
+          /* QR selado desta página: registro + nº da página + total, assinados pelo sistema. */
+          ...(input.registro && !rascunho
+            ? [
+                { width: 6, text: "" },
+                {
+                  width: 52,
+                  stack: [
+                    { qr: input.registro.urlPagina(paginaAtual, totalPaginas), fit: 52 },
+                    { text: "Verificar página", fontSize: 4.8, color: "#555", alignment: "center" }
+                  ]
+                }
+              ]
+            : [])
+        ]
       },
       {
-        text: soFuncionarioCiclo
-          ? "Assinado eletronicamente pelo funcionário no Sistema de Ponto Eletrônico CFO. " +
-            "O documento assinado fica disponível ao RH. " +
-            "A autenticidade pode ser verificada confrontando o código SHA-256 " +
-            "com o IP e horário registrados na base do sistema. " +
-            "Qualquer alteração no conteúdo invalida o código de validação."
-          : "Assinado eletronicamente pelo Sistema de Ponto Eletrônico CFO. " +
-            "A autenticidade de cada assinatura pode ser verificada confrontando o código SHA-256 " +
-            "com o IP e horário registrados na base do sistema. " +
-            "Qualquer alteração no conteúdo invalida os códigos de validação.",
-        fontSize: 5.5,
-        color: "#777",
-        margin: [0, 4, 0, 0] as [number, number, number, number],
-        lineHeight: 1.2
+        columns: [
+          {
+            text:
+              (input.registro && !rascunho ? `Registro nº ${input.registro.numero} — ` : "") +
+              `Gerado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} — ` +
+              "Sistema de Ponto Eletrônico CFO. Qualquer alteração no conteúdo invalida os códigos de validação." +
+              (rascunho ? "  RASCUNHO — sem validade sem assinatura eletrônica." : ""),
+            fontSize: 5.3,
+            color: rascunho ? "#B91C1C" : "#777"
+          },
+          {
+            text: `Página ${paginaAtual} de ${totalPaginas}`,
+            fontSize: 6.5,
+            bold: true,
+            color: "#374151",
+            alignment: "right",
+            width: 70
+          }
+        ],
+        margin: [0, 3, 0, 0]
       }
-    ],
-    margin: [0, 6, 0, 0] as [number, number, number, number]
+    ]
   };
 }
+
+/**
+ * Fundo de segurança de cada página (documento assinado): ondas finas tipo "guilhoché" e
+ * microtexto com o nº de registro e a página. Recortes/colagens de prints desalinham o padrão e
+ * o microtexto denuncia de qual registro/página veio o pedaço.
+ */
+function buildFundoSeguranca(registro: string) {
+  return (paginaAtual: number, tamanho: { width: number; height: number }) => {
+    const ondas: unknown[] = [];
+    for (let y = 30, k = 0; y < tamanho.height - 20; y += 22, k++) {
+      const pontos: Array<{ x: number; y: number }> = [];
+      for (let x = 0; x <= tamanho.width; x += 6) {
+        pontos.push({ x, y: y + 3.2 * Math.sin(x / 13 + k * 0.9) });
+      }
+      ondas.push({ type: "polyline", lineWidth: 0.25, lineColor: "#EFE3E5", points: pontos });
+    }
+    const unidade = `${registro} · PÁG ${paginaAtual} · `;
+    const linhaMicro = unidade.repeat(Math.ceil(tamanho.width / (unidade.length * 1.35)) + 1);
+    const micro: unknown[] = [];
+    for (let y = 41; y < tamanho.height - 20; y += 44) {
+      micro.push({
+        text: linhaMicro,
+        fontSize: 2.6,
+        color: "#E4D6D8",
+        absolutePosition: { x: 4, y },
+        noWrap: true
+      });
+    }
+    return [{ canvas: ondas, absolutePosition: { x: 0, y: 0 } }, ...micro];
+  };
+}
+
+/** A seção do Resumo inicia na 2ª página; se a tabela já passou para a 2ª, segue junto. */
+const resumoPageBreakBefore = (node: {
+  id?: string;
+  startPosition?: { pageNumber: number };
+}): boolean => node.id === "resumo" && (node.startPosition?.pageNumber ?? 0) === 1;
 
 export function buildQuadroPdfDocDefinition(input: QuadroPdfInput): Record<string, unknown> {
   const docSubtitle = input.cicloBancoHoras
     ? "RELATÓRIO DO CICLO DE BANCO DE HORAS"
-    : "QUADRO DE REGISTRO DE PONTO";
-  const sectionRegistros = input.cicloBancoHoras ? "Registros do Ciclo" : "Registros do Mês";
+    : "RELATÓRIO DE PONTO DO FUNCIONÁRIO";
+  const sectionRegistros = "Marcações e jornada realizada";
   return {
     pageSize: "A4",
-    pageMargins: [25, 22, 25, 28],
+    pageOrientation: ORIENTACAO_PAGINA,
+    pageMargins: [25, 16, 25, ALTURA_RODAPE_ASSINATURA],
     defaultStyle: { font: "Helvetica", fontSize: 7 },
     styles: {
       orgTitle: {
         font: "InstrumentSerif",
-        fontSize: 15,
+        fontSize: 18,
         italics: true,
         color: "#7A1E26",
         lineHeight: 1.15
@@ -1077,19 +1278,35 @@ export function buildQuadroPdfDocDefinition(input: QuadroPdfInput): Record<strin
       buildFuncionarioCard(input),
       { text: sectionRegistros, style: "sectionTitle" },
       buildTabelaDias(input),
-      buildTotais(input),
-      ...(input.cicloBancoHoras?.mesesResumo?.length
-        ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
-        : []),
-      buildAssinaturas(input)
+      {
+        id: "resumo",
+        stack: [
+          buildTotais(input),
+          buildOcorrencias(input),
+          ...(input.cicloBancoHoras?.mesesResumo?.length
+            ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
+            : []),
+          NOTA_LEGAL
+        ]
+      },
+      buildPaginaDeclaracao(input, false)
     ],
-    footer: () => ({
-      text: `Gerado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} — Sistema de Ponto Eletrônico CFO`,
-      alignment: "center",
-      fontSize: 6,
-      color: "#999",
-      margin: [0, 0, 0, 6]
-    })
+    pageBreakBefore: resumoPageBreakBefore,
+    ...(input.registro
+      ? {
+          background: buildFundoSeguranca(input.registro.numero),
+          watermark: {
+            text: input.registro.numero,
+            color: "#6B0F1A",
+            opacity: 0.045,
+            bold: true,
+            fontSize: 34,
+            angle: -38
+          }
+        }
+      : {}),
+    footer: (paginaAtual: number, totalPaginas: number) =>
+      buildAssinaturaRodape(input, paginaAtual, totalPaginas)
   };
 }
 
@@ -1098,7 +1315,7 @@ export function buildRascunhoPdfDocDefinition(input: QuadroPdfInput): Record<str
   const STYLES = {
     orgTitle: {
       font: "InstrumentSerif",
-      fontSize: 15,
+      fontSize: 18,
       italics: true,
       color: "#7A1E26",
       lineHeight: 1.15
@@ -1128,148 +1345,10 @@ export function buildRascunhoPdfDocDefinition(input: QuadroPdfInput): Record<str
     totalValue: { fontSize: 9, bold: true, color: "#111111" }
   };
 
-  const colunaFuncionarioRascunho = {
-    width: "*" as const,
-    stack: [
-      {
-        table: {
-          widths: ["*"],
-          body: [
-            [
-              {
-                stack: [
-                  {
-                    text: "FUNCIONÁRIO",
-                    fontSize: 7,
-                    bold: true,
-                    color: "#6B0F1A",
-                    margin: [0, 0, 0, 32] as [number, number, number, number]
-                  },
-                  {
-                    canvas: [
-                      {
-                        type: "line",
-                        x1: 0,
-                        y1: 0,
-                        x2: 220,
-                        y2: 0,
-                        lineWidth: 0.6,
-                        lineColor: "#9CA3AF"
-                      }
-                    ]
-                  },
-                  {
-                    text: input.funcionario.user.name,
-                    fontSize: 6.5,
-                    color: "#555",
-                    margin: [0, 2, 0, 0] as [number, number, number, number]
-                  },
-                  {
-                    text: `Matrícula: ${input.funcionario.matricula ?? "—"}`,
-                    fontSize: 6,
-                    color: "#888",
-                    margin: [0, 1, 0, 0] as [number, number, number, number]
-                  }
-                ],
-                border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
-                margin: [8, 6, 8, 8] as [number, number, number, number]
-              }
-            ]
-          ]
-        },
-        layout: {
-          hLineWidth: () => 0.5,
-          vLineWidth: () => 0.5,
-          hLineColor: () => "#D1D5DB",
-          vLineColor: () => "#D1D5DB"
-        }
-      }
-    ]
-  };
-
-  const colunaGestorRascunho = {
-    width: "*" as const,
-    stack: [
-      {
-        table: {
-          widths: ["*"],
-          body: [
-            [
-              {
-                stack: [
-                  {
-                    text: "GESTOR DA ÁREA",
-                    fontSize: 7,
-                    bold: true,
-                    color: "#374151",
-                    margin: [0, 0, 0, 32] as [number, number, number, number]
-                  },
-                  {
-                    canvas: [
-                      {
-                        type: "line",
-                        x1: 0,
-                        y1: 0,
-                        x2: 220,
-                        y2: 0,
-                        lineWidth: 0.6,
-                        lineColor: "#9CA3AF"
-                      }
-                    ]
-                  },
-                  {
-                    text: input.funcionario.gerencia
-                      ? `${input.funcionario.gerencia.nome} (${input.funcionario.gerencia.sigla})`
-                      : "—",
-                    fontSize: 6.5,
-                    color: "#555",
-                    margin: [0, 2, 0, 0] as [number, number, number, number]
-                  }
-                ],
-                border: [true, true, true, true] as [boolean, boolean, boolean, boolean],
-                margin: [8, 6, 8, 8] as [number, number, number, number]
-              }
-            ]
-          ]
-        },
-        layout: {
-          hLineWidth: () => 0.5,
-          vLineWidth: () => 0.5,
-          hLineColor: () => "#D1D5DB",
-          vLineColor: () => "#D1D5DB"
-        }
-      }
-    ]
-  };
-
-  const soFuncionarioCiclo = !!input.cicloBancoHoras;
-
-  const assinaturaManual = {
-    stack: [
-      { text: "Assinaturas", style: "sectionTitle" },
-      ...(soFuncionarioCiclo
-        ? [
-            {
-              text: "Neste relatório de ciclo, apenas o funcionário assina. O documento assinado fica disponível ao RH.",
-              fontSize: 6.5,
-              color: "#6B7280",
-              margin: [0, 0, 0, 6] as [number, number, number, number]
-            }
-          ]
-        : []),
-      {
-        columns: soFuncionarioCiclo
-          ? [colunaFuncionarioRascunho]
-          : [colunaFuncionarioRascunho, { width: 8, text: "" }, colunaGestorRascunho]
-      }
-    ],
-    margin: [0, 0, 0, 0] as [number, number, number, number],
-    unbreakable: true
-  };
-
   return {
     pageSize: "A4",
-    pageMargins: [25, 22, 25, 28],
+    pageOrientation: ORIENTACAO_PAGINA,
+    pageMargins: [25, 16, 25, ALTURA_RODAPE_ASSINATURA],
     defaultStyle: { font: "Helvetica", fontSize: 7 },
     watermark: { text: "RASCUNHO", color: "#6B0F1A", opacity: 0.055, bold: true, fontSize: 90 },
     styles: STYLES,
@@ -1278,36 +1357,29 @@ export function buildRascunhoPdfDocDefinition(input: QuadroPdfInput): Record<str
         input.logoBase64,
         input.cicloBancoHoras
           ? "RELATÓRIO DO CICLO DE BANCO DE HORAS"
-          : "QUADRO DE REGISTRO DE PONTO"
+          : "RELATÓRIO DE PONTO DO FUNCIONÁRIO"
       ),
       buildFuncionarioCard(input),
       {
-        text: input.cicloBancoHoras ? "Registros do Ciclo" : "Registros do Mês",
+        text: "Marcações e jornada realizada",
         style: "sectionTitle"
       },
       buildTabelaDias(input),
-      buildTotais(input),
-      ...(input.cicloBancoHoras?.mesesResumo?.length
-        ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
-        : []),
-      assinaturaManual
+      {
+        id: "resumo",
+        stack: [
+          buildTotais(input),
+          buildOcorrencias(input),
+          ...(input.cicloBancoHoras?.mesesResumo?.length
+            ? [buildSinteseMesesCiclo(input.cicloBancoHoras.mesesResumo)]
+            : []),
+          NOTA_LEGAL
+        ]
+      },
+      buildPaginaDeclaracao(input, true)
     ],
-    footer: () => ({
-      columns: [
-        {
-          text: `Gerado em ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} — Sistema de Ponto Eletrônico CFO`,
-          fontSize: 6,
-          color: "#999"
-        },
-        {
-          text: "RASCUNHO — Não possui validade sem assinatura eletrônica",
-          fontSize: 6,
-          color: "#B91C1C",
-          bold: true,
-          alignment: "right"
-        }
-      ],
-      margin: [25, 0, 25, 6]
-    })
+    pageBreakBefore: resumoPageBreakBefore,
+    footer: (paginaAtual: number, totalPaginas: number) =>
+      buildAssinaturaRodape(input, paginaAtual, totalPaginas, true)
   };
 }

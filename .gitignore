@@ -22,8 +22,12 @@ packages/backend/prisma/seed.js.map
 packages/backend/prisma/seed.d.ts
 packages/backend/instance/
 packages/backend/uploads/
+packages/backend/uploads-privado/
 packages/web/certs/*.crt
 packages/web/certs/*.key
 test-write
 packages/mobile/.expo
 packages/mobile/.expo-shared
+
+# Arquivos do OCR copiados de node_modules (scripts/copiar-ocr.mjs)
+packages/web/public/ocr/

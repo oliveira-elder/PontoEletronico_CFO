@@ -1,4 +1,5 @@
 import React, { useState, useEffect, Suspense } from "react";
+import { SolicitarTodosBarra } from "../../components/SolicitarTodosBarra";
 import { Link } from "react-router-dom";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
@@ -10,7 +11,7 @@ import {
   ChevronDownIcon,
   CheckCircleIcon,
   XCircleIcon,
-  MapPinIcon
+  ShieldCheckIcon
 } from "../../components/icons";
 import { ExtensionsApiPanel } from "../../components/ExtensionsApiPanel";
 import { dataBrasiliaISO, hojeBrasiliaISO } from "../../utils/horario-brasilia";
@@ -24,6 +25,8 @@ import {
   type Funcionario,
   type Gerencia
 } from "./gestaoShared";
+import { paginaRhLiberada } from "../../utils/recursosRh";
+import { SemAcessoRh } from "../../components/SemAcessoRh";
 
 function fezLoginHoje(f: Funcionario): boolean {
   if (f.loginHoje !== undefined) return f.loginHoje;
@@ -68,6 +71,7 @@ function Stat({
           ? "1px solid var(--burgundy-300, #d68f96)"
           : "1px solid rgba(122,30,38,0.08)",
         padding: "16px 20px",
+        flex: "1 0 auto",
         minWidth: 110,
         cursor: clicavel ? "pointer" : "default",
         boxShadow: selecionado ? "0 0 0 1px var(--burgundy-300, #d68f96) inset" : "none",
@@ -126,76 +130,9 @@ function CategoriaBadge({ cat }: { cat: Categoria }) {
   );
 }
 
-/* ─── Botão: Solicitar Endereço para Todos ─── */
-function SolicitarEnderecoTodosBtn() {
-  const [status, setStatus] = React.useState<"idle" | "loading" | "ok" | "erro">("idle");
-  const [total, setTotal] = React.useState(0);
-
-  async function solicitar() {
-    if (
-      !confirm(
-        "Enviar solicitação de endereço residencial para todos os funcionários ativos? Eles verão um formulário na próxima vez que acessarem o registro de ponto."
-      )
-    )
-      return;
-    setStatus("loading");
-    try {
-      const res = await api.post<{ total: number }>(
-        "/ponto/gestao/requerimento-endereco/todos",
-        {}
-      );
-      setTotal(res?.total ?? 0);
-      setStatus("ok");
-      setTimeout(() => setStatus("idle"), 4000);
-    } catch {
-      setStatus("erro");
-      setTimeout(() => setStatus("idle"), 3000);
-    }
-  }
-
-  return (
-    <button
-      onClick={() => void solicitar()}
-      disabled={status === "loading"}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 7,
-        padding: "9px 16px",
-        borderRadius: "var(--radius-md)",
-        border: "1.5px solid rgba(122,30,38,0.22)",
-        background:
-          status === "ok"
-            ? "rgba(47,125,79,0.08)"
-            : status === "erro"
-              ? "rgba(200,57,63,0.08)"
-              : "transparent",
-        cursor: status === "loading" ? "wait" : "pointer",
-        fontSize: 13,
-        fontWeight: 600,
-        fontFamily: "var(--font-body)",
-        color:
-          status === "ok" ? "var(--green)" : status === "erro" ? "var(--red)" : "var(--ink-700)",
-        opacity: status === "loading" ? 0.7 : 1,
-        transition: "all 200ms",
-        whiteSpace: "nowrap"
-      }}
-    >
-      <MapPinIcon size={15} />
-      {status === "loading"
-        ? "Enviando…"
-        : status === "ok"
-          ? `✓ Enviado para ${total} funcionário${total !== 1 ? "s" : ""}`
-          : status === "erro"
-            ? "Erro ao enviar"
-            : "Solicitar Endereço a Todos"}
-    </button>
-  );
-}
-
 /* ─── Página ─── */
 function GestaoListaTab() {
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, podeRh } = useAuth();
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
   const podeToggleAtivo = isRH;
@@ -206,7 +143,6 @@ function GestaoListaTab() {
   const [gerencias, setGerencias] = useState<Gerencia[]>([]);
   const [busca, setBusca] = useState("");
   const [filtroCategoria, setFiltroCategoria] = useState<Categoria | "">("");
-  const [filtroChefe, setFiltroChefe] = useState(false);
   const [filtroGerencia, setFiltroGerencia] = useState("");
   const [filtroSituacao, setFiltroSituacao] = useState<"todos" | "ativo" | "inativo">("ativo");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -237,13 +173,12 @@ function GestaoListaTab() {
       (f.matricula ?? "").includes(q) ||
       (f.user?.email ?? "").toLowerCase().includes(q);
     const matchCat = !filtroCategoria || f.categoria === filtroCategoria;
-    const matchChefe = !filtroChefe || !!f.isManager;
     const matchGer = !filtroGerencia || f.gerenciaId === filtroGerencia;
     const matchSituacao =
       filtroSituacao === "todos" ||
       (filtroSituacao === "ativo" && f.ativo) ||
       (filtroSituacao === "inativo" && !f.ativo);
-    return matchBusca && matchCat && matchChefe && matchGer && matchSituacao;
+    return matchBusca && matchCat && matchGer && matchSituacao;
   });
 
   function abrirConfirmDelete(id: string) {
@@ -326,13 +261,27 @@ function GestaoListaTab() {
   ) => resolverNomeGerencia(gerencias, id, gerencia);
 
   const total = funcionarios.length;
-  const estagiarios = funcionarios.filter((f) => f.categoria === "ESTAGIARIO").length;
-  const menoresAprendizes = funcionarios.filter((f) => f.categoria === "MENOR_APRENDIZ").length;
-  const concursados = funcionarios.filter((f) => f.categoria === "CONCURSADO").length;
-  const assessores = funcionarios.filter((f) => f.categoria === "ASSESSOR").length;
-  const chefes = funcionarios.filter((f) => f.isManager).length;
-  const ativos = funcionarios.filter((f) => f.ativo).length;
-  const inativos = funcionarios.filter((f) => !f.ativo).length;
+  /* Cards: as categorias contam só ativos, para somarem o "Total Ativos". */
+  const listaAtivos = funcionarios.filter((f) => f.ativo);
+  const ativos = listaAtivos.length;
+  const inativos = total - ativos;
+  const ativosPorCategoria = (cat: Categoria) =>
+    listaAtivos.filter((f) => f.categoria === cat).length;
+
+  /* Clique nos cards: Total Ativos / categoria filtram ativos; Inativos filtra inativos.
+     Clicar de novo no card já selecionado volta para "Total Ativos". */
+  const cardAtivosSelecionado = (cat: Categoria | "") =>
+    filtroSituacao === "ativo" && filtroCategoria === cat;
+  const selecionarCardAtivos = (cat: Categoria | "") => {
+    const jaSelecionado = cardAtivosSelecionado(cat);
+    setFiltroSituacao("ativo");
+    setFiltroCategoria(jaSelecionado ? "" : cat);
+  };
+  const selecionarCardInativos = () => {
+    const jaSelecionado = filtroSituacao === "inativo" && filtroCategoria === "";
+    setFiltroSituacao(jaSelecionado ? "ativo" : "inativo");
+    setFiltroCategoria("");
+  };
 
   // Acesso restrito: apenas RH_AUDITORIA e super admin/ponto-admin
   if (!isRH) {
@@ -364,17 +313,18 @@ function GestaoListaTab() {
   return (
     <div>
       {/* Solicitar endereço em massa */}
-      {isRhOuAdmin && (
+      {isRhOuAdmin && podeRh("gestao.solicitar-todos") && (
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
-          <SolicitarEnderecoTodosBtn />
+          <SolicitarTodosBarra pode={podeRh} />
         </div>
       )}
 
       {/* ── Banner Sync Extensions (RH e admin) ── */}
-      {isRhOuAdmin && (
+      {isRhOuAdmin && podeRh("gestao.ramais") && (
         <ExtensionsApiPanel
           isAdmin={isAdmin}
           isSuperAdmin={!!user?.isSuperAdmin}
+          podeSincronizar={podeRh("gestao.ramais.sincronizar")}
           onSyncComplete={() => {
             void api
               .get<Funcionario[]>("/ponto/gestao/funcionarios")
@@ -388,467 +338,450 @@ function GestaoListaTab() {
         />
       )}
 
-      {/* ── Stats ── */}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24 }}>
-        <Stat
-          valor={total}
-          label="Total"
-          cor="var(--burgundy-600)"
-          selecionado={filtroCategoria === ""}
-          onClick={() => setFiltroCategoria("")}
-        />
-        <Stat
-          valor={concursados}
-          label="Empregados"
-          cor="var(--green)"
-          selecionado={filtroCategoria === "CONCURSADO"}
-          onClick={() => setFiltroCategoria((prev) => (prev === "CONCURSADO" ? "" : "CONCURSADO"))}
-        />
-        <Stat
-          valor={chefes}
-          label="Chefes"
-          cor="var(--burgundy-600)"
-          selecionado={filtroChefe}
-          onClick={() => setFiltroChefe((prev) => !prev)}
-        />
-        <Stat
-          valor={assessores}
-          label="Comissionados"
-          cor="#8a6a00"
-          selecionado={filtroCategoria === "ASSESSOR"}
-          onClick={() => setFiltroCategoria((prev) => (prev === "ASSESSOR" ? "" : "ASSESSOR"))}
-        />
-        <Stat
-          valor={estagiarios}
-          label="Estagiários"
-          cor="var(--blue-ink)"
-          selecionado={filtroCategoria === "ESTAGIARIO"}
-          onClick={() => setFiltroCategoria((prev) => (prev === "ESTAGIARIO" ? "" : "ESTAGIARIO"))}
-        />
-        <Stat
-          valor={menoresAprendizes}
-          label="Jovens Aprendizes"
-          cor="#5b4a9e"
-          selecionado={filtroCategoria === "MENOR_APRENDIZ"}
-          onClick={() =>
-            setFiltroCategoria((prev) => (prev === "MENOR_APRENDIZ" ? "" : "MENOR_APRENDIZ"))
-          }
-        />
-        <Stat
-          valor={ativos}
-          label="Ativos"
-          cor="var(--green)"
-          selecionado={filtroSituacao === "ativo"}
-          onClick={() => setFiltroSituacao((prev) => (prev === "ativo" ? "todos" : "ativo"))}
-        />
-        <Stat
-          valor={inativos}
-          label="Inativos"
-          cor="var(--ink-500)"
-          selecionado={filtroSituacao === "inativo"}
-          onClick={() => setFiltroSituacao((prev) => (prev === "inativo" ? "todos" : "inativo"))}
-        />
-      </div>
-
-      {/* ── Barra de filtros ── */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        {/* Busca */}
-        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-          <SearchIcon
-            size={15}
+      {/* Perfil do RH: lista e ficha exigem a área "Funcionários". */}
+      {podeRh("gestao.funcionarios") && (
+        <>
+          {/* ── Stats ── */}
+          <div
             style={{
-              position: "absolute",
-              left: 12,
-              top: "50%",
-              transform: "translateY(-50%)",
-              color: "var(--ink-500)",
-              pointerEvents: "none"
-            }}
-          />
-          <input
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar por nome, matrícula ou e-mail…"
-            style={{
-              width: "100%",
-              padding: "9px 12px 9px 36px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(122,30,38,0.14)",
-              background: "#fff",
-              fontSize: 13,
-              fontFamily: "var(--font-body)",
-              outline: "none",
-              boxSizing: "border-box"
-            }}
-          />
-        </div>
-
-        {/* Filtro categoria */}
-        <div style={{ position: "relative" }}>
-          <select
-            value={filtroCategoria}
-            onChange={(e) => setFiltroCategoria(e.target.value as Categoria | "")}
-            style={{
-              appearance: "none",
-              padding: "9px 32px 9px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(122,30,38,0.14)",
-              background: "#fff",
-              fontSize: 13,
-              fontFamily: "var(--font-body)",
-              color: "var(--ink-900)",
-              cursor: "pointer",
-              outline: "none"
+              display: "flex",
+              gap: 12,
+              alignItems: "stretch",
+              marginBottom: 24,
+              overflowX: "auto",
+              paddingBottom: 2
             }}
           >
-            <option value="">Todas as categorias</option>
-            {(Object.keys(CAT) as Categoria[]).map((cat) => (
-              <option key={cat} value={cat}>
-                {CAT[cat].label}
-              </option>
-            ))}
-          </select>
-          <ChevronDownIcon
-            size={14}
-            style={{
-              position: "absolute",
-              right: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              pointerEvents: "none",
-              color: "var(--ink-500)"
-            }}
-          />
-        </div>
+            <Stat
+              valor={ativos}
+              label="Total Ativos"
+              cor="var(--burgundy-600)"
+              selecionado={cardAtivosSelecionado("")}
+              onClick={() => selecionarCardAtivos("")}
+            />
+            <Stat
+              valor={ativosPorCategoria("CONCURSADO")}
+              label="Empregados"
+              cor="var(--green)"
+              selecionado={cardAtivosSelecionado("CONCURSADO")}
+              onClick={() => selecionarCardAtivos("CONCURSADO")}
+            />
+            <Stat
+              valor={ativosPorCategoria("ASSESSOR")}
+              label="Comissionados"
+              cor="#8a6a00"
+              selecionado={cardAtivosSelecionado("ASSESSOR")}
+              onClick={() => selecionarCardAtivos("ASSESSOR")}
+            />
+            <Stat
+              valor={ativosPorCategoria("ESTAGIARIO")}
+              label="Estagiários"
+              cor="var(--blue-ink)"
+              selecionado={cardAtivosSelecionado("ESTAGIARIO")}
+              onClick={() => selecionarCardAtivos("ESTAGIARIO")}
+            />
+            <Stat
+              valor={ativosPorCategoria("MENOR_APRENDIZ")}
+              label="Jovens Aprendizes"
+              cor="#5b4a9e"
+              selecionado={cardAtivosSelecionado("MENOR_APRENDIZ")}
+              onClick={() => selecionarCardAtivos("MENOR_APRENDIZ")}
+            />
+            {/* Separador: à esquerda os ativos (total e por categoria), à direita os inativos. */}
+            <div
+              aria-hidden
+              style={{
+                width: 1,
+                flexShrink: 0,
+                margin: "6px 4px",
+                background: "rgba(122,30,38,0.18)"
+              }}
+            />
+            <Stat
+              valor={inativos}
+              label="Inativos"
+              cor="var(--ink-500)"
+              selecionado={filtroSituacao === "inativo" && filtroCategoria === ""}
+              onClick={selecionarCardInativos}
+            />
+          </div>
 
-        {/* Filtro gerência */}
-        <div style={{ position: "relative" }}>
-          <select
-            value={filtroGerencia}
-            onChange={(e) => setFiltroGerencia(e.target.value)}
-            style={{
-              appearance: "none",
-              padding: "9px 32px 9px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(122,30,38,0.14)",
-              background: "#fff",
-              fontSize: 13,
-              fontFamily: "var(--font-body)",
-              color: "var(--ink-900)",
-              cursor: "pointer",
-              outline: "none"
-            }}
-          >
-            <option value="">Todas as gerências</option>
-            {gerencias.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.nome}
-              </option>
-            ))}
-          </select>
-          <ChevronDownIcon
-            size={14}
-            style={{
-              position: "absolute",
-              right: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              pointerEvents: "none",
-              color: "var(--ink-500)"
-            }}
-          />
-        </div>
-
-        {/* Filtro situação (ativo/inativo) */}
-        <div style={{ position: "relative" }}>
-          <select
-            value={filtroSituacao}
-            onChange={(e) => setFiltroSituacao(e.target.value as "todos" | "ativo" | "inativo")}
-            style={{
-              appearance: "none",
-              padding: "9px 32px 9px 12px",
-              borderRadius: "var(--radius-md)",
-              border: "1px solid rgba(122,30,38,0.14)",
-              background: "#fff",
-              fontSize: 13,
-              fontFamily: "var(--font-body)",
-              color: "var(--ink-900)",
-              cursor: "pointer",
-              outline: "none"
-            }}
-          >
-            <option value="todos">Ativos e Inativos</option>
-            <option value="ativo">Somente Ativos</option>
-            <option value="inativo">Somente Inativos</option>
-          </select>
-          <ChevronDownIcon
-            size={14}
-            style={{
-              position: "absolute",
-              right: 10,
-              top: "50%",
-              transform: "translateY(-50%)",
-              pointerEvents: "none",
-              color: "var(--ink-500)"
-            }}
-          />
-        </div>
-      </div>
-
-      {/* ── Tabela ── */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "var(--radius-lg)",
-          border: "1px solid rgba(122,30,38,0.08)",
-          overflow: "hidden"
-        }}
-      >
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr
+          {/* ── Barra de filtros ── */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+            {/* Busca */}
+            <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
+              <SearchIcon
+                size={15}
                 style={{
-                  background: "var(--cream-50)",
-                  borderBottom: "1px solid rgba(122,30,38,0.08)"
+                  position: "absolute",
+                  left: 12,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--ink-500)",
+                  pointerEvents: "none"
+                }}
+              />
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Buscar por nome, matrícula ou e-mail…"
+                style={{
+                  width: "100%",
+                  padding: "9px 12px 9px 36px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  background: "#fff",
+                  fontSize: 13,
+                  fontFamily: "var(--font-body)",
+                  outline: "none",
+                  boxSizing: "border-box"
+                }}
+              />
+            </div>
+
+            {/* Filtro categoria */}
+            <div style={{ position: "relative" }}>
+              <select
+                value={filtroCategoria}
+                onChange={(e) => setFiltroCategoria(e.target.value as Categoria | "")}
+                style={{
+                  appearance: "none",
+                  padding: "9px 32px 9px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  background: "#fff",
+                  fontSize: 13,
+                  fontFamily: "var(--font-body)",
+                  color: "var(--ink-900)",
+                  cursor: "pointer",
+                  outline: "none"
                 }}
               >
-                {[
-                  "Funcionário",
-                  "Matrícula",
-                  "Categoria",
-                  "Gerência",
-                  "Situação",
-                  "Login Hoje",
-                  "Ações"
-                ].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      padding: "10px 16px",
-                      textAlign: "left",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--ink-500)",
-                      whiteSpace: "nowrap"
-                    }}
-                  >
-                    {h}
-                  </th>
+                <option value="">Todas as categorias</option>
+                {(Object.keys(CAT) as Categoria[]).map((cat) => (
+                  <option key={cat} value={cat}>
+                    {CAT[cat].label}
+                  </option>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {lista.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={7}
-                    style={{
-                      padding: "40px",
-                      textAlign: "center",
-                      color: "var(--ink-500)",
-                      fontSize: 14
-                    }}
-                  >
-                    <UsersIcon
-                      size={32}
-                      style={{ display: "block", margin: "0 auto 8px", opacity: 0.3 }}
-                    />
-                    Nenhum funcionário encontrado.
-                  </td>
-                </tr>
-              ) : (
-                lista.map((f, i) => (
+              </select>
+              <ChevronDownIcon
+                size={14}
+                style={{
+                  position: "absolute",
+                  right: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  pointerEvents: "none",
+                  color: "var(--ink-500)"
+                }}
+              />
+            </div>
+
+            {/* Filtro gerência */}
+            <div style={{ position: "relative" }}>
+              <select
+                value={filtroGerencia}
+                onChange={(e) => setFiltroGerencia(e.target.value)}
+                style={{
+                  appearance: "none",
+                  padding: "9px 32px 9px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  background: "#fff",
+                  fontSize: 13,
+                  fontFamily: "var(--font-body)",
+                  color: "var(--ink-900)",
+                  cursor: "pointer",
+                  outline: "none"
+                }}
+              >
+                <option value="">Todas as gerências</option>
+                {gerencias.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.nome}
+                  </option>
+                ))}
+              </select>
+              <ChevronDownIcon
+                size={14}
+                style={{
+                  position: "absolute",
+                  right: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  pointerEvents: "none",
+                  color: "var(--ink-500)"
+                }}
+              />
+            </div>
+
+            {/* Filtro situação (ativo/inativo) */}
+            <div style={{ position: "relative" }}>
+              <select
+                value={filtroSituacao}
+                onChange={(e) => setFiltroSituacao(e.target.value as "todos" | "ativo" | "inativo")}
+                style={{
+                  appearance: "none",
+                  padding: "9px 32px 9px 12px",
+                  borderRadius: "var(--radius-md)",
+                  border: "1px solid rgba(122,30,38,0.14)",
+                  background: "#fff",
+                  fontSize: 13,
+                  fontFamily: "var(--font-body)",
+                  color: "var(--ink-900)",
+                  cursor: "pointer",
+                  outline: "none"
+                }}
+              >
+                <option value="todos">Ativos e Inativos</option>
+                <option value="ativo">Somente Ativos</option>
+                <option value="inativo">Somente Inativos</option>
+              </select>
+              <ChevronDownIcon
+                size={14}
+                style={{
+                  position: "absolute",
+                  right: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  pointerEvents: "none",
+                  color: "var(--ink-500)"
+                }}
+              />
+            </div>
+          </div>
+
+          {/* ── Tabela ── */}
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "var(--radius-lg)",
+              border: "1px solid rgba(122,30,38,0.08)",
+              overflow: "hidden"
+            }}
+          >
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
                   <tr
-                    key={f.id}
                     style={{
-                      borderBottom:
-                        i < lista.length - 1 ? "1px solid rgba(122,30,38,0.06)" : "none",
-                      transition: "background 120ms"
+                      background: "var(--cream-50)",
+                      borderBottom: "1px solid rgba(122,30,38,0.08)"
                     }}
-                    onMouseEnter={(e) =>
-                      ((e.currentTarget as HTMLElement).style.background = "rgba(122,30,38,0.02)")
-                    }
-                    onMouseLeave={(e) =>
-                      ((e.currentTarget as HTMLElement).style.background = "transparent")
-                    }
                   >
-                    {/* Funcionário */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <div
-                          style={{
-                            width: 34,
-                            height: 34,
-                            borderRadius: "50%",
-                            background: f.fotoPerfilUrl ? "transparent" : "var(--burgundy-600)",
-                            border: f.fotoPerfilUrl ? "2px solid var(--burgundy-600)" : "none",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "#fff",
-                            fontWeight: 600,
-                            fontSize: 13,
-                            flexShrink: 0,
-                            overflow: "hidden"
-                          }}
-                        >
-                          {f.fotoPerfilUrl ? (
-                            <img
-                              src={f.fotoPerfilUrl}
-                              alt={f.user?.name}
-                              style={{
-                                width: "100%",
-                                height: "100%",
-                                objectFit: "cover",
-                                display: "block"
-                              }}
-                              onError={(e) => {
-                                (e.currentTarget as HTMLImageElement).style.display = "none";
-                              }}
-                            />
-                          ) : (
-                            (f.user?.name ?? "?")
-                              .split(" ")
-                              .map((n: string) => n[0])
-                              .slice(0, 2)
-                              .join("")
-                          )}
-                        </div>
-                        <div>
-                          <p
-                            style={{
-                              fontSize: 13.5,
-                              fontWeight: 500,
-                              color: "var(--ink-900)",
-                              lineHeight: 1.2
-                            }}
-                          >
-                            {f.user?.name ?? "—"}
-                          </p>
-                          <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1 }}>
-                            {f.user ? resolveEmail(f.user) : "—"}
-                          </p>
-                        </div>
-                      </div>
-                    </td>
-                    {/* Matrícula */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <span
+                    {[
+                      "Funcionário",
+                      "Matrícula",
+                      "Categoria",
+                      "Gerência",
+                      "Situação",
+                      "Login Hoje",
+                      "Ações"
+                    ].map((h) => (
+                      <th
+                        key={h}
                         style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: 12.5,
-                          color: "var(--ink-700)"
-                        }}
-                      >
-                        {f.matricula}
-                      </span>
-                    </td>
-                    {/* Categoria */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <CategoriaBadge cat={f.categoria} />
-                    </td>
-                    {/* Gerência / Subseção */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <span style={{ fontSize: 13, color: "var(--ink-700)", fontWeight: 500 }}>
-                        {nomeGerencia(f.gerenciaId, f.gerencia)}
-                        {f.subsecao && (
-                          <span style={{ color: "var(--ink-400)", fontWeight: 400 }}>
-                            {" / "}
-                            {slugLabel(f.subsecao)}
-                          </span>
-                        )}
-                      </span>
-                      {f.isManager && !f.ehGerenteSubstituto && (
-                        <p
-                          style={{
-                            margin: "2px 0 0",
-                            fontSize: 10.5,
-                            color: "var(--burgundy-600)",
-                            fontWeight: 600
-                          }}
-                        >
-                          Chefe da área
-                          {f.ehTitularEmSubstituicao ? " (em substituição)" : ""}
-                        </p>
-                      )}
-                      {f.ehGerenteSubstituto && (
-                        <p
-                          style={{
-                            margin: "2px 0 0",
-                            fontSize: 10.5,
-                            color: "#5b4a9e",
-                            fontWeight: 600
-                          }}
-                        >
-                          Chefe Substituto
-                          {f.substituicao?.dataInicio && f.substituicao?.dataFim
-                            ? ` · ${new Date(f.substituicao.dataInicio).toLocaleDateString("pt-BR")}–${new Date(f.substituicao.dataFim).toLocaleDateString("pt-BR")}`
-                            : ""}
-                        </p>
-                      )}
-                      {(f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
-                        f.supervisorEstagio && (
-                          <p
-                            style={{
-                              margin: "2px 0 0",
-                              fontSize: 10.5,
-                              color: "var(--blue-ink)",
-                              fontWeight: 600
-                            }}
-                          >
-                            Supervisor: {f.supervisorEstagio.user?.name ?? "—"}
-                          </p>
-                        )}
-                      {infoContato(f) && (
-                        <p style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-400)" }}>
-                          {infoContato(f)}
-                        </p>
-                      )}
-                      {f.jornadaPeriodo && (
-                        <p
-                          style={{
-                            margin: "2px 0 0",
-                            fontSize: 10.5,
-                            color: "var(--burgundy-600)",
-                            fontWeight: 600
-                          }}
-                        >
-                          {f.jornadaPeriodo.nome}
-                          {f.jornadaPeriodo.ePadrao ? " ★" : ""}
-                        </p>
-                      )}
-                    </td>
-                    {/* Situação */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 5,
-                          fontSize: 12,
+                          padding: "10px 16px",
+                          textAlign: "left",
+                          fontSize: 11,
                           fontWeight: 600,
-                          color: f.ativo ? "var(--green)" : "var(--ink-500)"
+                          letterSpacing: "0.08em",
+                          textTransform: "uppercase",
+                          color: "var(--ink-500)",
+                          whiteSpace: "nowrap"
                         }}
                       >
-                        <span
-                          style={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: "50%",
-                            background: f.ativo ? "var(--green)" : "var(--gray-cfo)",
-                            display: "inline-block"
-                          }}
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {lista.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={7}
+                        style={{
+                          padding: "40px",
+                          textAlign: "center",
+                          color: "var(--ink-500)",
+                          fontSize: 14
+                        }}
+                      >
+                        <UsersIcon
+                          size={32}
+                          style={{ display: "block", margin: "0 auto 8px", opacity: 0.3 }}
                         />
-                        {f.ativo ? "Ativo" : "Inativo"}
-                      </span>
-                    </td>
-                    {/* Login Hoje / Campos Manuais */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {fezLoginHoje(f) ? (
+                        Nenhum funcionário encontrado.
+                      </td>
+                    </tr>
+                  ) : (
+                    lista.map((f, i) => (
+                      <tr
+                        key={f.id}
+                        style={{
+                          borderBottom:
+                            i < lista.length - 1 ? "1px solid rgba(122,30,38,0.06)" : "none",
+                          transition: "background 120ms"
+                        }}
+                        onMouseEnter={(e) =>
+                          ((e.currentTarget as HTMLElement).style.background =
+                            "rgba(122,30,38,0.02)")
+                        }
+                        onMouseLeave={(e) =>
+                          ((e.currentTarget as HTMLElement).style.background = "transparent")
+                        }
+                      >
+                        {/* Funcionário */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div
+                              style={{
+                                width: 34,
+                                height: 34,
+                                borderRadius: "50%",
+                                background: f.fotoPerfilUrl ? "transparent" : "var(--burgundy-600)",
+                                border: f.fotoPerfilUrl ? "2px solid var(--burgundy-600)" : "none",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                color: "#fff",
+                                fontWeight: 600,
+                                fontSize: 13,
+                                flexShrink: 0,
+                                overflow: "hidden"
+                              }}
+                            >
+                              {f.fotoPerfilUrl ? (
+                                <img
+                                  src={f.fotoPerfilUrl}
+                                  alt={f.user?.name}
+                                  style={{
+                                    width: "100%",
+                                    height: "100%",
+                                    objectFit: "cover",
+                                    display: "block"
+                                  }}
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                              ) : (
+                                (f.user?.name ?? "?")
+                                  .split(" ")
+                                  .map((n: string) => n[0])
+                                  .slice(0, 2)
+                                  .join("")
+                              )}
+                            </div>
+                            <div>
+                              <p
+                                style={{
+                                  fontSize: 13.5,
+                                  fontWeight: 500,
+                                  color: "var(--ink-900)",
+                                  lineHeight: 1.2
+                                }}
+                              >
+                                {f.user?.name ?? "—"}
+                              </p>
+                              <p style={{ fontSize: 11.5, color: "var(--ink-500)", lineHeight: 1 }}>
+                                {f.user ? resolveEmail(f.user) : "—"}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                        {/* Matrícula */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 12.5,
+                              color: "var(--ink-700)"
+                            }}
+                          >
+                            {f.matricula}
+                          </span>
+                        </td>
+                        {/* Categoria */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <CategoriaBadge cat={f.categoria} />
+                        </td>
+                        {/* Gerência / Subseção */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <span style={{ fontSize: 13, color: "var(--ink-700)", fontWeight: 500 }}>
+                            {nomeGerencia(f.gerenciaId, f.gerencia)}
+                            {f.subsecao && (
+                              <span style={{ color: "var(--ink-400)", fontWeight: 400 }}>
+                                {" / "}
+                                {slugLabel(f.subsecao)}
+                              </span>
+                            )}
+                          </span>
+                          {f.isManager && !f.ehGerenteSubstituto && (
+                            <p
+                              style={{
+                                margin: "2px 0 0",
+                                fontSize: 10.5,
+                                color: "var(--burgundy-600)",
+                                fontWeight: 600
+                              }}
+                            >
+                              Chefe da área
+                              {f.ehTitularEmSubstituicao ? " (em substituição)" : ""}
+                            </p>
+                          )}
+                          {f.ehGerenteSubstituto && (
+                            <p
+                              style={{
+                                margin: "2px 0 0",
+                                fontSize: 10.5,
+                                color: "#5b4a9e",
+                                fontWeight: 600
+                              }}
+                            >
+                              Chefe Substituto
+                              {f.substituicao?.dataInicio && f.substituicao?.dataFim
+                                ? ` · ${new Date(f.substituicao.dataInicio).toLocaleDateString("pt-BR")}–${new Date(f.substituicao.dataFim).toLocaleDateString("pt-BR")}`
+                                : ""}
+                            </p>
+                          )}
+                          {(f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
+                            f.supervisorEstagio && (
+                              <p
+                                style={{
+                                  margin: "2px 0 0",
+                                  fontSize: 10.5,
+                                  color: "var(--blue-ink)",
+                                  fontWeight: 600
+                                }}
+                              >
+                                Supervisor: {f.supervisorEstagio.user?.name ?? "—"}
+                              </p>
+                            )}
+                          {infoContato(f) && (
+                            <p
+                              style={{ margin: "2px 0 0", fontSize: 10.5, color: "var(--ink-400)" }}
+                            >
+                              {infoContato(f)}
+                            </p>
+                          )}
+                          {f.jornadaPeriodo && (
+                            <p
+                              style={{
+                                margin: "2px 0 0",
+                                fontSize: 10.5,
+                                color: "var(--burgundy-600)",
+                                fontWeight: 600
+                              }}
+                            >
+                              {f.jornadaPeriodo.nome}
+                              {f.jornadaPeriodo.ePadrao ? " ★" : ""}
+                            </p>
+                          )}
+                        </td>
+                        {/* Situação */}
+                        <td style={{ padding: "12px 16px" }}>
                           <span
                             style={{
                               display: "inline-flex",
@@ -856,120 +789,152 @@ function GestaoListaTab() {
                               gap: 5,
                               fontSize: 12,
                               fontWeight: 600,
-                              color: "var(--green)"
+                              color: f.ativo ? "var(--green)" : "var(--ink-500)"
                             }}
                           >
-                            <CheckCircleIcon size={14} />
-                            Login hoje
+                            <span
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius: "50%",
+                                background: f.ativo ? "var(--green)" : "var(--gray-cfo)",
+                                display: "inline-block"
+                              }}
+                            />
+                            {f.ativo ? "Ativo" : "Inativo"}
                           </span>
-                        ) : (
-                          <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
-                            Sem login hoje
-                          </span>
-                        )}
-                        <label
-                          title="Marca que os campos manuais deste cadastro (cargo, categoria, gerência etc.) já foram revisados pelo RH"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            fontSize: 12,
-                            color: "var(--ink-600)",
-                            cursor: podeToggleAtivo ? "pointer" : "default"
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!f.camposManuaisConfigurados}
-                            disabled={!podeToggleAtivo}
-                            onChange={() => void toggleCamposManuais(f)}
-                            style={{ width: 14, height: 14, cursor: "inherit" }}
-                          />
-                          Campos manuais
-                        </label>
-                      </div>
-                    </td>
-                    {/* Ações */}
-                    <td style={{ padding: "12px 16px" }}>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <Link
-                          to={`/ponto/gestao/${f.id}/editar`}
-                          title="Editar"
-                          style={{
-                            padding: 6,
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid rgba(122,30,38,0.14)",
-                            background: "transparent",
-                            cursor: "pointer",
-                            color: "var(--ink-700)",
-                            display: "flex",
-                            alignItems: "center"
-                          }}
-                        >
-                          <Edit2Icon size={14} />
-                        </Link>
-                        {podeToggleAtivo && (
-                          <button
-                            title={f.ativo ? "Desativar funcionário" : "Ativar funcionário"}
-                            onClick={() => void toggleAtivo(f)}
-                            style={{
-                              padding: 6,
-                              borderRadius: "var(--radius-sm)",
-                              border: f.ativo
-                                ? "1px solid rgba(198,127,0,0.30)"
-                                : "1px solid rgba(47,125,79,0.30)",
-                              background: "transparent",
-                              cursor: "pointer",
-                              color: f.ativo ? "#92400e" : "var(--green)",
-                              display: "flex",
-                              alignItems: "center"
-                            }}
-                          >
-                            {f.ativo ? <XCircleIcon size={14} /> : <CheckCircleIcon size={14} />}
-                          </button>
-                        )}
-                        {isSuperAdmin && (
-                          <button
-                            title="Excluir"
-                            onClick={() => abrirConfirmDelete(f.id)}
-                            style={{
-                              padding: 6,
-                              borderRadius: "var(--radius-sm)",
-                              border: "1px solid rgba(200,57,63,0.20)",
-                              background: "transparent",
-                              cursor: "pointer",
-                              color: "var(--red)",
-                              display: "flex",
-                              alignItems: "center"
-                            }}
-                          >
-                            <Trash2Icon size={14} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-        {/* Rodapé da tabela */}
-        <div
-          style={{
-            padding: "10px 16px",
-            borderTop: "1px solid rgba(122,30,38,0.06)",
-            fontSize: 12,
-            color: "var(--ink-500)"
-          }}
-        >
-          {lista.length} funcionário{lista.length !== 1 ? "s" : ""} exibido
-          {lista.length !== 1 ? "s" : ""}
-          {filtroCategoria || filtroChefe || filtroGerencia || busca
-            ? ` (filtrado${lista.length !== 1 ? "s" : ""} de ${total})`
-            : ""}
-        </div>
-      </div>
+                        </td>
+                        {/* Login Hoje / Campos Manuais */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {fezLoginHoje(f) ? (
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 5,
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  color: "var(--green)"
+                                }}
+                              >
+                                <CheckCircleIcon size={14} />
+                                Login hoje
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 12, color: "var(--ink-400)" }}>
+                                Sem login hoje
+                              </span>
+                            )}
+                            <label
+                              title="Marca que os campos manuais deste cadastro (cargo, categoria, gerência etc.) já foram revisados pelo RH"
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                fontSize: 12,
+                                color: "var(--ink-600)",
+                                cursor: podeToggleAtivo ? "pointer" : "default"
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={!!f.camposManuaisConfigurados}
+                                disabled={!podeToggleAtivo}
+                                onChange={() => void toggleCamposManuais(f)}
+                                style={{ width: 14, height: 14, cursor: "inherit" }}
+                              />
+                              Campos manuais
+                            </label>
+                          </div>
+                        </td>
+                        {/* Ações */}
+                        <td style={{ padding: "12px 16px" }}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Link
+                              to={`/ponto/gestao/${f.id}/editar`}
+                              title="Editar"
+                              style={{
+                                padding: 6,
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid rgba(122,30,38,0.14)",
+                                background: "transparent",
+                                cursor: "pointer",
+                                color: "var(--ink-700)",
+                                display: "flex",
+                                alignItems: "center"
+                              }}
+                            >
+                              <Edit2Icon size={14} />
+                            </Link>
+                            {podeToggleAtivo && (
+                              <button
+                                title={f.ativo ? "Desativar funcionário" : "Ativar funcionário"}
+                                onClick={() => void toggleAtivo(f)}
+                                style={{
+                                  padding: 6,
+                                  borderRadius: "var(--radius-sm)",
+                                  border: f.ativo
+                                    ? "1px solid rgba(198,127,0,0.30)"
+                                    : "1px solid rgba(47,125,79,0.30)",
+                                  background: "transparent",
+                                  cursor: "pointer",
+                                  color: f.ativo ? "#92400e" : "var(--green)",
+                                  display: "flex",
+                                  alignItems: "center"
+                                }}
+                              >
+                                {f.ativo ? (
+                                  <XCircleIcon size={14} />
+                                ) : (
+                                  <CheckCircleIcon size={14} />
+                                )}
+                              </button>
+                            )}
+                            {isSuperAdmin && (
+                              <button
+                                title="Excluir"
+                                onClick={() => abrirConfirmDelete(f.id)}
+                                style={{
+                                  padding: 6,
+                                  borderRadius: "var(--radius-sm)",
+                                  border: "1px solid rgba(200,57,63,0.20)",
+                                  background: "transparent",
+                                  cursor: "pointer",
+                                  color: "var(--red)",
+                                  display: "flex",
+                                  alignItems: "center"
+                                }}
+                              >
+                                <Trash2Icon size={14} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {/* Rodapé da tabela */}
+            <div
+              style={{
+                padding: "10px 16px",
+                borderTop: "1px solid rgba(122,30,38,0.06)",
+                fontSize: 12,
+                color: "var(--ink-500)"
+              }}
+            >
+              {lista.length} funcionário{lista.length !== 1 ? "s" : ""} exibido
+              {lista.length !== 1 ? "s" : ""}
+              {filtroCategoria || filtroGerencia || busca
+                ? ` (filtrado${lista.length !== 1 ? "s" : ""} de ${total})`
+                : ""}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── Modal de confirmação de exclusão ── */}
       {confirmDelete && isSuperAdmin && (
@@ -1177,9 +1142,15 @@ function GestaoListaTab() {
 
 /* ─── Página ─── */
 export function GestaoPage() {
-  const { hasRole, user } = useAuth();
+  const { hasRole, user, podeRh, permissoesRhCarregadas } = useAuth();
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
+  /* Perfis do RH: gestão exclusiva do Gerente de RH (PONTO_ADMIN) e do super admin. */
+  const podeGerirPerfis = !!user?.isSuperAdmin || hasRole("PONTO_ADMIN") || hasRole("ponto-admin");
+
+  if (isRH && permissoesRhCarregadas && !paginaRhLiberada(podeRh, "gestao")) {
+    return <SemAcessoRh pagina="Gestão" />;
+  }
 
   if (!isRH) {
     return (
@@ -1210,19 +1181,40 @@ export function GestaoPage() {
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto" }}>
       {/* ── Cabeçalho ── */}
-      <div style={{ marginBottom: 24 }}>
-        <p className="eyebrow" style={{ marginBottom: 6 }}>
-          Administração
-        </p>
-        <h1
-          style={{
-            fontSize: "clamp(22px,3vw,28px)",
-            fontFamily: "var(--font-display)",
-            lineHeight: 1.1
-          }}
-        >
-          Gestão de <em>Funcionários</em>
-        </h1>
+      <div
+        style={{
+          marginBottom: 24,
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap"
+        }}
+      >
+        <div>
+          <p className="eyebrow" style={{ marginBottom: 6 }}>
+            Administração
+          </p>
+          <h1
+            style={{
+              fontSize: "clamp(22px,3vw,28px)",
+              fontFamily: "var(--font-display)",
+              lineHeight: 1.1
+            }}
+          >
+            Gestão de <em>Funcionários</em>
+          </h1>
+        </div>
+        {podeGerirPerfis && (
+          <Link
+            to="/ponto/perfis-rh"
+            className="btn btn-ghost btn-sm"
+            title="Perfis de acesso dos funcionários do RH (abas e funções)"
+            style={{ gap: 6, textDecoration: "none" }}
+          >
+            <ShieldCheckIcon size={14} /> Perfis do RH
+          </Link>
+        )}
       </div>
 
       {/* ── Conteúdo ── */}

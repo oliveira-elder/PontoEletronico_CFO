@@ -5,8 +5,16 @@ import {
   Logger,
   NotFoundException
 } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
+import { Prisma, type StatusSolicitacao } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import {
+  MINUTOS_MINIMOS_LIBERACAO,
+  creditoBancoDaSolicitacao,
+  fmtHoraMin,
+  situacaoDasLiberacoes,
+  totalDisponivel
+} from "../../utils/banco-horas-liberacao";
+import { carregarLiberacoes, carregarUsoCredito } from "../../utils/banco-horas-liberacao-db";
 import { NotificacaoService } from "../notificacao/notificacao.service";
 import { buildPersonCondition, buildQuerySearchCondition } from "../logs/log-search.util";
 import { matchEndpoint } from "../logs/endpoint-catalog";
@@ -17,43 +25,57 @@ import {
   validarHorarioPermitido,
   dataBrasiliaISO,
   dataCivilISO,
-  dataCivilFimAfastamento,
   hojeBrasiliaISO,
   intervaloColunaDate,
-  intervaloDiaBrasilia
+  intervaloDiaBrasilia,
+  fimDiaCivilBrasilia,
+  dataCivilPeriodo
 } from "../../utils/horario-brasilia";
 import { appendObservacao, criarObservacaoAjuste } from "../../utils/registro-observacoes";
 import { assertMesAposGoLive, getDataInicioProducao } from "../../utils/inicio-producao";
 import { inicioAtividadesUsuario } from "../../utils/inicio-atividades";
 import {
-  jornadaEsperadaMin as jornadaMinParaDia,
   resolverJornadaHistoricoContexto,
-  calcularJornadaParcialFeriado,
-  calcularJornadaComAtestadosParciais,
-  calcularJanelasEfetivasComCreditoDeslocamento,
-  prepararRegsCalculoAtestadosParciais,
-  isAfastamentoParcial,
-  labelAtestadosParciais,
-  dispensarAlmocoPorAtestadoParcial,
-  normalizarRegsAtestadoSemAlmoco,
-  aplicarMargemCalculoDiario,
-  creditoAlmocoDireitoDoDia
+  isAfastamentoParcial
 } from "../../utils/jornada-historico";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
 import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service";
 import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
+import { toleranciaFechamentoDias } from "../../utils/tolerancia-fechamento";
 import {
   funcionarioSemRegistroPonto,
-  categoriaSemIntervaloAlmoco,
   periodosSemObrigacaoPonto,
   MSG_SOLICITACAO_APENAS_INFORMATIVA
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { periodosCessao } from "../../utils/cessao-historico";
 import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
 import { observacaoForcaSemIntervalo } from "../../utils/turno-entrada";
 import { codigoCienciaGestorExibido } from "../../utils/assinatura-codigo";
+import { periodosDoAbono } from "../../utils/abono-periodos";
+import { interjornadaCurtaPorDia, textoNotaInterjornada } from "../../utils/interjornada";
+import { exigenciasCicloPresencial } from "../../utils/ciclo-completo-presencial";
+import { Cron } from "@nestjs/schedule";
+import {
+  ordemArquivoRodada,
+  periodosComRodada,
+  rodadasDe,
+  type DocumentoRodadaFerias,
+  type RodadaFeriasMeta
+} from "../../utils/ferias-rodadas";
+import {
+  diasCorridos,
+  somarDiasIso,
+  validarPeriodosEstagiario,
+  validarPeriodosFerias
+} from "../../utils/ferias-regras";
+import {
+  carregarContextoHoraExtra,
+  diasCicloCompletoEmCasa,
+  rotulosModalidadePorDia
+} from "../../utils/hora-extra-decisao";
 import {
   validarItensCorrecaoPontoPausa,
   type ItemCorrecaoPonto
@@ -78,6 +100,34 @@ export interface PeriodoPontoRaw {
   status: string;
   fechadoEm: Date | null;
   aprovadoPor: string | null;
+}
+
+/** Metadados sem a assinatura do funcionário (reenvio dos documentos pelo RH). */
+function semAssinaturaFerias(meta: Record<string, unknown>): Record<string, unknown> {
+  const resto = { ...meta };
+  delete resto.assinaturaFerias;
+  delete resto.rejeicaoDocumentoFerias;
+  return resto;
+}
+
+const fmtDataBr = (iso: string) => iso.split("-").reverse().join("/");
+
+/** Documento de férias enviado pelo RH: AVISO, RECIBO ou OUTROS (com `rotulo`). */
+export interface DocumentoFeriasEntrada {
+  tipo: string;
+  rotulo?: string;
+  arquivoBase64: string;
+  nomeArquivo?: string;
+  mimeType?: string;
+}
+
+/** Entrada do RH para agendar/alterar férias (Auditoria → Funcionário → Férias). */
+export interface FeriasRhEntrada {
+  cicloNumero?: number;
+  periodos: Array<{ inicio: string; fim: string }>;
+  diasVendidos?: number;
+  justificativa: string;
+  ignorarVedacao?: boolean;
 }
 
 @Injectable()
@@ -1312,7 +1362,7 @@ export class AuditoriaService {
       }),
       this.prisma.feriadoConfig.findMany({
         where: { data: { gte: feriadoIni, lte: feriadoFim } },
-        select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+        select: { data: true, nome: true, tipo: true, marcoHorario: true, marcoLado: true }
       }),
       this.configSolicitacoesService.getConfig()
     ]);
@@ -1332,33 +1382,69 @@ export class AuditoriaService {
     const feriados = feriadosRaw.map((f) => ({
       data: `${dataCivilISO(f.data)}T12:00:00.000-03:00`,
       nome: f.nome,
+      tipo: f.tipo,
       marcoHorario: f.marcoHorario,
       marcoLado: f.marcoLado
     }));
+
+    /* Contexto de HE por dia: a tela aplica a mesma regra do banco (aplicarRegraHoraExtra). */
+    const contextoHe = await carregarContextoHoraExtra(this.prisma, funcionarioId, inicio, fim);
+
+    const cicloEmCasaAud = await diasCicloCompletoEmCasa(
+      this.prisma,
+      funcionarioId,
+      intervaloDiaBrasilia(primeiroDia).inicio,
+      intervaloDiaBrasilia(ultimoDiaIso).fim
+    );
+    const jornadaAud = {
+      ...resolverJornadaHistoricoContexto({
+        ...func,
+        configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
+        configuracaoHoraSaida: cfgJornada?.horaSaida ?? null,
+        configuracaoAlmocoMinMin: cfgJornada?.almocoMinMin ?? null,
+        configuracaoAlmocoPodeIniciarA: cfgJornada?.almocoPodeIniciarA ?? null,
+        configuracaoAlmocoPodeIniciarAte: cfgJornada?.almocoPodeIniciarAte ?? null,
+        configuracaoToleranciaEntradaMin: cfgJornada?.toleranciaEntradaMin ?? null,
+        configuracaoToleranciaSaidaMin: cfgJornada?.toleranciaSaidaMin ?? null,
+        configuracaoToleranciaCalculoMin: cfgJornada?.toleranciaCalculoMin ?? null,
+        configuracaoHoraExtraLimiteAuto: cfgJornada?.horaExtraLimiteAuto ?? null
+      }),
+      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin,
+      atestadoTempoIdaMin: cfgSolicitacoes.atestadoTempoIdaMin
+    };
 
     return {
       registros,
       categoria: func?.categoria ?? null,
       periodosSemObrigacao,
+      contextoHoraExtra: contextoHe,
+      rotuloModalidadePorDia: await rotulosModalidadePorDia(
+        this.prisma,
+        funcionarioId,
+        intervaloDiaBrasilia(primeiroDia).inicio,
+        intervaloDiaBrasilia(ultimoDiaIso).fim
+      ),
+      interjornadaPorDia: await interjornadaCurtaPorDia(
+        this.prisma,
+        funcionarioId,
+        intervaloDiaBrasilia(primeiroDia).inicio,
+        intervaloDiaBrasilia(ultimoDiaIso).fim
+      ),
+      cicloCompletoPresencial: await exigenciasCicloPresencial(
+        this.prisma,
+        funcionarioId,
+        intervaloDiaBrasilia(primeiroDia).inicio,
+        intervaloDiaBrasilia(ultimoDiaIso).fim,
+        jornadaAud,
+        cicloEmCasaAud.dias
+      ),
+      cicloCompletoEmCasa: cicloEmCasaAud,
+      periodosCessao: await periodosCessao(this.prisma, funcionarioId),
       semRegistroPonto: funcionarioSemRegistroPonto(func ?? {}),
       pontoObrigatorioDesde,
       inicioAtividades: inicioAtividadesUsuario(func?.user),
       feriados,
-      jornada: {
-        ...resolverJornadaHistoricoContexto({
-          ...func,
-          configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
-          configuracaoHoraSaida: cfgJornada?.horaSaida ?? null,
-          configuracaoAlmocoMinMin: cfgJornada?.almocoMinMin ?? null,
-          configuracaoAlmocoPodeIniciarA: cfgJornada?.almocoPodeIniciarA ?? null,
-          configuracaoAlmocoPodeIniciarAte: cfgJornada?.almocoPodeIniciarAte ?? null,
-          configuracaoToleranciaEntradaMin: cfgJornada?.toleranciaEntradaMin ?? null,
-          configuracaoToleranciaSaidaMin: cfgJornada?.toleranciaSaidaMin ?? null,
-          configuracaoToleranciaCalculoMin: cfgJornada?.toleranciaCalculoMin ?? null,
-          configuracaoHoraExtraLimiteAuto: cfgJornada?.horaExtraLimiteAuto ?? null
-        }),
-        atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin
-      }
+      jornada: jornadaAud
     };
   }
 
@@ -1419,6 +1505,18 @@ export class AuditoriaService {
     observacaoGestor: string,
     resolvidoPor: string
   ) {
+    const sol = await this.prisma.solicitacao.findUniqueOrThrow({
+      where: { id },
+      select: { funcionarioId: true, metadados: true }
+    });
+    await this.assertNaoEhProprioPorSub(sol.funcionarioId, resolvidoPor);
+    if (status === "APROVADA") {
+      const quem = await this.prisma.user.findFirst({
+        where: { externalId: resolvidoPor },
+        select: { id: true }
+      });
+      this.assertCriadorNaoAprova(sol.metadados, quem?.id);
+    }
     return this.prisma.solicitacao.update({
       where: { id },
       data: {
@@ -1639,6 +1737,38 @@ export class AuditoriaService {
     return { total, page, limit, solicitacoes };
   }
 
+  /**
+   * Mesma regra de assertNaoEhAutoaprovacao, a partir do login (Keycloak sub): ninguém —
+   * nem RH, chefe ou Gerente de RH — dá andamento a uma demanda de RH de si mesmo.
+   */
+  private async assertNaoEhProprioPorSub(
+    funcionarioId: string,
+    keycloakSub: string,
+    mensagem = "Você não pode aprovar ou rejeitar sua própria solicitação."
+  ) {
+    const user = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { id: true }
+    });
+    if (!user) return;
+    const dono = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { userId: true }
+    });
+    if (dono?.userId === user.id) throw new ForbiddenException(mensagem);
+  }
+
+  /** Quem abriu a solicitação em nome do funcionário não dá a aprovação final da etapa RH. */
+  private assertCriadorNaoAprova(metadados: unknown, aprovadorUserId?: string | null) {
+    const criador = ((metadados ?? {}) as { criadaPorRh?: { userId?: string | null } }).criadaPorRh
+      ?.userId;
+    if (criador && aprovadorUserId && criador === aprovadorUserId) {
+      throw new ForbiddenException(
+        "Quem abriu a solicitação em nome do funcionário não pode dar a aprovação final. Outro membro do RH deve aprovar."
+      );
+    }
+  }
+
   /** Impede que o próprio solicitante aprove/rejeite a sua solicitação, mesmo tendo o papel de gestor/RH. */
   private async assertNaoEhAutoaprovacao(funcionarioId: string, aprovadorUserId?: string | null) {
     if (!aprovadorUserId) return;
@@ -1780,6 +1910,16 @@ export class AuditoriaService {
         solicitacao.tipo,
         observacao
       ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_RECUSADA: ${e}`));
+      /* Férias programadas pelo RH recusadas pelo chefe: o RH autor é avisado. */
+      const metaRec = solicitacao.metadados as Record<string, unknown> | null;
+      if (solicitacao.tipo === "FERIAS" && metaRec?.origem === "RH") {
+        this.notificarRhFeriasRecusadasPeloChefe(
+          resolvida.funcionario.user?.name ?? "Funcionário",
+          metaRec,
+          user?.name ?? "Chefe",
+          observacao
+        ).catch((e) => this.logger.error(`Falha ao notificar RH (férias recusadas): ${e}`));
+      }
     }
 
     if (novoStatus === "AGUARDANDO_RH") {
@@ -1853,6 +1993,7 @@ export class AuditoriaService {
 
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
     await this.assertNaoEhAutoaprovacao(solicitacao.funcionarioId, rhUser?.id);
+    if (decisao === "APROVAR") this.assertCriadorNaoAprova(solicitacao.metadados, rhUser?.id);
 
     if (decisao === "APROVAR") {
       const metadados = solicitacao.metadados as Record<string, unknown> | null;
@@ -1866,10 +2007,38 @@ export class AuditoriaService {
           "Aguardando o funcionário enviar o documento de retorno da consulta médica antes da aprovação."
         );
       }
-      if (solicitacao.tipo === "FERIAS") {
+      const docsFerias = Array.isArray(metadados?.documentosFerias)
+        ? (metadados!.documentosFerias as Array<{ tipo?: string }>)
+        : null;
+      if (solicitacao.tipo === "FERIAS" && docsFerias) {
+        /* Fluxo atual: Aviso + Recibo enviados pelo RH e assinados pelo funcionário. */
+        if (
+          !docsFerias.some((d) => d.tipo === "AVISO") ||
+          !docsFerias.some((d) => d.tipo === "RECIBO")
+        ) {
+          throw new BadRequestException(
+            "Envie o Aviso de Férias e o Recibo de Férias ao funcionário antes de aprovar."
+          );
+        }
+        const rejeicao = metadados?.rejeicaoDocumentoFerias as
+          | { documento?: string; justificativa?: string }
+          | undefined;
+        if (rejeicao) {
+          throw new BadRequestException(
+            `O funcionário rejeitou "${rejeicao.documento ?? "um documento"}": ` +
+              `${rejeicao.justificativa ?? ""} — corrija e reenvie os documentos de férias.`
+          );
+        }
+        if (!metadados?.assinaturaFerias) {
+          throw new BadRequestException(
+            "Aguardando o funcionário assinar pelo sistema cada documento de férias."
+          );
+        }
+      } else if (solicitacao.tipo === "FERIAS") {
+        /* Envios antigos (folha única + documento de retorno). */
         if (!solicitacao.guiaMedicoUrl) {
           throw new BadRequestException(
-            "Envie a folha de pagamento de férias ao funcionário antes de aprovar."
+            "Envie o Aviso e o Recibo de Férias ao funcionário antes de aprovar."
           );
         }
         if (!solicitacao.documentoRetornoUrl) {
@@ -1909,6 +2078,12 @@ export class AuditoriaService {
     // Se for uma alteração de férias, cancela a solicitação original substituída
     const metaAprov = solicitacao.metadados as Record<string, unknown> | null;
     if (solicitacao.tipo === "FERIAS" && typeof metaAprov?.alteracaoDeId === "string") {
+      /* Remove os afastamentos da férias substituída — antes eles continuavam valendo
+         junto com os novos. */
+      const original = await this.prisma.solicitacao.findUnique({
+        where: { id: metaAprov.alteracaoDeId }
+      });
+      if (original) await this.removerAfastamentosDaSolicitacao(this.prisma, original);
       await this.prisma.solicitacao.update({
         where: { id: metaAprov.alteracaoDeId },
         data: { status: "CANCELADA" }
@@ -1932,6 +2107,13 @@ export class AuditoriaService {
       solicitacao.tipo,
       observacao
     ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_APROVADA: ${e}`));
+    /* Férias programadas pelo RH que não passaram pelo chefe (sem chefe disponível): ele é
+       só informado da aprovação. As que ele aprovou já o envolveram. */
+    if (solicitacao.tipo === "FERIAS" && metaAprov?.origem === "RH" && !solicitacao.gestorUserId) {
+      this.notificarChefeFeriasRhAprovadas(solicitacao.funcionarioId, metaAprov).catch((e) =>
+        this.logger.error(`Falha ao notificar FERIAS_RH (aprovação): ${e}`)
+      );
+    }
     return aprovada;
   }
 
@@ -1944,6 +2126,12 @@ export class AuditoriaService {
     const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({
       where: { id }
     });
+
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
 
     if (solicitacao.status !== "AGUARDANDO_RH") {
       throw new BadRequestException(
@@ -1979,51 +2167,323 @@ export class AuditoriaService {
     return atualizada;
   }
 
+  /**
+   * RH envia os documentos de férias ao funcionário (Aviso de Férias, Recibo de Férias e
+   * outros) — etapa AGUARDANDO_RH → AGUARDANDO_DOCUMENTO_FUNCIONARIO. Aceita vários
+   * arquivos em `documentos`; `folhaBase64` (um arquivo) continua aceito.
+   */
   async rhEnviarFolhaFerias(
     id: string,
-    folhaBase64: string,
+    entrada: { documentos?: DocumentoFeriasEntrada[]; folhaBase64?: string },
     observacao: string,
     keycloakSub: string
   ) {
     const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
 
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
+
     if (solicitacao.status !== "AGUARDANDO_RH") {
       throw new BadRequestException(
-        "Apenas solicitações aguardando RH podem receber a folha de férias."
+        "Apenas solicitações aguardando RH podem receber os documentos de férias."
       );
     }
     if (solicitacao.tipo !== "FERIAS") {
       throw new BadRequestException(
-        "A folha de férias só pode ser enviada para solicitações de férias."
+        "Os documentos de férias só podem ser enviados para solicitações de férias."
       );
     }
 
-    const url = await this.documentoService.salvarGuiaMedica(id, folhaBase64);
+    const docsEntrada: DocumentoFeriasEntrada[] = Array.isArray(entrada.documentos)
+      ? entrada.documentos.filter((d) => typeof d?.arquivoBase64 === "string" && d.arquivoBase64)
+      : entrada.folhaBase64
+        ? [
+            {
+              tipo: "OUTROS",
+              rotulo: "Folha de pagamento de férias",
+              arquivoBase64: entrada.folhaBase64
+            }
+          ]
+        : [];
+    if (
+      !docsEntrada.some((d) => d.tipo === "AVISO") ||
+      !docsEntrada.some((d) => d.tipo === "RECIBO")
+    ) {
+      throw new BadRequestException(
+        "Anexe o Aviso de Férias e o Recibo de Férias (obrigatórios); “Outros” é opcional."
+      );
+    }
+    const ROTULO: Record<string, string> = {
+      AVISO: "Aviso de Férias",
+      RECIBO: "Recibo de Férias"
+    };
+    const documentos: Array<{ tipo: string; rotulo: string; nome: string | null; url: string }> =
+      [];
+    for (const [i, d] of docsEntrada.entries()) {
+      const tipo = ["AVISO", "RECIBO", "OUTROS"].includes(d.tipo) ? d.tipo : "OUTROS";
+      const rotulo = (ROTULO[tipo] ?? (d.rotulo ?? "").trim()) || "Outro documento";
+      const url = await this.documentoService.salvarDocumentoFerias({
+        solicitacaoId: id,
+        ordem: i + 1,
+        tipo,
+        arquivoBase64: d.arquivoBase64,
+        mimeType: d.mimeType
+      });
+      documentos.push({ tipo, rotulo, nome: d.nomeArquivo?.trim() || null, url });
+    }
+
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
-    const obsFinal = observacao || "Folha de pagamento de férias enviada para assinatura.";
+    const obsFinal = observacao || "Documentos de férias enviados para assinatura.";
 
     const atualizada = await this.prisma.solicitacao.update({
       where: { id },
       data: {
-        guiaMedicoUrl: url,
+        /* O 1º documento fica no campo antigo (links e retorno assinado continuam valendo). */
+        guiaMedicoUrl: documentos[0].url,
         guiaMedicoEnviadaEm: new Date(),
         guiaMedicoObservacao: obsFinal,
         status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
-        rhUserId: rhUser?.id
+        rhUserId: rhUser?.id,
+        /* Reenvio: a assinatura anterior não vale para os documentos novos. */
+        documentoRetornoUrl: null,
+        documentoRetornoEm: null,
+        metadados: {
+          ...semAssinaturaFerias((solicitacao.metadados ?? {}) as Record<string, unknown>),
+          documentosFerias: documentos
+        } as Prisma.InputJsonValue
       }
     });
 
+    const lista = documentos.map((d) => d.rotulo).join(", ");
     this.notificarDocumentoRhEnviado(
       atualizada.funcionarioId,
-      "folha de pagamento de férias",
+      `documentação de férias (${lista})`,
       obsFinal
     ).catch((e) => this.logger.error(`Falha ao notificar RH_DOCUMENTO_ENVIADO: ${e}`));
-    this.notificarDocumentoRetornoPendente(
-      atualizada.funcionarioId,
-      "folha de pagamento de férias assinada"
-    ).catch((e) => this.logger.error(`Falha ao notificar DOCUMENTO_RETORNO_PENDENTE: ${e}`));
+    this.notificacaoService
+      .getFuncionarioDestinatario(atualizada.funcionarioId)
+      .then((dest) =>
+        dest
+          ? this.notificacaoService.dispararEvento(
+              "DOCUMENTO_RETORNO_PENDENTE",
+              "Assine os documentos das suas férias",
+              `O RH enviou ${lista} para a sua assinatura.\n\n` +
+                "Assine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH. " +
+                "A aprovação das férias depende da sua assinatura.",
+              [dest]
+            )
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar DOCUMENTO_RETORNO_PENDENTE: ${e}`));
 
     return atualizada;
+  }
+
+  /* ─── Férias divididas: Aviso e Recibo do 2º e 3º período ─── */
+
+  /** Férias aprovadas com período futuro (2º/3º) que ainda não teve a rodada concluída. */
+  async listarRodadasFeriasPendentes() {
+    const hoje = hojeBrasiliaISO();
+    const cfg = await this.configSolicitacoesService.getConfig();
+    const sols = await this.prisma.solicitacao.findMany({
+      where: {
+        tipo: "FERIAS",
+        status: "APROVADA",
+        dataFim: { gte: new Date(`${hoje}T00:00:00-03:00`) }
+      },
+      select: {
+        id: true,
+        funcionarioId: true,
+        metadados: true,
+        funcionario: { select: { matricula: true, user: { select: { name: true } } } }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+    const linhas: Array<{
+      solicitacaoId: string;
+      funcionarioId: string;
+      funcionarioNome: string;
+      matricula: string | null;
+      ordem: number;
+      inicio: string;
+      fim: string;
+      diasParaInicio: number;
+      noPrazo: boolean;
+      situacao: string;
+      documentos: Array<{ tipo: string; rotulo?: string; url: string; urlAssinado?: string }>;
+    }> = [];
+    for (const s of sols) {
+      const meta = (s.metadados ?? {}) as Record<string, unknown>;
+      const rodadas = rodadasDe(meta);
+      for (const p of periodosComRodada(meta, hoje)) {
+        const r = rodadas[String(p.ordem)];
+        if (r?.situacao === "CONCLUIDA") continue;
+        const diasParaInicio = diasCorridos(hoje, p.inicio) - 1;
+        linhas.push({
+          solicitacaoId: s.id,
+          funcionarioId: s.funcionarioId,
+          funcionarioNome: s.funcionario?.user?.name ?? "Funcionário",
+          matricula: s.funcionario?.matricula ?? null,
+          ordem: p.ordem,
+          inicio: p.inicio,
+          fim: p.fim,
+          diasParaInicio,
+          noPrazo: diasParaInicio <= cfg.feriasRodadaAvisoDias,
+          situacao: r?.situacao ?? "PENDENTE_RH",
+          documentos: (r?.documentos ?? []).map((d) => ({
+            tipo: d.tipo,
+            rotulo: d.rotulo,
+            url: d.url,
+            urlAssinado: d.urlAssinado
+          }))
+        });
+      }
+    }
+    return linhas.sort((a, b) => (a.inicio < b.inicio ? -1 : 1));
+  }
+
+  /** RH anexa o Aviso e o Recibo do 2º/3º período e o funcionário é avisado para assinar. */
+  async rhEnviarRodadaFerias(
+    id: string,
+    ordem: number,
+    entrada: { documentos?: DocumentoFeriasEntrada[] },
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
+    if (solicitacao.tipo !== "FERIAS" || solicitacao.status !== "APROVADA") {
+      throw new BadRequestException("Só férias aprovadas têm rodadas de Aviso e Recibo.");
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const periodo = periodosComRodada(meta, hojeBrasiliaISO()).find((p) => p.ordem === ordem);
+    if (!periodo) {
+      throw new BadRequestException(
+        "Este período não existe, é o 1º (já tem seus documentos) ou já começou."
+      );
+    }
+    const atual = rodadasDe(meta)[String(ordem)];
+    if (atual?.situacao === "CONCLUIDA") {
+      throw new BadRequestException("Os documentos deste período já foram assinados.");
+    }
+    const docsEntrada = (Array.isArray(entrada.documentos) ? entrada.documentos : []).filter(
+      (d) => typeof d?.arquivoBase64 === "string" && d.arquivoBase64
+    );
+    if (
+      !docsEntrada.some((d) => d.tipo === "AVISO") ||
+      !docsEntrada.some((d) => d.tipo === "RECIBO")
+    ) {
+      throw new BadRequestException(
+        "Anexe o Aviso de Férias e o Recibo de Férias (obrigatórios); “Outros” é opcional."
+      );
+    }
+    const ROTULO: Record<string, string> = { AVISO: "Aviso de Férias", RECIBO: "Recibo de Férias" };
+    const documentos: DocumentoRodadaFerias[] = [];
+    for (const [i, d] of docsEntrada.entries()) {
+      const tipo = ["AVISO", "RECIBO", "OUTROS"].includes(d.tipo) ? d.tipo : "OUTROS";
+      const rotulo = (ROTULO[tipo] ?? (d.rotulo ?? "").trim()) || "Outro documento";
+      const url = await this.documentoService.salvarDocumentoFerias({
+        solicitacaoId: id,
+        ordem: ordemArquivoRodada(ordem, i),
+        tipo,
+        arquivoBase64: d.arquivoBase64,
+        mimeType: d.mimeType
+      });
+      documentos.push({ tipo, rotulo, nome: d.nomeArquivo?.trim() || null, url });
+    }
+    const obsFinal = observacao || "Documentos do período de férias enviados para assinatura.";
+    const rodada: RodadaFeriasMeta = {
+      ordem,
+      inicio: periodo.inicio,
+      fim: periodo.fim,
+      avisoRhEm: atual?.avisoRhEm,
+      situacao: "AGUARDANDO_ASSINATURA",
+      documentos,
+      observacao: obsFinal,
+      enviadaEm: new Date().toISOString()
+    };
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        metadados: {
+          ...meta,
+          rodadasFerias: { ...rodadasDe(meta), [String(ordem)]: rodada }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+
+    const lista = documentos.map((d) => d.rotulo).join(", ");
+    this.notificacaoService
+      .getFuncionarioDestinatario(atualizada.funcionarioId)
+      .then((dest) =>
+        dest
+          ? this.notificacaoService.dispararEvento(
+              "FERIAS_RODADA_ASSINAR",
+              `Assine os documentos do ${ordem}º período das suas férias`,
+              `O RH enviou ${lista} do ${ordem}º período de férias ` +
+                `(${fmtDataBr(periodo.inicio)} a ${fmtDataBr(periodo.fim)}) para a sua assinatura.\n\n` +
+                "Assine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH.",
+              [dest]
+            )
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar FERIAS_RODADA_ASSINAR: ${e}`));
+    return atualizada;
+  }
+
+  /** Todo dia: avisa o RH dos períodos futuros que já entraram na janela do Aviso/Recibo. */
+  @Cron("40 7 * * *", { timeZone: "America/Sao_Paulo" })
+  async avisarRodadasFeriasPendentes() {
+    try {
+      const pend = (await this.listarRodadasFeriasPendentes()).filter(
+        (r) => r.noPrazo && r.situacao === "PENDENTE_RH"
+      );
+      if (!pend.length) return;
+      const rh = await this.notificacaoService.getUsuariosRh();
+      for (const r of pend) {
+        const sol = await this.prisma.solicitacao.findUnique({
+          where: { id: r.solicitacaoId },
+          select: { metadados: true }
+        });
+        const meta = (sol?.metadados ?? {}) as Record<string, unknown>;
+        const atual = rodadasDe(meta)[String(r.ordem)];
+        if (atual?.avisoRhEm) continue;
+        if (rh.length) {
+          await this.notificacaoService.dispararEvento(
+            "FERIAS_RODADA_PENDENTE_RH",
+            `Aviso e Recibo pendentes — ${r.funcionarioNome}`,
+            `O ${r.ordem}º período de férias de ${r.funcionarioNome} começa em ` +
+              `${fmtDataBr(r.inicio)} (${r.diasParaInicio} dia(s)). Envie o Aviso e o Recibo ` +
+              "em Aprovações → Rodadas de férias.",
+            rh
+          );
+        }
+        await this.prisma.solicitacao.update({
+          where: { id: r.solicitacaoId },
+          data: {
+            metadados: {
+              ...meta,
+              rodadasFerias: {
+                ...rodadasDe(meta),
+                [String(r.ordem)]: {
+                  ...(atual ?? { ordem: r.ordem, inicio: r.inicio, fim: r.fim }),
+                  avisoRhEm: new Date().toISOString()
+                }
+              }
+            } as unknown as Prisma.InputJsonValue
+          }
+        });
+      }
+    } catch (e) {
+      this.logger.error(`Falha ao avisar rodadas de férias pendentes: ${(e as Error).message}`);
+    }
   }
 
   async getSaldoFeriasFuncionario(funcionarioId: string) {
@@ -2047,6 +2507,13 @@ export class AuditoriaService {
       }>;
     }
   ) {
+    /* A correção do RH pula a aprovação do chefe: não vale para o próprio ponto. */
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode lançar correção no seu próprio ponto. Solicite a correção pelo fluxo normal (chefe e, depois, outro membro do RH)."
+    );
+
     const dataRef = new Date(body.dataReferencia);
     const mes = dataRef.getUTCMonth() + 1;
     const ano = dataRef.getUTCFullYear();
@@ -2127,7 +2594,7 @@ export class AuditoriaService {
     await this.assertNaoEhAutoaprovacao(sol.funcionarioId, user?.id);
 
     const agora = new Date();
-    const dataFormatada = agora.toLocaleDateString("pt-BR");
+    const dataFormatada = agora.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const meta = (sol.metadados ?? {}) as Record<string, unknown>;
     const criadoPorNome = (meta.criadoPorNome as string) ?? "RH";
     const marker = `Modificado pelo RH (${criadoPorNome}) em ${dataFormatada} — aprovado pelo Gerente de RH`;
@@ -2263,6 +2730,14 @@ export class AuditoriaService {
       });
       apenasInformativo = funcionarioSemRegistroPonto(funcCat ?? {});
     }
+    /* Abono com tempo liberado pelo RH tem efeito mesmo para quem não registra ponto. */
+    if (
+      tipo === "ABONO" &&
+      (creditoBancoDaSolicitacao(solicitacao.metadados) ||
+        (meta.cotaAbono && typeof meta.cotaAbono === "object"))
+    ) {
+      apenasInformativo = false;
+    }
     const obsInformativo = apenasInformativo
       ? `${obs} — ${MSG_SOLICITACAO_APENAS_INFORMATIVA}`
       : obs;
@@ -2280,6 +2755,10 @@ export class AuditoriaService {
             horarioOriginal?: string;
           }>)
         : null;
+
+      /* Entrada que desrespeita o descanso de interjornada, aprovada pelo chefe e pelo RH:
+         o aviso registrado no pedido vira nota na observação do registro. */
+      const notaInterjornada = textoNotaInterjornada(meta.avisoInterjornada);
 
       if (correcoesDia) {
         for (const c of correcoesDia) {
@@ -2299,7 +2778,8 @@ export class AuditoriaService {
                 horarioAnterior: c.horarioOriginal ?? horarioDeDataBrasilia(atual.dataHora),
                 horarioNovo: c.horario,
                 solicitacaoId: solicitacao.id,
-                acao: "CORRIGIR"
+                acao: "CORRIGIR",
+                textoExtra: c.tipoRegistro === "ENTRADA" ? notaInterjornada : undefined
               });
               const observacoes = appendObservacao(atual.observacoes, novaObs);
               await this.prisma.registroPonto.update({
@@ -2320,7 +2800,8 @@ export class AuditoriaService {
               tipoRegistro: c.tipoRegistro,
               horarioNovo: c.horario,
               solicitacaoId: solicitacao.id,
-              acao: "INCLUIR"
+              acao: "INCLUIR",
+              textoExtra: c.tipoRegistro === "ENTRADA" ? notaInterjornada : undefined
             });
             await this.prisma.registroPonto.create({
               data: {
@@ -2368,7 +2849,9 @@ export class AuditoriaService {
             horarioAnterior,
             horarioNovo: horario,
             solicitacaoId: solicitacao.id,
-            acao: "CORRIGIR"
+            acao: "CORRIGIR",
+            textoExtra:
+              tipoRegistro === "ENTRADA" ? textoNotaInterjornada(meta.avisoInterjornada) : undefined
           });
           const observacoes = appendObservacao(registroAtual.observacoes, novaObs);
           await this.prisma.registroPonto.update({
@@ -2389,7 +2872,9 @@ export class AuditoriaService {
           tipoRegistro,
           horarioNovo: horario,
           solicitacaoId: solicitacao.id,
-          acao: "INCLUIR"
+          acao: "INCLUIR",
+          textoExtra:
+            tipoRegistro === "ENTRADA" ? textoNotaInterjornada(meta.avisoInterjornada) : undefined
         });
         await this.prisma.registroPonto.create({
           data: {
@@ -2413,12 +2898,17 @@ export class AuditoriaService {
       if (periodos && periodos.length > 0) {
         // Cria um afastamento por período
         for (const p of periodos) {
+          /* Dia civil de Brasília do período (aceita o formato legado, data civil em UTC,
+             que lido como instante deslocaria o início para o dia anterior). */
+          const iniCivil = dataCivilPeriodo(String(p.dataInicio));
+          const fimCivil = dataCivilPeriodo(String(p.dataFim));
           await this.prisma.afastamento.create({
             data: {
               funcionarioId: funcId,
+              solicitacaoId: solicitacao.id,
               tipo: "FERIAS",
-              dataInicio: new Date(p.dataInicio),
-              dataFim: new Date(p.dataFim),
+              dataInicio: intervaloDiaBrasilia(iniCivil).inicio,
+              dataFim: fimDiaCivilBrasilia(fimCivil),
               justificativa: solicitacao.descricao || obsInformativo,
               aprovadoPor: rhKeycloakSub,
               apenasInformativo
@@ -2429,6 +2919,7 @@ export class AuditoriaService {
         await this.prisma.afastamento.create({
           data: {
             funcionarioId: funcId,
+            solicitacaoId: solicitacao.id,
             tipo: "FERIAS",
             dataInicio: ref,
             dataFim: fim,
@@ -2450,6 +2941,7 @@ export class AuditoriaService {
       await this.prisma.afastamento.create({
         data: {
           funcionarioId: funcId,
+          solicitacaoId: solicitacao.id,
           tipo: "ATESTADO",
           dataInicio: ref,
           dataFim: fim,
@@ -2461,10 +2953,39 @@ export class AuditoriaService {
           apenasInformativo
         }
       });
+    } else if (tipo === "LICENCA" && (meta.tipoLicenca as { nome?: string } | undefined)?.nome) {
+      /* Licença com tipo configurável: um afastamento por período, com o nome do tipo. */
+      const tl = meta.tipoLicenca as { nome: string; codigoSistema?: string | null };
+      const tipoAfast =
+        tl.codigoSistema === "MATERNIDADE"
+          ? "LICENCA_MATERNIDADE"
+          : tl.codigoSistema === "PATERNIDADE"
+            ? "LICENCA_PATERNIDADE"
+            : "LICENCA_MEDICA";
+      const documentoUrl = typeof meta.documentoUrl === "string" ? meta.documentoUrl : null;
+      for (const p of periodosDoAbono(solicitacao)) {
+        await this.prisma.afastamento.create({
+          data: {
+            funcionarioId: funcId,
+            solicitacaoId: solicitacao.id,
+            tipo: tipoAfast,
+            rotulo: tl.nome,
+            dataInicio: intervaloDiaBrasilia(p.inicio).inicio,
+            dataFim: fimDiaCivilBrasilia(p.fim),
+            horarioInicio: p.horarioInicio,
+            horarioFim: p.horarioFim,
+            justificativa: solicitacao.descricao || obsInformativo,
+            documentoUrl,
+            aprovadoPor: rhKeycloakSub,
+            apenasInformativo
+          }
+        });
+      }
     } else if (tipo === "LICENCA") {
       await this.prisma.afastamento.create({
         data: {
           funcionarioId: funcId,
+          solicitacaoId: solicitacao.id,
           tipo: "LICENCA_MEDICA",
           dataInicio: ref,
           dataFim: fim,
@@ -2474,27 +2995,51 @@ export class AuditoriaService {
         }
       });
     } else if (tipo === "ABONO") {
-      const horarioInicio =
-        typeof meta.horarioInicio === "string" && meta.horarioInicio.trim()
-          ? meta.horarioInicio.trim()
-          : null;
-      const horarioFim =
-        typeof meta.horarioFim === "string" && meta.horarioFim.trim()
-          ? meta.horarioFim.trim()
-          : null;
-      await this.prisma.afastamento.create({
-        data: {
-          funcionarioId: funcId,
-          tipo: "ABONO",
-          dataInicio: ref,
-          dataFim: fim,
-          horarioInicio,
-          horarioFim,
-          justificativa: solicitacao.descricao || obsInformativo,
-          aprovadoPor: rhKeycloakSub,
-          apenasInformativo
+      const documentoUrl = typeof meta.documentoUrl === "string" ? meta.documentoUrl : null;
+      if (Array.isArray(meta.periodos) && meta.periodos.length) {
+        /* Vários períodos: um afastamento por período (dia inteiro ou parcial de 1 dia). */
+        for (const p of periodosDoAbono(solicitacao)) {
+          await this.prisma.afastamento.create({
+            data: {
+              funcionarioId: funcId,
+              solicitacaoId: solicitacao.id,
+              tipo: "ABONO",
+              dataInicio: intervaloDiaBrasilia(p.inicio).inicio,
+              dataFim: fimDiaCivilBrasilia(p.fim),
+              horarioInicio: p.horarioInicio,
+              horarioFim: p.horarioFim,
+              justificativa: solicitacao.descricao || obsInformativo,
+              documentoUrl,
+              aprovadoPor: rhKeycloakSub,
+              apenasInformativo
+            }
+          });
         }
-      });
+      } else {
+        const horarioInicio =
+          typeof meta.horarioInicio === "string" && meta.horarioInicio.trim()
+            ? meta.horarioInicio.trim()
+            : null;
+        const horarioFim =
+          typeof meta.horarioFim === "string" && meta.horarioFim.trim()
+            ? meta.horarioFim.trim()
+            : null;
+        await this.prisma.afastamento.create({
+          data: {
+            funcionarioId: funcId,
+            solicitacaoId: solicitacao.id,
+            tipo: "ABONO",
+            dataInicio: ref,
+            dataFim: fim,
+            horarioInicio,
+            horarioFim,
+            justificativa: solicitacao.descricao || obsInformativo,
+            documentoUrl,
+            aprovadoPor: rhKeycloakSub,
+            apenasInformativo
+          }
+        });
+      }
     }
     /* HORA_EXTRA / ENVIO_DOCUMENTO_RH: aprovação registrada no status; sem efeito adicional no banco */
 
@@ -2652,6 +3197,15 @@ export class AuditoriaService {
   }
 
   async atualizarStatusPeriodo(id: string, status: "FECHADO" | "APROVADO", aprovadoPor: string) {
+    const atual = await this.prisma.periodoPonto.findUniqueOrThrow({
+      where: { id },
+      select: { funcionarioId: true }
+    });
+    await this.assertNaoEhProprioPorSub(
+      atual.funcionarioId,
+      aprovadoPor,
+      "Você não pode fechar ou aprovar o seu próprio período de ponto."
+    );
     const periodo = await this.prisma.periodoPonto.update({
       where: { id },
       data: {
@@ -2680,10 +3234,13 @@ export class AuditoriaService {
 
   /** Ciclo atual do banco de horas: começa na última data marco já atingida
    *  (o dia da virada entra no ciclo novo) ou desde sempre, se nenhum marco passou. */
-  private async getCicloBancoHoras() {
+  private async getCicloBancoHoras(funcionarioId?: string) {
     const marcos = await this.prisma.bancoHorasMarco.findMany();
     const hojeIso = hojeBrasiliaISO();
-    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso);
+    const tolerancia = funcionarioId
+      ? await toleranciaFechamentoDias(this.prisma, funcionarioId)
+      : 0;
+    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso, tolerancia);
     return { cicloInicio, proximaZeragem, hojeIso };
   }
 
@@ -2727,411 +3284,317 @@ export class AuditoriaService {
     );
   }
 
-  /** Saldo do banco de horas no ciclo atual, iterando todos os dias úteis
-   *  e contabilizando feriados/afastamentos como saldo neutro (0). */
+  /**
+   * Banco de horas do ciclo atual. Usa a MESMA conta da página Banco de Horas do funcionário
+   * (PontoService) — antes havia uma cópia própria que divergia (isenção, primeiro acesso,
+   * atestados), gerando saldos diferentes na Auditoria, na folha e na assinatura.
+   */
   private async calcularBancoHoras(
     funcionarioId: string,
-    cicloInicio: string | null,
-    hojeIso: string
+    _cicloInicio: string | null,
+    _hojeIso: string
+  ): Promise<{
+    saldoAtualMinutos: number;
+    dias: Awaited<ReturnType<PontoService["calcularBancoHorasAdmin"]>>["dias"];
+  }> {
+    void _cicloInicio;
+    void _hojeIso;
+    const r = await this.pontoService.calcularBancoHorasAdmin(funcionarioId);
+    return { saldoAtualMinutos: r.saldoAtualMinutos, dias: r.dias };
+  }
+
+  /** Banco de horas de um intervalo (folha mensal), mesma conta da página do funcionário. */
+  bancoHorasDoIntervalo(funcionarioId: string, inicioIso: string, fimIso: string) {
+    return this.pontoService.bancoHorasDoIntervalo(funcionarioId, inicioIso, fimIso);
+  }
+
+  /* ─── Tempo do banco de horas liberado pelo RH para abono ─── */
+
+  /** Situação do saldo, do que o RH já liberou e do que o funcionário ainda pode usar. */
+  async getLiberacoesBancoRh(funcionarioId: string) {
+    await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
+    const { cicloInicio, hojeIso } = await this.getCicloBancoHoras(funcionarioId);
+    const [{ saldoAtualMinutos }, rows, { uso }, cfg] = await Promise.all([
+      this.calcularBancoHoras(funcionarioId, cicloInicio, hojeIso),
+      this.prisma.bancoHorasLiberacao.findMany({
+        where: { funcionarioId },
+        orderBy: { createdAt: "desc" }
+      }),
+      carregarUsoCredito(this.prisma, funcionarioId),
+      this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: { bancoHorasLiberacaoValidadeDias: true }
+      })
+    ]);
+    const bases = await carregarLiberacoes(this.prisma, funcionarioId);
+    const situacoes = situacaoDasLiberacoes(bases, uso, hojeIso);
+    const porId = new Map(situacoes.map((x) => [x.id, x]));
+    const liberacoes = rows.map((r) => {
+      const sit = porId.get(r.id)!;
+      return {
+        id: r.id,
+        minutos: r.minutos,
+        minutosEfetivos: sit.minutosEfetivos,
+        usadoMinutos: sit.usadoMinutos,
+        disponivelMinutos: sit.disponivelMinutos,
+        validaAte: sit.validaAte,
+        vencida: sit.vencida,
+        revogada: r.minutosRevogados > 0,
+        minutosRevogados: r.minutosRevogados,
+        devolvidoAoBancoMin: r.devolvidoAoBancoMin,
+        justificativa: r.justificativa,
+        liberadoPorNome: r.liberadoPorNome,
+        createdAt: r.createdAt,
+        revogadaEm: r.revogadaEm,
+        revogadaPorNome: r.revogadaPorNome,
+        revogacaoJustificativa: r.revogacaoJustificativa
+      };
+    });
+    return {
+      saldoAtualMinutos,
+      liberavelMinutos: Math.max(0, saldoAtualMinutos),
+      minutoMinimo: MINUTOS_MINIMOS_LIBERACAO,
+      disponivelMinutos: totalDisponivel(situacoes),
+      usadoMinutos: situacoes.reduce((t, x) => t + x.usadoMinutos, 0),
+      validadePadraoDias: cfg?.bancoHorasLiberacaoValidadeDias ?? 180,
+      liberacoes
+    };
+  }
+
+  async liberarBancoHorasRh(
+    funcionarioId: string,
+    body: { minutos: number; validaAte: string; justificativa: string },
+    keycloakSub: string
   ) {
-    const funcJornada = await this.prisma.funcionario.findUnique({
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode liberar tempo do seu próprio banco de horas. Outro membro do RH deve fazê-lo."
+    );
+    const minutos = Math.round(Number(body.minutos));
+    const justificativa = (body.justificativa ?? "").trim();
+    if (!Number.isFinite(minutos) || minutos < MINUTOS_MINIMOS_LIBERACAO) {
+      throw new BadRequestException(
+        `Informe ao menos ${MINUTOS_MINIMOS_LIBERACAO} minutos para liberar.`
+      );
+    }
+    if (justificativa.length < 10) {
+      throw new BadRequestException("Informe a justificativa (mínimo de 10 caracteres).");
+    }
+    const hojeIso = hojeBrasiliaISO();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.validaAte ?? "") || body.validaAte < hojeIso) {
+      throw new BadRequestException("Informe uma data de validade a partir de hoje.");
+    }
+    const func = await this.prisma.funcionario.findUniqueOrThrow({
       where: { id: funcionarioId },
-      select: {
-        categoria: true,
-        jornadaPeriodoId: true,
-        jornadaHorasDia: true,
-        jornadaPeriodoDesde: true,
-        jornadaPeriodoAssociadoEm: true,
-        jornadaPeriodo: {
-          select: {
-            nome: true,
-            jornadaDiariaMin: true,
-            horaEntrada: true,
-            horaSaida: true,
-            almocoMinMin: true,
-            almocoPodeIniciarA: true,
-            almocoPodeIniciarAte: true,
-            toleranciaEntradaMin: true,
-            toleranciaSaidaMin: true,
-            toleranciaCalculoMin: true,
-            horaExtraLimiteAuto: true
+      select: { id: true }
+    });
+    const { cicloInicio } = await this.getCicloBancoHoras(funcionarioId);
+    const { saldoAtualMinutos } = await this.calcularBancoHoras(func.id, cicloInicio, hojeIso);
+    const liberavel = Math.max(0, saldoAtualMinutos);
+    if (minutos > liberavel) {
+      throw new BadRequestException(
+        liberavel > 0
+          ? `O saldo positivo do banco é de ${fmtHoraMin(liberavel)}; não é possível liberar ${fmtHoraMin(minutos)}.`
+          : "O funcionário não tem saldo positivo no banco de horas para liberar."
+      );
+    }
+    const rh = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { id: true, name: true }
+    });
+    const criada = await this.prisma.bancoHorasLiberacao.create({
+      data: {
+        funcionarioId: func.id,
+        minutos,
+        validaAte: new Date(`${body.validaAte}T00:00:00.000Z`),
+        justificativa,
+        liberadoPorNome: rh?.name ?? keycloakSub,
+        liberadoPorUserId: rh?.id ?? null,
+        cicloInicio: cicloInicio ?? null
+      }
+    });
+    this.notificarBancoHorasLiberado(
+      func.id,
+      "LIBERADO",
+      minutos,
+      body.validaAte,
+      justificativa,
+      rh?.name ?? "RH"
+    ).catch((e) => this.logger.error(`Falha ao notificar BANCO_HORAS_LIBERADO: ${e}`));
+    return criada;
+  }
+
+  /** Revoga o tempo ainda não usado. Devolve ao banco só se o ciclo da liberação ainda é o atual. */
+  async revogarLiberacaoBancoRh(
+    funcionarioId: string,
+    liberacaoId: string,
+    justificativaBruta: string,
+    keycloakSub: string
+  ) {
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode revogar liberações do seu próprio banco de horas."
+    );
+    const justificativa = (justificativaBruta ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException("Informe a justificativa (mínimo de 10 caracteres).");
+    }
+    const lib = await this.prisma.bancoHorasLiberacao.findFirst({
+      where: { id: liberacaoId, funcionarioId }
+    });
+    if (!lib) throw new NotFoundException("Liberação não encontrada.");
+    const hojeIso = hojeBrasiliaISO();
+    const bases = await carregarLiberacoes(this.prisma, funcionarioId);
+    const { uso } = await carregarUsoCredito(this.prisma, funcionarioId);
+    const sit = situacaoDasLiberacoes(bases, uso, hojeIso).find((x) => x.id === lib.id)!;
+    if (sit.vencida) throw new BadRequestException("Esta liberação já venceu.");
+    if (sit.disponivelMinutos <= 0) {
+      throw new BadRequestException("Não há tempo disponível para revogar nesta liberação.");
+    }
+    const { cicloInicio } = await this.getCicloBancoHoras(funcionarioId);
+    const mesmoCiclo = (lib.cicloInicio ?? null) === (cicloInicio ?? null);
+    const rh = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { name: true }
+    });
+    const restante = sit.disponivelMinutos;
+    const atualizada = await this.prisma.bancoHorasLiberacao.update({
+      where: { id: lib.id },
+      data: {
+        minutosRevogados: { increment: restante },
+        devolvidoAoBancoMin: { increment: mesmoCiclo ? restante : 0 },
+        revogadaEm: new Date(),
+        revogadaPorNome: rh?.name ?? keycloakSub,
+        revogacaoJustificativa: justificativa
+      }
+    });
+    this.notificarBancoHorasLiberado(
+      funcionarioId,
+      "REVOGADO",
+      restante,
+      dataCivilISO(lib.validaAte),
+      justificativa,
+      rh?.name ?? "RH"
+    ).catch((e) => this.logger.error(`Falha ao notificar BANCO_HORAS_LIBERADO: ${e}`));
+    return { ...atualizada, devolvidoAoBanco: mesmoCiclo, minutosRevogadosAgora: restante };
+  }
+
+  private async notificarBancoHorasLiberado(
+    funcionarioId: string,
+    acao: "LIBERADO" | "REVOGADO",
+    minutos: number,
+    validaAteIso: string,
+    justificativa: string,
+    rhNome: string
+  ) {
+    const [func, dest, chefe] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { user: { select: { name: true } } }
+      }),
+      this.notificacaoService.getFuncionarioDestinatario(funcionarioId),
+      this.notificacaoService.getGestorDoFuncionario(funcionarioId)
+    ]);
+    const nome = func?.user?.name ?? "Funcionário";
+    const validade = validaAteIso.split("-").reverse().join("/");
+    const tempo = fmtHoraMin(minutos);
+    const liberado = acao === "LIBERADO";
+    const corpoFunc = liberado
+      ? `O RH (${rhNome}) liberou ${tempo} do seu banco de horas para você usar como abono, ` +
+        `com validade até ${validade}.\n\nJustificativa do RH: ${justificativa}\n\n` +
+        'Para usar, acesse Solicitações → Abono e marque "Usar o tempo liberado pelo RH".'
+      : `O RH (${rhNome}) revogou ${tempo} do tempo de banco de horas liberado para abono.` +
+        `\n\nJustificativa do RH: ${justificativa}`;
+    if (dest) {
+      await this.notificacaoService.dispararEvento(
+        "BANCO_HORAS_LIBERADO",
+        liberado
+          ? `Tempo de banco de horas liberado pelo RH: ${tempo}`
+          : `Tempo de banco de horas revogado pelo RH: ${tempo}`,
+        corpoFunc,
+        [dest]
+      );
+    }
+    if (chefe && chefe.externalId !== dest?.externalId) {
+      await this.notificacaoService.dispararEvento(
+        "BANCO_HORAS_LIBERADO",
+        liberado
+          ? `Banco de horas de ${nome}: ${tempo} liberados pelo RH`
+          : `Banco de horas de ${nome}: ${tempo} revogados pelo RH`,
+        `${liberado ? `O RH (${rhNome}) liberou ${tempo} do banco de horas de ${nome} para abono` : `O RH (${rhNome}) revogou ${tempo} do tempo liberado para abono de ${nome}`}` +
+          `${liberado ? `, com validade até ${validade}` : ""} (apenas informativo).\n\n` +
+          `Justificativa do RH: ${justificativa}`,
+        [chefe]
+      );
+    }
+  }
+
+  /** Todo dia: avisa funcionário e RH sobre tempo liberado e não usado que vence em 15 dias. */
+  @Cron("20 7 * * *", { timeZone: "America/Sao_Paulo" })
+  async avisarLiberacoesBancoVencendo() {
+    try {
+      const hojeIso = hojeBrasiliaISO();
+      const limite = somarDiasIso(hojeIso, 15);
+      const candidatas = await this.prisma.bancoHorasLiberacao.findMany({
+        where: {
+          avisoVencimentoEm: null,
+          validaAte: {
+            gte: new Date(`${hojeIso}T00:00:00.000Z`),
+            lte: new Date(`${limite}T00:00:00.000Z`)
           }
         },
-        user: { select: { primeiroLoginEm: true } }
-      }
-    });
-    const inicioLogin = inicioAtividadesUsuario(funcJornada?.user);
-    const semIntervaloCategoria = categoriaSemIntervaloAlmoco(funcJornada?.categoria);
-    const cfg = await this.prisma.configuracaoSistema.findUnique({
-      where: { id: "singleton" },
-      select: {
-        diasUteis: true,
-        horaEntrada: true,
-        horaSaida: true,
-        toleranciaCalculoMin: true,
-        toleranciaEntradaMin: true,
-        toleranciaSaidaMin: true,
-        almocoMinMin: true,
-        almocoPodeIniciarA: true,
-        almocoPodeIniciarAte: true,
-        horaExtraLimiteAuto: true
-      }
-    });
-    let periodoJornada = funcJornada?.jornadaPeriodo ?? null;
-    if (!periodoJornada) {
-      periodoJornada = await this.prisma.jornadaPeriodo.findFirst({
-        where: { ePadrao: true, ativo: true },
-        select: {
-          nome: true,
-          jornadaDiariaMin: true,
-          horaEntrada: true,
-          horaSaida: true,
-          almocoMinMin: true,
-          almocoPodeIniciarA: true,
-          almocoPodeIniciarAte: true,
-          toleranciaEntradaMin: true,
-          toleranciaSaidaMin: true,
-          toleranciaCalculoMin: true,
-          horaExtraLimiteAuto: true
+        select: { funcionarioId: true }
+      });
+      const ids = [...new Set(candidatas.map((c) => c.funcionarioId))];
+      for (const funcionarioId of ids) {
+        const bases = await carregarLiberacoes(this.prisma, funcionarioId);
+        const { uso } = await carregarUsoCredito(this.prisma, funcionarioId);
+        const vencendo = situacaoDasLiberacoes(bases, uso, hojeIso).filter(
+          (x) => x.disponivelMinutos > 0 && x.validaAte <= limite
+        );
+        if (!vencendo.length) continue;
+        const [func, dest, rh] = await Promise.all([
+          this.prisma.funcionario.findUnique({
+            where: { id: funcionarioId },
+            select: { user: { select: { name: true } } }
+          }),
+          this.notificacaoService.getFuncionarioDestinatario(funcionarioId),
+          this.notificacaoService.getUsuariosRh()
+        ]);
+        const nome = func?.user?.name ?? "Funcionário";
+        const detalhe = vencendo
+          .map(
+            (v) =>
+              `${fmtHoraMin(v.disponivelMinutos)} até ${v.validaAte.split("-").reverse().join("/")}`
+          )
+          .join("\n");
+        if (dest) {
+          await this.notificacaoService.dispararEvento(
+            "BANCO_HORAS_LIBERADO_VENCENDO",
+            "Tempo de banco de horas liberado está perto de vencer",
+            `Você tem tempo liberado pelo RH, ainda não usado, perto de vencer:\n${detalhe}\n\n` +
+              "Programe o abono em Solicitações → Abono.",
+            [dest]
+          );
         }
-      });
-    }
-    const cfgSolicitacoes = await this.configSolicitacoesService.getConfig();
-    const jornadaCtx = {
-      ...resolverJornadaHistoricoContexto({
-        ...funcJornada,
-        jornadaPeriodo: periodoJornada,
-        configuracaoHoraEntrada: cfg?.horaEntrada ?? null,
-        configuracaoHoraSaida: cfg?.horaSaida ?? null,
-        configuracaoAlmocoMinMin: cfg?.almocoMinMin ?? null,
-        configuracaoAlmocoPodeIniciarA: cfg?.almocoPodeIniciarA ?? null,
-        configuracaoAlmocoPodeIniciarAte: cfg?.almocoPodeIniciarAte ?? null,
-        configuracaoToleranciaEntradaMin: cfg?.toleranciaEntradaMin ?? null,
-        configuracaoToleranciaSaidaMin: cfg?.toleranciaSaidaMin ?? null,
-        configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
-        configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
-      }),
-      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin
-    };
-    const diasUteisCfg: boolean[] = JSON.parse(
-      cfg?.diasUteis ?? "[false,true,true,true,true,true,false]"
-    );
-
-    // Preferência: tolerância do período do funcionário; senão Configuração → Períodos
-    let toleranciaCalculoMin = cfg?.toleranciaCalculoMin ?? 0;
-    if (funcJornada?.jornadaPeriodoId) {
-      const jp = await this.prisma.jornadaPeriodo.findUnique({
-        where: { id: funcJornada.jornadaPeriodoId },
-        select: { toleranciaCalculoMin: true }
-      });
-      if (jp) toleranciaCalculoMin = jp.toleranciaCalculoMin;
-    } else {
-      const padrao = await this.prisma.jornadaPeriodo.findFirst({
-        where: { ePadrao: true, ativo: true },
-        select: { toleranciaCalculoMin: true }
-      });
-      if (padrao) toleranciaCalculoMin = padrao.toleranciaCalculoMin;
-    }
-
-    // Sem marco: inicia do primeiro registro do funcionário (evita iterar desde 1970)
-    let cicloInicioEfetivo = cicloInicio;
-    if (!cicloInicioEfetivo) {
-      const primeiroRegistro = await this.prisma.registroPonto.findFirst({
-        where: { funcionarioId },
-        orderBy: { dataHora: "asc" },
-        select: { dataHora: true }
-      });
-      cicloInicioEfetivo = primeiroRegistro ? dataBrasiliaISO(primeiroRegistro.dataHora) : hojeIso;
-    }
-
-    const { inicio } = intervaloDiaBrasilia(cicloInicioEfetivo);
-    const { fim } = intervaloDiaBrasilia(hojeIso);
-
-    const registros = await this.prisma.registroPonto.findMany({
-      where: { funcionarioId, dataHora: { gte: inicio, lte: fim } },
-      orderBy: { dataHora: "asc" },
-      select: { tipo: true, dataHora: true, observacoes: true }
-    });
-
-    const porDia = new Map<string, { tipo: string; dataHora: Date; observacoes?: unknown }[]>();
-    for (const r of registros) {
-      const key = dataBrasiliaISO(r.dataHora);
-      if (!porDia.has(key)) porDia.set(key, []);
-      porDia.get(key)!.push(r);
-    }
-
-    const afastamentosRaw = await this.prisma.afastamento.findMany({
-      where: { funcionarioId, dataInicio: { lte: fim }, dataFim: { gte: inicio } },
-      select: {
-        id: true,
-        tipo: true,
-        dataInicio: true,
-        dataFim: true,
-        horarioInicio: true,
-        horarioFim: true
-      }
-    });
-    const solsAtestado = await this.prisma.solicitacao.findMany({
-      where: {
-        funcionarioId,
-        tipo: { in: ["ATESTADO", "ABONO"] },
-        status: "APROVADA",
-        OR: [
-          { dataInicio: { lte: fim }, dataFim: { gte: inicio } },
-          { dataReferencia: { gte: inicio, lte: fim } }
-        ]
-      },
-      select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
-    });
-    const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, solsAtestado);
-
-    const { inicio: feriadoIni, fim: feriadoFim } = intervaloColunaDate(
-      cicloInicioEfetivo,
-      hojeIso
-    );
-    const feriados = await this.prisma.feriadoConfig.findMany({
-      where: { data: { gte: feriadoIni, lte: feriadoFim } },
-      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
-    });
-    const feriadoMap = new Map(
-      feriados.map((f) => [
-        dataCivilISO(f.data),
-        { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
-      ])
-    );
-
-    const cfgMult = await this.prisma.configuracaoSistema.findUnique({
-      where: { id: "singleton" },
-      select: { bancoHorasSabadoPct: true, bancoHorasDomingoPct: true, bancoHorasFeriadoPct: true }
-    });
-    const sabadoPct = cfgMult?.bancoHorasSabadoPct ?? 100;
-    const domingoPct = cfgMult?.bancoHorasDomingoPct ?? 200;
-    const feriadoPct = cfgMult?.bancoHorasFeriadoPct ?? 200;
-
-    const dias: {
-      data: string;
-      horasTrabalhadasMinutos: number;
-      jornadaEsperadaMinutos: number;
-      saldoDiaMinutos: number;
-      saldoAcumuladoMinutos: number;
-      observacao?: string;
-    }[] = [];
-
-    let saldoAcumulado = 0;
-    let dataAtual = cicloInicioEfetivo;
-
-    while (dataAtual <= hojeIso) {
-      const [year, month, day] = dataAtual.split("-").map(Number);
-      const diaSemana = new Date(year, month - 1, day).getDay();
-      const eDiaUtil = diasUteisCfg[diaSemana];
-      const feriadoDia = feriadoMap.get(dataAtual);
-      const nomeFeriado = feriadoDia?.nome;
-      const afastamentosDia = afastamentos.filter((a) => {
-        const aInicio = dataBrasiliaISO(a.dataInicio);
-        const aFim = dataCivilFimAfastamento(a.dataInicio, a.dataFim);
-        return dataAtual >= aInicio && dataAtual <= aFim;
-      });
-      const afastamentoIntegral = afastamentosDia.find((a) => !isAfastamentoParcial(a));
-      const parciaisDia = afastamentosDia.filter(isAfastamentoParcial);
-      const temAfastamentoIntegral = !!afastamentoIntegral;
-      const afastamentoParcial = !afastamentoIntegral && parciaisDia.length > 0;
-      const janelasParciais = parciaisDia.map((p) => ({
-        horarioInicio: p.horarioInicio!,
-        horarioFim: p.horarioFim!
-      }));
-      const regsDodia = porDia.get(dataAtual) ?? [];
-      const eHoje = dataAtual === hojeIso;
-      /* Mesma regra do Histórico: em dias passados o trecho aberto (ex. retorno
-         sem saída) NÃO conta; no dia corrente usa o horário atual como teto. */
-      const capMs = eHoje ? Date.now() : undefined;
-      /* Antes do primeiro login real: não conta falta nem saldo negativo. */
-      const antesDoPrimeiroAcesso = dataAtual < inicioLogin && regsDodia.length === 0;
-
-      if (!antesDoPrimeiroAcesso && eDiaUtil) {
-        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
-        const optsDispAlmocoDia = {
-          horarioInicio: parciaisDia[0]?.horarioInicio,
-          horarioFim: parciaisDia[0]?.horarioFim,
-          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
-        };
-        const semAlmocoDia =
-          semIntervaloCategoria ||
-          !!observacaoForcaSemIntervalo(entradaDia?.observacoes) ||
-          dispensarAlmocoPorAtestadoParcial(afastamentoParcial, regsDodia, optsDispAlmocoDia);
-        const regsCalcDia = semAlmocoDia ? normalizarRegsAtestadoSemAlmoco(regsDodia) : regsDodia;
-        let horasTrabalhadasMinutos = this.calcHorasMinutos(regsCalcDia, capMs, {
-          exigirIntervalo: !semAlmocoDia,
-          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-          horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-          horaSaida: jornadaCtx.horaSaida ?? "17:00",
-          toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
-          toleranciaSaidaMin: jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
-        });
-        let saldoDiaMinutos: number;
-        let jornadaDia: number;
-        let obs: string | undefined;
-
-        if (temAfastamentoIntegral) {
-          saldoDiaMinutos = 0;
-          jornadaDia = 0;
-          obs = "Afastamento";
-        } else if (afastamentoParcial) {
-          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
-          const regsMinDia = regsDodia.map((r) => ({
-            tipo: r.tipo,
-            minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora).substring(0, 5))
-          }));
-          const janelasEfetivasDia = calcularJanelasEfetivasComCreditoDeslocamento(
-            janelasParciais,
-            regsMinDia,
-            jornadaCtx.atestadoTempoRetornoMin ?? 60
+        if (rh.length) {
+          await this.notificacaoService.dispararEvento(
+            "BANCO_HORAS_LIBERADO_VENCENDO",
+            `Tempo liberado de ${nome} perto de vencer`,
+            `${nome} tem tempo de banco de horas liberado e não usado perto de vencer:\n${detalhe}`,
+            rh
           );
-          const jornadaMandatoria = calcularJornadaComAtestadosParciais(janelasEfetivasDia, {
-            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-            horaSaida: jornadaCtx.horaSaida ?? "17:00",
-            jornadaDiariaMin: jornadaDiaMin,
-            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00"
-          });
-          const prep = prepararRegsCalculoAtestadosParciais({
-            registros: regsMinDia,
-            janelas: janelasParciais,
-            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-            horaSaida: jornadaCtx.horaSaida ?? "17:00",
-            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-            fecharVespertinoNoMarco: !eHoje
-          });
-          horasTrabalhadasMinutos = calcHorasTrabalhadasMinutos(prep.registros, {
-            exigirIntervalo: !prep.semAlmoco,
-            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-            horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-            horaSaida: jornadaCtx.horaSaida ?? "17:00",
-            toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
-            toleranciaSaidaMin:
-              jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
-          });
-          /* Saldo = horas − jornada abonada pelo período solicitado (ex.: 08:00–09:30). */
-          saldoDiaMinutos = aplicarMargemCalculoDiario(
-            horasTrabalhadasMinutos - jornadaMandatoria,
-            toleranciaCalculoMin ?? 0
-          );
-          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
-            registros: regsDodia,
-            horarioInicioAtestado: parciaisDia[0]?.horarioInicio,
-            horarioFimAtestado: parciaisDia[0]?.horarioFim,
-            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-            agoraMin: eHoje
-              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
-              : undefined,
-            exigirIntervalo: !semAlmocoDia
-          });
-          jornadaDia = jornadaMandatoria;
-          obs = labelAtestadosParciais(parciaisDia);
-        } else if (feriadoDia) {
-          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
-          if (feriadoDia.marcoHorario) {
-            const jornadaMandatoria = calcularJornadaParcialFeriado(
-              feriadoDia.marcoHorario,
-              feriadoDia.marcoLado,
-              {
-                horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-                horaSaida: jornadaCtx.horaSaida ?? "17:00",
-                jornadaDiariaMin: jornadaDiaMin
-              }
-            );
-            saldoDiaMinutos = aplicarMargemCalculoDiario(
-              horasTrabalhadasMinutos - jornadaMandatoria,
-              toleranciaCalculoMin
-            );
-            jornadaDia = jornadaMandatoria;
-            obs = `Feriado parcial: ${feriadoDia.nome} (${feriadoDia.marcoLado === "ANTES" ? "até" : "após"} ${feriadoDia.marcoHorario})`;
-          } else if (regsDodia.length > 0) {
-            saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * feriadoPct) / 100);
-            jornadaDia = 0;
-            obs = `Feriado trabalhado: ${feriadoDia.nome} (${feriadoPct}%)`;
-          } else {
-            saldoDiaMinutos = 0;
-            jornadaDia = 0;
-            obs = `Feriado: ${feriadoDia.nome}`;
-          }
-        } else {
-          const jornadaDiaMin = jornadaMinParaDia(dataAtual, jornadaCtx);
-          saldoDiaMinutos = aplicarMargemCalculoDiario(
-            horasTrabalhadasMinutos - jornadaDiaMin,
-            toleranciaCalculoMin
-          );
-          saldoDiaMinutos += creditoAlmocoDireitoDoDia({
-            registros: regsDodia,
-            almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-            almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-            almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-            agoraMin: eHoje
-              ? horarioParaMinutos(horarioDeDataBrasilia(new Date()).substring(0, 5))
-              : undefined,
-            exigirIntervalo: !semAlmocoDia
-          });
-          jornadaDia = jornadaDiaMin;
-          obs = undefined;
         }
-
-        saldoAcumulado += saldoDiaMinutos;
-        dias.push({
-          data: dataAtual,
-          horasTrabalhadasMinutos,
-          jornadaEsperadaMinutos: jornadaDia,
-          saldoDiaMinutos,
-          saldoAcumuladoMinutos: saldoAcumulado,
-          observacao: obs
-        });
-      } else if (!antesDoPrimeiroAcesso && !temAfastamentoIntegral && regsDodia.length > 0) {
-        // Fim de semana com registros: aplica multiplicador
-        const entradaDia = regsDodia.find((r) => r.tipo === "ENTRADA");
-        const horasTrabalhadasMinutos = this.calcHorasMinutos(regsDodia, capMs, {
-          exigirIntervalo:
-            !semIntervaloCategoria && !observacaoForcaSemIntervalo(entradaDia?.observacoes),
-          almocoMinMin: jornadaCtx.almocoMinMin ?? 60,
-          almocoPodeIniciarA: jornadaCtx.almocoPodeIniciarA ?? "11:30",
-          almocoPodeIniciarAte: jornadaCtx.almocoPodeIniciarAte ?? "13:00",
-          horaEntrada: jornadaCtx.horaEntrada ?? "08:00",
-          horaSaida: jornadaCtx.horaSaida ?? "17:00",
-          toleranciaEntradaMin: jornadaCtx.toleranciaEntradaMin ?? 5,
-          toleranciaSaidaMin: jornadaCtx.toleranciaEntradaMin ?? jornadaCtx.toleranciaSaidaMin ?? 5
-        });
-        const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
-        const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
-        const tipoLabel = nomeFeriado
-          ? `Feriado: ${nomeFeriado}`
-          : diaSemana === 6
-            ? "Sábado"
-            : "Domingo";
-        saldoAcumulado += saldoDiaMinutos;
-        dias.push({
-          data: dataAtual,
-          horasTrabalhadasMinutos,
-          jornadaEsperadaMinutos: 0,
-          saldoDiaMinutos,
-          saldoAcumuladoMinutos: saldoAcumulado,
-          observacao: `Trabalho em ${tipoLabel} (${pct}%)`
+        await this.prisma.bancoHorasLiberacao.updateMany({
+          where: { id: { in: vencendo.map((v) => v.id) } },
+          data: { avisoVencimentoEm: new Date() }
         });
       }
-
-      const prox = new Date(year, month - 1, day);
-      prox.setDate(prox.getDate() + 1);
-      dataAtual = `${prox.getFullYear()}-${String(prox.getMonth() + 1).padStart(2, "0")}-${String(prox.getDate()).padStart(2, "0")}`;
+    } catch (e) {
+      this.logger.error(`Falha no aviso de vencimento de banco de horas liberado: ${e}`);
     }
-
-    return { saldoAtualMinutos: saldoAcumulado, dias };
   }
 
   async getBancoHorasGeral(filtros: {
@@ -3200,6 +3663,174 @@ export class AuditoriaService {
     return this.pontoService.getAtestadoDoDia(funcionarioId, diaISO);
   }
 
+  /** Saldo e histórico da cota de abono diário (acordo coletivo) do funcionário. */
+  async getCotaAbonoFuncionario(funcionarioId: string) {
+    await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
+    return this.pontoService.getCotaAbonoPorFuncionario(funcionarioId);
+  }
+
+  /* ─── RH abre solicitação em nome do funcionário ─── */
+
+  private async alvoSolicitacaoRh(funcionarioId: string, keycloakSub: string) {
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode abrir solicitações em seu próprio nome. Outro membro do RH deve fazê-lo."
+    );
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: {
+        id: true,
+        categoria: true,
+        isManager: true,
+        isFiscal: true,
+        registroPontoObrigatorio: true,
+        user: { select: { name: true, primeiroLoginEm: true } }
+      }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado.");
+    if (!func.user?.primeiroLoginEm) {
+      throw new BadRequestException(
+        "Este funcionário ainda não acessou o sistema. A solicitação só pode ser aberta depois do primeiro acesso."
+      );
+    }
+    return { ref: `@func:${func.id}`, func };
+  }
+
+  /** Dados que os formulários usam do próprio funcionário (categoria etc.). */
+  async getPerfilSolicitacaoRh(funcionarioId: string, keycloakSub: string) {
+    const { func } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    return {
+      nome: func.user?.name ?? "Funcionário",
+      categoria: func.categoria,
+      isEstagiario: func.categoria === "ESTAGIARIO",
+      semRegistroPonto: funcionarioSemRegistroPonto(func)
+    };
+  }
+
+  async getCreditoBancoRh(funcionarioId: string, keycloakSub: string) {
+    const { ref } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    return this.pontoService.getCreditoBanco(ref);
+  }
+
+  async simularCreditoBancoRh(
+    funcionarioId: string,
+    body: Parameters<PontoService["simularCreditoBanco"]>[1],
+    keycloakSub: string
+  ) {
+    const { ref } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    return this.pontoService.simularCreditoBanco(ref, body);
+  }
+
+  async getCotaAbonoRh(funcionarioId: string, keycloakSub: string) {
+    const { ref } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    return this.pontoService.getCotaAbono(ref);
+  }
+
+  async getTiposLicencaRh(funcionarioId: string, keycloakSub: string) {
+    const { ref } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    return this.pontoService.getTiposLicenca(ref);
+  }
+
+  /** Cria a solicitação em nome do funcionário: mesmo fluxo do funcionário, marcada como do RH. */
+  async criarSolicitacaoPeloRh(
+    funcionarioId: string,
+    body: Parameters<PontoService["criarSolicitacao"]>[1] & {
+      rh?: { dispensarPrazos?: boolean; justificativa?: string };
+    },
+    keycloakSub: string
+  ) {
+    const { ref } = await this.alvoSolicitacaoRh(funcionarioId, keycloakSub);
+    if (["FERIAS", "CORRECAO_PONTO"].includes(body.tipo)) {
+      throw new BadRequestException(
+        body.tipo === "FERIAS"
+          ? "Férias são agendadas na aba Férias do funcionário."
+          : "A correção de ponto é feita pelo Histórico do funcionário."
+      );
+    }
+    const dispensar = !!body.rh?.dispensarPrazos;
+    const justificativa = (body.rh?.justificativa ?? "").trim();
+    if (dispensar && justificativa.length < 10) {
+      throw new BadRequestException(
+        "Informe a justificativa da dispensa de prazos (mínimo de 10 caracteres)."
+      );
+    }
+    const rh = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { id: true, name: true }
+    });
+    const { rh: _rh, ...corpo } = body;
+    void _rh;
+    return this.pontoService.criarSolicitacao(ref, corpo, {
+      origemRh: {
+        userId: rh?.id ?? null,
+        nome: rh?.name ?? "RH",
+        dispensar,
+        justificativa
+      }
+    });
+  }
+
+  /** Fechamentos do banco por mudança de situação (virou chefe/fiscal/assessor ou voltou a bater). */
+  async listarFechamentosSituacao(funcionarioId: string) {
+    await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
+    const rows = await this.prisma.fechamentoSituacao.findMany({
+      where: { funcionarioId },
+      orderBy: { dataMudanca: "desc" },
+      take: 50
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      dataMudanca: dataCivilISO(r.dataMudanca),
+      de: r.deRotulo,
+      para: r.paraRotulo,
+      paraSemRegistro: r.paraSemRegistro,
+      saldoMinutos: r.saldoMinutos,
+      cicloInicio: r.cicloInicio,
+      alteradoPorNome: r.alteradoPorNome,
+      createdAt: r.createdAt
+    }));
+  }
+
+  /** RH completa/corrige o grupo do CID de um atestado já enviado. */
+  async alterarCidAtestado(
+    solicitacaoId: string,
+    body: { cidGrupoId?: string; justificativa?: string },
+    keycloakSub: string
+  ) {
+    const sol = await this.prisma.solicitacao.findUnique({ where: { id: solicitacaoId } });
+    if (!sol || sol.tipo !== "ATESTADO") throw new NotFoundException("Atestado não encontrado.");
+    const justificativa = (body.justificativa ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException("Informe a justificativa (mínimo de 10 caracteres).");
+    }
+    const grupo = body.cidGrupoId
+      ? await this.prisma.cidGrupo.findUnique({ where: { id: body.cidGrupoId } })
+      : null;
+    if (!grupo) throw new BadRequestException("Grupo do CID inválido.");
+    const rh = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { name: true }
+    });
+    const meta = (sol.metadados ?? {}) as Record<string, unknown>;
+    return this.prisma.solicitacao.update({
+      where: { id: sol.id },
+      data: {
+        metadados: JSON.parse(
+          JSON.stringify({
+            ...meta,
+            cidGrupo: { id: grupo.id, codigo: grupo.codigo, descricao: grupo.descricao },
+            cidAlteradoPor: {
+              nome: rh?.name ?? keycloakSub,
+              em: new Date().toISOString(),
+              justificativa
+            }
+          })
+        )
+      }
+    });
+  }
+
   async getBancoHorasFuncionario(funcionarioId: string) {
     const func = await this.prisma.funcionario.findUniqueOrThrow({
       where: { id: funcionarioId },
@@ -3214,7 +3845,7 @@ export class AuditoriaService {
       select: { bancoHorasLimiteMin: true, tipoFlexibilidade: true }
     });
     const limiteMinutos = cfg?.bancoHorasLimiteMin ?? 120;
-    const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras();
+    const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras(func.id);
     const { saldoAtualMinutos, dias } = await this.calcularBancoHoras(
       func.id,
       cicloInicio,
@@ -3432,9 +4063,12 @@ export class AuditoriaService {
     }
 
     /* Totais do card: mesmas regras da página Banco de Horas */
-    const { cicloInicio, hojeIso } = await this.getCicloBancoHoras();
-    const { dias: diasBanco } = await this.calcularBancoHoras(funcionarioId, cicloInicio, hojeIso);
-    const diasMesBanco = diasBanco.filter((d) => d.data.startsWith(mesPrefix));
+    const ultimoDiaMesBanco = String(new Date(ano, mes, 0).getDate()).padStart(2, "0");
+    const { dias: diasMesBanco } = await this.bancoHorasDoIntervalo(
+      funcionarioId,
+      `${mesPrefix}-01`,
+      `${mesPrefix}-${ultimoDiaMesBanco}`
+    );
 
     const horasTrabalhadasMinutos = diasMesBanco.reduce((s, d) => s + d.horasTrabalhadasMinutos, 0);
     const jornadaEsperadaMin = diasMesBanco.reduce((s, d) => s + d.jornadaEsperadaMinutos, 0);
@@ -3445,9 +4079,12 @@ export class AuditoriaService {
       .filter((d) => d.saldoDiaMinutos < 0)
       .reduce((s, d) => s + Math.abs(d.saldoDiaMinutos), 0);
     const saldoMinutos = diasMesBanco.reduce((s, d) => s + d.saldoDiaMinutos, 0);
-    const diasTrabalhados = diasMesBanco.filter(
-      (d) => d.horasTrabalhadasMinutos > 0 && d.observacao !== "Afastamento"
-    ).length;
+    /* Mesma contagem do Histórico, da folha e do modal de assinatura. */
+    const { diasTrabalhados } = await this.pontoService.calcularResumoMensalPorFuncionarioId(
+      funcionarioId,
+      mes,
+      ano
+    );
 
     const diasDetalhados = diasMesBanco.map((d) => {
       const regs = porDia.get(d.data) ?? [];
@@ -3507,10 +4144,698 @@ export class AuditoriaService {
 
   /* ─── Helpers de notificação ─── */
 
+  /* ─── Férias agendadas pelo RH (Auditoria → Funcionário → Férias) ─── */
+
+  /**
+   * Remove os afastamentos gerados por uma solicitação (alteração/cancelamento de férias).
+   * Usa o vínculo `solicitacaoId`; afastamentos antigos (sem vínculo) são achados pelas
+   * datas dos períodos — inclusive no formato legado (data civil gravada em UTC).
+   */
+  private async removerAfastamentosDaSolicitacao(
+    tx: Prisma.TransactionClient,
+    sol: {
+      id: string;
+      funcionarioId: string;
+      dataInicio: Date | null;
+      dataFim: Date | null;
+      dataReferencia: Date;
+      metadados: unknown;
+    }
+  ): Promise<number> {
+    const vinculados = await tx.afastamento.deleteMany({ where: { solicitacaoId: sol.id } });
+    if (vinculados.count > 0) return vinculados.count;
+
+    const meta = (sol.metadados ?? {}) as Record<string, unknown>;
+    const periodos = Array.isArray(meta.periodos)
+      ? (meta.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+      : [];
+    const pares: Array<{ inicios: Date[]; fins: Date[] }> = periodos.length
+      ? periodos.map((p) => {
+          const ini = dataCivilPeriodo(String(p.dataInicio ?? ""));
+          const fim = dataCivilPeriodo(String(p.dataFim ?? p.dataInicio ?? ""));
+          return {
+            inicios: [new Date(String(p.dataInicio)), intervaloDiaBrasilia(ini).inicio],
+            fins: [new Date(String(p.dataFim)), fimDiaCivilBrasilia(fim)]
+          };
+        })
+      : [
+          {
+            inicios: [sol.dataInicio ?? sol.dataReferencia],
+            fins: [sol.dataFim ?? sol.dataInicio ?? sol.dataReferencia]
+          }
+        ];
+    let total = 0;
+    for (const p of pares) {
+      const r = await tx.afastamento.deleteMany({
+        where: {
+          funcionarioId: sol.funcionarioId,
+          tipo: "FERIAS",
+          solicitacaoId: null,
+          dataInicio: { in: p.inicios.filter((d) => !Number.isNaN(d.getTime())) },
+          dataFim: { in: p.fins.filter((d) => !Number.isNaN(d.getTime())) }
+        }
+      });
+      total += r.count;
+    }
+    return total;
+  }
+
+  /** Calendário de vedação para o formulário do RH (feriados + dias úteis do funcionário). */
+  async getCalendarioFeriasRh(funcionarioId: string, de: string, ate: string) {
+    const ok = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d ?? "");
+    if (!ok(de) || !ok(ate) || de > ate) {
+      throw new BadRequestException("Informe o intervalo (de/ate) no formato AAAA-MM-DD.");
+    }
+    const cfg = await this.configSolicitacoesService.getConfig();
+    return {
+      vedacaoPreFeriadoDias: cfg.feriasVedacaoPreFeriadoDias,
+      ...(await this.pontoService.calendarioFerias(funcionarioId, de, ate))
+    };
+  }
+
+  /**
+   * Valida a entrada do RH: mesmas regras do funcionário, sem antecedência (qualquer data,
+   * inclusive passada); vedação pode ser ignorada com `ignorarVedacao`. Devolve os períodos
+   * normalizados e os totais.
+   */
+  private async validarEntradaFeriasRh(
+    funcionarioId: string,
+    entrada: FeriasRhEntrada,
+    total: { exato?: number; maximo?: number }
+  ) {
+    const justificativa = (entrada.justificativa ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException("Informe a justificativa do RH (mínimo de 10 caracteres).");
+    }
+    const periodos = (Array.isArray(entrada.periodos) ? entrada.periodos : []).map((p) => ({
+      inicio: String(p.inicio ?? "").slice(0, 10),
+      fim: String(p.fim ?? "").slice(0, 10)
+    }));
+    const diasVendidos = Math.max(0, Math.floor(Number(entrada.diasVendidos ?? 0)));
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado.");
+    const isEstagiario = func.categoria === "ESTAGIARIO";
+
+    const erros: string[] = [];
+    const cfg = await this.configSolicitacoesService.getConfig();
+    const datas = periodos
+      .flatMap((p) => [p.inicio, p.fim])
+      .filter((d) => d)
+      .sort();
+    const calendario =
+      datas.length && !entrada.ignorarVedacao
+        ? await this.pontoService.calendarioFerias(
+            funcionarioId,
+            datas[0],
+            somarDiasIso(datas[datas.length - 1], cfg.feriasVedacaoPreFeriadoDias + 1)
+          )
+        : { diasUteis: [false, true, true, true, true, true, false], feriados: [] };
+    /* Ciclo da entrada: limite por período do estagiário e data mínima de gozo. */
+    const saldo = await this.pontoService.calcularSaldoFeriasFuncionario(funcionarioId);
+    const ciclo =
+      saldo?.ciclos.find((c) => c.numero === entrada.cicloNumero) ??
+      saldo?.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0);
+    const liberaEm = ciclo?.liberaEm ?? null;
+    if (isEstagiario) {
+      /* Estagiário: não vende dias; blocos de 5 dias, até 3 períodos (sem antecedência
+         quando o RH agenda). */
+      if (diasVendidos > 0) erros.push("Estagiários não podem vender dias de férias.");
+      erros.push(
+        ...validarPeriodosEstagiario({
+          periodos,
+          maxPeriodoDias: (ciclo?.diasPorCiclo ?? 30) <= 15 ? 10 : 30,
+          regras: {
+            antecedenciaMinDias: cfg.feriasAntecedenciaMinDias,
+            vedacaoPreFeriadoDias: cfg.feriasVedacaoPreFeriadoDias
+          },
+          hoje: hojeBrasiliaISO(),
+          calendario,
+          liberaEm,
+          ignorarAntecedencia: true,
+          ignorarVedacao: !!entrada.ignorarVedacao
+        })
+      );
+    } else {
+      erros.push(
+        ...validarPeriodosFerias({
+          periodos,
+          diasVenda: diasVendidos,
+          regras: {
+            antecedenciaMinDias: cfg.feriasAntecedenciaMinDias,
+            minimoGrandePeriodo: cfg.feriasMinimoGrandePeriodo,
+            minimoOutrosPeriodos: cfg.feriasMinimoOutrosPeriodos,
+            maxPeriodos: cfg.feriasMaxPeriodos,
+            maxDiasVenda: cfg.feriasMaxDiasVenda,
+            vedacaoPreFeriadoDias: cfg.feriasVedacaoPreFeriadoDias
+          },
+          hoje: hojeBrasiliaISO(),
+          calendario,
+          liberaEm,
+          ignorarAntecedencia: true,
+          ignorarVedacao: !!entrada.ignorarVedacao
+        })
+      );
+    }
+    if (erros.length) throw new BadRequestException(erros.join(" "));
+
+    const ordenados = [...periodos].sort((a, b) => (a.inicio < b.inicio ? -1 : 1));
+    const comDias = ordenados.map((p) => ({ ...p, dias: diasCorridos(p.inicio, p.fim) }));
+    const totalDiasGozo = comDias.reduce((s, p) => s + p.dias, 0);
+    const totalDias = totalDiasGozo + diasVendidos;
+    if (total.exato != null && totalDias !== total.exato) {
+      throw new BadRequestException(
+        `Gozo + venda deve somar ${total.exato} dias (informado: ${totalDias}).`
+      );
+    }
+    if (total.maximo != null && totalDias > total.maximo) {
+      throw new BadRequestException(
+        `Gozo + venda (${totalDias} dias) excede os ${total.maximo} dias disponíveis.`
+      );
+    }
+    return {
+      justificativa,
+      periodos: comDias,
+      diasVendidos,
+      totalDiasGozo,
+      totalDias,
+      ignorouVedacao: !!entrada.ignorarVedacao
+    };
+  }
+
+  /** Quem é o RH (nome + id) para o registro e os avisos. */
+  private async rhAutor(keycloakSub: string) {
+    const u = await this.prisma.user.findFirst({
+      where: { externalId: keycloakSub },
+      select: { id: true, name: true }
+    });
+    return { userId: u?.id ?? null, nome: u?.name ?? "RH" };
+  }
+
+  /** Metadados de uma solicitação de férias feita pelo RH. */
+  private metadadosFeriasRh(
+    v: Awaited<ReturnType<AuditoriaService["validarEntradaFeriasRh"]>>,
+    extra: {
+      cicloNumero: number | null;
+      rhNome: string;
+      rhUserId?: string | null;
+      semChefe?: boolean;
+      alteracaoDeId?: string;
+      acao: string;
+    }
+  ): Prisma.InputJsonValue {
+    return {
+      periodos: v.periodos.map((p) => ({
+        dataInicio: intervaloDiaBrasilia(p.inicio).inicio.toISOString(),
+        dataFim: fimDiaCivilBrasilia(p.fim).toISOString(),
+        dias: p.dias
+      })),
+      diasVendidos: v.diasVendidos,
+      totalDiasGozo: v.totalDiasGozo,
+      totalDias: v.totalDias,
+      cicloNumero: extra.cicloNumero,
+      origem: "RH",
+      acaoRh: extra.acao,
+      rhNome: extra.rhNome,
+      ...(extra.rhUserId ? { rhAutorUserId: extra.rhUserId } : {}),
+      justificativaRh: v.justificativa,
+      ...(extra.semChefe ? { semChefe: true } : {}),
+      ...(v.ignorouVedacao ? { ignorouVedacao: true } : {}),
+      ...(extra.alteracaoDeId ? { alteracaoDeId: extra.alteracaoDeId } : {})
+    };
+  }
+
+  /** Marca uma solicitação de férias como cancelada/substituída pelo RH. */
+  private async cancelarFeriasPorRh(
+    tx: Prisma.TransactionClient,
+    sol: { id: string; metadados: unknown },
+    motivo: "SUBSTITUIDA" | "ALTERADA" | "CANCELADA",
+    rh: { userId: string | null; nome: string },
+    justificativa: string
+  ) {
+    await tx.solicitacao.update({
+      where: { id: sol.id },
+      data: {
+        status: "CANCELADA",
+        rhUserId: rh.userId ?? undefined,
+        rhResolvidoEm: new Date(),
+        metadados: {
+          ...((sol.metadados ?? {}) as Record<string, unknown>),
+          canceladaPorRh: {
+            motivo,
+            nome: rh.nome,
+            em: new Date().toISOString(),
+            justificativa
+          }
+        } as Prisma.InputJsonValue
+      }
+    });
+  }
+
+  /**
+   * Etapa inicial das férias feitas pelo RH, como no pedido do funcionário: primeiro o chefe
+   * (PENDENTE), depois o RH (Aviso + Recibo → assinatura → aprovação). Se não houver chefe
+   * que possa aprovar (nenhum encontrado, ou o próprio funcionário é o responsável), vai
+   * direto para a etapa do RH, para não ficar parada.
+   */
+  private async etapaInicialFeriasRh(funcionarioId: string) {
+    const [chefe, dest] = await Promise.all([
+      this.notificacaoService.getGestorDoFuncionario(funcionarioId),
+      this.notificacaoService.getFuncionarioDestinatario(funcionarioId)
+    ]);
+    const temChefe = !!chefe && chefe.externalId !== dest?.externalId;
+    return {
+      status: (temChefe ? "PENDENTE" : "AGUARDANDO_RH") as StatusSolicitacao,
+      aguardaChefe: temChefe,
+      semChefe: !temChefe
+    };
+  }
+
+  private static readonly STATUS_FERIAS_EM_ANALISE: StatusSolicitacao[] = [
+    "PENDENTE",
+    "AGUARDANDO_RH",
+    "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+    "AGUARDANDO_GESTOR_RH"
+  ];
+
+  /** RH agenda as férias de um ciclo (aprovadas na hora; substitui pedido pendente). */
+  async agendarFeriasRh(funcionarioId: string, entrada: FeriasRhEntrada, keycloakSub: string) {
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode agendar as suas próprias férias. Outro membro do RH deve fazê-lo."
+    );
+    const saldo = await this.pontoService.calcularSaldoFeriasFuncionario(funcionarioId);
+    if (!saldo) {
+      throw new BadRequestException(
+        "Data de admissão não cadastrada: não é possível calcular os ciclos de férias."
+      );
+    }
+    const cicloNumero = Number(entrada.cicloNumero);
+    const ciclo = saldo.ciclos.find((c) => c.numero === cicloNumero);
+    if (!ciclo) throw new BadRequestException("Ciclo de férias inválido.");
+
+    /* Solicitações do ciclo: aprovadas bloqueiam (use Alterar); pendentes são substituídas. */
+    const doFuncionario = await this.prisma.solicitacao.findMany({
+      where: { funcionarioId, tipo: "FERIAS", status: { not: "CANCELADA" } },
+      select: {
+        id: true,
+        status: true,
+        metadados: true,
+        dataInicio: true,
+        dataFim: true,
+        dataReferencia: true
+      }
+    });
+    const doCiclo = doFuncionario.filter((s) => {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      return m.cicloNumero == null || Number(m.cicloNumero) === cicloNumero;
+    });
+    const pendentes = doCiclo.filter((s) =>
+      AuditoriaService.STATUS_FERIAS_EM_ANALISE.includes(s.status)
+    );
+    const aprovadas = doCiclo.filter(
+      (s) =>
+        s.status === "APROVADA" &&
+        Number(((s.metadados ?? {}) as Record<string, unknown>).cicloNumero) === cicloNumero
+    );
+    const isEstagiario = saldo.isEstagiario;
+    const consumidoAprovado = aprovadas.reduce((acc, s) => {
+      const m = (s.metadados ?? {}) as Record<string, unknown>;
+      return acc + Number(m.totalDiasGozo ?? 0) + Number(m.diasVendidos ?? 0);
+    }, 0);
+    const disponivel = Math.max(0, ciclo.diasPorCiclo - consumidoAprovado);
+    if (!isEstagiario && aprovadas.length) {
+      throw new BadRequestException(
+        `O ciclo ${cicloNumero} já tem férias aprovadas. Use "Alterar" nas férias do histórico.`
+      );
+    }
+    if (disponivel <= 0) {
+      throw new BadRequestException(`Não há dias disponíveis no ciclo ${cicloNumero}.`);
+    }
+
+    const v = await this.validarEntradaFeriasRh(
+      funcionarioId,
+      entrada,
+      isEstagiario ? { maximo: disponivel } : { exato: disponivel }
+    );
+    const rh = await this.rhAutor(keycloakSub);
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true, isManager: true, isFiscal: true, registroPontoObrigatorio: true }
+    });
+    const apenasInformativo = !!func && funcionarioSemRegistroPonto(func);
+    const primeiro = v.periodos[0].inicio;
+    const ultimo = v.periodos[v.periodos.length - 1].fim;
+    const descricao = `Férias programadas pelo RH (${rh.nome}).`;
+
+    /* Mesmo fluxo do pedido do funcionário: o chefe aprova, depois o RH anexa Aviso + Recibo,
+       o funcionário assina e o RH aprova — só então os afastamentos são criados. */
+    const etapa = await this.etapaInicialFeriasRh(funcionarioId);
+    const criada = await this.prisma.$transaction(async (tx) => {
+      for (const p of pendentes) {
+        await this.cancelarFeriasPorRh(tx, p, "SUBSTITUIDA", rh, v.justificativa);
+      }
+      return tx.solicitacao.create({
+        data: {
+          funcionarioId,
+          tipo: "FERIAS",
+          status: etapa.status,
+          dataReferencia: new Date(`${primeiro}T12:00:00-03:00`),
+          dataInicio: intervaloDiaBrasilia(primeiro).inicio,
+          dataFim: fimDiaCivilBrasilia(ultimo),
+          descricao,
+          apenasInformativo,
+          metadados: this.metadadosFeriasRh(v, {
+            cicloNumero,
+            rhNome: rh.nome,
+            rhUserId: rh.userId,
+            semChefe: etapa.semChefe,
+            acao: "AGENDADA"
+          })
+        }
+      });
+    });
+
+    this.notificarFeriasRh(
+      funcionarioId,
+      "AGENDADA",
+      v,
+      rh.nome,
+      pendentes.length > 0,
+      etapa.aguardaChefe
+    ).catch((e) => this.logger.error(`Falha ao notificar FERIAS_RH: ${e}`));
+    return criada;
+  }
+
+  /** RH altera férias aprovadas ou em análise: nova solicitação aprovada substitui a original. */
+  async alterarFeriasRh(
+    funcionarioId: string,
+    solicitacaoId: string,
+    entrada: FeriasRhEntrada,
+    keycloakSub: string
+  ) {
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode alterar as suas próprias férias. Outro membro do RH deve fazê-lo."
+    );
+    const original = await this.prisma.solicitacao.findFirst({
+      where: { id: solicitacaoId, funcionarioId, tipo: "FERIAS" }
+    });
+    if (!original) throw new NotFoundException("Solicitação de férias não encontrada.");
+    if (
+      original.status !== "APROVADA" &&
+      !AuditoriaService.STATUS_FERIAS_EM_ANALISE.includes(original.status)
+    ) {
+      throw new BadRequestException("Só é possível alterar férias aprovadas ou em análise.");
+    }
+    const metaOrig = (original.metadados ?? {}) as Record<string, unknown>;
+    const totalOriginal =
+      Number(metaOrig.totalDiasGozo ?? 0) + Number(metaOrig.diasVendidos ?? 0) ||
+      Number(metaOrig.totalDias ?? 0);
+    const saldo = await this.pontoService.calcularSaldoFeriasFuncionario(funcionarioId);
+    const v = await this.validarEntradaFeriasRh(
+      funcionarioId,
+      entrada,
+      saldo?.isEstagiario
+        ? { maximo: totalOriginal + Math.max(0, saldo.diasDisponiveis) }
+        : { exato: totalOriginal }
+    );
+    const rh = await this.rhAutor(keycloakSub);
+    const cicloNumero = metaOrig.cicloNumero != null ? Number(metaOrig.cicloNumero) : null;
+    /* Mudança pedida pelo funcionário e ainda em análise sobre esta férias: substituída. */
+    const alteracoesPendentes = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "FERIAS",
+        status: { in: AuditoriaService.STATUS_FERIAS_EM_ANALISE },
+        metadados: { path: ["alteracaoDeId"], equals: original.id }
+      },
+      select: { id: true, metadados: true }
+    });
+    const primeiro = v.periodos[0].inicio;
+    const ultimo = v.periodos[v.periodos.length - 1].fim;
+
+    /* A nova programação segue o fluxo: chefe → RH (Aviso + Recibo → assinatura → aprovação).
+       Férias já aprovadas continuam valendo até a aprovação da nova — nesse momento a
+       original é cancelada e os afastamentos trocados (rhResolverSolicitacao). Se a
+       original ainda estava em análise, é substituída já. */
+    const etapa = await this.etapaInicialFeriasRh(funcionarioId);
+    const criada = await this.prisma.$transaction(async (tx) => {
+      for (const p of alteracoesPendentes) {
+        await this.cancelarFeriasPorRh(tx, p, "SUBSTITUIDA", rh, v.justificativa);
+      }
+      if (original.status !== "APROVADA") {
+        await this.cancelarFeriasPorRh(tx, original, "ALTERADA", rh, v.justificativa);
+      }
+      return tx.solicitacao.create({
+        data: {
+          funcionarioId,
+          tipo: "FERIAS",
+          status: etapa.status,
+          dataReferencia: new Date(`${primeiro}T12:00:00-03:00`),
+          dataInicio: intervaloDiaBrasilia(primeiro).inicio,
+          dataFim: fimDiaCivilBrasilia(ultimo),
+          descricao: `Férias reprogramadas pelo RH (${rh.nome}).`,
+          apenasInformativo: original.apenasInformativo,
+          metadados: this.metadadosFeriasRh(v, {
+            cicloNumero,
+            rhNome: rh.nome,
+            rhUserId: rh.userId,
+            semChefe: etapa.semChefe,
+            acao: "ALTERADA",
+            alteracaoDeId: original.id
+          })
+        }
+      });
+    });
+
+    this.notificarFeriasRh(
+      funcionarioId,
+      "ALTERADA",
+      v,
+      rh.nome,
+      alteracoesPendentes.length > 0 || original.status !== "APROVADA",
+      etapa.aguardaChefe
+    ).catch((e) => this.logger.error(`Falha ao notificar FERIAS_RH: ${e}`));
+    return criada;
+  }
+
+  /** RH cancela férias aprovadas ou em análise (libera o saldo e remove os afastamentos). */
+  async cancelarFeriasRh(
+    funcionarioId: string,
+    solicitacaoId: string,
+    justificativaBruta: string,
+    keycloakSub: string
+  ) {
+    await this.assertNaoEhProprioPorSub(
+      funcionarioId,
+      keycloakSub,
+      "Você não pode cancelar as suas próprias férias. Outro membro do RH deve fazê-lo."
+    );
+    const justificativa = (justificativaBruta ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException("Informe a justificativa do RH (mínimo de 10 caracteres).");
+    }
+    const sol = await this.prisma.solicitacao.findFirst({
+      where: { id: solicitacaoId, funcionarioId, tipo: "FERIAS" }
+    });
+    if (!sol) throw new NotFoundException("Solicitação de férias não encontrada.");
+    if (
+      sol.status !== "APROVADA" &&
+      !AuditoriaService.STATUS_FERIAS_EM_ANALISE.includes(sol.status)
+    ) {
+      throw new BadRequestException("Só é possível cancelar férias aprovadas ou em análise.");
+    }
+    const rh = await this.rhAutor(keycloakSub);
+    const alteracoesPendentes = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId,
+        tipo: "FERIAS",
+        status: { in: AuditoriaService.STATUS_FERIAS_EM_ANALISE },
+        metadados: { path: ["alteracaoDeId"], equals: sol.id }
+      },
+      select: { id: true, metadados: true }
+    });
+    await this.prisma.$transaction(async (tx) => {
+      for (const p of alteracoesPendentes) {
+        await this.cancelarFeriasPorRh(tx, p, "CANCELADA", rh, justificativa);
+      }
+      await this.removerAfastamentosDaSolicitacao(tx, sol);
+      await this.cancelarFeriasPorRh(tx, sol, "CANCELADA", rh, justificativa);
+    });
+
+    const meta = (sol.metadados ?? {}) as Record<string, unknown>;
+    const periodos = (
+      Array.isArray(meta.periodos)
+        ? (meta.periodos as Array<{ dataInicio?: string; dataFim?: string; dias?: number }>)
+        : []
+    ).map((p) => {
+      const inicio = dataCivilPeriodo(String(p.dataInicio ?? ""));
+      const fim = dataCivilPeriodo(String(p.dataFim ?? p.dataInicio ?? ""));
+      return { inicio, fim, dias: Number(p.dias ?? diasCorridos(inicio, fim)) };
+    });
+    this.notificarFeriasRh(
+      funcionarioId,
+      "CANCELADA",
+      {
+        justificativa,
+        periodos,
+        diasVendidos: Number(meta.diasVendidos ?? 0)
+      },
+      rh.nome,
+      false
+    ).catch((e) => this.logger.error(`Falha ao notificar FERIAS_RH: ${e}`));
+    return { ok: true };
+  }
+
+  /** RH autor: o chefe recusou a programação de férias feita por ele. */
+  private async notificarRhFeriasRecusadasPeloChefe(
+    funcNome: string,
+    meta: Record<string, unknown>,
+    chefeNome: string,
+    observacao: string
+  ) {
+    const autorId = typeof meta.rhAutorUserId === "string" ? meta.rhAutorUserId : null;
+    const autor = autorId
+      ? await this.prisma.user.findUnique({
+          where: { id: autorId },
+          select: { externalId: true, email: true, emailReal: true }
+        })
+      : null;
+    const destinatarios = autor ? [autor] : await this.notificacaoService.getUsuariosRh();
+    if (!destinatarios.length) return;
+    await this.notificacaoService.dispararEvento(
+      "SOLICITACAO_RECUSADA",
+      `Férias de ${funcNome} recusadas pelo chefe`,
+      `O chefe ${chefeNome} recusou a programação de férias de ${funcNome} feita pelo RH.` +
+        (observacao ? `\n\nJustificativa do chefe: ${observacao}` : "") +
+        "\n\nAjuste a programação em Auditoria → Funcionário → Férias.",
+      destinatarios
+    );
+  }
+
+  /** Chefe: férias programadas pelo RH foram aprovadas (assinadas pelo funcionário). */
+  private async notificarChefeFeriasRhAprovadas(
+    funcionarioId: string,
+    meta: Record<string, unknown>
+  ) {
+    const [func, chefe] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { user: { select: { name: true } } }
+      }),
+      this.notificacaoService.getGestorDoFuncionario(funcionarioId)
+    ]);
+    if (!chefe) return;
+    const nome = func?.user?.name ?? "Funcionário";
+    const fmt = (iso: string) => iso.split("-").reverse().join("/");
+    const periodos = (
+      Array.isArray(meta.periodos)
+        ? (meta.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+        : []
+    )
+      .map((p, i) => {
+        const ini = dataCivilPeriodo(String(p.dataInicio ?? ""));
+        const fim = dataCivilPeriodo(String(p.dataFim ?? p.dataInicio ?? ""));
+        return `${i + 1}º período: ${fmt(ini)} a ${fmt(fim)}`;
+      })
+      .join("\n");
+    await this.notificacaoService.dispararEvento(
+      "FERIAS_RH",
+      `Férias de ${nome} aprovadas pelo RH`,
+      `As férias de ${nome} programadas pelo RH foram aprovadas após a assinatura do Aviso ` +
+        `e do Recibo de Férias (apenas informativo).\n\n${periodos}`,
+      [chefe]
+    );
+  }
+
+  /** Aviso ao funcionário e ao chefe (evento FERIAS_RH). */
+  private async notificarFeriasRh(
+    funcionarioId: string,
+    acao: "AGENDADA" | "ALTERADA" | "CANCELADA",
+    v: {
+      justificativa: string;
+      periodos: Array<{ inicio: string; fim: string; dias: number }>;
+      diasVendidos: number;
+    },
+    rhNome: string,
+    substituiuPedido: boolean,
+    aguardaChefe = false
+  ) {
+    const [func, dest, chefe] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { user: { select: { name: true } } }
+      }),
+      this.notificacaoService.getFuncionarioDestinatario(funcionarioId),
+      this.notificacaoService.getGestorDoFuncionario(funcionarioId)
+    ]);
+    const nome = func?.user?.name ?? "Funcionário";
+    const fmt = (iso: string) => iso.split("-").reverse().join("/");
+    const verbo = { AGENDADA: "programou", ALTERADA: "reprogramou", CANCELADA: "cancelou" }[acao];
+    const particip = {
+      AGENDADA: "programadas",
+      ALTERADA: "reprogramadas",
+      CANCELADA: "canceladas"
+    }[acao];
+    /* Programação/reprogramação segue o fluxo: chefe → Aviso + Recibo → assinatura → aprovação. */
+    const proximos =
+      acao === "CANCELADA"
+        ? ""
+        : (aguardaChefe
+            ? "\n\nPróximos passos: o chefe imediato analisa e aprova a programação; depois "
+            : "\n\nPróximos passos: ") +
+          "o RH enviará o Aviso e o Recibo de Férias para assinatura do funcionário pelo " +
+          "sistema; após a assinatura, o RH conclui a aprovação.";
+    const lista = v.periodos
+      .map((p, i) => `${i + 1}º período: ${fmt(p.inicio)} a ${fmt(p.fim)} (${p.dias} dias)`)
+      .join("\n");
+    const venda = v.diasVendidos > 0 ? `\n+ ${v.diasVendidos} dia(s) vendido(s)` : "";
+    const detalhe =
+      `${lista}${venda}\n\nJustificativa do RH: ${v.justificativa}` +
+      (substituiuPedido
+        ? "\n\nO pedido de férias que estava em análise foi substituído por este agendamento do RH."
+        : "") +
+      proximos +
+      "\n\nAcesse o sistema (Solicitações → Férias) para consultar.";
+
+    if (dest) {
+      await this.notificacaoService.dispararEvento(
+        "FERIAS_RH",
+        `Suas férias foram ${particip} pelo RH`,
+        `O RH (${rhNome}) ${verbo} as suas férias.\n\n${detalhe}`,
+        [dest]
+      );
+    }
+    if (chefe && chefe.externalId !== dest?.externalId) {
+      if (aguardaChefe) {
+        /* Programação/reprogramação do RH precisa da aprovação do chefe (como o pedido do funcionário). */
+        await this.notificacaoService.dispararEvento(
+          "SOLICITACAO_NOVA_GESTOR",
+          `Férias de ${nome} ${particip} pelo RH — aguardando sua aprovação`,
+          `O RH (${rhNome}) ${verbo} as férias de ${nome} e a programação aguarda a sua ` +
+            `aprovação.\n\n${detalhe}\n\nAcesse Aprovações para analisar.`,
+          [chefe]
+        );
+      } else {
+        await this.notificacaoService.dispararEvento(
+          "FERIAS_RH",
+          `Férias de ${nome} ${particip} pelo RH`,
+          `O RH (${rhNome}) ${verbo} as férias de ${nome} (apenas informativo).\n\n${detalhe}`,
+          [chefe]
+        );
+      }
+    }
+  }
+
   private readonly TIPO_LABEL: Record<string, string> = {
     FERIAS: "Férias",
     ATESTADO: "Atestado",
-    LICENCA: "Licença",
+    LICENCA: "Licença e Outros",
     HORA_EXTRA: "Hora Extra",
     CORRECAO_PONTO: "Correção de Ponto",
     ABONO: "Abono",
@@ -3624,8 +4949,9 @@ export class AuditoriaService {
     if (!dest) return;
 
     const tipoLabel = this.TIPO_LABEL[tipo] ?? tipo;
-    const inicioStr = inicio.toLocaleDateString("pt-BR");
-    const fimStr = fim.toLocaleDateString("pt-BR");
+    /* Servidor em UTC: formata no fuso de Brasília (o fim do dia é 02:59 UTC do dia seguinte). */
+    const inicioStr = inicio.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    const fimStr = fim.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const titulo = `Afastamento registrado — ${tipoLabel}`;
     const corpo = `Foi registrado um afastamento de ${tipoLabel} no período de ${inicioStr} a ${fimStr}.`;
 

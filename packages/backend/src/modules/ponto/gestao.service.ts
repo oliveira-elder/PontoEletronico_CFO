@@ -1,3 +1,6 @@
+import { mensagemCpfObrigatorio } from "../../utils/cpf";
+import { PontoService } from "./ponto.service";
+import { inteiroConfig } from "../../utils/licenca-regras";
 import {
   BadRequestException,
   HttpException,
@@ -5,20 +8,77 @@ import {
   Logger,
   NotFoundException
 } from "@nestjs/common";
+import { registrarMudancaModalidade } from "../../utils/modalidade-historico";
 import { Cron, CronExpression } from "@nestjs/schedule";
-import { AtividadeTipo, CategoriaFuncional, Prisma } from "@prisma/client";
+import {
+  AtividadeTipo,
+  CategoriaFuncional,
+  Prisma,
+  TipoRequerimentoCadastro
+} from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { dataCivilISO, hojeBrasiliaISO, intervaloDiaBrasilia } from "../../utils/horario-brasilia";
 import { NotificacaoService } from "../notificacao/notificacao.service";
-import { funcionarioSemRegistroPonto } from "../../utils/categoria-jornada";
+import {
+  funcionarioSemRegistroPonto,
+  labelSemRegistroPonto,
+  type SituacaoRegistroPonto
+} from "../../utils/categoria-jornada";
 import {
   ensureCategoriaHistorico,
   registrarMudancaSituacao
 } from "../../utils/categoria-historico";
 import {
+  adicionarVigenciaLotacao,
+  atualizarVigenciaLotacao,
   ensureLotacaoHistorico,
-  registrarMovimentacaoLotacao
+  removerVigenciaLotacao,
+  sincronizarFuncionarioComLotacao
 } from "../../utils/lotacao-historico";
+import {
+  CATEGORIAS_REQUERIMENTO_CADASTRO,
+  TIPOS_REQUERIMENTO_CADASTRO,
+  syncCapacitacoes,
+  syncDependentes,
+  syncFormacoesAcademicas,
+  type CapacitacaoInput,
+  type DependenteInput,
+  type FormacaoAcademicaInput
+} from "../../utils/cadastro-listas";
+import {
+  adicionarCessao,
+  atualizarCessao,
+  contarCessoesEmAberto,
+  listarCessoes,
+  removerCessao,
+  sincronizarFuncionarioComCessao,
+  type PeriodoCessao
+} from "../../utils/cessao-historico";
+
+const ERROS_LOTACAO: Record<string, string> = {
+  VIGENCIA_NAO_ENCONTRADA: "Período de lotação não encontrado.",
+  INICIO_ANTES_DA_ANTERIOR: "A data de início deve ser posterior ao início da lotação anterior.",
+  INICIO_DEPOIS_DA_SEGUINTE: "A data de início deve ser anterior ao início da lotação seguinte.",
+  FIM_ANTES_DO_INICIO: "A data de fim deve ser igual ou posterior à data de início.",
+  UNICA_VIGENCIA: "O funcionário precisa ter ao menos um período de lotação."
+};
+
+const ERROS_CESSAO: Record<string, string> = {
+  CESSAO_NAO_ENCONTRADA: "Período de cessão não encontrado.",
+  CESSAO_INCOMPLETA:
+    "Cessão do Empregado: preencha Data de Início, Órgão de Origem e Órgão de Destino.",
+  CESSAO_FIM_ANTES_DO_INICIO:
+    "Cessão do Empregado: a data de fim deve ser igual ou posterior à data de início.",
+  CESSAO_SOBREPOSTA: "Cessão do Empregado: o período se sobrepõe a outra cessão registrada."
+};
+
+export type LinhaLotacaoBody = {
+  cargo?: string;
+  gerenciaId: string | null;
+  subsecao: string | null;
+  vigenciaDesde: string;
+  vigenciaAte?: string | null;
+};
 
 /** Campos "simples" de RH — sem efeito colateral em vigência/histórico, só passthrough. */
 export type CamposSimplesFuncionario = Partial<{
@@ -34,6 +94,8 @@ export type CamposSimplesFuncionario = Partial<{
   isFiscal: boolean;
   valeTransporte: boolean;
   registroPontoObrigatorio: boolean | null;
+  /** Nível do cargo (só empregado/concursado). */
+  nivelCargo: "MEDIO" | "SUPERIOR" | null;
   cargoData: string | null;
   lotacaoInicio: string | null;
   lotacaoTermino: string | null;
@@ -43,6 +105,12 @@ export type CamposSimplesFuncionario = Partial<{
   contratoTermino: string | null;
   cargaHoraria: string | null;
   diasSemana: string | null;
+  observacoes: string | null;
+  cedido: boolean;
+  cessaoInicio: string | null;
+  cessaoFim: string | null;
+  cessaoOrgaoOrigem: string | null;
+  cessaoOrgaoDestino: string | null;
 }>;
 
 const CAMPOS_TEXTO_SIMPLES = [
@@ -55,7 +123,10 @@ const CAMPOS_TEXTO_SIMPLES = [
   "telefone",
   "curso",
   "cargaHoraria",
-  "diasSemana"
+  "diasSemana",
+  "cessaoOrgaoOrigem",
+  "cessaoOrgaoDestino",
+  "observacoes"
 ] as const;
 
 const CAMPOS_DATA_SIMPLES = [
@@ -64,10 +135,40 @@ const CAMPOS_DATA_SIMPLES = [
   "lotacaoInicio",
   "lotacaoTermino",
   "contratoInicio",
-  "contratoTermino"
+  "contratoTermino",
+  "cessaoInicio",
+  "cessaoFim"
 ] as const;
 
-const CAMPOS_BOOLEAN_SIMPLES = ["isFiscal", "valeTransporte"] as const;
+const CAMPOS_BOOLEAN_SIMPLES = ["isFiscal", "valeTransporte", "cedido"] as const;
+
+/**
+ * Cessão marcada (só Empregado/CONCURSADO): início e órgãos são obrigatórios; o fim é
+ * opcional (cessão em aberto), mas não pode ser anterior ao início.
+ */
+function validarCessao(v: {
+  categoria: CategoriaFuncional;
+  cedido: boolean;
+  cessaoInicio: string | null;
+  cessaoFim: string | null;
+  cessaoOrgaoOrigem: string | null;
+  cessaoOrgaoDestino: string | null;
+}) {
+  if (v.categoria !== "CONCURSADO" || !v.cedido) return;
+  const faltando = [
+    !v.cessaoInicio && "Data de Início da Cessão",
+    !v.cessaoOrgaoOrigem?.trim() && "Órgão de Origem",
+    !v.cessaoOrgaoDestino?.trim() && "Órgão de Destino"
+  ].filter(Boolean);
+  if (faltando.length) {
+    throw new BadRequestException(`Cessão do Empregado: preencha ${faltando.join(", ")}.`);
+  }
+  if (v.cessaoFim && v.cessaoFim < v.cessaoInicio!) {
+    throw new BadRequestException(
+      "Cessão do Empregado: a data de fim deve ser igual ou posterior à data de início."
+    );
+  }
+}
 
 function mapCamposSimples(data: CamposSimplesFuncionario): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -82,6 +183,13 @@ function mapCamposSimples(data: CamposSimplesFuncionario): Record<string, unknow
     if (data[k] !== undefined) out[k] = !!data[k];
   }
   if (data.atividade !== undefined) out.atividade = data.atividade || null;
+  if (data.nivelCargo !== undefined) {
+    const nivel = data.nivelCargo;
+    if (nivel !== null && nivel !== "MEDIO" && nivel !== "SUPERIOR") {
+      throw new BadRequestException("Nível do cargo inválido (use Médio ou Superior).");
+    }
+    out.nivelCargo = nivel;
+  }
   if (data.registroPontoObrigatorio !== undefined) {
     out.registroPontoObrigatorio = data.registroPontoObrigatorio;
   }
@@ -92,18 +200,7 @@ function mapCamposSimples(data: CamposSimplesFuncionario): Record<string, unknow
   return out;
 }
 
-export type DependenteInput = { nome: string; cpf?: string | null; dataNascimento?: string | null };
-export type FormacaoAcademicaInput = {
-  grauEscolaridade?: string | null;
-  curso: string;
-  instituicao?: string | null;
-  conclusao?: string | null;
-};
-export type CapacitacaoInput = {
-  nome: string;
-  instituicao?: string | null;
-  conclusao?: string | null;
-};
+export type { DependenteInput, FormacaoAcademicaInput, CapacitacaoInput };
 
 export type SubstituicaoPayload = {
   substitutoId: string | null;
@@ -117,7 +214,8 @@ export class GestaoService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notificacaoService: NotificacaoService
+    private readonly notificacaoService: NotificacaoService,
+    private readonly pontoService: PontoService
   ) {}
 
   /* ─── Gerências ─── */
@@ -298,6 +396,9 @@ export class GestaoService {
       requerimentoEndereco: {
         select: { id: true, status: true, criadoEm: true, respondidoEm: true }
       },
+      requerimentosCadastro: {
+        select: { tipo: true, status: true, criadoEm: true, respondidoEm: true }
+      },
       supervisorEstagio: {
         select: {
           id: true,
@@ -365,6 +466,72 @@ export class GestaoService {
     return { total: ativos.length };
   }
 
+  /** Quantos receberiam "Solicitar Endereço a Todos" (1ª etapa da confirmação). */
+  async contarAlvosRequerimentoEndereco() {
+    return { total: await this.prisma.funcionario.count({ where: { ativo: true } }) };
+  }
+
+  /* ─── Requerimentos de cadastro (Dependentes / Formação / Cursos) ─── */
+
+  private validarTipoRequerimento(tipo: string): TipoRequerimentoCadastro {
+    if (!TIPOS_REQUERIMENTO_CADASTRO.includes(tipo as TipoRequerimentoCadastro)) {
+      throw new BadRequestException("Tipo de requerimento inválido.");
+    }
+    return tipo as TipoRequerimentoCadastro;
+  }
+
+  /** Só Empregado e Comissionado têm Dependentes/Capacitação no cadastro. */
+  private readonly alvosRequerimentoCadastro = {
+    ativo: true,
+    categoria: { in: [...CATEGORIAS_REQUERIMENTO_CADASTRO] as CategoriaFuncional[] }
+  } satisfies Prisma.FuncionarioWhereInput;
+
+  async criarRequerimentoCadastro(funcionarioId: string, tipoStr: string) {
+    const tipo = this.validarTipoRequerimento(tipoStr);
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { categoria: true }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    if (!(CATEGORIAS_REQUERIMENTO_CADASTRO as readonly string[]).includes(func.categoria)) {
+      throw new BadRequestException(
+        "Este requerimento se aplica somente a Empregado e Comissionado."
+      );
+    }
+    return this.prisma.requerimentoCadastro.upsert({
+      where: { funcionarioId_tipo: { funcionarioId, tipo } },
+      create: { funcionarioId, tipo, status: "PENDENTE" },
+      update: { status: "PENDENTE", respondidoEm: null, criadoEm: new Date() },
+      select: { tipo: true, status: true, criadoEm: true, respondidoEm: true }
+    });
+  }
+
+  async contarAlvosRequerimentoCadastro(tipoStr: string) {
+    this.validarTipoRequerimento(tipoStr);
+    return {
+      total: await this.prisma.funcionario.count({ where: this.alvosRequerimentoCadastro })
+    };
+  }
+
+  async criarRequerimentoCadastroTodos(tipoStr: string) {
+    const tipo = this.validarTipoRequerimento(tipoStr);
+    const alvos = await this.prisma.funcionario.findMany({
+      where: this.alvosRequerimentoCadastro,
+      select: { id: true }
+    });
+    const agora = new Date();
+    await this.prisma.$transaction(
+      alvos.map((f) =>
+        this.prisma.requerimentoCadastro.upsert({
+          where: { funcionarioId_tipo: { funcionarioId: f.id, tipo } },
+          create: { funcionarioId: f.id, tipo, status: "PENDENTE" },
+          update: { status: "PENDENTE", respondidoEm: null, criadoEm: agora }
+        })
+      )
+    );
+    return { total: alvos.length };
+  }
+
   async createFuncionario(
     data: {
       nome: string;
@@ -385,6 +552,16 @@ export class GestaoService {
       capacitacoes?: CapacitacaoInput[];
     } & CamposSimplesFuncionario
   ) {
+    const erroCpf = mensagemCpfObrigatorio(data.cpf);
+    if (erroCpf) throw new BadRequestException(erroCpf);
+    validarCessao({
+      categoria: data.categoria as CategoriaFuncional,
+      cedido: !!data.cedido,
+      cessaoInicio: data.cessaoInicio ?? null,
+      cessaoFim: data.cessaoFim ?? null,
+      cessaoOrgaoOrigem: data.cessaoOrgaoOrigem ?? null,
+      cessaoOrgaoDestino: data.cessaoOrgaoDestino ?? null
+    });
     const funcionario = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: { name: data.nome, email: data.email }
@@ -431,73 +608,22 @@ export class GestaoService {
           vigenciaAte: null
         }
       });
-      await this.syncDependentes(tx, funcionario.id, data.dependentes);
-      await this.syncFormacoesAcademicas(tx, funcionario.id, data.formacoesAcademicas);
-      await this.syncCapacitacoes(tx, funcionario.id, data.capacitacoes);
+      if (cat === "CONCURSADO" && data.cedido && data.cessaoInicio) {
+        /* Cadastro novo com cessão: o período informado inaugura o histórico. */
+        await adicionarCessao(tx, funcionario.id, {
+          inicio: data.cessaoInicio,
+          fim: data.cessaoFim || null,
+          orgaoOrigem: data.cessaoOrgaoOrigem ?? "",
+          orgaoDestino: data.cessaoOrgaoDestino ?? ""
+        });
+        await sincronizarFuncionarioComCessao(tx, funcionario.id);
+      }
+      await syncDependentes(tx, funcionario.id, data.dependentes);
+      await syncFormacoesAcademicas(tx, funcionario.id, data.formacoesAcademicas);
+      await syncCapacitacoes(tx, funcionario.id, data.capacitacoes);
       return funcionario;
     });
     return this.getFuncionario(funcionario.id);
-  }
-
-  private async syncFormacoesAcademicas(
-    tx: Prisma.TransactionClient,
-    funcionarioId: string,
-    formacoes?: FormacaoAcademicaInput[]
-  ) {
-    if (formacoes === undefined) return;
-    await tx.formacaoAcademica.deleteMany({ where: { funcionarioId } });
-    const validas = formacoes.filter((f) => f.curso?.trim());
-    if (validas.length) {
-      await tx.formacaoAcademica.createMany({
-        data: validas.map((f) => ({
-          funcionarioId,
-          grauEscolaridade: f.grauEscolaridade || null,
-          curso: f.curso.trim(),
-          instituicao: f.instituicao || null,
-          conclusao: f.conclusao ? new Date(`${f.conclusao}T12:00:00-03:00`) : null
-        }))
-      });
-    }
-  }
-
-  private async syncCapacitacoes(
-    tx: Prisma.TransactionClient,
-    funcionarioId: string,
-    capacitacoes?: CapacitacaoInput[]
-  ) {
-    if (capacitacoes === undefined) return;
-    await tx.capacitacao.deleteMany({ where: { funcionarioId } });
-    const validas = capacitacoes.filter((c) => c.nome?.trim());
-    if (validas.length) {
-      await tx.capacitacao.createMany({
-        data: validas.map((c) => ({
-          funcionarioId,
-          nome: c.nome.trim(),
-          instituicao: c.instituicao || null,
-          conclusao: c.conclusao ? new Date(`${c.conclusao}T12:00:00-03:00`) : null
-        }))
-      });
-    }
-  }
-
-  private async syncDependentes(
-    tx: Prisma.TransactionClient,
-    funcionarioId: string,
-    dependentes?: DependenteInput[]
-  ) {
-    if (dependentes === undefined) return;
-    await tx.dependente.deleteMany({ where: { funcionarioId } });
-    const validos = dependentes.filter((d) => d.nome?.trim());
-    if (validos.length) {
-      await tx.dependente.createMany({
-        data: validos.map((d) => ({
-          funcionarioId,
-          nome: d.nome.trim(),
-          cpf: d.cpf?.trim() || null,
-          dataNascimento: d.dataNascimento ? new Date(d.dataNascimento) : null
-        }))
-      });
-    }
   }
 
   async updateFuncionario(
@@ -528,13 +654,23 @@ export class GestaoService {
         formacoesAcademicas: FormacaoAcademicaInput[];
         capacitacoes: CapacitacaoInput[];
       } & CamposSimplesFuncionario
-    >
+    >,
+    atorKeycloakSub?: string
   ) {
     const func = await this.prisma.funcionario.findUnique({
       where: { id },
       include: { user: true }
     });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
+
+    /* CPF obrigatório: não pode ser apagado nem ficar inválido; na edição completa do cadastro
+       (com nome/matrícula) quem ainda não tem CPF precisa informá-lo. Outras ações (ex.:
+       desativar) não são bloqueadas por CPF ausente. */
+    const edicaoCompleta = data.nome !== undefined || data.matricula !== undefined;
+    if (data.cpf !== undefined || (edicaoCompleta && !func.cpf)) {
+      const erroCpf = mensagemCpfObrigatorio(data.cpf !== undefined ? data.cpf : func.cpf);
+      if (erroCpf) throw new BadRequestException(erroCpf);
+    }
 
     const {
       nome,
@@ -599,6 +735,27 @@ export class GestaoService {
     const subsecaoFinal = subsecao !== undefined ? subsecao || null : func.subsecao;
     const isEstagio = categoriaFinal === "ESTAGIARIO" || categoriaFinal === "MENOR_APRENDIZ";
 
+    /* Cessão marcada exige ao menos um período no histórico (as linhas são gravadas
+       pelos endpoints de cessão; aqui só se confere a marcação). */
+    if (categoriaFinal === "CONCURSADO" && (data.cedido ?? func.cedido)) {
+      const periodos = await this.prisma.funcionarioCessaoHistorico.count({
+        where: { funcionarioId: id }
+      });
+      if (!periodos) {
+        throw new BadRequestException(
+          "Cessão do Empregado: registre ao menos um período de cessão ou desmarque a opção."
+        );
+      }
+    }
+    /* Desmarcar mantém o histórico, mas só quando todas as cessões têm data de fim. */
+    if (data.cedido === false && func.cedido) {
+      if (await contarCessoesEmAberto(this.prisma, id)) {
+        throw new BadRequestException(
+          "Cessão do Empregado: há cessão em aberto. Informe a data de fim antes de desmarcar."
+        );
+      }
+    }
+
     /* Data de Desligamento é a fonte de verdade da inatividade: preenchida com data
        igual/anterior a hoje desativa na hora; reativação explícita (ativo=true) limpa a
        data. Ver plano "Inatividade automática por Data de Desligamento". */
@@ -643,6 +800,13 @@ export class GestaoService {
       }
     }
 
+    /** Mudança de obrigação de ponto nesta edição (gera o fechamento do banco e o aviso ao RH). */
+    let fechamentoInfo: {
+      dataMudanca: string;
+      de: SituacaoRegistroPonto;
+      para: SituacaoRegistroPonto;
+    } | null = null;
+
     try {
       await this.prisma.$transaction(async (tx) => {
         const userUpdate: Record<string, string> = {};
@@ -674,16 +838,34 @@ export class GestaoService {
         /* Categoria e/ou "é chefe" (isManager) mudaram: uma única vigência de histórico
          reage às duas juntas (antes só existia a troca de categoria, porque "ser chefe"
          era a própria categoria GERENTE — agora são independentes). */
+        const fiscalFinal = data.isFiscal !== undefined ? !!data.isFiscal : func.isFiscal;
+        const overrideFinal =
+          data.registroPontoObrigatorio !== undefined
+            ? data.registroPontoObrigatorio
+            : func.registroPontoObrigatorio;
         if (
           (categoria !== undefined && categoriaFinal !== func.categoria) ||
-          (isManager !== undefined && isManagerFinal !== func.isManager)
+          (isManager !== undefined && isManagerFinal !== func.isManager) ||
+          fiscalFinal !== func.isFiscal ||
+          (overrideFinal ?? null) !== (func.registroPontoObrigatorio ?? null)
         ) {
           /* Histórico ANTES de alterar o funcionário (seed usa a situação antiga). */
           await ensureCategoriaHistorico(tx, id);
-          const { desdeNova } = await registrarMudancaSituacao(tx, id, {
-            categoria: categoriaFinal,
-            isManager: isManagerFinal
-          });
+          const { desdeNova } = await registrarMudancaSituacao(
+            tx,
+            id,
+            {
+              categoria: categoriaFinal,
+              isManager: isManagerFinal,
+              isFiscal: fiscalFinal,
+              registroPontoObrigatorio: overrideFinal ?? null
+            },
+            undefined,
+            {
+              isFiscal: func.isFiscal,
+              registroPontoObrigatorio: func.registroPontoObrigatorio ?? null
+            }
+          );
 
           const situacaoAnterior = {
             categoria: func.categoria,
@@ -702,6 +884,14 @@ export class GestaoService {
           };
           const eraSemRegistro = funcionarioSemRegistroPonto(situacaoAnterior);
           const seraComRegistro = !funcionarioSemRegistroPonto(situacaoNova);
+          if (eraSemRegistro === seraComRegistro) {
+            /* A obrigação de ponto mudou de fato (passou a isento ou voltou a bater). */
+            fechamentoInfo = {
+              dataMudanca: desdeNova,
+              de: situacaoAnterior,
+              para: situacaoNova
+            };
+          }
           /* Retorno de isento → obrigação: só a partir do dia seguinte à mudança (desdeNova). */
           if (eraSemRegistro && seraComRegistro && !func.pontoObrigatorioDesde) {
             funcUpdate.pontoObrigatorioDesde = new Date(`${desdeNova}T12:00:00-03:00`);
@@ -722,6 +912,13 @@ export class GestaoService {
           const da = (data as Record<string, unknown>).dataAdmissao as string | null;
           funcUpdate.dataAdmissao = da ? new Date(da) : null;
         }
+        if (modoHomeOffice !== undefined || modoHibridoLocal !== undefined) {
+          /* Histórico ANTES de alterar (seed usa a modalidade antiga): vale daqui para frente. */
+          await registrarMudancaModalidade(tx, id, {
+            homeOffice: modoHomeOffice ?? func.modoHomeOffice,
+            hibrido: modoHibridoLocal ?? func.modoHibridoLocal
+          });
+        }
         if (modoHomeOffice !== undefined) funcUpdate.modoHomeOffice = modoHomeOffice;
         if (modoHibridoLocal !== undefined) funcUpdate.modoHibridoLocal = modoHibridoLocal;
         if (supervisorEstagioId !== undefined || categoria !== undefined) {
@@ -740,9 +937,9 @@ export class GestaoService {
           });
         }
 
-        await this.syncDependentes(tx, id, dependentes);
-        await this.syncFormacoesAcademicas(tx, id, formacoesAcademicas);
-        await this.syncCapacitacoes(tx, id, capacitacoes);
+        await syncDependentes(tx, id, dependentes);
+        await syncFormacoesAcademicas(tx, id, formacoesAcademicas);
+        await syncCapacitacoes(tx, id, capacitacoes);
       });
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -759,6 +956,12 @@ export class GestaoService {
         throw new BadRequestException("Já existe um cadastro com estes dados.");
       }
       throw err;
+    }
+
+    if (fechamentoInfo) {
+      await this.registrarFechamentoSituacao(id, fechamentoInfo, atorKeycloakSub).catch((e) =>
+        this.logger.error(`Falha ao registrar fechamento por mudança de situação (${id}): ${e}`)
+      );
     }
 
     const desativou = ativoFinal === false && func.ativo === true;
@@ -1168,10 +1371,17 @@ export class GestaoService {
     });
   }
 
-  setModalidade(funcionarioId: string, modoHomeOffice: boolean, modoHibridoLocal: boolean) {
-    return this.prisma.funcionario.update({
-      where: { id: funcionarioId },
-      data: { modoHomeOffice, modoHibridoLocal }
+  async setModalidade(funcionarioId: string, modoHomeOffice: boolean, modoHibridoLocal: boolean) {
+    /* A modalidade vale daqui para frente: o histórico guarda a anterior para os dias passados. */
+    return this.prisma.$transaction(async (tx) => {
+      await registrarMudancaModalidade(tx, funcionarioId, {
+        homeOffice: modoHomeOffice,
+        hibrido: modoHibridoLocal
+      });
+      return tx.funcionario.update({
+        where: { id: funcionarioId },
+        data: { modoHomeOffice, modoHibridoLocal }
+      });
     });
   }
 
@@ -1340,16 +1550,23 @@ export class GestaoService {
       }
     }
 
-    // ── Contratos a vencer (Estágio/Jovem Aprendiz, próximos 90 dias) ──
-    const em90dias = new Date(Date.parse(`${hoje}T12:00:00-03:00`) + 90 * 24 * 3600 * 1000);
-    const em90diasIso = dataCivilISO(em90dias);
+    // ── Contratos a vencer (Estágio/Jovem Aprendiz, antecedência configurável — padrão 90 dias) ──
+    const cfgContrato = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { contratoAvisoAntecedenciaDias: true }
+    });
+    const contratoAvisoDias = cfgContrato?.contratoAvisoAntecedenciaDias ?? 90;
+    const limiteAviso = new Date(
+      Date.parse(`${hoje}T12:00:00-03:00`) + contratoAvisoDias * 24 * 3600 * 1000
+    );
+    const limiteAvisoIso = dataCivilISO(limiteAviso);
     const contratosAVencer = ativos
       .filter(
         (f) =>
           (f.categoria === "ESTAGIARIO" || f.categoria === "MENOR_APRENDIZ") &&
           f.contratoTermino &&
           dataCivilISO(f.contratoTermino) >= hoje &&
-          dataCivilISO(f.contratoTermino) <= em90diasIso
+          dataCivilISO(f.contratoTermino) <= limiteAvisoIso
       )
       .map((f) => ({
         nome: f.user?.name ?? f.matricula ?? f.id,
@@ -1422,6 +1639,7 @@ export class GestaoService {
       valeTransporte,
       admissoesDesligamentos: meses,
       contratosAVencer,
+      contratoAvisoDias,
       chefesPorLotacao,
       totalDependentes,
       dependentesMedia: Math.round(dependentesMedia * 100) / 100,
@@ -1439,57 +1657,190 @@ export class GestaoService {
     return [...historico].sort((a, b) => b.vigenciaDesde.localeCompare(a.vigenciaDesde));
   }
 
-  async registrarMovimentacaoLotacao(
+  /** Dados de uma linha de lotação vindos da tela (cargo só para Comissionado). */
+  private async alterarLotacao(
     funcionarioId: string,
-    data: {
-      cargo?: string;
-      gerenciaId: string | null;
-      subsecao: string | null;
-      situacaoAtiva: boolean;
-      data: string | null;
-      vigenciaDesde: string;
-    }
+    operacao: (tx: Prisma.TransactionClient, cargoAtual: string) => Promise<void>
   ) {
     const func = await this.prisma.funcionario.findUnique({ where: { id: funcionarioId } });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
-    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início da vigência.");
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await ensureLotacaoHistorico(tx, funcionarioId);
+        await operacao(tx, func.cargo || "");
+        /* Mantém os campos "atuais" do Funcionario em sincronia com a vigência de hoje. */
+        await sincronizarFuncionarioComLotacao(tx, funcionarioId);
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? ERROS_LOTACAO[e.message] : undefined;
+      if (msg) throw new BadRequestException(msg);
+      throw e;
+    }
+    return {
+      historico: await this.getLotacaoHistorico(funcionarioId),
+      funcionario: await this.getFuncionario(funcionarioId)
+    };
+  }
 
-    /* Cargo é opcional aqui — telas que só editam setor/lotação (ex.: Empregado)
-       não reenviam o cargo, então mantemos o valor já vigente em vez de exigir
-       ou apagar o cargo atual do funcionário. */
-    const cargoFinal = data.cargo?.trim() || func.cargo || "";
-
-    const registro = await this.prisma.$transaction(async (tx) => {
-      const criado = await registrarMovimentacaoLotacao(tx, funcionarioId, {
-        cargo: cargoFinal,
+  async adicionarLotacao(funcionarioId: string, data: LinhaLotacaoBody) {
+    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início.");
+    return this.alterarLotacao(funcionarioId, (tx, cargoAtual) =>
+      adicionarVigenciaLotacao(tx, funcionarioId, {
+        /* Cargo é opcional — telas sem cargo na linha mantêm o valor já vigente. */
+        cargo: data.cargo?.trim() || cargoAtual,
         gerenciaId: data.gerenciaId || null,
         subsecao: data.subsecao || null,
-        situacaoAtiva: data.situacaoAtiva,
-        data: data.data || null,
-        vigenciaDesde: data.vigenciaDesde
-      });
+        vigenciaDesde: data.vigenciaDesde,
+        vigenciaAte: data.vigenciaAte || null
+      })
+    );
+  }
 
-      /* Mantém os campos "atuais" do Funcionario em sincronia com a vigência aberta,
-         mesma lógica de cache denormalizado usada para categoria. */
-      const hoje = hojeBrasiliaISO();
-      if (data.vigenciaDesde <= hoje) {
-        await tx.funcionario.update({
-          where: { id: funcionarioId },
-          data: {
-            cargo: cargoFinal,
-            gerenciaId: data.gerenciaId || null,
-            subsecao: data.subsecao || null,
-            cargoData: data.data ? new Date(`${data.data}T12:00:00-03:00`) : null,
-            lotacaoInicio: new Date(`${data.vigenciaDesde}T12:00:00-03:00`),
-            lotacaoTermino: null
-          }
-        });
+  async atualizarLotacao(funcionarioId: string, vigenciaId: string, data: LinhaLotacaoBody) {
+    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início.");
+    return this.alterarLotacao(funcionarioId, (tx) =>
+      atualizarVigenciaLotacao(tx, funcionarioId, vigenciaId, {
+        cargo: data.cargo?.trim() || undefined,
+        gerenciaId: data.gerenciaId || null,
+        subsecao: data.subsecao || null,
+        vigenciaDesde: data.vigenciaDesde,
+        vigenciaAte: data.vigenciaAte === undefined ? undefined : data.vigenciaAte || null
+      })
+    );
+  }
+
+  async removerLotacao(funcionarioId: string, vigenciaId: string) {
+    return this.alterarLotacao(funcionarioId, (tx) =>
+      removerVigenciaLotacao(tx, funcionarioId, vigenciaId)
+    );
+  }
+
+  /* ─── Histórico de cessão (Empregado) ─── */
+
+  /**
+   * Fechamento por mudança de situação: guarda o saldo do banco na data em que o funcionário
+   * passou a não registrar ponto (ou voltou a registrar) e avisa o RH e o chefe.
+   */
+  private async registrarFechamentoSituacao(
+    funcionarioId: string,
+    info: { dataMudanca: string; de: SituacaoRegistroPonto; para: SituacaoRegistroPonto },
+    atorKeycloakSub?: string
+  ) {
+    const rotulo = (s: SituacaoRegistroPonto) =>
+      funcionarioSemRegistroPonto(s)
+        ? `Sem registro de ponto (${labelSemRegistroPonto(s)})`
+        : "Registra ponto";
+    const deSem = funcionarioSemRegistroPonto(info.de);
+    const paraSem = funcionarioSemRegistroPonto(info.para);
+    const banco = await this.pontoService.calcularBancoHorasAdmin(funcionarioId);
+    const ator = atorKeycloakSub
+      ? await this.prisma.user.findFirst({
+          where: { externalId: atorKeycloakSub },
+          select: { name: true }
+        })
+      : null;
+    await this.prisma.fechamentoSituacao.create({
+      data: {
+        funcionarioId,
+        dataMudanca: new Date(`${info.dataMudanca}T12:00:00-03:00`),
+        deRotulo: rotulo(info.de),
+        paraRotulo: rotulo(info.para),
+        deSemRegistro: deSem,
+        paraSemRegistro: paraSem,
+        saldoMinutos: banco.saldoAtualMinutos,
+        cicloInicio: banco.cicloInicio ?? null,
+        alteradoPorNome: ator?.name ?? null
       }
-
-      return criado;
     });
+    await this.notificacaoService.notificarFechamentoSituacao(funcionarioId, {
+      dataMudanca: info.dataMudanca,
+      paraSemRegistro: paraSem,
+      rotuloNovo: rotulo(info.para),
+      saldoMinutos: banco.saldoAtualMinutos,
+      proximaZeragem: banco.proximaZeragem ?? null
+    });
+  }
 
-    return registro;
+  /** Tolerância do fechamento do banco: individual (RH) + global de fallback. */
+  async getToleranciaFechamento(id: string) {
+    const [f, cfg] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id },
+        select: { bancoHorasToleranciaFechamentoDias: true }
+      }),
+      this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: { bancoHorasToleranciaFechamentoDias: true }
+      })
+    ]);
+    if (!f) throw new NotFoundException("Funcionário não encontrado.");
+    const globalDias = cfg?.bancoHorasToleranciaFechamentoDias ?? 0;
+    const individualDias = f.bancoHorasToleranciaFechamentoDias;
+    return { individualDias, globalDias, efetivoDias: individualDias ?? globalDias };
+  }
+
+  /** `null`/vazio remove a tolerância individual (volta a valer a global). */
+  async setToleranciaFechamento(id: string, valor: unknown) {
+    let dias: number | null;
+    try {
+      dias = inteiroConfig(valor, "Tolerância individual (dias)");
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+    await this.prisma.funcionario.update({
+      where: { id },
+      data: { bancoHorasToleranciaFechamentoDias: dias }
+    });
+    return this.getToleranciaFechamento(id);
+  }
+
+  async getCessoes(funcionarioId: string) {
+    const func = await this.prisma.funcionario.findUnique({ where: { id: funcionarioId } });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    return listarCessoes(this.prisma, funcionarioId);
+  }
+
+  private async alterarCessao(
+    funcionarioId: string,
+    operacao: (tx: Prisma.TransactionClient) => Promise<void>
+  ) {
+    const func = await this.prisma.funcionario.findUnique({ where: { id: funcionarioId } });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    if (func.categoria !== "CONCURSADO") {
+      throw new BadRequestException("Cessão se aplica somente à categoria Empregado.");
+    }
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await operacao(tx);
+        await sincronizarFuncionarioComCessao(tx, funcionarioId);
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? ERROS_CESSAO[e.message] : undefined;
+      if (msg) throw new BadRequestException(msg);
+      throw e;
+    }
+    return {
+      cessoes: await listarCessoes(this.prisma, funcionarioId),
+      funcionario: await this.getFuncionario(funcionarioId)
+    };
+  }
+
+  adicionarCessao(funcionarioId: string, p: PeriodoCessao) {
+    return this.alterarCessao(funcionarioId, async (tx) => {
+      await adicionarCessao(tx, funcionarioId, p);
+      /* Registrar um período implica cessão marcada. */
+      await tx.funcionario.update({ where: { id: funcionarioId }, data: { cedido: true } });
+    });
+  }
+
+  atualizarCessao(funcionarioId: string, cessaoId: string, p: PeriodoCessao) {
+    return this.alterarCessao(funcionarioId, (tx) =>
+      atualizarCessao(tx, funcionarioId, cessaoId, p)
+    );
+  }
+
+  removerCessao(funcionarioId: string, cessaoId: string) {
+    return this.alterarCessao(funcionarioId, (tx) => removerCessao(tx, funcionarioId, cessaoId));
   }
 
   async deleteFuncionario(id: string, superAdminSub: string, numeroChamado: string) {

@@ -1,4 +1,8 @@
 import {
+  metaAssinaturaDaRequisicao,
+  type RequisicaoComOrigem
+} from "../../common/assinatura-request.util";
+import {
   Controller,
   Get,
   Post,
@@ -64,6 +68,37 @@ export class PontoController {
     return this.pontoService.getBancoHoras(req.user.sub, cicloInicio);
   }
 
+  @Get("abono/cota")
+  getCotaAbono(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getCotaAbono(req.user.sub);
+  }
+
+  @Get("banco-horas/credito")
+  getCreditoBanco(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getCreditoBanco(req.user.sub);
+  }
+
+  @Post("banco-horas/credito/simular")
+  simularCreditoBanco(
+    @Req() req: { user: { sub: string } },
+    @Body()
+    body: {
+      periodos: Array<{
+        dataInicio: string;
+        dataFim?: string;
+        horarioInicio?: string | null;
+        horarioFim?: string | null;
+      }>;
+    }
+  ) {
+    return this.pontoService.simularCreditoBanco(req.user.sub, body);
+  }
+
+  @Get("licenca/tipos")
+  getTiposLicenca(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getTiposLicenca(req.user.sub);
+  }
+
   @Get("solicitacoes")
   getSolicitacoes(@Req() req: { user: { sub: string } }) {
     return this.pontoService.getSolicitacoes(req.user.sub);
@@ -88,6 +123,76 @@ export class PontoController {
     }
   ) {
     return this.pontoService.criarSolicitacao(req.user.sub, body);
+  }
+
+  /** Funcionário assina pelo sistema um documento de férias (índice na lista do RH). */
+  @Post("solicitacoes/:id/ferias/documentos/:indice/assinar")
+  assinarDocumentoFerias(
+    @Req() req: { user: { sub: string } } & RequisicaoComOrigem,
+    @Param("id") id: string,
+    @Param("indice") indice: string,
+    @Body() body: { aceite?: boolean }
+  ) {
+    return this.pontoService.assinarDocumentoFerias(
+      req.user.sub,
+      id,
+      Number(indice),
+      !!body?.aceite,
+      metaAssinaturaDaRequisicao(req)
+    );
+  }
+
+  /** Funcionário rejeita um documento de férias com justificativa (volta ao RH). */
+  @Post("solicitacoes/:id/ferias/documentos/:indice/rejeitar")
+  rejeitarDocumentoFerias(
+    @Req() req: { user: { sub: string } },
+    @Param("id") id: string,
+    @Param("indice") indice: string,
+    @Body() body: { justificativa?: string }
+  ) {
+    return this.pontoService.rejeitarDocumentoFerias(
+      req.user.sub,
+      id,
+      Number(indice),
+      body?.justificativa ?? ""
+    );
+  }
+
+  /** Assina um documento da rodada do 2º/3º período das férias. */
+  @Post("solicitacoes/:id/ferias/rodadas/:ordem/documentos/:indice/assinar")
+  assinarDocumentoRodadaFerias(
+    @Req() req: { user: { sub: string } } & RequisicaoComOrigem,
+    @Param("id") id: string,
+    @Param("ordem") ordem: string,
+    @Param("indice") indice: string,
+    @Body() body: { aceite?: boolean }
+  ) {
+    return this.pontoService.assinarDocumentoRodadaFerias(
+      req.user.sub,
+      id,
+      Number(ordem),
+      Number(indice),
+      !!body?.aceite,
+      metaAssinaturaDaRequisicao(req)
+    );
+  }
+
+  /** Rejeita um documento da rodada do 2º/3º período (volta ao RH). */
+  @Post("solicitacoes/:id/ferias/rodadas/:ordem/documentos/:indice/rejeitar")
+  rejeitarDocumentoRodadaFerias(
+    @Req() req: { user: { sub: string } },
+    @Param("id") id: string,
+    @Param("ordem") ordem: string,
+    @Param("indice") indice: string,
+    @Body() body: { justificativa?: string }
+  ) {
+    return this.pontoService.rejeitarDocumentoRodadaFerias(
+      req.user.sub,
+      id,
+      Number(ordem),
+      Number(indice),
+      body?.justificativa ?? ""
+    );
   }
 
   @Patch("solicitacoes/:id/documento-retorno")
@@ -118,6 +223,12 @@ export class PontoController {
     );
   }
 
+  /** Local apurado das batidas do dia e se ele dá direito ao limite diário de HE. */
+  @Get("hora-extra/local-do-dia")
+  getLocalDoDiaHoraExtra(@Req() req: { user: { sub: string } }, @Query("data") data: string) {
+    return this.pontoService.getLocalDoDiaHoraExtra(req.user.sub, data);
+  }
+
   @Get("registros-do-dia")
   getRegistrosDoDia(@Req() req: { user: { sub: string } }, @Query("data") data: string) {
     return this.pontoService.getRegistrosDoDia(req.user.sub, data);
@@ -132,6 +243,16 @@ export class PontoController {
   getFeriados(@Query("ano") anoStr?: string) {
     const ano = anoStr ? parseInt(anoStr) : new Date().getFullYear();
     return this.feriadosService.getFeriadosDoAno(ano);
+  }
+
+  /** Feriados e dias úteis para a regra de vedação do início das férias. */
+  @Get("ferias/calendario")
+  getCalendarioFerias(
+    @Req() req: { user: { sub: string } },
+    @Query("de") de: string,
+    @Query("ate") ate: string
+  ) {
+    return this.pontoService.getCalendarioFerias(req.user.sub, de, ate);
   }
 
   @Get("ferias/saldo")
@@ -161,6 +282,24 @@ export class PontoController {
     }
   ) {
     return this.pontoService.responderRequerimentoEndereco(req.user.sub, body);
+  }
+
+  @Get("requerimento-cadastro")
+  getRequerimentosCadastro(@Req() req: { user: { sub: string } }) {
+    return this.pontoService.getRequerimentosCadastro(req.user.sub);
+  }
+
+  @Post("requerimento-cadastro/:tipo/responder")
+  responderRequerimentoCadastro(
+    @Req() req: { user: { sub: string } },
+    @Param("tipo") tipo: string,
+    @Body() body: { itens?: Array<Record<string, string | null>>; semRegistros?: boolean }
+  ) {
+    return this.pontoService.responderRequerimentoCadastro(
+      req.user.sub,
+      tipo,
+      body as Parameters<PontoService["responderRequerimentoCadastro"]>[2]
+    );
   }
 
   @Post("minha-foto/solicitar-atualizacao")

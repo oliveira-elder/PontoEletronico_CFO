@@ -34,6 +34,8 @@ interface ExtensionsApiPanelProps {
   isAdmin: boolean;
   isSuperAdmin: boolean;
   onSyncComplete?: () => void;
+  /** Perfil do RH: pode usar "Sincronizar Gerências" (padrão: sim). */
+  podeSincronizar?: boolean;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -66,7 +68,8 @@ const sourceBadge = (source: ExtensionsConfig["source"]) => {
 export function ExtensionsApiPanel({
   isAdmin,
   isSuperAdmin,
-  onSyncComplete
+  onSyncComplete,
+  podeSincronizar = true
 }: ExtensionsApiPanelProps) {
   const [config, setConfig] = useState<ExtensionsConfig | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
@@ -286,18 +289,20 @@ export function ExtensionsApiPanel({
               {testing ? "Testando..." : "⚡ Testar"}
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => void sincronizar()}
-            disabled={syncLoading || testing}
-            style={{
-              ...btnOutline,
-              background: syncLoading ? "rgba(37,99,235,0.06)" : "#eff6ff",
-              cursor: syncLoading || testing ? "not-allowed" : "pointer"
-            }}
-          >
-            {syncLoading ? "Sincronizando..." : "↻ Sincronizar Gerências"}
-          </button>
+          {podeSincronizar && (
+            <button
+              type="button"
+              onClick={() => void sincronizar()}
+              disabled={syncLoading || testing}
+              style={{
+                ...btnOutline,
+                background: syncLoading ? "rgba(37,99,235,0.06)" : "#eff6ff",
+                cursor: syncLoading || testing ? "not-allowed" : "pointer"
+              }}
+            >
+              {syncLoading ? "Sincronizando..." : "↻ Sincronizar Gerências"}
+            </button>
+          )}
           {isSuperAdmin && (
             <button
               type="button"

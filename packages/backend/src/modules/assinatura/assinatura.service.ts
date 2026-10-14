@@ -7,22 +7,77 @@ import {
   InternalServerErrorException
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditoriaService } from "../auditoria/auditoria.service";
 import { NotificacaoService } from "../notificacao/notificacao.service";
 import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service";
 import {
+  dataBrasiliaISO,
+  dataCivilFimAfastamento,
+  dataCivilISO,
   hojeBrasiliaISO,
   intervaloColunaDate,
-  intervaloDiaBrasilia
+  intervaloDiaBrasilia,
+  somarDiasCivil
 } from "../../utils/horario-brasilia";
+import { diasCicloCompletoEmCasa, rotulosModalidadePorDia } from "../../utils/hora-extra-decisao";
+import { exigenciasCicloPresencial } from "../../utils/ciclo-completo-presencial";
 import {
+  contarDiasTrabalhados,
   montarRelatorioQuadro,
+  type RelatorioQuadroMensal,
   resolverJornadaHistoricoContexto,
   type DiaQuadroPdf
 } from "../../utils/historico-quadro";
+import { SeloIcpService } from "../selo-icp/selo-icp.service";
+import { createHash, createHmac, randomBytes } from "crypto";
+import { extrairLinhasPdf, normalizarTexto, tokensNumericos } from "../../utils/pdf-texto";
+import { existsSync } from "fs";
+import { mkdir, readFile, unlink, writeFile } from "fs/promises";
+import { join } from "path";
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { inicioAtividadesUsuario } from "../../utils/inicio-atividades";
+import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { diaSemObrigacaoPonto } from "../../utils/categoria-jornada";
+import { periodosCessao, type IntervaloCessao } from "../../utils/cessao-historico";
+import { montarDiaNeutro } from "../../utils/dias-neutros";
+
+export type ElegibilidadeAssinatura = {
+  funcionarioId: string;
+  nome: string;
+  matricula: string | null;
+  categoria: string;
+  gerenciaId: string | null;
+  gerencia: string | null;
+  /** APTO: gera; JA_POSSUI: já tem assinatura no mês; NAO_APTO: fora dos critérios. */
+  situacao: "APTO" | "JA_POSSUI" | "NAO_APTO";
+  motivo: string | null;
+  /** Observações que não impedem a geração (ex.: cessão em parte do mês). */
+  aviso: string | null;
+};
+
+/** O intervalo [ini, fim] cobre todos os dias de [alvoIni, alvoFim]? (datas civis YYYY-MM-DD) */
+function cobreMesInteiro(
+  periodos: Array<{ inicio: string; fim: string | null }>,
+  alvoIni: string,
+  alvoFim: string
+): boolean {
+  const ord = [...periodos].sort((a, b) => a.inicio.localeCompare(b.inicio));
+  let cursor = alvoIni;
+  for (const p of ord) {
+    if (p.inicio > cursor) break;
+    const fim = p.fim ?? "9999-12-31";
+    if (fim >= cursor) {
+      if (fim >= alvoFim) return true;
+      cursor = somarDiasCivil(fim, 1);
+    }
+  }
+  return false;
+}
+
+const sobrepoe = (p: IntervaloCessao, ini: string, fim: string) =>
+  p.inicio <= fim && (p.fim ?? "9999-12-31") >= ini;
 import { urlHomeSistema } from "../notificacao/atalhos-evento";
 import {
   codigoAssinaturaCoincide,
@@ -33,6 +88,10 @@ import {
 } from "../../utils/assinatura-codigo";
 import {
   buildQuadroPdfDocDefinition,
+  type EspelhoExtrasPdf,
+  type VerificacaoDocumentoPdf,
+  type QuadroPdfInput,
+  type RegistroDocumentoPdf,
   buildRascunhoPdfDocDefinition,
   loadAssetBase64,
   type ResumoBadgesPdf
@@ -44,12 +103,132 @@ import {
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoria-jornada";
 
+/** Troca o saldo do dia/mês do quadro pelo do banco de horas (fonte única). */
+function aplicarBancoNoRelatorio(
+  rel: RelatorioQuadroMensal,
+  diasBanco: Array<{ data: string; saldoDiaMinutos: number; movimentoRhMinutos?: unknown }>
+): RelatorioQuadroMensal {
+  const porData = new Map(diasBanco.map((d) => [d.data, d]));
+  const fmt = (m: number) => {
+    const sinal = m < 0 ? "-" : m > 0 ? "+" : "";
+    const abs = Math.abs(m);
+    return `${sinal}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}m`;
+  };
+  if (!diasBanco.length) return rel;
+  const dias = rel.dias.map((d) => {
+    const b = porData.get(d.iso);
+    if (!b && d.saldoMin !== null) {
+      /* Dia que o banco não conta (fora dos dias de trabalho da jornada do funcionário, ex.:
+         aprendiz que não trabalha às terças, ou antes do início das atividades): não é falta
+         nem gera saldo. */
+      if (d.statusInterno === "FALTA") {
+        return {
+          ...d,
+          saldoMin: null,
+          saldoFormatado: "—",
+          status: "Sem Expediente",
+          statusInterno: "FOLGA" as const
+        };
+      }
+      return { ...d, saldoMin: null, saldoFormatado: "—" };
+    }
+    if (!b || d.saldoMin === null) return d;
+    /* Liberação de tempo pelo RH é movimento do banco, não do dia de ponto. */
+    const saldo = b.saldoDiaMinutos - Number(b.movimentoRhMinutos ?? 0);
+    /* Rendimento do dia: o que foi apurado além da jornada × o que o banco creditou. */
+    const apurado = Math.max(0, d.saldoMin);
+    const creditado = Math.max(0, saldo);
+    const rendimento = {
+      heAutorizadaMin: apurado > 0 ? creditado : 0,
+      heNaoAutorizadaMin: Math.max(0, apurado - creditado),
+      debitoMin: Math.max(0, -saldo),
+      creditoMin: creditado
+    };
+    return {
+      ...d,
+      ...rendimento,
+      ...(saldo === d.saldoMin ? {} : { saldoMin: saldo, saldoFormatado: fmt(saldo) })
+    };
+  });
+  const saldoMinutos = dias
+    .filter((d) => d.saldoMin !== null)
+    .reduce((t, d) => t + (d.saldoMin ?? 0), 0);
+  return { ...rel, dias, saldoMinutos, saldoFormatado: fmt(saldoMinutos) };
+}
+
 const STATUS_SOLICITACAO_EM_ANDAMENTO = [
   "PENDENTE",
   "AGUARDANDO_RH",
   "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
   "AGUARDANDO_GESTOR_RH"
 ] as const;
+
+/**
+ * O que impede a assinatura da folha: dias INCONSISTENTES (registro iniciado e não completado) e
+ * solicitações do mês em andamento. A Falta (nenhum registro) NÃO impede: o funcionário optou
+ * por faltar e o banco de horas já desconta.
+ */
+export interface PendenciasFolha {
+  /** Dias Inconsistentes (exceto hoje), com o motivo. */
+  dias: Array<{ iso: string; status: "INCONSISTENTE"; motivo: string }>;
+  /** Solicitações do mês ainda sem decisão final. */
+  solicitacoes: Array<{
+    id: string;
+    tipo: string;
+    tipoLabel: string;
+    status: string;
+    etapa: string;
+    inicio: string;
+    fim: string;
+  }>;
+  /** Não foi possível conferir os dias do mês (erro interno). */
+  erroConferencia: boolean;
+}
+
+const TIPO_SOLICITACAO_LABEL_FOLHA: Record<string, string> = {
+  CORRECAO_PONTO: "Correção de ponto",
+  ATESTADO: "Atestado médico",
+  ABONO: "Abono",
+  FERIAS: "Férias",
+  LICENCA: "Licença e Outros",
+  DAY_OFF: "Day Off",
+  HORA_EXTRA: "Hora extra"
+};
+
+const ETAPA_SOLICITACAO_FOLHA: Record<string, string> = {
+  PENDENTE: "aguardando o chefe",
+  AGUARDANDO_RH: "aguardando o RH",
+  AGUARDANDO_DOCUMENTO_FUNCIONARIO: "aguardando o seu documento",
+  AGUARDANDO_GESTOR_RH: "aguardando o Gerente de RH"
+};
+
+const fmtDiaBr = (iso: string) => iso.split("-").reverse().join("/");
+
+/** Texto da pendência para a mensagem de bloqueio (e e-mail/notificação, se preciso). */
+export function textoPendenciasFolha(p: PendenciasFolha): string {
+  const partes: string[] = [];
+  if (p.erroConferencia) {
+    partes.push("não foi possível conferir os dias do mês (tente novamente ou fale com o RH)");
+  }
+  if (p.dias.length) {
+    partes.push(
+      "dias para regularizar: " +
+        p.dias.map((d) => `${fmtDiaBr(d.iso)} (Inconsistente — ${d.motivo})`).join("; ")
+    );
+  }
+  if (p.solicitacoes.length) {
+    partes.push(
+      "solicitações em andamento: " +
+        p.solicitacoes
+          .map(
+            (s) =>
+              `${s.tipoLabel} ${s.inicio === s.fim ? fmtDiaBr(s.inicio) : `${fmtDiaBr(s.inicio)} a ${fmtDiaBr(s.fim)}`} (${s.etapa})`
+          )
+          .join("; ")
+    );
+  }
+  return partes.join(" | ");
+}
 
 function montarMensagemCorrecaoPendenteFolha(
   mes: number,
@@ -61,13 +240,13 @@ function montarMensagemCorrecaoPendenteFolha(
   const corpo =
     `Olá,\n\n` +
     `A folha de ponto de ${periodo} ainda não pode ser fechada nem assinada. ` +
-    `Há dias com cálculo de saldo irregular (status Falta ou Pendente) ou solicitações de correção em andamento.\n\n` +
+    `Há dias com registro inconsistente (iniciado e não completado) ou solicitações do mês em andamento.\n\n` +
     `Regularize esses registros para liberar a assinatura.\n\n` +
     `ATENÇÃO: depois de assinar, não será mais possível solicitar correção deste período.\n\n` +
     `Como regularizar\n\n` +
     `1. Acesse o sistema: ${urlHomeSistema()}\n` +
     `2. Abra Histórico e localize o mês da folha que precisa ser assinada (${periodo}).\n` +
-    `3. Identifique os dias com status Falta ou Pendente.\n` +
+    `3. Identifique os dias com status Inconsistente (destacados na tabela).\n` +
     `4. Para ajustar batidas (entrada, intervalo, saída ou retorno de pausa):\n` +
     `   Solicitações → Nova solicitação → Correção de ponto\n` +
     `   Selecione a data, informe os horários corretos e envie. A solicitação segue para o gestor.\n` +
@@ -102,6 +281,12 @@ try {
 
 const PDF_FONTS = getPdfFonts();
 
+/**
+ * Versão do layout da folha em PDF. Aumente a cada mudança visual: as folhas concluídas e AINDA
+ * NÃO seladas são regeradas no próximo download; as seladas com ICP-Brasil nunca mudam.
+ */
+const VERSAO_LAYOUT_PDF = 5;
+
 @Injectable()
 export class AssinaturaService {
   private readonly logger = new Logger(AssinaturaService.name);
@@ -110,30 +295,641 @@ export class AssinaturaService {
     private readonly prisma: PrismaService,
     private readonly auditoriaService: AuditoriaService,
     private readonly notificacaoService: NotificacaoService,
-    private readonly configSolicitacoesService: ConfigSolicitacoesService
+    private readonly configSolicitacoesService: ConfigSolicitacoesService,
+    private readonly seloIcpService: SeloIcpService
   ) {}
 
-  /* ─── Cron: 00:05 UTC do 1º de cada mês (= 21:05 BRT do último dia do mês anterior) ─── */
+  /* ─── PDF final imutável, selo ICP-Brasil e verificação pública ─── */
 
-  @Cron("5 0 1 * *")
+  private get dirPdfFinal(): string {
+    return join(process.env.UPLOAD_DIR ?? join(process.cwd(), "uploads"), "folhas-finais");
+  }
+
+  private chaveSeloCache: Buffer | null = null;
+  private textoOriginalCache = new Map<string, string[]>();
+
+  /**
+   * Chave secreta do selo das páginas (HMAC). DOC_SEAL_SECRET no ambiente ou, na falta, um
+   * arquivo gerado uma única vez ao lado das folhas finais (persistido no volume).
+   */
+  private async chaveSeloDocumentos(): Promise<Buffer> {
+    if (this.chaveSeloCache) return this.chaveSeloCache;
+    const env = process.env.DOC_SEAL_SECRET?.trim();
+    if (env) return (this.chaveSeloCache = Buffer.from(env, "utf8"));
+    const arq = join(this.dirPdfFinal, "..", ".chave-selo-documentos");
+    if (existsSync(arq)) return (this.chaveSeloCache = await readFile(arq));
+    const nova = randomBytes(32);
+    await mkdir(join(this.dirPdfFinal, ".."), { recursive: true });
+    await writeFile(arq, nova, { mode: 0o600 });
+    return (this.chaveSeloCache = nova);
+  }
+
+  /** Nº de registro: muda sempre que o conteúdo (impressão digital dos dados) muda. */
+  private numeroRegistro(mes: number, ano: number, fingerprint: string): string {
+    return `ESP-${ano}${String(mes).padStart(2, "0")}-${fingerprint.slice(0, 12).toUpperCase()}`;
+  }
+
+  /** Selo de uma página: só o sistema (com a chave) consegue gerar um par registro/página válido. */
+  private seloPagina(chave: Buffer, registro: string, pagina: number, total: number): string {
+    return createHmac("sha256", chave)
+      .update(`${registro}|${pagina}|${total}`)
+      .digest("hex")
+      .slice(0, 16)
+      .toUpperCase();
+  }
+
+  /** Link e código de verificação (código = SHA-256 agrupado da assinatura do funcionário). */
+  private montarVerificacao(a: {
+    assinadoFuncionarioEm: Date | null;
+    assinadoFuncionarioIp: string | null;
+    matricula: string | null;
+    periodo: string;
+  }): VerificacaoDocumentoPdf {
+    const seloAtivo = this.seloIcpService.status().configurado;
+    if (!a.assinadoFuncionarioEm) return { url: null, codigo: null, seloAtivo };
+    const codigo = groupCodigoAssinatura(
+      computeQuadroSignatoryHash(
+        a.matricula ?? "",
+        a.periodo,
+        a.assinadoFuncionarioEm,
+        a.assinadoFuncionarioIp
+      ),
+      32
+    );
+    const base = (process.env.APP_BASE_URL ?? process.env.VITE_APP_BASE_URL ?? "").replace(
+      /\/+$/,
+      ""
+    );
+    return {
+      url: `${base}/verificar/${normalizeCodigoAssinatura(codigo)}`,
+      codigo,
+      seloAtivo
+    };
+  }
+
+  /**
+   * PDF da folha: só gera um arquivo NOVO quando os dados do documento mudam. A impressão
+   * digital (fingerprint) considera apenas o que aparece no PDF — dias, horas, saldos,
+   * assinaturas, dados cadastrais e a versão do layout —, nunca o horário do download. Assim,
+   * baixar de novo devolve o MESMO arquivo (mesmo SHA-256) e todas as cópias continuam válidas.
+   * Quando os dados mudam, o arquivo anterior vai para o histórico (verificação o reconhece como
+   * versão substituída). Arquivo selado com ICP-Brasil é definitivo.
+   */
+  async congelarPdfFinal(assinaturaId: string): Promise<Buffer> {
+    const reg = await this.prisma.assinaturaQuadro.findUnique({
+      where: { id: assinaturaId },
+      select: {
+        id: true,
+        status: true,
+        pdfFinalUrl: true,
+        pdfFinalSha256: true,
+        pdfFingerprint: true,
+        pdfHistorico: true,
+        seladoEm: true,
+        criadoEm: true
+      }
+    });
+    if (!reg) throw new NotFoundException("Assinatura não encontrada");
+    const arquivoAtual = reg.pdfFinalUrl ? join(this.dirPdfFinal, reg.pdfFinalUrl) : null;
+    if (reg.seladoEm && arquivoAtual && existsSync(arquivoAtual)) return readFile(arquivoAtual);
+
+    const { input, fingerprint } = await this.montarEntradaPdfQuadro(assinaturaId);
+    if (reg.pdfFingerprint === fingerprint && arquivoAtual && existsSync(arquivoAtual)) {
+      return readFile(arquivoAtual);
+    }
+
+    /* Dados mudaram (ou 1ª emissão): gera, sela se concluída e guarda. */
+    let pdf = await this.renderizarPdfQuadro(input);
+    let selado: { selado: boolean; serial?: string } = { selado: false };
+    if (reg.status === "CONCLUIDA") {
+      const cfg = await this.prisma.configuracaoSistema.findUnique({
+        where: { id: "singleton" },
+        select: { nome: true }
+      });
+      const r = await this.seloIcpService.selarPdf(pdf, {
+        razaoSocial: cfg?.nome ?? "Conselho Federal de Odontologia"
+      });
+      pdf = r.pdf;
+      selado = r;
+    }
+    await mkdir(this.dirPdfFinal, { recursive: true });
+    const nome = `${assinaturaId}-${fingerprint.slice(0, 16)}.pdf`;
+    await writeFile(join(this.dirPdfFinal, nome), pdf);
+
+    const historico = Array.isArray(reg.pdfHistorico)
+      ? (reg.pdfHistorico as Array<Record<string, unknown>>)
+      : [];
+    if (reg.pdfFinalSha256) {
+      historico.push({
+        sha256: reg.pdfFinalSha256,
+        fingerprint: reg.pdfFingerprint,
+        arquivo: reg.pdfFinalUrl,
+        substituidoEm: new Date().toISOString()
+      });
+    }
+    await this.prisma.assinaturaQuadro.update({
+      where: { id: assinaturaId },
+      data: {
+        pdfFinalUrl: nome,
+        pdfFinalSha256: createHash("sha256").update(pdf).digest("hex"),
+        pdfFingerprint: fingerprint,
+        pdfHistorico: historico as unknown as Prisma.InputJsonValue,
+        seladoEm: selado.selado ? new Date() : null,
+        seloSerial: selado.selado ? (selado.serial ?? null) : null
+      }
+    });
+    /* O arquivo substituído não é mais servido: fica só o hash no histórico. */
+    if (arquivoAtual && reg.pdfFinalUrl !== nome) await unlink(arquivoAtual).catch(() => {});
+    return pdf;
+  }
+
+  /** Estado do selo ICP-Brasil (e-CNPJ A1) para Configurações — sem expor senha. */
+  statusSeloIcp() {
+    return this.seloIcpService.status();
+  }
+
+  /** Todo dia: avisa o RH quando o e-CNPJ A1 está a 60/30/7 dias do vencimento (ou vencido). */
+  @Cron("30 7 * * *", { timeZone: "America/Sao_Paulo" })
+  async avisarVencimentoSeloIcp() {
+    try {
+      const st = this.seloIcpService.status();
+      if (!st.validadeAte) return;
+      const dias = Math.ceil((new Date(st.validadeAte).getTime() - Date.now()) / 86_400_000);
+      if (![60, 30, 15, 7, 3, 1, 0].includes(dias) && dias > 0) return;
+      const rh = await this.notificacaoService.getUsuariosRh();
+      if (!rh.length) return;
+      await this.notificacaoService.dispararEvento(
+        "SELO_ICP_VENCENDO",
+        dias <= 0
+          ? "Certificado e-CNPJ A1 VENCIDO"
+          : `Certificado e-CNPJ A1 vence em ${dias} dia(s)`,
+        `O certificado e-CNPJ A1 usado no selo ICP-Brasil dos documentos ` +
+          `${dias <= 0 ? "venceu" : `vence em ${dias} dia(s)`} (${st.validadeAte.slice(0, 10)}). ` +
+          "Renove e substitua o arquivo .pfx no servidor para que os documentos continuem selados.",
+        rh
+      );
+    } catch (e) {
+      this.logger.error(`Falha ao avisar vencimento do selo ICP: ${(e as Error).message}`);
+    }
+  }
+
+  /** Consulta pública pelo PRÓPRIO ARQUIVO: localiza a folha pelo SHA-256 do PDF enviado. */
+  async verificarArquivoPublico(sha256Raw: string) {
+    const sha256 = (sha256Raw ?? "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new BadRequestException("Arquivo inválido para conferência.");
+    }
+    /* Arquivo vigente ou versão anterior (histórico) da mesma folha. */
+    const anterior = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "AssinaturaQuadro"
+      WHERE "pdfHistorico" @> ${JSON.stringify([{ sha256 }])}::jsonb
+      LIMIT 1`;
+    const reg = await this.prisma.assinaturaQuadro.findFirst({
+      where: anterior.length ? { id: anterior[0].id } : { pdfFinalSha256: sha256 },
+      select: {
+        assinadoFuncionarioEm: true,
+        assinadoFuncionarioIp: true,
+        periodo: { select: { mes: true, ano: true, funcionario: { select: { matricula: true } } } }
+      }
+    });
+    if (!reg) return { encontrado: false, arquivoNaoReconhecido: true };
+    const { codigo } = this.montarVerificacao({
+      assinadoFuncionarioEm: reg.assinadoFuncionarioEm,
+      assinadoFuncionarioIp: reg.assinadoFuncionarioIp,
+      matricula: reg.periodo.funcionario.matricula,
+      periodo: `${reg.periodo.mes}/${reg.periodo.ano}`
+    });
+    if (!codigo) return { encontrado: false, arquivoNaoReconhecido: true };
+    return {
+      ...(await this.verificarDocumentoPublico(codigo, sha256)),
+      codigo: normalizeCodigoAssinatura(codigo)
+    };
+  }
+
+  /** Consulta pública (sem login): dados mínimos e situação do documento. */
+  async verificarDocumentoPublico(
+    codigoRaw: string,
+    sha256Arquivo?: string,
+    qr?: { r?: string; p?: string; t?: string; s?: string }
+  ) {
+    const codigo = normalizeCodigoAssinatura(codigoRaw ?? "");
+    if (codigo.length < 16) {
+      throw new BadRequestException("Informe o código de verificação completo.");
+    }
+    const achados = await this.buscarPorCodigoAssinatura(codigo);
+    const lista = achados.encontrados;
+    const item = lista.find((x) => x.tipo === "QUADRO_MENSAL") as
+      | {
+          id: string;
+          papel: string;
+          assinadoEm: string | null;
+          periodo?: { mes: number; ano: number };
+          funcionarioNome: string;
+          matricula: string | null;
+          status?: string;
+        }
+      | undefined;
+    if (!item) return { encontrado: false };
+
+    const reg = await this.prisma.assinaturaQuadro.findUnique({
+      where: { id: item.id },
+      select: {
+        status: true,
+        pdfFinalSha256: true,
+        pdfFingerprint: true,
+        pdfHistorico: true,
+        seladoEm: true,
+        assinadoFuncionarioEm: true,
+        assinadoGestorEm: true
+      }
+    });
+    const versaoAnterior =
+      sha256Arquivo && Array.isArray(reg?.pdfHistorico)
+        ? ((reg!.pdfHistorico as Array<{ sha256?: string; substituidoEm?: string }>).find(
+            (h) => h.sha256?.toLowerCase() === sha256Arquivo.toLowerCase()
+          ) ?? null)
+        : null;
+    /* QR da página: registro + página + total, com selo HMAC do sistema. */
+    let registro: {
+      vigente: string | null;
+      informado: string | null;
+      situacao: "VIGENTE" | "ANTERIOR" | "DESCONHECIDO" | "SELO_INVALIDO" | null;
+      pagina: number | null;
+      total: number | null;
+    } | null = null;
+    if (item.periodo && reg?.pdfFingerprint) {
+      const { mes, ano } = item.periodo;
+      const vigente = this.numeroRegistro(mes, ano, reg.pdfFingerprint);
+      registro = { vigente, informado: null, situacao: null, pagina: null, total: null };
+      if (qr?.r) {
+        const p = Number(qr.p);
+        const t = Number(qr.t);
+        const chave = await this.chaveSeloDocumentos();
+        const seloOk =
+          Number.isInteger(p) &&
+          Number.isInteger(t) &&
+          (qr.s ?? "").toUpperCase() === this.seloPagina(chave, qr.r, p, t);
+        const anteriores = (
+          Array.isArray(reg.pdfHistorico)
+            ? (reg.pdfHistorico as Array<{ fingerprint?: string }>)
+            : []
+        )
+          .filter((h) => h.fingerprint)
+          .map((h) => this.numeroRegistro(mes, ano, h.fingerprint!));
+        registro = {
+          vigente,
+          informado: qr.r,
+          pagina: Number.isInteger(p) ? p : null,
+          total: Number.isInteger(t) ? t : null,
+          situacao: !seloOk
+            ? "SELO_INVALIDO"
+            : qr.r === vigente
+              ? "VIGENTE"
+              : anteriores.includes(qr.r)
+                ? "ANTERIOR"
+                : "DESCONHECIDO"
+        };
+      }
+    }
+    const mascarar = (nome: string) =>
+      nome
+        .split(" ")
+        .filter(Boolean)
+        .map((p, i) => (i === 0 ? p : `${p[0]}.`))
+        .join(" ");
+    const mat = item.matricula ?? "";
+    return {
+      encontrado: true,
+      documento: "Espelho de Ponto Eletrônico (folha mensal)",
+      competencia: item.periodo
+        ? `${String(item.periodo.mes).padStart(2, "0")}/${item.periodo.ano}`
+        : null,
+      funcionario: mascarar(item.funcionarioNome),
+      matricula: mat.length > 2 ? `${"*".repeat(mat.length - 2)}${mat.slice(-2)}` : "**",
+      situacao: reg?.status ?? item.status ?? null,
+      assinaturas: {
+        funcionarioEm: reg?.assinadoFuncionarioEm?.toISOString() ?? null,
+        gestorEm: reg?.assinadoGestorEm?.toISOString() ?? null
+      },
+      arquivo: {
+        sha256: reg?.pdfFinalSha256 ?? null,
+        conferido:
+          sha256Arquivo && reg?.pdfFinalSha256
+            ? sha256Arquivo.toLowerCase() === reg.pdfFinalSha256.toLowerCase()
+            : null,
+        /* O arquivo enviado é uma versão anterior autêntica, substituída por mudança nos dados. */
+        versaoAnterior: versaoAnterior
+          ? { substituidoEm: versaoAnterior.substituidoEm ?? null }
+          : null
+      },
+      seloIcpBrasil: { aplicado: !!reg?.seladoEm, em: reg?.seladoEm?.toISOString() ?? null },
+      registro
+    };
+  }
+
+  /**
+   * Conferência AUTOMÁTICA do conteúdo: o navegador extrai o texto do PDF enviado (ou lê a foto
+   * por OCR) e o sistema compara com o original arquivado. Aponta as linhas que não existem no
+   * original — sem revelar os valores originais (LGPD).
+   */
+  async compararConteudoPublico(body: {
+    codigo?: string;
+    registro?: string;
+    linhas?: string[];
+    origem?: "pdf" | "ocr";
+  }) {
+    const linhas = (Array.isArray(body.linhas) ? body.linhas : [])
+      .slice(0, 3000)
+      .map((l) => String(l ?? "").slice(0, 500))
+      .filter((l) => l.trim());
+    if (!linhas.length) throw new BadRequestException("Não foi possível ler o texto do arquivo.");
+    const origem = body.origem === "ocr" ? "ocr" : "pdf";
+
+    /* 1. Qual documento: nº de registro (lido do arquivo) ou código. */
+    const registroLido =
+      body.registro?.trim().toUpperCase() ||
+      linhas
+        .join(" ")
+        .toUpperCase()
+        .match(/ESP-\d{6}-[0-9A-F]{12}/)?.[0] ||
+      null;
+    let assinaturaId: string | null = null;
+    if (registroLido) {
+      const fp12 = registroLido.slice(-12).toLowerCase();
+      const atual = await this.prisma.assinaturaQuadro.findFirst({
+        where: { pdfFingerprint: { startsWith: fp12 } },
+        select: { id: true }
+      });
+      if (atual) assinaturaId = atual.id;
+      else {
+        const comHistorico = await this.prisma.assinaturaQuadro.findMany({
+          where: { pdfHistorico: { not: Prisma.AnyNull } },
+          select: { id: true, pdfHistorico: true }
+        });
+        const anterior = comHistorico.find((a) =>
+          (a.pdfHistorico as Array<{ fingerprint?: string }>).some((h) =>
+            h.fingerprint?.startsWith(fp12)
+          )
+        );
+        if (anterior) {
+          return {
+            encontrado: true,
+            registro: registroLido,
+            veredito: "VERSAO_ANTERIOR" as const,
+            divergencias: [],
+            linhasRemovidas: 0
+          };
+        }
+      }
+    }
+    if (!assinaturaId && body.codigo) {
+      const achados = await this.buscarPorCodigoAssinatura(normalizeCodigoAssinatura(body.codigo));
+      assinaturaId = achados.encontrados.find((x) => x.tipo === "QUADRO_MENSAL")?.id ?? null;
+    }
+    if (!assinaturaId) {
+      return {
+        encontrado: false,
+        registro: registroLido,
+        veredito: "NAO_IDENTIFICADO" as const,
+        divergencias: [],
+        linhasRemovidas: 0
+      };
+    }
+
+    /* 2. Texto do original arquivado (mesma extração usada no navegador). */
+    const original = await this.congelarPdfFinal(assinaturaId);
+    const shaOrig = createHash("sha256").update(original).digest("hex");
+    let linhasOrig = this.textoOriginalCache.get(shaOrig);
+    if (!linhasOrig) {
+      linhasOrig = await extrairLinhasPdf(original);
+      this.textoOriginalCache.set(shaOrig, linhasOrig);
+    }
+    const compactoOrig = linhasOrig.map(normalizarTexto).join("");
+    const reg = await this.prisma.assinaturaQuadro.findUnique({
+      where: { id: assinaturaId },
+      select: { pdfFingerprint: true, periodo: { select: { mes: true, ano: true } } }
+    });
+    const registroVigente = reg?.pdfFingerprint
+      ? this.numeroRegistro(reg.periodo.mes, reg.periodo.ano, reg.pdfFingerprint)
+      : null;
+
+    /* 3. Comparação. */
+    const divergencias: Array<{ linha: string; trechos?: string[] }> = [];
+    let linhasRemovidas = 0;
+    if (origem === "pdf") {
+      for (const l of linhas) {
+        const n = normalizarTexto(l);
+        if (n.length < 4) continue;
+        if (!compactoOrig.includes(n)) divergencias.push({ linha: l.trim() });
+      }
+      /* Linhas de dia do original que sumiram do arquivo enviado. */
+      const compactoEnviado = linhas.map(normalizarTexto).join("");
+      linhasRemovidas = linhasOrig.filter(
+        (l) =>
+          /^\d{2}\/\d{2}\/\d{4}/.test(l.trim()) && !compactoEnviado.includes(normalizarTexto(l))
+      ).length;
+    } else {
+      /* OCR: compara datas, horários e durações linha a linha (tolerante ao resto do texto). */
+      const todosOrig = new Set(linhasOrig.flatMap(tokensNumericos));
+      for (const l of linhas) {
+        const tokens = tokensNumericos(l);
+        if (!tokens.length) continue;
+        const data = tokens.find((t) => /\d{2}\/\d{2}\/\d{4}/.test(t));
+        const referencia = data
+          ? new Set(linhasOrig.filter((o) => o.includes(data)).flatMap(tokensNumericos))
+          : todosOrig;
+        const extras = tokens.filter((t) => !referencia.has(t));
+        if (extras.length) divergencias.push({ linha: l.trim(), trechos: extras });
+      }
+    }
+
+    const veredito =
+      registroLido && registroVigente && registroLido !== registroVigente
+        ? ("VERSAO_ANTERIOR" as const)
+        : divergencias.length || linhasRemovidas
+          ? origem === "pdf"
+            ? ("ADULTERADO" as const)
+            : ("DIVERGENCIAS" as const)
+          : ("CONFERE" as const);
+    return {
+      encontrado: true,
+      registro: registroVigente,
+      veredito,
+      divergencias: divergencias.slice(0, 50),
+      totalDivergencias: divergencias.length,
+      linhasRemovidas
+    };
+  }
+
+  /* ─── Cron: 00:05 (Brasília) do 1º de cada mês → gera o mês anterior, já encerrado ─── */
+
+  @Cron("5 0 1 * *", { timeZone: "America/Sao_Paulo" })
   async criarAssinaturasAutomaticas() {
-    const now = new Date();
-    // getMonth() 0-indexed; no 1º do mês, getMonth() como número 1-indexed = mês anterior
-    const mes = now.getMonth() === 0 ? 12 : now.getMonth();
-    const ano = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const [anoHoje, mesHoje] = hojeBrasiliaISO().split("-").map(Number);
+    const mes = mesHoje === 1 ? 12 : mesHoje - 1;
+    const ano = mesHoje === 1 ? anoHoje - 1 : anoHoje;
     this.logger.log(`Cron: criando assinaturas para ${mes}/${ano}`);
-    const { criadas, ignoradas } = await this.criarAssinaturasMensais(mes, ano);
-    this.logger.log(`Assinaturas criadas: ${criadas}, ignoradas (já existiam): ${ignoradas}`);
+    const { criadas, ignoradas, naoAptos } = await this.criarAssinaturasMensais(mes, ano);
+    this.logger.log(
+      `Assinaturas criadas: ${criadas}, já existiam: ${ignoradas}, fora dos critérios: ${naoAptos}`
+    );
+  }
+
+  /* ─── Elegibilidade (prévia do RH e geração) ─── */
+
+  /**
+   * Quem pode receber a assinatura do quadro de um mês:
+   * - o mês precisa estar encerrado (verificado em criarAssinaturasMensais/prévia);
+   * - funcionário ativo;
+   * - admitido até o fim do mês e com primeiro acesso ao sistema até o fim do mês;
+   * - com obrigação de ponto em ao menos um dia do mês (isentos o mês todo ficam de fora);
+   * - não cedido a outro órgão durante o mês inteiro.
+   * Folha com dias Inconsistentes continua apta: a regularização é exigida na assinatura.
+   */
+  async avaliarElegibilidadeMes(mes: number, ano: number): Promise<ElegibilidadeAssinatura[]> {
+    const ini = `${ano}-${String(mes).padStart(2, "0")}-01`;
+    const fim = somarDiasCivil(
+      `${mes === 12 ? ano + 1 : ano}-${String(mes === 12 ? 1 : mes + 1).padStart(2, "0")}-01`,
+      -1
+    );
+    const funcionarios = await this.prisma.funcionario.findMany({
+      where: { ativo: true },
+      orderBy: { user: { name: "asc" } },
+      select: {
+        id: true,
+        matricula: true,
+        categoria: true,
+        isManager: true,
+        isFiscal: true,
+        registroPontoObrigatorio: true,
+        pontoObrigatorioDesde: true,
+        dataAdmissao: true,
+        gerenciaId: true,
+        gerencia: { select: { nome: true, sigla: true } },
+        user: { select: { name: true, primeiroLoginEm: true } },
+        periodos: {
+          where: { mes, ano },
+          select: { assinatura: { select: { status: true } } }
+        }
+      }
+    });
+
+    const fmt = (iso: string) => iso.split("-").reverse().join("/");
+    const out: ElegibilidadeAssinatura[] = [];
+    for (const f of funcionarios) {
+      const base = {
+        funcionarioId: f.id,
+        nome: f.user.name,
+        matricula: f.matricula,
+        categoria: f.categoria,
+        gerenciaId: f.gerenciaId,
+        gerencia: f.gerencia?.sigla || f.gerencia?.nome || null,
+        aviso: null as string | null
+      };
+      const naoApto = (motivo: string) => out.push({ ...base, situacao: "NAO_APTO", motivo });
+
+      const assinaturaExistente = f.periodos[0]?.assinatura;
+      if (assinaturaExistente) {
+        out.push({
+          ...base,
+          situacao: "JA_POSSUI",
+          motivo: `Já possui assinatura neste mês (${assinaturaExistente.status})`
+        });
+        continue;
+      }
+
+      const admissao = f.dataAdmissao ? dataCivilISO(f.dataAdmissao) : null;
+      if (admissao && admissao > fim) {
+        naoApto(`Admitido após o mês (${fmt(admissao)})`);
+        continue;
+      }
+
+      const primeiroAcesso = inicioAtividadesUsuario(f.user);
+      if (primeiroAcesso > fim) {
+        naoApto(
+          f.user.primeiroLoginEm
+            ? `Primeiro acesso ao sistema após o mês (${fmt(primeiroAcesso)})`
+            : "Nunca acessou o sistema"
+        );
+        continue;
+      }
+
+      const historicoCat = await ensureCategoriaHistorico(this.prisma, f.id);
+      /* Mesma regra do banco de horas, dia a dia (inclui dias antes da 1ª vigência). */
+      const optsObrigacao = {
+        historico: historicoCat,
+        pontoObrigatorioDesde: f.pontoObrigatorioDesde
+          ? dataCivilISO(f.pontoObrigatorioDesde)
+          : null,
+        categoriaAtual: f.categoria,
+        isManagerAtual: f.isManager,
+        isFiscalAtual: f.isFiscal,
+        registroPontoObrigatorioAtual: f.registroPontoObrigatorio
+      };
+      let algumDiaComObrigacao = false;
+      for (let dia = ini; dia <= fim; dia = somarDiasCivil(dia, 1)) {
+        if (!diaSemObrigacaoPonto(dia, optsObrigacao)) {
+          algumDiaComObrigacao = true;
+          break;
+        }
+      }
+      if (!algumDiaComObrigacao) {
+        naoApto("Sem obrigação de ponto no mês (isento — Comissionado/Chefe/Assessor)");
+        continue;
+      }
+
+      const cessoes = await periodosCessao(this.prisma, f.id);
+      if (cobreMesInteiro(cessoes, ini, fim)) {
+        naoApto("Cedido a outro órgão durante todo o mês");
+        continue;
+      }
+
+      out.push({
+        ...base,
+        situacao: "APTO",
+        motivo: null,
+        aviso: cessoes.some((c) => sobrepoe(c, ini, fim))
+          ? "Cedido em parte do mês (dias da cessão ficam neutros)"
+          : null
+      });
+    }
+    return out;
+  }
+
+  /** Prévia para o modal do RH: elegibilidade de cada funcionário ativo. */
+  async previaAssinaturasMes(mes: number, ano: number) {
+    return {
+      mes,
+      ano,
+      mesEncerrado: this.mesEncerrado(mes, ano),
+      funcionarios: await this.avaliarElegibilidadeMes(mes, ano)
+    };
+  }
+
+  private mesEncerrado(mes: number, ano: number) {
+    const [anoHoje, mesHoje] = hojeBrasiliaISO().split("-").map(Number);
+    return ano < anoHoje || (ano === anoHoje && mes < mesHoje);
   }
 
   /* ─── Criação batch (cron ou disparo manual pelo RH) ─── */
 
   async criarAssinaturasMensais(
     mes: number,
-    ano: number
-  ): Promise<{ criadas: number; ignoradas: number }> {
+    ano: number,
+    /** Seleção manual do RH (subconjunto dos aptos). Ausente = todos os aptos. */
+    funcionarioIds?: string[]
+  ): Promise<{ criadas: number; ignoradas: number; naoAptos: number }> {
+    if (!this.mesEncerrado(mes, ano)) {
+      throw new BadRequestException("Assinaturas só podem ser geradas para meses já encerrados.");
+    }
+    const elegibilidade = await this.avaliarElegibilidadeMes(mes, ano);
+    const selecionados = funcionarioIds ? new Set(funcionarioIds) : null;
+    const alvo = elegibilidade.filter((e) => !selecionados || selecionados.has(e.funcionarioId));
+    const aptosIds = alvo.filter((e) => e.situacao === "APTO").map((e) => e.funcionarioId);
+    const naoAptos = alvo.filter((e) => e.situacao === "NAO_APTO").length;
+
     const funcionarios = await this.prisma.funcionario.findMany({
-      where: { ativo: true },
+      where: { id: { in: aptosIds } },
       select: { id: true, user: { select: { externalId: true, email: true, emailReal: true } } }
     });
 
@@ -185,10 +981,80 @@ export class AssinaturaService {
       }
     }
 
-    return { criadas, ignoradas };
+    ignoradas += alvo.filter((e) => e.situacao === "JA_POSSUI").length;
+    return { criadas, ignoradas, naoAptos };
   }
 
   /* ─── Busca assinatura do funcionário (por keycloakSub) — com lazy creation ─── */
+
+  /**
+   * A folha guarda um resumo (dias trabalhados, horas e banco total) gravado na criação; ele
+   * envelhece com correções, atestados e abonos aprovados depois. Enquanto não concluída, a folha
+   * é recalculada com a conta atual (a mesma do PDF e da página Banco de Horas) e o resumo gravado
+   * é atualizado. Folha concluída mantém o que foi assinado.
+   */
+  private async atualizarResumoFolha<
+    T extends {
+      id: string;
+      status: string;
+      bancoHorasSaldoTotalMinutos: number;
+      periodo: {
+        id: string;
+        funcionarioId: string;
+        mes: number;
+        ano: number;
+        diasTrabalhados: number;
+        horasTrabalhadasMinutos: number;
+      };
+    }
+  >(a: T, relatorioPronto?: RelatorioQuadroMensal): Promise<T> {
+    if (a.status === "CONCLUIDA" || a.status === "DISPENSADA") return a;
+    try {
+      const { funcionarioId, mes, ano } = a.periodo;
+      const montado = await this.montarRelatorioParaPdf(funcionarioId, mes, ano);
+      const relatorio = relatorioPronto ?? montado.relatorio;
+      const cat =
+        (
+          await this.prisma.funcionario.findUnique({
+            where: { id: funcionarioId },
+            select: { categoria: true }
+          })
+        )?.categoria ?? null;
+      const badges = await this.montarResumoBadgesPdf(
+        funcionarioId,
+        cat,
+        mes,
+        ano,
+        relatorio,
+        montado.bancoMes
+      );
+      const saldo = badges.totalAcumuladoMinutos;
+      if (
+        a.periodo.diasTrabalhados !== relatorio.diasTrabalhados ||
+        a.periodo.horasTrabalhadasMinutos !== relatorio.horasTrabalhadasMinutos
+      ) {
+        await this.prisma.periodoPonto.update({
+          where: { id: a.periodo.id },
+          data: {
+            diasTrabalhados: relatorio.diasTrabalhados,
+            horasTrabalhadasMinutos: relatorio.horasTrabalhadasMinutos
+          }
+        });
+        a.periodo.diasTrabalhados = relatorio.diasTrabalhados;
+        a.periodo.horasTrabalhadasMinutos = relatorio.horasTrabalhadasMinutos;
+      }
+      if (saldo !== a.bancoHorasSaldoTotalMinutos) {
+        await this.prisma.assinaturaQuadro.update({
+          where: { id: a.id },
+          data: { bancoHorasSaldoTotalMinutos: saldo }
+        });
+        a.bancoHorasSaldoTotalMinutos = saldo;
+      }
+    } catch (e) {
+      this.logger.warn(`atualizarResumoFolha(${a.id}): ${String(e)}`);
+    }
+    return a;
+  }
 
   async getAssinaturaFuncionario(keycloakSub: string, mes?: number, ano?: number) {
     const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
@@ -247,13 +1113,18 @@ export class AssinaturaService {
     });
 
     return Promise.all(
-      lista.map(async (item) => {
+      lista.map(async (itemGravado) => {
+        const item = await this.atualizarResumoFolha(itemGravado);
         const avaliacao = await this.avaliarSaldoFolha(
           item.periodo.funcionarioId,
           item.periodo.mes,
           item.periodo.ano
         );
-        return { ...item, saldoRegularizado: avaliacao.saldoRegularizado };
+        return {
+          ...item,
+          saldoRegularizado: avaliacao.saldoRegularizado,
+          pendencias: avaliacao.pendencias
+        };
       })
     );
   }
@@ -326,11 +1197,14 @@ export class AssinaturaService {
       }
 
       const avaliacao = await this.avaliarSaldoFolha(func.id, mes, ano);
-      const { relatorio } = await this.montarRelatorioParaPdf(func.id, mes, ano);
+      const relatorio =
+        avaliacao.relatorio ?? (await this.montarRelatorioParaPdf(func.id, mes, ano)).relatorio;
+      assinatura = await this.atualizarResumoFolha(assinatura, relatorio);
       const diasOk = relatorio.dias.filter((d) => d.statusInterno === "OK").length;
       itens.push({
         ...assinatura,
         saldoRegularizado: avaliacao.saldoRegularizado,
+        pendencias: avaliacao.pendencias,
         /** Mesmos números do PDF da folha (mês civil completo). */
         folhaResumo: {
           diasOk,
@@ -407,15 +1281,10 @@ export class AssinaturaService {
       );
     }
 
-    let saldoCicloMinutos = 0;
-    for (const { mes, ano } of meses) {
-      const { relatorio } = await this.montarRelatorioParaPdf(func.id, mes, ano);
-      for (const d of relatorio.dias) {
-        if (d.iso >= inicioIso && d.iso <= fimIso && d.saldoMin !== null) {
-          saldoCicloMinutos += d.saldoMin;
-        }
-      }
-    }
+    /* Saldo do ciclo = acumulado do banco no fim do ciclo (mesma conta da página). */
+    const saldoCicloMinutos = (
+      await this.auditoriaService.bancoHorasDoIntervalo(func.id, inicioIso, fimIso)
+    ).saldoFinalMinutos;
 
     return this.prisma.assinaturaCicloBancoHoras.create({
       data: {
@@ -505,15 +1374,17 @@ export class AssinaturaService {
       assinatura.periodo.ano
     );
     if (!avaliacao.saldoRegularizado) {
-      throw new BadRequestException(
-        "Há correções pendentes na folha de ponto. Regularize os dias com status Falta ou Pendente " +
-          "antes de assinar. Depois de assinar, não será mais possível solicitar correção deste período."
-      );
+      throw new BadRequestException({
+        message:
+          `A folha de ponto ainda não pode ser assinada — ${textoPendenciasFolha(avaliacao.pendencias)}. ` +
+          "Depois de assinar, não será mais possível solicitar correção deste período.",
+        pendencias: avaliacao.pendencias
+      });
     }
 
     let bancoHorasSaldoTotalMinutos = assinatura.bancoHorasSaldoTotalMinutos;
     try {
-      const { relatorio } = await this.montarRelatorioParaPdf(
+      const { relatorio, bancoMes } = await this.montarRelatorioParaPdf(
         func.id,
         assinatura.periodo.mes,
         assinatura.periodo.ano
@@ -523,7 +1394,8 @@ export class AssinaturaService {
         func.categoria,
         assinatura.periodo.mes,
         assinatura.periodo.ano,
-        relatorio
+        relatorio,
+        bancoMes
       );
       bancoHorasSaldoTotalMinutos = badges.totalAcumuladoMinutos;
     } catch {
@@ -595,7 +1467,7 @@ export class AssinaturaService {
 
     let bancoHorasSaldoTotalMinutos = assinatura.bancoHorasSaldoTotalMinutos;
     try {
-      const { relatorio } = await this.montarRelatorioParaPdf(
+      const { relatorio, bancoMes } = await this.montarRelatorioParaPdf(
         assinatura.periodo.funcionarioId,
         assinatura.periodo.mes,
         assinatura.periodo.ano
@@ -606,7 +1478,8 @@ export class AssinaturaService {
         cat,
         assinatura.periodo.mes,
         assinatura.periodo.ano,
-        relatorio
+        relatorio,
+        bancoMes
       );
       bancoHorasSaldoTotalMinutos = badges.totalAcumuladoMinutos;
     } catch {
@@ -689,6 +1562,11 @@ export class AssinaturaService {
       include: { periodo: { include: { funcionario: { include: { user: true } } } } }
     });
 
+    /* Congela o PDF final (e aplica o selo ICP-Brasil, quando configurado). */
+    this.congelarPdfFinal(concluida.id).catch((e) =>
+      this.logger.error(`Falha ao congelar o PDF final (${concluida.id}): ${e}`)
+    );
+
     // Notifica o funcionário que o quadro foi totalmente assinado
     this.dispararNotificacaoConcluida(concluida).catch((e) =>
       this.logger.error(`Falha ao notificar ASSINATURA_CONCLUIDA: ${e}`)
@@ -744,43 +1622,8 @@ export class AssinaturaService {
       orderBy: [{ status: "asc" }, { criadoEm: "desc" }]
     });
 
-    // BH da folha do período (igual ao PDF: acumulado anterior + saldo do mês).
-    // Não usar saldoAtualMinutos ao vivo — muda a cada ciclo e diverge do quadro.
-    for (const a of rows) {
-      if (a.status !== "PENDENTE_GESTOR" && a.status !== "PENDENTE_FUNCIONARIO") continue;
-      try {
-        const funcionarioId = a.periodo.funcionarioId;
-        const { relatorio } = await this.montarRelatorioParaPdf(
-          funcionarioId,
-          a.periodo.mes,
-          a.periodo.ano
-        );
-        const cat =
-          (
-            await this.prisma.funcionario.findUnique({
-              where: { id: funcionarioId },
-              select: { categoria: true }
-            })
-          )?.categoria ?? null;
-        const badges = await this.montarResumoBadgesPdf(
-          funcionarioId,
-          cat,
-          a.periodo.mes,
-          a.periodo.ano,
-          relatorio
-        );
-        const saldo = badges.totalAcumuladoMinutos;
-        if (saldo !== a.bancoHorasSaldoTotalMinutos) {
-          await this.prisma.assinaturaQuadro.update({
-            where: { id: a.id },
-            data: { bancoHorasSaldoTotalMinutos: saldo }
-          });
-          a.bancoHorasSaldoTotalMinutos = saldo;
-        }
-      } catch {
-        /* mantém valor gravado */
-      }
-    }
+    // Resumo da folha (dias, horas, BH total) com a conta atual — igual ao PDF e à página do banco.
+    for (const a of rows) await this.atualizarResumoFolha(a);
 
     return rows;
   }
@@ -834,6 +1677,7 @@ export class AssinaturaService {
       })
     ]);
 
+    for (const a of assinaturas) await this.atualizarResumoFolha(a);
     return { total, page, limit, assinaturas };
   }
 
@@ -1002,10 +1846,55 @@ export class AssinaturaService {
 
   /* ─── Metadados para filename do PDF ─── */
 
+  /**
+   * Folhas de ponto do funcionário: as **totalmente assinadas** (funcionário + chefe), prontas
+   * para baixar como documento, e as que ainda faltam assinar (em andamento).
+   */
+  async listarFolhasAssinadasDoFuncionario(funcionarioId: string) {
+    const [func, rows] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { categoria: true }
+      }),
+      this.prisma.assinaturaQuadro.findMany({
+        where: { periodo: { funcionarioId } },
+        include: { periodo: { select: { mes: true, ano: true } } },
+        orderBy: [{ periodo: { ano: "desc" } }, { periodo: { mes: "desc" } }]
+      })
+    ]);
+    const mostrarBanco = !categoriaSemVisibilidadeBancoHoras(func?.categoria);
+    const item = (a: (typeof rows)[number]) => ({
+      id: a.id,
+      mes: a.periodo.mes,
+      ano: a.periodo.ano,
+      status: a.status,
+      assinadoFuncionarioEm: a.assinadoFuncionarioEm,
+      assinadoGestorEm: a.assinadoGestorEm,
+      assinadoGestorNome: a.assinadoGestorNome,
+      bancoHorasSaldoTotalMinutos: mostrarBanco ? a.bancoHorasSaldoTotalMinutos : null
+    });
+    return {
+      assinadas: rows.filter((a) => a.status === "CONCLUIDA").map(item),
+      emAndamento: rows
+        .filter((a) => a.status === "PENDENTE_FUNCIONARIO" || a.status === "PENDENTE_GESTOR")
+        .map(item)
+    };
+  }
+
+  async listarFolhasAssinadasPorSub(keycloakSub: string) {
+    const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    if (!user) throw new NotFoundException("Usuário não encontrado");
+    const func = await this.prisma.funcionario.findUnique({ where: { userId: user.id } });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    return this.listarFolhasAssinadasDoFuncionario(func.id);
+  }
+
   async getAssinaturaParaPdf(id: string) {
     return this.prisma.assinaturaQuadro.findUnique({
       where: { id },
-      include: { periodo: { include: { funcionario: true } } }
+      include: {
+        periodo: { include: { funcionario: { include: { user: { select: { name: true } } } } } }
+      }
     });
   }
 
@@ -1094,7 +1983,8 @@ export class AssinaturaService {
         configuracaoHoraEntrada: cfgJornada?.horaEntrada ?? null,
         configuracaoHoraSaida: cfgJornada?.horaSaida ?? null
       }),
-      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin
+      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin,
+      atestadoTempoIdaMin: cfgSolicitacoes.atestadoTempoIdaMin
     };
 
     const { registros, afastamentos } = await this.buscarRegistrosEAfastamentos(
@@ -1113,7 +2003,7 @@ export class AssinaturaService {
     const [feriados, cfg] = await Promise.all([
       this.prisma.feriadoConfig.findMany({
         where: { data: { gte: feriadoIni, lte: feriadoFim } },
-        select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+        select: { data: true, nome: true, tipo: true, marcoHorario: true, marcoLado: true }
       }),
       this.prisma.configuracaoSistema.findUnique({
         where: { id: "singleton" },
@@ -1125,29 +2015,70 @@ export class AssinaturaService {
       })
     ]);
 
+    const cicloEmCasa = await diasCicloCompletoEmCasa(
+      this.prisma,
+      funcionarioId,
+      intervaloDiaBrasilia(`${ano}-${mm}-01`).inicio,
+      intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`).fim
+    );
+
+    const relatorioBase = montarRelatorioQuadro(
+      registros,
+      afastamentos,
+      mes,
+      ano,
+      jornada,
+      feriados,
+      cfg?.bancoHorasSabadoPct ?? 100,
+      cfg?.bancoHorasDomingoPct ?? 200,
+      cfg?.bancoHorasFeriadoPct ?? 200,
+      inicioAtividadesUsuario(funcJornada?.user),
+      {
+        forcarSemIntervalo: categoriaSemIntervaloAlmoco(funcJornada?.categoria),
+        diasCicloCompletoEmCasa: cicloEmCasa.dias,
+        exigenciasCicloPresencial: (
+          await exigenciasCicloPresencial(
+            this.prisma,
+            funcionarioId,
+            intervaloDiaBrasilia(`${ano}-${mm}-01`).inicio,
+            intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`).fim,
+            jornada,
+            cicloEmCasa.dias
+          )
+        ).porDia,
+        diaNeutro: await montarDiaNeutro(this.prisma, funcionarioId),
+        rotuloModalidadePorDia: await rotulosModalidadePorDia(
+          this.prisma,
+          funcionarioId,
+          intervaloDiaBrasilia(`${ano}-${mm}-01`).inicio,
+          intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`).fim
+        )
+      }
+    );
+
+    /* Saldo do dia e do mês = MESMA conta da página Banco de Horas (regra de hora extra,
+       atestados, isenção…). O quadro só mostra as batidas e o status; o saldo vem do banco. */
+    const banco = await this.auditoriaService.bancoHorasDoIntervalo(
+      funcionarioId,
+      `${ano}-${mm}-01`,
+      `${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`
+    );
+    const relatorio = aplicarBancoNoRelatorio(relatorioBase, banco.dias);
     return {
-      relatorio: montarRelatorioQuadro(
-        registros,
-        afastamentos,
-        mes,
-        ano,
-        jornada,
-        feriados,
-        cfg?.bancoHorasSabadoPct ?? 100,
-        cfg?.bancoHorasDomingoPct ?? 200,
-        cfg?.bancoHorasFeriadoPct ?? 200,
-        inicioAtividadesUsuario(funcJornada?.user),
-        { forcarSemIntervalo: categoriaSemIntervaloAlmoco(funcJornada?.categoria) }
-      ),
-      jornada
+      relatorio,
+      jornada,
+      bancoMes: {
+        saldoAntesMinutos: banco.saldoAntesMinutos,
+        saldoFinalMinutos: banco.saldoFinalMinutos
+      }
     };
   }
 
   /**
-   * Dias Falta/Pendente (exceto o dia corrente) ou solicitações de correção/atestado
+   * Dias Inconsistentes (exceto o dia corrente) ou solicitações de correção/atestado
    * em andamento impedem a assinatura da folha.
    */
-  private async avaliarSaldoFolha(
+  async avaliarSaldoFolha(
     funcionarioId: string,
     mes: number,
     ano: number
@@ -1155,31 +2086,47 @@ export class AssinaturaService {
     saldoRegularizado: boolean;
     temDiasIrregulares: boolean;
     temSolicitacoesPendentes: boolean;
+    pendencias: PendenciasFolha;
+    /** Relatório do mês já montado (evita montar de novo em quem precisa dele). */
+    relatorio: Awaited<ReturnType<AssinaturaService["montarRelatorioParaPdf"]>>["relatorio"] | null;
   }> {
-    const func = await this.prisma.funcionario.findUnique({
-      where: { id: funcionarioId },
-      select: { categoria: true, isManager: true, isFiscal: true, registroPontoObrigatorio: true }
-    });
-    if (!func || funcionarioSemRegistroPonto(func)) {
-      return {
-        saldoRegularizado: true,
-        temDiasIrregulares: false,
-        temSolicitacoesPendentes: false
-      };
-    }
-
-    let temDiasIrregulares = false;
+    /* Sem atalho pela situação ATUAL (ex.: hoje Comissionado): a folha do mês já trata,
+       dia a dia, os períodos isentos e a cessão como neutros — então só sobram como
+       Inconsistentes os dias que de fato tinham obrigação de ponto naquele mês. Só o status
+       Inconsistente barra a assinatura; Falta (nenhum registro) não barra. */
+    const pendencias: PendenciasFolha = { dias: [], solicitacoes: [], erroConferencia: false };
+    let relatorioMes:
+      | Awaited<ReturnType<AssinaturaService["montarRelatorioParaPdf"]>>["relatorio"]
+      | null = null;
     try {
       const { relatorio } = await this.montarRelatorioParaPdf(funcionarioId, mes, ano);
+      relatorioMes = relatorio;
       const hojeIso = hojeBrasiliaISO();
-      temDiasIrregulares = relatorio.dias.some(
-        (d) => (d.statusInterno === "FALTA" || d.statusInterno === "PENDENTE") && d.iso !== hojeIso
-      );
+      for (const d of relatorio.dias) {
+        if (d.statusInterno !== "INCONSISTENTE" || d.iso === hojeIso) continue;
+        let motivo: string;
+        if (d.cicloIncompleto) {
+          motivo = d.cicloIncompleto.replace(/^Ciclo incompleto( em casa)? — falta: /, "falta ");
+        } else if (!d.entrada) {
+          motivo = "há registros no dia, mas falta a entrada";
+        } else if (d.inicioIntervalo && !d.fimIntervalo) {
+          motivo = "intervalo sem retorno";
+        } else if (d.pausas.some((p) => !p.fim)) {
+          motivo = "pausa sem retorno";
+        } else if (!d.saida && !d.inicioIntervalo) {
+          motivo = d.pausas.length ? "sem registro de saída" : "apenas a entrada foi registrada";
+        } else if (!d.saida) {
+          motivo = "sem registro de saída";
+        } else {
+          motivo = "registro incompleto";
+        }
+        pendencias.dias.push({ iso: d.iso, status: "INCONSISTENTE", motivo });
+      }
     } catch (err) {
       this.logger.warn(
         `avaliarSaldoFolha: falha ao montar relatório ${mes}/${ano} func ${funcionarioId}: ${String(err)}`
       );
-      temDiasIrregulares = true;
+      pendencias.erroConferencia = true;
     }
 
     const mm = String(mes).padStart(2, "0");
@@ -1187,24 +2134,61 @@ export class AssinaturaService {
     const { inicio } = intervaloDiaBrasilia(`${ano}-${mm}-01`);
     const { fim } = intervaloDiaBrasilia(`${ano}-${mm}-${String(ultimoDia).padStart(2, "0")}`);
 
-    const solPendente = await this.prisma.solicitacao.findFirst({
+    const solsPendentes = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId,
-        tipo: { in: ["CORRECAO_PONTO", "ATESTADO"] },
+        /* Qualquer solicitação em andamento que mexa na folha do mês (correção, atestado,
+           abono, férias, licença, day off, hora extra). Só o envio de documento ao RH e
+           as solicitações apenas informativas (isentos) não afetam a folha. */
+        tipo: { not: "ENVIO_DOCUMENTO_RH" },
+        apenasInformativo: false,
         status: { in: [...STATUS_SOLICITACAO_EM_ANDAMENTO] },
         OR: [
           { dataReferencia: { gte: inicio, lte: fim } },
           { dataInicio: { lte: fim }, dataFim: { gte: inicio } }
         ]
       },
-      select: { id: true }
+      select: {
+        id: true,
+        tipo: true,
+        status: true,
+        dataReferencia: true,
+        dataInicio: true,
+        dataFim: true
+      },
+      orderBy: { dataReferencia: "asc" }
     });
+    /* Pedidos idênticos (mesmo tipo, período e etapa) aparecem uma vez só na lista. */
+    const jaListadas = new Set<string>();
+    for (const sol of solsPendentes) {
+      const ini = sol.dataInicio ?? sol.dataReferencia;
+      const chave = [
+        sol.tipo,
+        sol.status,
+        dataBrasiliaISO(ini),
+        dataCivilFimAfastamento(ini, sol.dataFim ?? ini)
+      ].join("|");
+      if (jaListadas.has(chave)) continue;
+      jaListadas.add(chave);
+      pendencias.solicitacoes.push({
+        id: sol.id,
+        tipo: sol.tipo,
+        tipoLabel: TIPO_SOLICITACAO_LABEL_FOLHA[sol.tipo] ?? sol.tipo,
+        status: sol.status,
+        etapa: ETAPA_SOLICITACAO_FOLHA[sol.status] ?? "em andamento",
+        inicio: dataBrasiliaISO(ini),
+        fim: dataCivilFimAfastamento(ini, sol.dataFim ?? ini)
+      });
+    }
 
-    const temSolicitacoesPendentes = !!solPendente;
+    const temDiasIrregulares = pendencias.dias.length > 0 || pendencias.erroConferencia;
+    const temSolicitacoesPendentes = pendencias.solicitacoes.length > 0;
     return {
       temDiasIrregulares,
       temSolicitacoesPendentes,
-      saldoRegularizado: !temDiasIrregulares && !temSolicitacoesPendentes
+      saldoRegularizado: !temDiasIrregulares && !temSolicitacoesPendentes,
+      pendencias,
+      relatorio: relatorioMes
     };
   }
 
@@ -1277,7 +2261,8 @@ export class AssinaturaService {
       dias: Array<{ statusInterno: string }>;
       horasTrabalhadasMinutos: number;
       saldoMinutos: number;
-    }
+    },
+    bancoMes?: { saldoAntesMinutos: number; saldoFinalMinutos: number }
   ): Promise<ResumoBadgesPdf> {
     const diasOk = relatorio.dias.filter((d) => d.statusInterno === "OK").length;
     const faltas = relatorio.dias.filter((d) => d.statusInterno === "FALTA").length;
@@ -1291,35 +2276,22 @@ export class AssinaturaService {
       { month: "short", year: "numeric" }
     );
 
+    /* Acumulado do ciclo até o mês anterior e no fim do mês: mesma conta da página do banco. */
     let saldoAcumuladoMesAnteriorMinutos = 0;
+    let totalAcumuladoMinutos: number | null = null;
     if (!ocultarBancoHoras) {
       try {
-        const bh = await this.auditoriaService.getBancoHorasFuncionario(funcionarioId);
-        const mesPrefixInicio = `${ano}-${String(mes).padStart(2, "0")}-01`;
-        const diasAntes = (bh.dias ?? [])
-          .filter((d: { data: string }) => d.data < mesPrefixInicio)
-          .sort((a: { data: string }, b: { data: string }) =>
-            a.data < b.data ? -1 : a.data > b.data ? 1 : 0
-          );
-        if (diasAntes.length > 0) {
-          saldoAcumuladoMesAnteriorMinutos =
-            diasAntes[diasAntes.length - 1].saldoAcumuladoMinutos ?? 0;
-        } else {
-          const mesPrefix = `${ano}-${String(mes).padStart(2, "0")}`;
-          const bancoMes = (bh.dias ?? [])
-            .filter((d: { data: string }) => d.data.startsWith(mesPrefix))
-            .sort((a: { data: string }, b: { data: string }) =>
-              a.data < b.data ? -1 : a.data > b.data ? 1 : 0
-            );
-          if (bancoMes.length > 0) {
-            const primeiro = bancoMes[0] as {
-              saldoAcumuladoMinutos: number;
-              saldoDiaMinutos: number;
-            };
-            saldoAcumuladoMesAnteriorMinutos =
-              primeiro.saldoAcumuladoMinutos - primeiro.saldoDiaMinutos;
-          }
-        }
+        const mm = String(mes).padStart(2, "0");
+        const ultimo = new Date(ano, mes, 0).getDate();
+        const b =
+          bancoMes ??
+          (await this.auditoriaService.bancoHorasDoIntervalo(
+            funcionarioId,
+            `${ano}-${mm}-01`,
+            `${ano}-${mm}-${String(ultimo).padStart(2, "0")}`
+          ));
+        saldoAcumuladoMesAnteriorMinutos = b.saldoAntesMinutos;
+        totalAcumuladoMinutos = b.saldoFinalMinutos;
       } catch (err) {
         this.logger.warn(`montarResumoBadgesPdf: falha ao obter banco de horas — ${String(err)}`);
       }
@@ -1335,7 +2307,42 @@ export class AssinaturaService {
       saldoAcumuladoMesAnteriorMinutos,
       labelMesAnterior,
       saldoMesMinutos,
-      totalAcumuladoMinutos: saldoAcumuladoMesAnteriorMinutos + saldoMesMinutos
+      totalAcumuladoMinutos:
+        totalAcumuladoMinutos ?? saldoAcumuladoMesAnteriorMinutos + saldoMesMinutos
+    };
+  }
+
+  /** Dados do empregador e da jornada contratual exibidos no Espelho de Ponto. */
+  private async montarEspelhoExtras(
+    funcionario: { dataAdmissao: Date | null },
+    jornada: { atualMin: number; horaEntrada?: string; horaSaida?: string }
+  ): Promise<EspelhoExtrasPdf> {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: {
+        nome: true,
+        cnpj: true,
+        bancoHorasSabadoPct: true,
+        bancoHorasDomingoPct: true,
+        bancoHorasFeriadoPct: true
+      }
+    });
+    const h = (min: number) => `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+    const semanal = jornada.atualMin * 5;
+    return {
+      razaoSocial: (cfg?.nome ?? "Conselho Federal de Odontologia").toUpperCase(),
+      cnpj: cfg?.cnpj ?? null,
+      dataAdmissao: funcionario.dataAdmissao,
+      jornadaContratual: `${h(jornada.atualMin)}/dia – ${h(semanal)} semanais`,
+      horarioContratual:
+        jornada.horaEntrada && jornada.horaSaida
+          ? `${jornada.horaEntrada} às ${jornada.horaSaida}`
+          : "—",
+      multiplicadores: {
+        sabadoPct: cfg?.bancoHorasSabadoPct ?? 100,
+        domingoPct: cfg?.bancoHorasDomingoPct ?? 200,
+        feriadoPct: cfg?.bancoHorasFeriadoPct ?? 200
+      }
     };
   }
 
@@ -1351,21 +2358,29 @@ export class AssinaturaService {
     });
     if (!funcionario) throw new NotFoundException("Funcionário não encontrado");
 
-    const { relatorio, jornada } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
+    const { relatorio, jornada, bancoMes } = await this.montarRelatorioParaPdf(
+      funcionario.id,
+      mes,
+      ano
+    );
     const jornadaHorasExibicao = Math.round(jornada.atualMin / 60);
     const resumoBadges = await this.montarResumoBadgesPdf(
       funcionario.id,
       funcionario.categoria,
       mes,
       ano,
-      relatorio
+      relatorio,
+      bancoMes
     );
 
     const logoBase64 = loadAssetBase64("logo.png");
 
+    const espelho = await this.montarEspelhoExtras(funcionario, jornada);
     const docDefinition = buildRascunhoPdfDocDefinition({
       mes,
       ano,
+      espelho,
+      verificacao: { url: null, codigo: null, seloAtivo: this.seloIcpService.status().configurado },
       funcionario: {
         matricula: funcionario.matricula,
         cpf: funcionario.cpf,
@@ -1491,7 +2506,7 @@ export class AssinaturaService {
       const yyyyMM = `${ano}-${String(mes).padStart(2, "0")}`;
       const doMes = diasPorMes.get(yyyyMM) ?? [];
       const trabalhadoMinutos = doMes
-        .filter((d) => d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+        .filter((d) => ["OK", "PENDENTE", "INCONSISTENTE"].includes(d.statusInterno))
         .reduce((s, d) => s + d.horasMin, 0);
       const saldoMesMinutos = doMes
         .filter((d) => d.saldoMin !== null)
@@ -1517,11 +2532,9 @@ export class AssinaturaService {
     });
 
     const horasTrabalhadasMinutos = dias
-      .filter((d) => d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
+      .filter((d) => ["OK", "PENDENTE", "INCONSISTENTE"].includes(d.statusInterno))
       .reduce((s, d) => s + d.horasMin, 0);
-    const diasTrabalhados = dias.filter(
-      (d) => d.horasMin > 0 && (d.statusInterno === "OK" || d.statusInterno === "PENDENTE")
-    ).length;
+    const diasTrabalhados = contarDiasTrabalhados(dias);
     const horasEsperadasMinutos = dias.reduce((s, d) => {
       if (d.statusInterno === "FUTURO" || d.statusInterno === "FOLGA") return s;
       if (d.statusInterno === "AFASTAMENTO") return s;
@@ -1578,7 +2591,14 @@ export class AssinaturaService {
     const pdfInput = {
       mes: mesRef,
       ano: anoRef,
+      espelho: await this.montarEspelhoExtras(funcionario, jornada),
       cicloBancoHoras: { inicio: inicioIso, fim: fimIso, mesesResumo },
+      verificacao: this.montarVerificacao({
+        assinadoFuncionarioEm: assinaturaCiclo?.assinadoEm ?? null,
+        assinadoFuncionarioIp: assinaturaCiclo?.assinadoIp ?? null,
+        matricula: funcionario.matricula,
+        periodo: `${inicioIso}/${fimIso}`
+      }),
       funcionario: {
         matricula: funcionario.matricula,
         cpf: funcionario.cpf,
@@ -1635,6 +2655,13 @@ export class AssinaturaService {
   }
 
   async gerarPdfQuadro(assinaturaId: string): Promise<Buffer> {
+    return this.congelarPdfFinal(assinaturaId);
+  }
+
+  /** Entrada do PDF da folha + impressão digital dos dados exibidos (sem horário de emissão). */
+  private async montarEntradaPdfQuadro(
+    assinaturaId: string
+  ): Promise<{ input: QuadroPdfInput; fingerprint: string }> {
     this.logger.log(`gerarPdfQuadro iniciado para: ${assinaturaId}`);
     const assinatura = await this.prisma.assinaturaQuadro.findUnique({
       where: { id: assinaturaId },
@@ -1659,14 +2686,19 @@ export class AssinaturaService {
     const { mes, ano } = periodo;
 
     this.logger.log(`Buscando relatório para funcionário ${funcionario.id}, ${mes}/${ano}`);
-    const { relatorio } = await this.montarRelatorioParaPdf(funcionario.id, mes, ano);
+    const { relatorio, bancoMes, jornada } = await this.montarRelatorioParaPdf(
+      funcionario.id,
+      mes,
+      ano
+    );
     this.logger.log(`Relatório OK — ${relatorio.dias.length} dias`);
     const resumoBadges = await this.montarResumoBadgesPdf(
       funcionario.id,
       funcionario.categoria,
       mes,
       ano,
-      relatorio
+      relatorio,
+      bancoMes
     );
 
     const logoBase64 = loadAssetBase64("logo.png");
@@ -1676,16 +2708,95 @@ export class AssinaturaService {
     if (certificadoBase64) this.logger.log("Ícone de certificado digital carregado");
     else this.logger.warn("Ícone de certificado digital não encontrado");
 
-    const docDefinition = buildQuadroPdfDocDefinition({
+    const espelho = await this.montarEspelhoExtras(funcionario, jornada);
+    const verificacao = this.montarVerificacao({
+      assinadoFuncionarioEm: assinatura.assinadoFuncionarioEm,
+      assinadoFuncionarioIp: assinatura.assinadoFuncionarioIp,
+      matricula: funcionario.matricula,
+      periodo: `${mes}/${ano}`
+    });
+    const input: QuadroPdfInput = {
       mes,
       ano,
+      espelho,
+      verificacao,
       funcionario,
       assinatura,
       relatorio,
       logoBase64,
       certificadoBase64,
       resumoBadges
-    });
+    };
+    /* Só o que aparece no documento (nada de updatedAt, último login, data do download…). */
+    const conteudo = {
+      layout: VERSAO_LAYOUT_PDF,
+      mes,
+      ano,
+      status: assinatura.status,
+      assinaturas: {
+        funcionarioEm: assinatura.assinadoFuncionarioEm,
+        funcionarioIp: assinatura.assinadoFuncionarioIp,
+        funcionarioGw: assinatura.assinadoFuncionarioIpGateway,
+        funcionarioUa: assinatura.assinadoFuncionarioUserAgent,
+        gestorEm: assinatura.assinadoGestorEm,
+        gestorIp: assinatura.assinadoGestorIp,
+        gestorGw: assinatura.assinadoGestorIpGateway,
+        gestorUa: assinatura.assinadoGestorUserAgent,
+        gestorNome: assinatura.assinadoGestorNome,
+        banco: assinatura.bancoHorasSaldoTotalMinutos
+      },
+      funcionario: {
+        nome: funcionario.user.name,
+        matricula: funcionario.matricula,
+        cpf: funcionario.cpf,
+        cargo: funcionario.cargo,
+        secao: funcionario.section,
+        categoria: funcionario.categoria,
+        chefe: funcionario.isManager,
+        gerencia: funcionario.gerencia
+          ? [funcionario.gerencia.nome, funcionario.gerencia.sigla]
+          : null
+      },
+      relatorio,
+      resumoBadges,
+      espelho,
+      verificacao
+    };
+    const fingerprint = createHash("sha256").update(JSON.stringify(conteudo)).digest("hex");
+    if (verificacao.url) {
+      const chave = await this.chaveSeloDocumentos();
+      const numero = this.numeroRegistro(mes, ano, fingerprint);
+      const registro: RegistroDocumentoPdf = {
+        numero,
+        urlPagina: (p, t) =>
+          `${verificacao.url}?r=${numero}&p=${p}&t=${t}&s=${this.seloPagina(chave, numero, p, t)}`
+      };
+      input.registro = registro;
+    }
+    return { input, fingerprint };
+  }
+
+  private async renderizarPdfQuadro(input: QuadroPdfInput): Promise<Buffer> {
+    /* Impressão liberada; cópia de texto, edição, montagem e conversão bloqueadas (senha de
+       proprietário aleatória, descartada). Com o selo ICP-Brasil ativo, a proteção passa a ser a
+       assinatura PAdES (o PDF criptografado não pode receber a assinatura). */
+    const docDefinition = {
+      ...buildQuadroPdfDocDefinition(input),
+      ...(this.seloIcpService.status().configurado
+        ? {}
+        : {
+            ownerPassword: randomBytes(24).toString("hex"),
+            permissions: {
+              printing: "highResolution",
+              modifying: false,
+              copying: false,
+              annotating: false,
+              fillingForms: false,
+              contentAccessibility: true,
+              documentAssembly: false
+            }
+          })
+    };
 
     if (!PdfPrinter) {
       throw new InternalServerErrorException(

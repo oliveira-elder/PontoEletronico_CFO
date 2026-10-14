@@ -1,4 +1,9 @@
 import {
+  contentDispositionAnexo,
+  nomeArquivoRelatorioCiclo,
+  nomeArquivoRelatorioMes
+} from "../../utils/nome-arquivo";
+import {
   Controller,
   Get,
   Post,
@@ -11,12 +16,16 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
   ForbiddenException,
-  BadRequestException
+  BadRequestException,
+  HttpException,
+  HttpStatus
 } from "@nestjs/common";
 import { Response } from "express";
 import { AuthGuard } from "@nestjs/passport";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
+import { PermissaoRhGuard } from "../auth/permissao-rh.guard";
+import { RecursoRh } from "../auth/recurso-rh.decorator";
 import { AssinaturaService, SignatureMeta } from "./assinatura.service";
 
 interface AuthRequest {
@@ -85,6 +94,12 @@ export class AssinaturaController {
     );
   }
 
+  /** Folhas de ponto totalmente assinadas (para baixar como documento) e as pendentes. */
+  @Get("folhas")
+  getMinhasFolhas(@Req() req: AuthRequest) {
+    return this.assinaturaService.listarFolhasAssinadasPorSub(req.user.sub);
+  }
+
   /** Ciclo encerrado do banco de horas: lista folhas mês a mês (cria sob demanda). */
   @Get("ciclo-banco-horas")
   getAssinaturasCicloBancoHoras(
@@ -113,7 +128,7 @@ export class AssinaturaController {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="ciclo-banco-horas-${inicio}_${fim}.pdf"`
+      contentDispositionAnexo(nomeArquivoRelatorioCiclo(inicio, fim))
     );
     res.send(pdf);
   }
@@ -161,9 +176,11 @@ export class AssinaturaController {
     @Res() res: import("express").Response
   ) {
     const pdf = await this.assinaturaService.gerarRascunhoPdf(req.user.sub, mes, ano);
-    const nomeMes = String(mes).padStart(2, "0");
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="rascunho-${nomeMes}-${ano}.pdf"`);
+    res.setHeader(
+      "Content-Disposition",
+      contentDispositionAnexo(nomeArquivoRelatorioMes(mes, ano, { rascunho: true }))
+    );
     res.send(pdf);
   }
 
@@ -184,11 +201,10 @@ export class AssinaturaController {
     if (!pertence) throw new ForbiddenException("Este PDF não pertence ao seu quadro");
 
     const pdf = await this.assinaturaService.gerarPdfQuadro(id);
-    const matricula = assinatura.periodo.funcionario.matricula ?? id;
-    const filename = `quadro-${matricula}-${String(assinatura.periodo.mes).padStart(2, "0")}-${assinatura.periodo.ano}.pdf`;
+    const filename = nomeArquivoRelatorioMes(assinatura.periodo.mes, assinatura.periodo.ano);
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Disposition", contentDispositionAnexo(filename));
     res.send(pdf);
   }
 }
@@ -196,7 +212,7 @@ export class AssinaturaController {
 /* ─── Rotas do Gestor e RH: /auditoria/... ─── */
 
 @Controller("auditoria")
-@UseGuards(AuthGuard("jwt"), RolesGuard)
+@UseGuards(AuthGuard("jwt"), RolesGuard, PermissaoRhGuard)
 export class AssinaturaAuditoriaController {
   constructor(private readonly assinaturaService: AssinaturaService) {}
 
@@ -245,6 +261,7 @@ export class AssinaturaAuditoriaController {
 
   /* RH — listar todas as assinaturas */
 
+  @RecursoRh("auditoria.validacoes")
   @Get("assinaturas")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   getAssinaturasRH(
@@ -267,8 +284,16 @@ export class AssinaturaAuditoriaController {
     });
   }
 
+  /* RH — estado do selo ICP-Brasil (e-CNPJ A1) */
+  @Get("selo-icp/status")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  statusSeloIcp() {
+    return this.assinaturaService.statusSeloIcp();
+  }
+
   /* RH — verificar / buscar por código de assinatura digital */
 
+  @RecursoRh("auditoria.validacoes")
   @Get("assinaturas/verificar")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   verificarCodigoAssinatura(@Query("codigo") codigo?: string) {
@@ -280,14 +305,35 @@ export class AssinaturaAuditoriaController {
 
   /* RH — disparo manual de geração de assinaturas */
 
+  @RecursoRh("auditoria.validacoes")
+  @Get("assinaturas/previa-mes")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  previaMes(@Query("mes") mes: string, @Query("ano") ano: string) {
+    return this.assinaturaService.previaAssinaturasMes(Number(mes), Number(ano));
+  }
+
+  @RecursoRh("auditoria.validacoes.gerar")
   @Post("assinaturas/gerar-mes")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
-  gerarMes(@Body() body: { mes: number; ano: number }) {
-    return this.assinaturaService.criarAssinaturasMensais(body.mes, body.ano);
+  gerarMes(@Body() body: { mes: number; ano: number; funcionarioIds?: string[] }) {
+    return this.assinaturaService.criarAssinaturasMensais(
+      body.mes,
+      body.ano,
+      Array.isArray(body.funcionarioIds) ? body.funcionarioIds : undefined
+    );
+  }
+
+  /** Folhas assinadas de um funcionário (RH), com o PDF pronto para baixar. */
+  @RecursoRh("auditoria.funcionarios", "auditoria.validacoes")
+  @Get("funcionarios/:id/folhas-assinadas")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  getFolhasAssinadasFuncionario(@Param("id") id: string) {
+    return this.assinaturaService.listarFolhasAssinadasDoFuncionario(id);
   }
 
   /* Download PDF */
 
+  @RecursoRh("auditoria.validacoes")
   @Get("assinaturas/:id/pdf")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN", "GESTOR_APROVACAO", "gestor")
   async getPdf(@Param("id") id: string, @Res() res: Response) {
@@ -295,13 +341,78 @@ export class AssinaturaAuditoriaController {
 
     const assinatura = await this.assinaturaService.getAssinaturaParaPdf(id);
 
-    const matricula = assinatura?.periodo?.funcionario?.matricula ?? id;
-    const mes = assinatura?.periodo?.mes ?? 0;
-    const ano = assinatura?.periodo?.ano ?? 0;
-    const filename = `quadro-${matricula}-${String(mes).padStart(2, "0")}-${ano}.pdf`;
+    const mes = assinatura?.periodo?.mes ?? 1;
+    const ano = assinatura?.periodo?.ano ?? new Date().getFullYear();
+    const nomePessoa = (
+      assinatura?.periodo?.funcionario as { user?: { name?: string } } | undefined
+    )?.user?.name;
+    /* Documento de outra pessoa: o nome vai no arquivo para não colidir. */
+    const filename = nomeArquivoRelatorioMes(mes, ano, { nomePessoa });
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Disposition", contentDispositionAnexo(filename));
     res.send(pdf);
+  }
+}
+
+/**
+ * Verificação PÚBLICA (sem login) da autenticidade de uma folha assinada — destino do QR Code da
+ * declaração. Só devolve dados mínimos; limitada por IP para evitar varredura de códigos.
+ */
+@Controller("ponto/verificar")
+export class VerificacaoPublicaController {
+  private readonly tentativas = new Map<string, number[]>();
+
+  constructor(private readonly assinaturaService: AssinaturaService) {}
+
+  private limitar(ip: string) {
+    const agora = Date.now();
+    const janela = (this.tentativas.get(ip) ?? []).filter((t) => agora - t < 60_000);
+    if (janela.length >= 20) {
+      throw new HttpException("Muitas consultas. Aguarde um minuto.", HttpStatus.TOO_MANY_REQUESTS);
+    }
+    janela.push(agora);
+    this.tentativas.set(ip, janela);
+  }
+
+  /** Conferência automática do CONTEÚDO (texto do PDF ou OCR da foto) com o original. */
+  @Post("conteudo")
+  compararConteudo(
+    @Body()
+    body: { codigo?: string; registro?: string; linhas?: string[]; origem?: "pdf" | "ocr" },
+    @Req() req: { ip?: string; headers: Record<string, string | string[] | undefined> }
+  ) {
+    const xff = req.headers["x-forwarded-for"];
+    const ip = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim() ?? req.ip ?? "?";
+    this.limitar(ip);
+    return this.assinaturaService.compararConteudoPublico(body ?? {});
+  }
+
+  /** Conferência pelo arquivo: o navegador calcula o SHA-256 do PDF e envia só o hash. */
+  @Get("arquivo/:sha256")
+  verificarArquivo(
+    @Param("sha256") sha256: string,
+    @Req() req: { ip?: string; headers: Record<string, string | string[] | undefined> }
+  ) {
+    const xff = req.headers["x-forwarded-for"];
+    const ip = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim() ?? req.ip ?? "?";
+    this.limitar(ip);
+    return this.assinaturaService.verificarArquivoPublico(sha256);
+  }
+
+  @Get(":codigo")
+  verificar(
+    @Param("codigo") codigo: string,
+    @Query("sha256") sha256: string | undefined,
+    @Query("r") r: string | undefined,
+    @Query("p") p: string | undefined,
+    @Query("t") t: string | undefined,
+    @Query("s") selo: string | undefined,
+    @Req() req: { ip?: string; headers: Record<string, string | string[] | undefined> }
+  ) {
+    const xff = req.headers["x-forwarded-for"];
+    const ip = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim() ?? req.ip ?? "?";
+    this.limitar(ip);
+    return this.assinaturaService.verificarDocumentoPublico(codigo, sha256, { r, p, t, s: selo });
   }
 }

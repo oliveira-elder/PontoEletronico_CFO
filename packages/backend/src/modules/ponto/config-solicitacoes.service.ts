@@ -6,13 +6,15 @@ const DEFAULTS = {
   atestadoDiasLimiteInss: 14,
   atestadoPrazoEnvioDias: 2,
   atestadoTempoRetornoMin: 60,
+  atestadoTempoIdaMin: 60,
   atestadoMensagemOriginais: "Os originais devem ser entregues ao setor de RH.",
   feriasAntecedenciaMinDias: 30,
   feriasMinimoGrandePeriodo: 14,
   feriasMinimoOutrosPeriodos: 5,
   feriasMaxPeriodos: 3,
   feriasMaxDiasVenda: 10,
-  feriasVedacaoPreFeriadoDias: 2,
+  feriasVedacaoPreFeriadoDias: 1,
+  feriasRodadaAvisoDias: 45,
   tipoAtivoCorrecaoPonto: true,
   tipoAtivoAtestado: true,
   tipoAtivoFerias: true,
@@ -20,7 +22,10 @@ const DEFAULTS = {
   tipoAtivoAbono: true,
   tipoAtivoDayOff: true,
   tipoAtivoHoraExtra: true,
-  tipoAtivoEnvioDocumentoRh: true
+  tipoAtivoEnvioDocumentoRh: true,
+  abonoAlemLimiteLiberadoRh: true,
+  abonoCotaDiasDoisCiclos: 0,
+  atestadoCidModo: "OBRIGATORIO" as string
 };
 
 export type ConfigSolicitacoesData = typeof DEFAULTS;
@@ -41,6 +46,16 @@ export class ConfigSolicitacoesService {
     const safe: Partial<ConfigSolicitacoesData> = {};
     for (const key of allowed) {
       if (key in data) (safe as Record<string, unknown>)[key] = data[key];
+    }
+    if ("atestadoCidModo" in safe) {
+      const modo = String(safe.atestadoCidModo);
+      safe.atestadoCidModo = ["OBRIGATORIO", "OPCIONAL", "DESATIVADO"].includes(modo)
+        ? modo
+        : "OBRIGATORIO";
+    }
+    if ("abonoCotaDiasDoisCiclos" in safe) {
+      const n = Math.floor(Number(safe.abonoCotaDiasDoisCiclos));
+      safe.abonoCotaDiasDoisCiclos = Number.isFinite(n) ? Math.min(365, Math.max(0, n)) : 0;
     }
     return this.prisma.configuracaoSolicitacoes.upsert({
       where: { id: "singleton" },

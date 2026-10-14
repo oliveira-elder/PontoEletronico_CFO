@@ -1,7 +1,7 @@
 import { somarDiasCivil } from "./horario-brasilia";
 
 /** Categorias com carga horária corrida — sem intervalo de almoço no ponto. */
-export const CATEGORIAS_SEM_INTERVALO_ALMOCO = ["ESTAGIARIO"] as const;
+export const CATEGORIAS_SEM_INTERVALO_ALMOCO = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
 
 export type CategoriaSemIntervaloAlmoco = (typeof CATEGORIAS_SEM_INTERVALO_ALMOCO)[number];
 
@@ -23,8 +23,15 @@ export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | un
 }
 
 export function labelCategoriaSemIntervalo(categoria: string): string {
-  void categoria;
-  return "Estagiário";
+  return categoria === "MENOR_APRENDIZ" ? "Jovem aprendiz" : "Estagiário";
+}
+
+/** Estagiário e jovem aprendiz não fazem hora extra: o excedente é só informativo. */
+export const CATEGORIAS_SEM_HORA_EXTRA = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+
+export function categoriaSemHoraExtra(categoria: string | null | undefined): boolean {
+  if (!categoria) return false;
+  return (CATEGORIAS_SEM_HORA_EXTRA as readonly string[]).includes(categoria);
 }
 
 /** Categorias sem obrigação de bater ponto por si só (independente de isManager/isFiscal). */
@@ -51,6 +58,11 @@ export type SituacaoRegistroPonto = {
   registroPontoObrigatorio?: boolean | null;
 };
 
+/** Alguma vigência do histórico já era sem obrigação de ponto (chefe/comissionado)? */
+function historicoTemIsencao(historico: VigenciaCategoria[]): boolean {
+  return historico.some((v) => funcionarioSemRegistroPonto(v));
+}
+
 /** true = sem obrigação de ponto. Fonte única de verdade para funcionário (situação atual ou vigência histórica). */
 export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
   if (s.registroPontoObrigatorio === true) return false;
@@ -60,7 +72,7 @@ export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
 
 export function labelSemRegistroPonto(s: SituacaoRegistroPonto): string {
   if (s.isManager) return "Chefe";
-  if (s.isFiscal) return "Fiscal";
+  if (s.isFiscal) return "Assessor";
   return "Comissionado";
 }
 
@@ -72,6 +84,10 @@ export type VigenciaCategoria = {
   categoria: string;
   /** Era chefe (isManager) durante esta vigência — ver FuncionarioCategoriaHistorico.isManager. */
   isManager?: boolean;
+  /** Fiscal durante esta vigência (histórico de isenção). */
+  isFiscal?: boolean;
+  /** Override "registro de ponto" do RH durante esta vigência. */
+  registroPontoObrigatorio?: boolean | null;
   vigenciaDesde: string; // YYYY-MM-DD
   vigenciaAte: string | null; // YYYY-MM-DD ou null = vigente
 };
@@ -116,7 +132,14 @@ export function diaSemObrigacaoPonto(
 
   if (historico.length > 0) {
     const v = vigenciaNaData(diaIso, historico);
-    if (v) return funcionarioSemRegistroPonto(v);
+    if (v) {
+      if (funcionarioSemRegistroPonto(v)) return true;
+      /* O histórico guarda só categoria e "é chefe". Indicadores sem histórico (fiscal e o
+         "ponto obrigatório" manual) valem pelo cadastro atual quando o histórico não tem
+         nenhum período isento — igual ao Histórico do funcionário. Sem isso, um fiscal
+         aparecia com falta e não conseguia assinar a folha. */
+      return !historicoTemIsencao(historico) && funcionarioSemRegistroPonto(atual);
+    }
 
     /* Antes de qualquer vigência registrada */
     const primeira = [...historico].sort((a, b) =>
@@ -166,6 +189,12 @@ export function periodosSemObrigacaoPonto(
     if (funcionarioSemRegistroPonto(v)) {
       periodos.push({ inicio: v.vigenciaDesde, fim: v.vigenciaAte });
     }
+  }
+
+  /* Fiscal / "ponto obrigatório" manual não têm histórico: sem nenhum período isento no
+     histórico, valem os indicadores do cadastro atual (mesma regra de diaSemObrigacaoPonto). */
+  if (periodos.length === 0 && funcionarioSemRegistroPonto(atual)) {
+    periodos.push({ inicio: "1900-01-01", fim: null });
   }
 
   return periodos;

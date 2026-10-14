@@ -3,10 +3,32 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
-  Logger
+  Logger,
+  OnModuleInit
 } from "@nestjs/common";
 import { TipoPonto, OrigemPonto, Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
+import { listarTiposLicenca } from "../../utils/licenca-db";
+import {
+  datasUsadasDoTipo,
+  resumoRegra,
+  validarPedidoLicenca,
+  type TipoLicencaRegra
+} from "../../utils/licenca-regras";
+import {
+  STATUS_SOLICITACAO_COTA_EM_USO,
+  janelaDoDia,
+  validarCotaAbono
+} from "../../utils/abono-cota";
+import {
+  alocarCredito,
+  calcularMinutosDoAbono,
+  fmtHoraMin,
+  aplicarLiberacoesNoExtrato,
+  situacaoDasLiberacoes,
+  totalDisponivel
+} from "../../utils/banco-horas-liberacao";
+import { carregarLiberacoes, carregarUsoCredito } from "../../utils/banco-horas-liberacao-db";
 import { FotoService } from "./foto.service";
 import { DocumentoService } from "./documento.service";
 import { FeriadoConfigService } from "./feriado-config.service";
@@ -15,13 +37,17 @@ import { ConfigSolicitacoesService } from "./config-solicitacoes.service";
 import { CreateRegistroDto } from "./dto/create-registro.dto";
 import {
   dataBrasiliaISO,
+  dataCivilPeriodo,
   dataCivilISO,
   dataCivilFimAfastamento,
   horarioDeDataBrasilia,
   horarioParaMinutos,
+  aplicarHorarioBrasilia,
   hojeBrasiliaISO,
   intervaloColunaDate,
   intervaloDiaBrasilia,
+  fimDiaCivilBrasilia,
+  minutosParaHorario,
   validarHorarioPermitido
 } from "../../utils/horario-brasilia";
 import { appendObservacao } from "../../utils/registro-observacoes";
@@ -36,7 +62,10 @@ import {
   calcularJornadaComAtestadoParcial,
   calcularJornadaComAtestadosParciais,
   calcularJanelasEfetivasComCreditoDeslocamento,
+  calcularCreditoDeslocamentoIda,
   encontrarRetornoAposAtestado,
+  encontrarSaidaAntesDoAtestado,
+  saidaEhAlmoco,
   prepararRegsCalculoAtestadosParciais,
   isAfastamentoParcial,
   labelAtestadosParciais,
@@ -58,6 +87,7 @@ import {
 } from "../../utils/turno-entrada";
 import {
   categoriaSemIntervaloAlmoco,
+  categoriaSemHoraExtra,
   funcionarioSemRegistroPonto,
   categoriaSemVisibilidadeBancoHoras,
   diaSemObrigacaoPonto,
@@ -67,8 +97,54 @@ import {
   type CategoriaSemIntervaloAlmoco
 } from "../../utils/categoria-jornada";
 import { ensureCategoriaHistorico } from "../../utils/categoria-historico";
+import { cedidoHoje, diaEmCessao, periodosCessao } from "../../utils/cessao-historico";
+import { ehDiaAbonado } from "../../utils/feriado-rotulo";
+import { montarDiaNeutro } from "../../utils/dias-neutros";
+import {
+  TIPOS_REQUERIMENTO_CADASTRO,
+  cpfValido,
+  syncCapacitacoes,
+  syncDependentes,
+  syncFormacoesAcademicas,
+  type CapacitacaoInput,
+  type DependenteInput,
+  type FormacaoAcademicaInput
+} from "../../utils/cadastro-listas";
 import { calcHorasTrabalhadasMinutos } from "../../utils/calc-horas-trabalhadas";
 import { resolverCicloBancoHoras, listarCiclosBancoHoras } from "../../utils/banco-horas-marco";
+import { toleranciaFechamentoDias } from "../../utils/tolerancia-fechamento";
+import { codigoCienciaGestorExibido } from "../../utils/assinatura-codigo";
+import { exigenciasCicloPresencial } from "../../utils/ciclo-completo-presencial";
+import { cicloCompleto } from "../../utils/ciclo-completo";
+import {
+  type AvisoInterjornada,
+  calcularInterjornada,
+  fmtDiaHoraBrasilia,
+  interjornadaCurtaPorDia,
+  mensagemInterjornada,
+  ultimaSaidaFechada
+} from "../../utils/interjornada";
+import {
+  intervalosDaSolicitacao,
+  periodosDoAbono,
+  validarPeriodosAbono
+} from "../../utils/abono-periodos";
+import {
+  diasCorridos,
+  somarDiasIso,
+  validarPeriodosEstagiario,
+  validarPeriodosFerias,
+  type CalendarioFerias
+} from "../../utils/ferias-regras";
+import { ordemArquivoRodada, rodadasDe, type RodadaFeriasMeta } from "../../utils/ferias-rodadas";
+import {
+  aplicarRegraHoraExtra,
+  carregarContextoHoraExtra,
+  rotulosModalidadePorDia,
+  contextoDoDia,
+  diasCicloCompletoEmCasa,
+  type AjusteHoraExtraDia
+} from "../../utils/hora-extra-decisao";
 import {
   validarItensCorrecaoPontoPausa,
   type ItemCorrecaoPonto
@@ -93,7 +169,7 @@ const TIPO_SOLICITACAO_LABEL: Record<string, string> = {
   CORRECAO_PONTO: "Correção de ponto",
   ATESTADO: "Atestado médico",
   FERIAS: "Férias",
-  LICENCA: "Licença",
+  LICENCA: "Licença e Outros",
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
@@ -278,9 +354,57 @@ const ESTADO_POR_FASE: Record<FaseJornada, "FORA" | "TRABALHANDO" | "INTERVALO" 
   ENCERRADA: "FORA"
 };
 
+/** Documento de férias enviado pelo RH, com a assinatura ou a rejeição do funcionário. */
+interface DocumentoFeriasMeta {
+  tipo: string;
+  rotulo?: string;
+  nome?: string | null;
+  url: string;
+  urlAssinado?: string;
+  assinatura?: Record<string, unknown>;
+  rejeicao?: { nome: string; em: string; justificativa: string };
+}
+
 @Injectable()
-export class PontoService {
+export class PontoService implements OnModuleInit {
   private readonly logger = new Logger(PontoService.name);
+
+  onModuleInit() {
+    this.migrarDocumentosEmbutidos().catch((e) =>
+      this.logger.warn(`Migração de documentos embutidos falhou: ${(e as Error).message}`)
+    );
+  }
+
+  /**
+   * Solicitações gravadas com o arquivo dentro de `metadados.documentoBase64` (ex.: abono
+   * enviado enquanto o backend ainda não salvava anexo de abono): salva o arquivo como
+   * documento e troca o base64 pelo `documentoUrl`. Idempotente — roda a cada início.
+   */
+  private async migrarDocumentosEmbutidos() {
+    const linhas = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "Solicitacao" WHERE metadados ? 'documentoBase64'`;
+    for (const { id } of linhas) {
+      const sol = await this.prisma.solicitacao.findUnique({
+        where: { id },
+        select: { id: true, funcionarioId: true, metadados: true }
+      });
+      const meta = { ...((sol?.metadados ?? {}) as Record<string, unknown>) };
+      if (!sol || typeof meta.documentoBase64 !== "string") continue;
+      const url = await this.documentoService.salvarDocumento({
+        funcionarioId: sol.funcionarioId,
+        solicitacaoId: sol.id,
+        arquivoBase64: meta.documentoBase64,
+        mimeType: typeof meta.documentoMime === "string" ? meta.documentoMime : undefined
+      });
+      delete meta.documentoBase64;
+      delete meta.documentoMime;
+      await this.prisma.solicitacao.update({
+        where: { id: sol.id },
+        data: { metadados: { ...meta, documentoUrl: url } as Prisma.InputJsonValue }
+      });
+      this.logger.log(`Documento embutido da solicitação ${sol.id} salvo em ${url}.`);
+    }
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -366,7 +490,8 @@ export class PontoService {
         configuracaoToleranciaCalculoMin: cfg?.toleranciaCalculoMin ?? null,
         configuracaoHoraExtraLimiteAuto: cfg?.horaExtraLimiteAuto ?? null
       }),
-      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin
+      atestadoTempoRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin,
+      atestadoTempoIdaMin: cfgSolicitacoes.atestadoTempoIdaMin
     };
   }
 
@@ -453,7 +578,19 @@ export class PontoService {
 
   /* Resolve Keycloak sub → User (via externalId) → Funcionario.
      Auto-cria o Funcionario se não existir (User já deve existir via /api/auth/me). */
+  /**
+   * Funcionário do usuário logado (`sub` do Keycloak) ou, em rotas do RH, a referência
+   * `@func:<id>` — assim os mesmos métodos servem ao RH que age em nome do funcionário.
+   */
   private async getFuncionario(keycloakSub: string) {
+    if (keycloakSub.startsWith("@func:")) {
+      const alvo = await this.prisma.funcionario.findUnique({
+        where: { id: keycloakSub.slice(6) },
+        include: { enderecoResidencial: true }
+      });
+      if (!alvo) throw new NotFoundException("Funcionário não encontrado.");
+      return alvo;
+    }
     const user = await this.prisma.user.findUnique({ where: { externalId: keycloakSub } });
     if (!user) {
       throw new NotFoundException("Perfil não sincronizado. Faça logout e login novamente.");
@@ -780,7 +917,13 @@ export class PontoService {
       const [janelaEfetivaHoje] = calcularJanelasEfetivasComCreditoDeslocamento(
         [{ horarioInicio: afastamento.horarioInicio, horarioFim: afastamento.horarioFim }],
         regsMinHoje,
-        cfgSolicitacoes.atestadoTempoRetornoMin
+        {
+          toleranciaRetornoMin: cfgSolicitacoes.atestadoTempoRetornoMin,
+          toleranciaIdaMin: cfgSolicitacoes.atestadoTempoIdaMin,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? undefined,
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? undefined
+        }
       );
       jornadaMinutos = calcularJornadaComAtestadoParcial(
         afastamento.horarioInicio,
@@ -838,6 +981,30 @@ export class PontoService {
       jornadaMinutos,
       proximaAcao: acoesPermitidas[0] ?? null,
       acoesPermitidas,
+      /* Descanso de interjornada em curso (só informativo; o bloqueio efetivo é no registro). */
+      interjornada: await this.interjornadaParaStatus(func.id),
+      /* Presencial: o dia exige o intervalo e ele ainda não foi registrado (só aviso; o registro
+         continua como sempre — sem o intervalo, o dia fica Pendente). */
+      intervaloPendenteParaFechar: await this.intervaloPendenteParaFechar(
+        func.id,
+        hojeIso,
+        inicio,
+        fim,
+        registros
+      ),
+      /* Em casa, a Saída só é aceita depois do intervalo (aviso na tela; o bloqueio é no registro). */
+      saidaExigeIntervalo:
+        fase === "MANHA" &&
+        (func.modoHomeOffice || func.modoHibridoLocal) &&
+        this.cicloCompletoAtivoEm(
+          (
+            await this.prisma.configuracaoSistema.findUnique({
+              where: { id: "singleton" },
+              select: { cicloCompletoEmCasaDesde: true }
+            })
+          )?.cicloCompletoEmCasaDesde,
+          hojeIso
+        ),
       afastamentoHoje,
       categoria: func.categoria,
       isManager: func.isManager,
@@ -951,6 +1118,12 @@ export class PontoService {
       tipo: r.tipo,
       minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora))
     }));
+    const jornadaDetalhe = await this.getJornadaEfetiva(funcionarioId);
+    const almocoMinMin = jornadaDetalhe.almocoMinMin ?? 60;
+    const janelaAlmocoDetalhe = {
+      podeIniciarA: jornadaDetalhe.almocoPodeIniciarA ?? undefined,
+      podeIniciarAte: jornadaDetalhe.almocoPodeIniciarAte ?? undefined
+    };
 
     const atestados = sols.map((s) => {
       const meta = (s.metadados && typeof s.metadados === "object" ? s.metadados : {}) as Record<
@@ -994,6 +1167,35 @@ export class PontoService {
         }
       }
 
+      /* Ida: saída do trabalho (saída, interrupção ou início do almoço) antes do início. */
+      let deslocamentoIda: {
+        deslocamentoRealMin: number;
+        creditoMin: number;
+        toleranciaMin: number;
+        horaSaida: string;
+        paraAlmoco: boolean;
+      } | null = null;
+      if (horarioInicio) {
+        const saida = encontrarSaidaAntesDoAtestado(regsMin, horarioInicio);
+        if (saida) {
+          const paraAlmoco = saidaEhAlmoco(saida, janelaAlmocoDetalhe);
+          const bruto = horarioParaMinutos(horarioInicio) - saida.minuto;
+          deslocamentoIda = {
+            deslocamentoRealMin: Math.max(0, bruto - (paraAlmoco ? almocoMinMin : 0)),
+            creditoMin: calcularCreditoDeslocamentoIda(
+              regsMin,
+              horarioInicio,
+              cfgSolicitacoes.atestadoTempoIdaMin,
+              almocoMinMin,
+              janelaAlmocoDetalhe
+            ),
+            toleranciaMin: cfgSolicitacoes.atestadoTempoIdaMin,
+            horaSaida: minutosParaHorario(saida.minuto),
+            paraAlmoco
+          };
+        }
+      }
+
       const diStart = s.dataInicio ?? s.dataReferencia;
       const diEndRaw = s.dataFim ?? diStart;
 
@@ -1029,7 +1231,8 @@ export class PontoService {
               observacao: s.rhObservacao
             }
           : null,
-        deslocamento
+        deslocamento,
+        deslocamentoIda
       };
     });
 
@@ -1085,6 +1288,151 @@ export class PontoService {
     );
   }
 
+  /* ─── Descanso de interjornada ─── */
+
+  /**
+   * Situação do descanso de interjornada do funcionário em `agora`. Devolve null quando a
+   * regra está desativada (0), não há jornada anterior fechada (sem saída, jornada aberta
+   * ou já em andamento) ou o descanso já foi cumprido.
+   */
+  private async verificarInterjornada(funcionarioId: string, agora: Date) {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { interjornadaMin: true }
+    });
+    const minimoMin = cfg?.interjornadaMin ?? 660;
+    if (minimoMin <= 0) return null;
+
+    const ultimo = await this.prisma.registroPonto.findFirst({
+      where: { funcionarioId, apenasInformativo: false, dataHora: { lte: agora } },
+      orderBy: { dataHora: "desc" },
+      select: { tipo: true, dataHora: true }
+    });
+    const ultimaSaida = ultimo ? ultimaSaidaFechada([ultimo]) : null;
+    const r = calcularInterjornada({ ultimaSaida, agora, minimoMin });
+    if (!r?.bloqueado || !ultimaSaida) return null;
+    return {
+      descansoMin: r.descansoMin,
+      minimoMin,
+      liberadoEm: r.liberadoEm,
+      mensagem: mensagemInterjornada(r, minimoMin, ultimaSaida)
+    };
+  }
+
+  /**
+   * Pedido de correção de ponto com ENTRADA (incluída ou alterada) cujo descanso desde a última
+   * saída fica abaixo do mínimo. Devolve o aviso para gravar em `metadados.avisoInterjornada`.
+   */
+  private async avisoInterjornadaCorrecao(
+    funcionarioId: string,
+    dataReferencia: Date,
+    meta: Record<string, unknown>
+  ): Promise<AvisoInterjornada | null> {
+    const cfg = await this.prisma.configuracaoSistema.findUnique({
+      where: { id: "singleton" },
+      select: { interjornadaMin: true }
+    });
+    const minimoMin = cfg?.interjornadaMin ?? 660;
+    if (minimoMin <= 0) return null;
+
+    type Item = { acao?: string; tipoRegistro?: string; horario?: string; registroId?: string };
+    const itens: Item[] = Array.isArray(meta.correcoesDia)
+      ? (meta.correcoesDia as Item[])
+      : meta.horarioSolicitado
+        ? [
+            {
+              acao: "INCLUIR",
+              tipoRegistro: (meta.tipoRegistro as string) ?? "ENTRADA",
+              horario: meta.horarioSolicitado as string
+            }
+          ]
+        : [];
+
+    let pior: AvisoInterjornada | null = null;
+    for (const c of itens) {
+      if (c.tipoRegistro !== "ENTRADA" || !c.horario || c.acao === "EXCLUIR") continue;
+      let base = dataReferencia;
+      if (c.acao === "CORRIGIR" && c.registroId) {
+        const atual = await this.prisma.registroPonto.findUnique({
+          where: { id: c.registroId },
+          select: { dataHora: true }
+        });
+        if (atual) base = atual.dataHora;
+      }
+      const entrada = aplicarHorarioBrasilia(base, c.horario);
+      const anterior = await this.prisma.registroPonto.findFirst({
+        where: {
+          funcionarioId,
+          apenasInformativo: false,
+          dataHora: { lt: entrada },
+          ...(c.registroId ? { id: { not: c.registroId } } : {})
+        },
+        orderBy: { dataHora: "desc" },
+        select: { tipo: true, dataHora: true }
+      });
+      const saida = anterior ? ultimaSaidaFechada([anterior]) : null;
+      const r = calcularInterjornada({ ultimaSaida: saida, agora: entrada, minimoMin });
+      if (r?.bloqueado && saida && (!pior || r.descansoMin < pior.descansoMin)) {
+        pior = { saidaAnterior: saida.toISOString(), descansoMin: r.descansoMin, minimoMin };
+      }
+    }
+    return pior;
+  }
+
+  /**
+   * Aviso da tela de registro (ponto presencial): hoje exige intervalo, já há Entrada, ainda
+   * não há Saída e o intervalo exigido não foi registrado. Devolve o tipo e o tempo mínimo
+   * configurados, ou null.
+   */
+  private async intervaloPendenteParaFechar(
+    funcionarioId: string,
+    hojeIso: string,
+    inicio: Date,
+    fim: Date,
+    registrosHoje: Array<{ tipo: string; observacoes?: unknown }>
+  ) {
+    if (
+      !registrosHoje.some((r) => r.tipo === "ENTRADA") ||
+      registrosHoje.some((r) => r.tipo === "SAIDA")
+    ) {
+      return null;
+    }
+    const exig = await exigenciasCicloPresencial(
+      this.prisma,
+      funcionarioId,
+      inicio,
+      fim,
+      await this.getJornadaHistoricoContexto(funcionarioId)
+    );
+    const ex = exig.porDia[hojeIso];
+    if (!ex) return null;
+    const turnoSemIntervalo = !!observacaoForcaSemIntervalo(
+      registrosHoje.find((r) => r.tipo === "ENTRADA")?.observacoes
+    );
+    const modo = turnoSemIntervalo ? "ALMOCO_OU_PAUSA" : ex.modo;
+    const r = cicloCompleto([...registrosHoje, { tipo: "SAIDA" }], { modoIntervalo: modo });
+    if (r.completo || !r.faltas.some((f) => /intervalo/i.test(f))) return null;
+    return { modo, minimoMin: ex.minimoMin };
+  }
+
+  /** A regra do ciclo completo em casa vale em `dia` (YYYY-MM-DD)? Nulo/futuro = desligada. */
+  private cicloCompletoAtivoEm(desde: Date | null | undefined, dia: string): boolean {
+    return !!desde && dia >= dataCivilISO(desde);
+  }
+
+  /** Dados para o aviso do front; null se não há descanso em curso ou o dia já começou. */
+  private async interjornadaParaStatus(funcionarioId: string) {
+    const b = await this.verificarInterjornada(funcionarioId, new Date());
+    if (!b) return null;
+    return {
+      ativa: true,
+      descansoMin: b.descansoMin,
+      minimoMin: b.minimoMin,
+      liberadoEm: b.liberadoEm.toISOString(),
+      liberadoEmTexto: fmtDiaHoraBrasilia(b.liberadoEm)
+    };
+  }
+
   /* ─── Bater ponto ─── */
 
   async baterPonto(keycloakSub: string, dto: CreateRegistroDto) {
@@ -1094,6 +1442,11 @@ export class PontoService {
     if (funcionarioSemRegistroPonto(func)) {
       throw new BadRequestException(
         `Funcionários na condição "${labelSemRegistroPonto(func)}" não registram ponto eletrônico.`
+      );
+    }
+    if (await cedidoHoje(this.prisma, func.id)) {
+      throw new ForbiddenException(
+        "Empregado cedido a outro órgão: o registro de ponto fica suspenso durante a cessão."
       );
     }
 
@@ -1138,6 +1491,10 @@ export class PontoService {
             `Registro de ponto bloqueado: feriado ${periodo} (${feriadoBloq.nome ?? ""}). Entre em contato com o RH se precisar registrar.`
           );
         }
+      } else if (feriadoBloq.abono) {
+        throw new BadRequestException(
+          `Registro de ponto bloqueado: ${feriadoBloq.nome ?? "dia abonado pelo RH"}.`
+        );
       } else {
         throw new BadRequestException(
           `Registro de ponto bloqueado: hoje é feriado (${feriadoBloq.nome ?? ""}). Entre em contato com o RH se precisar registrar.`
@@ -1163,6 +1520,14 @@ export class PontoService {
         `${label} realiza carga horária corrida e não registra intervalo de almoço. ` +
           `Use Interromper/Reiniciar Expediente para pausas.`
       );
+    }
+
+    /* Descanso de interjornada (CLT art. 66): enquanto o descanso mínimo desde a última saída
+       não se completa, não é possível iniciar nova jornada. Só vale para ENTRADA; correção de
+       ponto aprovada (chefe + RH) e correção do RH não passam por aqui. */
+    if (dto.tipo === "ENTRADA") {
+      const bloqueioInterjornada = await this.verificarInterjornada(func.id, new Date());
+      if (bloqueioInterjornada) throw new BadRequestException(bloqueioInterjornada.mensagem);
     }
 
     /* Validação de sequência */
@@ -1354,6 +1719,22 @@ export class PontoService {
 
     const agora = new Date();
 
+    /* Em casa (home office/híbrido), com a regra do ciclo completo ativa: a Saída exige o
+       intervalo de almoço já registrado — não cria intervalo automático. Ficam de fora os
+       turnos sem intervalo (fase TARDE desde a entrada) e o feriado parcial. */
+    if (
+      dto.tipo === "SAIDA" &&
+      status.fase === "MANHA" &&
+      (modoRegistroEfetivo === "HOME_OFFICE" || modoRegistroEfetivo === "HIBRIDO") &&
+      !feriadoBloq.marcoHorario &&
+      this.cicloCompletoAtivoEm(sysConfig?.cicloCompletoEmCasaDesde, hojeIso)
+    ) {
+      throw new BadRequestException(
+        "Em casa, registre o intervalo de almoço antes de encerrar a jornada (Início e Fim do intervalo). " +
+          "Se não puder, solicite a Correção de ponto no dia seguinte: ela será analisada pelo seu chefe e pelo RH."
+      );
+    }
+
     /* Encerrar a jornada sem ter feito o intervalo de almoço: completa as
        posições de Início/Fim no histórico (duração zero junto à saída) para
        documentação. A dedução mínima de almoço é aplicada no cálculo de horas. */
@@ -1516,6 +1897,65 @@ export class PontoService {
       }
     }
 
+    /* Crédito de deslocamento na IDA: saída do trabalho (SAIDA, INTERROMPER_EXPEDIENTE ou
+       INICIO_INTERVALO) antes do início de um atestado parcial já registrado para hoje,
+       dentro da tolerância de Configurações → Solicitações (atestadoTempoIdaMin). Se a
+       saída foi para o almoço, o almoço mínimo não conta. Documenta no próprio registro.
+       Quando o atestado é enviado depois, o crédito entra só no cálculo, sem anotação. */
+    if (
+      dto.tipo === "SAIDA" ||
+      dto.tipo === "INTERROMPER_EXPEDIENTE" ||
+      dto.tipo === "INICIO_INTERVALO"
+    ) {
+      const afastIda = await this.getAfastamentoDoDia(func.id, hojeIso);
+      const horaAgoraStr = horarioDeDataBrasilia(agora).substring(0, 5);
+      const agoraMin = horarioParaMinutos(horaAgoraStr);
+      if (
+        afastIda &&
+        isAfastamentoParcial(afastIda) &&
+        afastIda.horarioInicio &&
+        afastIda.horarioFim &&
+        agoraMin < horarioParaMinutos(afastIda.horarioInicio)
+      ) {
+        const cfgSolicitacoes = await this.configSolicitacoesService.getConfig();
+        const jornadaIda = await this.getJornadaEfetiva(func.id);
+        const almocoMinMin = jornadaIda.almocoMinMin ?? 60;
+        const janelaAlmocoIda = {
+          podeIniciarA: jornadaIda.almocoPodeIniciarA ?? undefined,
+          podeIniciarAte: jornadaIda.almocoPodeIniciarAte ?? undefined
+        };
+        const regsHojeMin = [
+          ...status.registrosHoje.map((r) => ({
+            tipo: r.tipo,
+            minuto: horarioParaMinutos(horarioDeDataBrasilia(r.dataHora))
+          })),
+          { tipo: dto.tipo, minuto: agoraMin }
+        ];
+        const credito = calcularCreditoDeslocamentoIda(
+          regsHojeMin,
+          afastIda.horarioInicio,
+          cfgSolicitacoes.atestadoTempoIdaMin,
+          almocoMinMin,
+          janelaAlmocoIda
+        );
+        if (credito > 0) {
+          const texto =
+            `Atestado médico das ${afastIda.horarioInicio} às ${afastIda.horarioFim} — ` +
+            `saída registrada às ${horaAgoraStr}` +
+            (saidaEhAlmoco({ tipo: dto.tipo, minuto: agoraMin }, janelaAlmocoIda)
+              ? ` (almoço de ${almocoMinMin} min descontado)`
+              : "") +
+            `. Até ${credito} min de tempo de deslocamento (ida) serão creditados` +
+            ` (tolerância de ${cfgSolicitacoes.atestadoTempoIdaMin} min).`;
+          observacoesRegistro = appendObservacao(observacoesRegistro ?? [], {
+            data: agora.toISOString(),
+            tipo: "AJUSTE_AUTOMATICO",
+            texto
+          }) as unknown as Prisma.InputJsonValue;
+        }
+      }
+    }
+
     let observacoesAlmoco: Prisma.InputJsonValue | undefined;
     if (dto.tipo === "FIM_INTERVALO" && status.fase === "PAUSA_MANHA") {
       const pausa = [...status.registrosHoje]
@@ -1661,7 +2101,8 @@ export class PontoService {
         justificativa: true,
         apenasInformativo: true,
         horarioInicio: true,
-        horarioFim: true
+        horarioFim: true,
+        rotulo: true
       }
     });
 
@@ -1750,7 +2191,9 @@ export class PontoService {
         saldoAcumuladoMinutos: number;
         jornadaEsperadaMinutos: number;
         observacao?: string;
+        abono?: boolean;
         neutro: boolean;
+        horaExtra?: AjusteHoraExtraDia;
       }
     > = {};
     let saldoMesBanco = 0;
@@ -1758,8 +2201,14 @@ export class PontoService {
     let saldoAcumuladoMesAnterior = 0;
 
     if (precisaBanco) {
-      const banco = await this.calcularBancoHoras(func.id, inicioAtividades);
-      const bancoMes = banco.dias.filter((d) => d.data.startsWith(mesPrefix));
+      /* Banco do mês, no ciclo em que o mês está (também para meses de ciclos anteriores). */
+      const ultimoDiaMes = new Date(ano, mes, 0).getDate();
+      const banco = await this.bancoHorasDoIntervalo(
+        func.id,
+        `${mesPrefix}-01`,
+        `${mesPrefix}-${String(ultimoDiaMes).padStart(2, "0")}`
+      );
+      const bancoMes = banco.dias;
       for (const d of bancoMes) {
         bancoPorDia[d.data] = {
           horasTrabalhadasMinutos: d.horasTrabalhadasMinutos,
@@ -1767,29 +2216,25 @@ export class PontoService {
           saldoAcumuladoMinutos: d.saldoAcumuladoMinutos,
           jornadaEsperadaMinutos: d.jornadaEsperadaMinutos,
           observacao: d.observacao,
+          ...(d.abono ? { abono: true } : {}),
+          ...(d.horaExtra ? { horaExtra: d.horaExtra } : {}),
           /* Neutro só quando o saldo não deve aparecer (afastamento integral / isento /
-             feriado sem trabalho). Atestado parcial e feriado parcial mostram saldo. */
+             feriado sem trabalho / abono do RH). Atestado parcial e feriado parcial mostram saldo. */
           neutro:
-            !!d.observacao &&
-            (d.observacao === "Afastamento" ||
-              d.observacao.startsWith("Isento") ||
-              (d.observacao.startsWith("Feriado:") && d.horasTrabalhadasMinutos === 0))
+            !!d.abono ||
+            (!!d.observacao &&
+              (d.observacao === "Afastamento" ||
+                d.observacao.startsWith("Isento") ||
+                (d.observacao.startsWith("Feriado:") && d.horasTrabalhadasMinutos === 0)))
         };
       }
       saldoMesBanco = bancoMes.reduce((s, d) => s + d.saldoDiaMinutos, 0);
-      saldoAcumuladoMes = bancoMes.at(-1)?.saldoAcumuladoMinutos ?? 0;
-      const mesPrefixInicio = `${mesPrefix}-01`;
-      const diasAntesDoMes = banco.dias
-        .filter((d) => d.data < mesPrefixInicio)
-        .sort((a, b) => (a.data < b.data ? -1 : a.data > b.data ? 1 : 0));
-      /* Fim do mês anterior no ciclo; se o ciclo começa no mês atual, deriva do 1º dia. */
-      saldoAcumuladoMesAnterior =
-        diasAntesDoMes.length > 0
-          ? (diasAntesDoMes.at(-1)?.saldoAcumuladoMinutos ?? 0)
-          : bancoMes.length > 0
-            ? bancoMes[0].saldoAcumuladoMinutos - bancoMes[0].saldoDiaMinutos
-            : 0;
+      saldoAcumuladoMes = banco.saldoFinalMinutos;
+      saldoAcumuladoMesAnterior = banco.saldoAntesMinutos;
     }
+
+    /* Dias em casa (apurados uma vez; o presencial os exclui). */
+    const cicloCompletoEmCasa = await diasCicloCompletoEmCasa(this.prisma, func.id, inicio, fim);
 
     return {
       mes,
@@ -1801,6 +2246,8 @@ export class PontoService {
       semRegistroPonto: funcionarioSemRegistroPonto(func),
       categoria: func.categoria,
       periodosSemObrigacao,
+      /* Cessão a outro órgão: dias neutros no histórico (rótulo "Isento — Cedido"). */
+      periodosCessao: await periodosCessao(this.prisma, func.id),
       categoriaHistorico: historicoCat,
       funcionario: { id: func.id, matricula: func.matricula, cargo: func.cargo },
       bancoPorDia: exporBancoHoras ? bancoPorDia : {},
@@ -1820,7 +2267,22 @@ export class PontoService {
         domingoPct: cfg?.bancoHorasDomingoPct ?? 200,
         feriadoPct: cfg?.bancoHorasFeriadoPct ?? 200
       },
-      jornada
+      jornada,
+      /* Entradas com descanso de interjornada abaixo do mínimo (ícone de informação). */
+      interjornadaPorDia: await interjornadaCurtaPorDia(this.prisma, func.id, inicio, fim),
+      /* Dias em casa que exigem o ciclo completo de batidas (status OK só com ele). */
+      cicloCompletoEmCasa,
+      /* Status "OK - Home Office" / "OK - Híbrido": só dias em que bateu em casa. */
+      rotuloModalidadePorDia: await rotulosModalidadePorDia(this.prisma, func.id, inicio, fim),
+      /* Presencial: dias que exigem o ciclo (e o tipo de intervalo), pela jornada e pela lei. */
+      cicloCompletoPresencial: await exigenciasCicloPresencial(
+        this.prisma,
+        func.id,
+        inicio,
+        fim,
+        jornada,
+        cicloCompletoEmCasa.dias
+      )
     };
   }
 
@@ -1843,7 +2305,12 @@ export class PontoService {
       historico.multiplicadores.domingoPct,
       historico.multiplicadores.feriadoPct,
       historico.inicioAtividades,
-      { forcarSemIntervalo: categoriaSemIntervaloAlmoco(historico.categoria) }
+      {
+        forcarSemIntervalo: categoriaSemIntervaloAlmoco(historico.categoria),
+        diasCicloCompletoEmCasa: historico.cicloCompletoEmCasa.dias,
+        exigenciasCicloPresencial: historico.cicloCompletoPresencial.porDia,
+        diaNeutro: await montarDiaNeutro(this.prisma, historico.funcionario.id)
+      }
     );
 
     const diasMesBanco = Object.entries(historico.bancoPorDia).map(([data, d]) => ({
@@ -1911,6 +2378,53 @@ export class PontoService {
     return this.calcularBancoHoras(funcionarioId, inicioAtividades);
   }
 
+  /**
+   * Banco de horas (mesma conta da página Banco de Horas) para um intervalo de datas, cruzando
+   * os ciclos que o cobrem. Usado pela folha mensal/assinatura e pela Auditoria.
+   * `saldoAntesMinutos`: acumulado do ciclo até a véspera de `inicioIso` (0 se o ciclo começa no
+   * intervalo); `saldoFinalMinutos`: acumulado no último dia do intervalo.
+   */
+  async bancoHorasDoIntervalo(funcionarioId: string, inicioIso: string, fimIso: string) {
+    const funcUser = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { user: { select: { primeiroLoginEm: true } } }
+    });
+    const inicioLogin = inicioAtividadesUsuario(funcUser?.user);
+    const marcos = await this.prisma.bancoHorasMarco.findMany();
+    const hojeIso = hojeBrasiliaISO();
+    const dataInicioProducao = await getDataInicioProducao(this.prisma);
+    const tolerancia = await toleranciaFechamentoDias(this.prisma, funcionarioId);
+    const ciclos = listarCiclosBancoHoras(
+      marcos,
+      inicioLogin,
+      hojeIso,
+      dataInicioProducao,
+      tolerancia
+    ).filter((c) => c.inicio <= fimIso && c.fim >= inicioIso);
+    type Dia = Awaited<ReturnType<PontoService["calcularBancoHoras"]>>["dias"][number];
+    const dias: Dia[] = [];
+    let saldoAntesMinutos = 0;
+    let saldoFinalMinutos = 0;
+    const detalhes = ciclos.length
+      ? await Promise.all(
+          ciclos.map((c) => this.calcularBancoHoras(funcionarioId, inicioLogin, c.inicio, false))
+        )
+      : [await this.calcularBancoHoras(funcionarioId, inicioLogin, undefined, false)];
+    detalhes.forEach((det, i) => {
+      if (i === 0) {
+        saldoAntesMinutos =
+          det.dias.filter((d) => d.data < inicioIso).at(-1)?.saldoAcumuladoMinutos ?? 0;
+      }
+      const doIntervalo = det.dias.filter((d) => d.data >= inicioIso && d.data <= fimIso);
+      dias.push(...doIntervalo);
+      const ultimo = det.dias.filter((d) => d.data <= fimIso).at(-1);
+      if (ultimo) saldoFinalMinutos = ultimo.saldoAcumuladoMinutos;
+      else if (i === 0) saldoFinalMinutos = saldoAntesMinutos;
+    });
+    dias.sort((a, b) => a.data.localeCompare(b.data));
+    return { dias, saldoAntesMinutos, saldoFinalMinutos };
+  }
+
   /** Calcula o saldo do banco de horas do ciclo atual, iterando todos os dias
    *  úteis (seg–sex conforme diasUteis) e contabilizando feriados e afastamentos
    *  como saldo neutro (0), e faltas como saldo negativo. */
@@ -1945,6 +2459,7 @@ export class PontoService {
 
     const jornada = await this.getJornadaEfetiva(funcionarioId);
     const jornadaCtx = await this.getJornadaHistoricoContexto(funcionarioId);
+    const cessoes = await periodosCessao(this.prisma, funcionarioId);
 
     const diasUteisCfg: boolean[] = JSON.parse(
       typeof jornada.diasUteis === "string"
@@ -1954,7 +2469,8 @@ export class PontoService {
 
     const marcos = await this.prisma.bancoHorasMarco.findMany();
     const hojeIso = hojeBrasiliaISO();
-    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso);
+    const tolerancia = await toleranciaFechamentoDias(this.prisma, funcionarioId);
+    const { cicloInicio, proximaZeragem } = resolverCicloBancoHoras(marcos, hojeIso, tolerancia);
     const dataInicioProducao = await getDataInicioProducao(this.prisma);
 
     let inicioLogin = inicioAtividades;
@@ -1966,7 +2482,13 @@ export class PontoService {
       inicioLogin = inicioAtividadesUsuario(funcUser?.user);
     }
 
-    const ciclos = listarCiclosBancoHoras(marcos, inicioLogin, hojeIso, dataInicioProducao);
+    const ciclos = listarCiclosBancoHoras(
+      marcos,
+      inicioLogin,
+      hojeIso,
+      dataInicioProducao,
+      tolerancia
+    );
     const cicloAlvo =
       cicloInicioQuery != null
         ? (ciclos.find((c) => c.inicio === cicloInicioQuery) ?? null)
@@ -2037,6 +2559,8 @@ export class PontoService {
       select: { dataInicio: true, dataFim: true, dataReferencia: true, metadados: true }
     });
     const afastamentos = enriquecerAfastamentosComSolicitacoes(afastamentosRaw, solsAtestado);
+    /* HE sem aprovação não entra (ou só até o limite) — ver utils/hora-extra-decisao. */
+    const contextoHe = await carregarContextoHoraExtra(this.prisma, funcionarioId, inicio, fim);
 
     // Todos os feriados do ciclo (inclusive os que não bloqueiam registro)
     const { inicio: feriadoIni, fim: feriadoFim } = intervaloColunaDate(
@@ -2045,12 +2569,17 @@ export class PontoService {
     );
     const feriados = await this.prisma.feriadoConfig.findMany({
       where: { data: { gte: feriadoIni, lte: feriadoFim } },
-      select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+      select: { data: true, nome: true, tipo: true, marcoHorario: true, marcoLado: true }
     });
     const feriadoMap = new Map(
       feriados.map((f) => [
         dataCivilISO(f.data),
-        { nome: f.nome, marcoHorario: f.marcoHorario, marcoLado: f.marcoLado }
+        {
+          nome: f.nome,
+          abono: ehDiaAbonado(f),
+          marcoHorario: f.marcoHorario,
+          marcoLado: f.marcoLado
+        }
       ])
     );
 
@@ -2069,6 +2598,12 @@ export class PontoService {
       saldoDiaMinutos: number;
       saldoAcumuladoMinutos: number;
       observacao?: string;
+      /** Abono do RH: dia neutro com o nome cadastrado como status. */
+      abono?: boolean;
+      /** HE rejeitada: quanto foi creditado/rejeitado e o informativo. */
+      horaExtra?: AjusteHoraExtraDia;
+      /** Linha afetada por liberação (ou revogação) de tempo do banco pelo RH. */
+      liberacaoRh?: boolean;
     }[] = [];
 
     let saldoAcumulado = 0;
@@ -2108,9 +2643,10 @@ export class PontoService {
         continue;
       }
 
-      /* Período como assessor/gerente (ou pré-obrigação): neutro — não falta nem crédito.
-         Preserva saldos dos períodos como concursado antes/depois. */
-      if (diaSemObrigacaoPonto(dataAtual, optsObrigacao)) {
+      /* Período como assessor/gerente (ou pré-obrigação) ou de cessão a outro órgão:
+         neutro — não falta nem crédito. Preserva saldos dos períodos antes/depois. */
+      const cedidoNoDia = diaEmCessao(dataAtual, cessoes);
+      if (cedidoNoDia || diaSemObrigacaoPonto(dataAtual, optsObrigacao)) {
         if (eDiaUtil || regsDodia.length > 0) {
           dias.push({
             data: dataAtual,
@@ -2118,7 +2654,27 @@ export class PontoService {
             jornadaEsperadaMinutos: 0,
             saldoDiaMinutos: 0,
             saldoAcumuladoMinutos: saldoAcumulado,
-            observacao: "Isento — Comissionado/Chefe"
+            observacao: cedidoNoDia ? "Isento — Cedido" : "Isento — Comissionado/Chefe"
+          });
+        }
+        const prox = new Date(year, month - 1, day);
+        prox.setDate(prox.getDate() + 1);
+        dataAtual = `${prox.getFullYear()}-${String(prox.getMonth() + 1).padStart(2, "0")}-${String(prox.getDate()).padStart(2, "0")}`;
+        continue;
+      }
+
+      /* Abono do RH: dia neutro para todos — nem falta nem crédito, mesmo com batidas.
+         O status exibido é exatamente o nome cadastrado (sem o prefixo "Feriado:"). */
+      if (feriadoDia?.abono) {
+        if (eDiaUtil || regsDodia.length > 0) {
+          dias.push({
+            data: dataAtual,
+            horasTrabalhadasMinutos: 0,
+            jornadaEsperadaMinutos: 0,
+            saldoDiaMinutos: 0,
+            saldoAcumuladoMinutos: saldoAcumulado,
+            observacao: feriadoDia.nome,
+            abono: true
           });
         }
         const prox = new Date(year, month - 1, day);
@@ -2170,7 +2726,13 @@ export class PontoService {
           const janelasEfetivasDia = calcularJanelasEfetivasComCreditoDeslocamento(
             janelasParciais,
             regsMinDia,
-            jornadaCtx.atestadoTempoRetornoMin ?? 60
+            {
+              toleranciaRetornoMin: jornadaCtx.atestadoTempoRetornoMin ?? 60,
+              toleranciaIdaMin: jornadaCtx.atestadoTempoIdaMin ?? 60,
+              almocoMinMin: jornada.almocoMinMin ?? 60,
+              almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? undefined,
+              almocoPodeIniciarAte: jornada.almocoPodeIniciarAte ?? undefined
+            }
           );
           const jornadaMandatoria = calcularJornadaComAtestadosParciais(janelasEfetivasDia, {
             horaEntrada: jornada.horaEntrada ?? "08:00",
@@ -2270,6 +2832,13 @@ export class PontoService {
           obs = undefined;
         }
 
+        /* Feriado trabalhado (jornada 0, multiplicador): só corta se a HE foi rejeitada. */
+        const ctxHeDia = contextoDoDia(contextoHe, dataAtual);
+        const heDia =
+          jornadaDia > 0 || ctxHeDia.situacao === "REJEITADA" || !!ctxHeDia.semHoraExtra
+            ? aplicarRegraHoraExtra(saldoDiaMinutos, ctxHeDia, jornada.horaExtraLimiteAuto)
+            : { saldoDiaMin: saldoDiaMinutos, ajuste: undefined };
+        saldoDiaMinutos = heDia.saldoDiaMin;
         saldoAcumulado += saldoDiaMinutos;
         dias.push({
           data: dataAtual,
@@ -2277,7 +2846,8 @@ export class PontoService {
           jornadaEsperadaMinutos: jornadaDia,
           saldoDiaMinutos,
           saldoAcumuladoMinutos: saldoAcumulado,
-          observacao: obs
+          observacao: obs,
+          ...(heDia.ajuste ? { horaExtra: heDia.ajuste } : {})
         });
       } else if ((!afastamento || isAfastamentoParcial(afastamento)) && regsDodia.length > 0) {
         // Fim de semana COM registros: aplica multiplicador
@@ -2295,7 +2865,14 @@ export class PontoService {
           toleranciaSaidaMin: jornada.toleranciaEntradaMin ?? jornada.toleranciaSaidaMin ?? 5
         });
         const pct = nomeFeriado ? feriadoPct : diaSemana === 6 ? sabadoPct : domingoPct;
-        const saldoDiaMinutos = Math.round((horasTrabalhadasMinutos * pct) / 100);
+        /* Fim de semana/feriado tem multiplicador próprio: só corta se a HE foi rejeitada. */
+        const saldoFds = Math.round((horasTrabalhadasMinutos * pct) / 100);
+        const ctxHeFds = contextoDoDia(contextoHe, dataAtual);
+        const heFds =
+          ctxHeFds.situacao === "REJEITADA" || !!ctxHeFds.semHoraExtra
+            ? aplicarRegraHoraExtra(saldoFds, ctxHeFds, jornada.horaExtraLimiteAuto)
+            : { saldoDiaMin: saldoFds, ajuste: undefined };
+        const saldoDiaMinutos = heFds.saldoDiaMin;
         const tipoLabel = nomeFeriado
           ? `Feriado: ${nomeFeriado}`
           : diaSemana === 6
@@ -2308,7 +2885,8 @@ export class PontoService {
           jornadaEsperadaMinutos: 0,
           saldoDiaMinutos,
           saldoAcumuladoMinutos: saldoAcumulado,
-          observacao: `Trabalho em ${tipoLabel} (${pct}%)`
+          observacao: `Trabalho em ${tipoLabel} (${pct}%)`,
+          ...(heFds.ajuste ? { horaExtra: heFds.ajuste } : {})
         });
       }
 
@@ -2319,6 +2897,20 @@ export class PontoService {
     }
 
     const cicloComputadoInicio = cicloAlvo?.inicio ?? cicloInicioEfetivo;
+
+    /* Tempo liberado pelo RH para abono: debita o saldo na data da liberação. */
+    const liberacoesRh = await carregarLiberacoes(this.prisma, funcionarioId);
+    if (liberacoesRh.length) {
+      const aplicado = aplicarLiberacoesNoExtrato(
+        dias,
+        liberacoesRh,
+        cicloComputadoInicio,
+        cicloFimEfetivo
+      );
+      dias.splice(0, dias.length, ...aplicado.dias);
+      saldoAcumulado = aplicado.saldoAtualMinutos;
+    }
+
     let ciclosResposta = ciclos.map((c) => ({
       ...c,
       saldoMinutos: c.inicio === cicloComputadoInicio ? saldoAcumulado : (null as number | null)
@@ -2363,6 +2955,8 @@ export class PontoService {
         matricula: true,
         cargo: true,
         dataNascimento: true,
+        modoHomeOffice: true,
+        modoHibridoLocal: true,
         user: { select: { id: true, name: true, email: true, emailReal: true } }
       }
     });
@@ -2391,13 +2985,32 @@ export class PontoService {
     }));
   }
 
+  async getLocalDoDiaHoraExtra(keycloakSub: string, data: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data ?? "")) {
+      throw new BadRequestException("Data inválida (use AAAA-MM-DD).");
+    }
+    const func = await this.getFuncionario(keycloakSub);
+    const { inicio, fim } = intervaloDiaBrasilia(data);
+    const ctx = contextoDoDia(
+      await carregarContextoHoraExtra(this.prisma, func.id, inicio, fim),
+      data
+    );
+    return { remoto: ctx.remoto, local: ctx.local ?? null };
+  }
+
   async getRegistrosDoDia(keycloakSub: string, data: string) {
     const func = await this.getFuncionario(keycloakSub);
     const { inicio, fim } = intervaloDiaBrasilia(data);
     return this.prisma.registroPonto.findMany({
       where: { funcionarioId: func.id, dataHora: { gte: inicio, lte: fim } },
       orderBy: { dataHora: "asc" },
-      select: { id: true, tipo: true, dataHora: true, ajustado: true, observacao: true }
+      select: {
+        id: true,
+        tipo: true,
+        dataHora: true,
+        ajustado: true,
+        observacao: true
+      }
     });
   }
 
@@ -2427,6 +3040,12 @@ export class PontoService {
       orderBy: { dataHora: "asc" },
       select: { tipo: true, dataHora: true, observacoes: true }
     });
+    /* Home office/híbrido fora do CFO (local apurado pelas batidas): nenhuma HE entra no
+       banco sem aprovação do chefe, então qualquer HE acima da tolerância gera a solicitação. */
+    const remoto = contextoDoDia(
+      await carregarContextoHoraExtra(this.prisma, funcionarioId, inicio, fim),
+      hoje
+    ).remoto;
 
     // Verifica se hoje é feriado parcial para ajustar a jornada obrigatória
     const feriadoHoje = await this.prisma.feriadoConfig.findUnique({
@@ -2459,7 +3078,7 @@ export class PontoService {
     const overtime = aplicarMargemCalculoDiario(overtimeRaw, jornada.toleranciaCalculoMin);
     // Permanência residual dentro da tolerância de HE também não dispara solicitação
     if (overtime <= (jornada.toleranciaHoraExtraMin ?? 0)) return;
-    if (overtime <= limiteMin) return;
+    if (!remoto && overtime <= limiteMin) return;
 
     const jaExiste = await this.prisma.solicitacao.findFirst({
       where: {
@@ -2479,8 +3098,10 @@ export class PontoService {
         dataReferencia: new Date(`${hoje}T12:00:00-03:00`),
         dataInicio: inicio,
         dataFim: fim,
-        descricao: `Hora extra automática: ${h}h${m} além da jornada diária.`,
-        metadados: { automatica: true, horasExtraMinutos: overtime }
+        descricao: remoto
+          ? `Hora extra automática (home office/híbrido em casa): ${h}h${m} além da jornada diária. Só entra no banco de horas se aprovada.`
+          : `Hora extra automática: ${h}h${m} além da jornada diária. O que passar do limite diário só entra no banco de horas se aprovado.`,
+        metadados: { automatica: true, horasExtraMinutos: overtime, remoto }
       }
     });
   }
@@ -2494,9 +3115,96 @@ export class PontoService {
       dataFim?: string;
       descricao: string;
       metadados?: Record<string, unknown>;
+    },
+    opcoes?: {
+      /** RH abrindo o pedido em nome do funcionário (mesmo fluxo; fica marcado). */
+      origemRh?: { userId: string | null; nome: string; dispensar: boolean; justificativa: string };
     }
   ) {
     const func = await this.getFuncionario(keycloakSub);
+    const dispensar = !!opcoes?.origemRh?.dispensar;
+    /** Dispensas de prazo/antecedência realmente usadas (vão para o registro). */
+    const dispensasUsadas: string[] = [];
+
+    /* Abono com vários períodos: valida e normaliza (00:00–23:59 = dia inteiro, datas em
+       Brasília). O intervalo da solicitação passa a ir do 1º início ao último fim. */
+    if (body.tipo === "ABONO" && Array.isArray(body.metadados?.periodos)) {
+      const periodosAbono = periodosDoAbono({
+        dataInicio: null,
+        dataFim: null,
+        dataReferencia: new Date(body.dataReferencia),
+        metadados: body.metadados
+      });
+      const errosAbono = validarPeriodosAbono(periodosAbono);
+      if (errosAbono.length) throw new BadRequestException(errosAbono.join(" "));
+      const primeiro = periodosAbono.map((p) => p.inicio).sort()[0];
+      const ultimo = periodosAbono
+        .map((p) => p.fim)
+        .sort()
+        .at(-1)!;
+      body.metadados = {
+        ...body.metadados,
+        periodos: periodosAbono.map((p) => ({
+          dataInicio: intervaloDiaBrasilia(p.inicio).inicio.toISOString(),
+          dataFim: fimDiaCivilBrasilia(p.fim).toISOString(),
+          horarioInicio: p.horarioInicio,
+          horarioFim: p.horarioFim
+        }))
+      };
+      delete (body.metadados as Record<string, unknown>).horarioInicio;
+      delete (body.metadados as Record<string, unknown>).horarioFim;
+      body.dataReferencia = new Date(`${primeiro}T12:00:00-03:00`).toISOString();
+      body.dataInicio = intervaloDiaBrasilia(primeiro).inicio.toISOString();
+      body.dataFim = fimDiaCivilBrasilia(ultimo).toISOString();
+    }
+
+    /* Abono com tempo de banco liberado pelo RH: o servidor recalcula os minutos por dia,
+       confere o disponível e a validade e grava a alocação (reserva) no pedido. */
+    let usaCreditoBanco = false;
+    let usaCotaAbono = false;
+    if (body.tipo === "ABONO") {
+      const pediuCota =
+        (body.metadados as Record<string, unknown> | undefined)?.usarCotaAbono === true;
+      if (body.metadados) {
+        delete (body.metadados as Record<string, unknown>).usarCotaAbono;
+        delete (body.metadados as Record<string, unknown>).cotaAbono;
+      }
+      if (pediuCota) {
+        /* Abono diário da cota do acordo coletivo: independe do tempo liberado e do abono livre. */
+        const dias = await this.montarCotaAbono(func.id, body.metadados);
+        usaCotaAbono = true;
+        body.metadados = { ...body.metadados, cotaAbono: { dias } };
+      }
+    }
+    if (body.tipo === "ABONO" && !usaCotaAbono) {
+      const pediuCredito =
+        (body.metadados as Record<string, unknown> | undefined)?.usarCreditoBanco === true;
+      if (body.metadados) {
+        delete (body.metadados as Record<string, unknown>).usarCreditoBanco;
+        delete (body.metadados as Record<string, unknown>).creditoBanco;
+      }
+      /* O tempo liberado pelo RH é prioritário: havendo saldo disponível, o abono o consome. O
+         abono comum / além do limite só vale com a opção ligada em Configurações → Solicitações. */
+      const { disponivelMinutos } = await this.getCreditoBancoPorFuncionario(func.id);
+      const cfgAbono = await this.configSolicitacoesService.getConfig();
+      const permitirAlemCfg = !!cfgAbono.abonoAlemLimiteLiberadoRh;
+      const permitirAlem = permitirAlemCfg || dispensar;
+      if (pediuCredito || disponivelMinutos > 0) {
+        const credito = await this.montarCreditoBancoAbono(func.id, body.metadados, permitirAlem);
+        if (credito) {
+          usaCreditoBanco = true;
+          body.metadados = { ...body.metadados, creditoBanco: credito };
+        }
+      }
+      if (!usaCreditoBanco && !permitirAlemCfg && dispensar) {
+        dispensasUsadas.push("Abono livre (opção desligada em Configurações)");
+      }
+      if (!usaCreditoBanco && !permitirAlem) {
+        throw new BadRequestException(
+          "O abono livre está desativado. O abono só pode ser pedido com tempo de banco de horas liberado pelo RH; procure o RH."
+        );
+      }
+    }
 
     /* Bloqueia nova solicitação se o período já está coberto por uma solicitação
        previamente aprovada pelo RH (evita duplicidade/conflito para o mesmo dia). */
@@ -2634,12 +3342,22 @@ export class PontoService {
       /* Envio de documento ao RH pode ocorrer várias vezes no mesmo dia.
          Estagiário pode ter várias solicitações de férias no mesmo ciclo (saldo residual),
          desde que as datas não se sobreponham. */
+      /* Com vários períodos (abono, férias), compara período a período — os dias entre
+         dois períodos não ficam bloqueados. */
+      const novosIntervalos = intervalosDaSolicitacao({
+        dataInicio: novoInicio,
+        dataFim: novoFim,
+        dataReferencia: novoInicio,
+        metadados: body.metadados ?? null
+      });
       const conflito = aprovadas.find((s) => {
         if (alteracaoDeId && s.id === alteracaoDeId) return false;
         if (s.tipo === "ENVIO_DOCUMENTO_RH") return false;
-        const inicioExist = s.dataInicio ?? s.dataReferencia;
-        const fimExist = s.dataFim ?? inicioExist;
-        return periodosSobrepostos(novoInicio, novoFim, inicioExist, fimExist);
+        /* Hora extra só conflita com outra hora extra (correção aprovada no dia não impede). */
+        if (body.tipo === "HORA_EXTRA" && s.tipo !== "HORA_EXTRA") return false;
+        return intervalosDaSolicitacao(s).some(([ie, fe]) =>
+          novosIntervalos.some(([ni, nf]) => periodosSobrepostos(ni, nf, ie, fe))
+        );
       });
 
       if (conflito) {
@@ -2662,14 +3380,31 @@ export class PontoService {
       ]);
 
       if (solCfg?.tipoAtivoHoraExtra === false) {
-        throw new BadRequestException(
-          "A solicitação de Hora Extra está desativada. Entre em contato com o RH."
-        );
+        if (!dispensar) {
+          throw new BadRequestException(
+            "A solicitação de Hora Extra está desativada. Entre em contato com o RH."
+          );
+        }
+        dispensasUsadas.push("Tipo Hora Extra desativado em Configurações");
       }
 
-      const limiteMin = jornada.horaExtraLimiteAuto;
       const horasExtraMin = (body.metadados?.horasExtraMinutos as number | undefined) ?? 0;
-      if (horasExtraMin < limiteMin) {
+      /* Dia em home office / híbrido em casa: nenhuma HE entra sem aprovação, então
+         qualquer tempo pode ser solicitado. Presencial: só o que passa do limite diário. */
+      const { inicio: iniDia, fim: fimDia } = intervaloDiaBrasilia(
+        dataBrasiliaISO(new Date(body.dataReferencia))
+      );
+      /* Home office/híbrido fora do CFO: nenhuma HE entra sem aprovação, então qualquer
+         tempo pode ser solicitado. Mesmo critério de local do banco de horas. */
+      const diaRef = dataBrasiliaISO(new Date(body.dataReferencia));
+      const diaRemoto = contextoDoDia(
+        await carregarContextoHoraExtra(this.prisma, func.id, iniDia, fimDia),
+        diaRef
+      ).remoto;
+      const limiteMin = diaRemoto ? 1 : jornada.horaExtraLimiteAuto;
+      if (horasExtraMin < limiteMin && dispensar) {
+        dispensasUsadas.push("Mínimo de tempo da hora extra");
+      } else if (horasExtraMin < limiteMin) {
         const h = Math.floor(limiteMin / 60);
         const m = String(limiteMin % 60).padStart(2, "0");
         throw new BadRequestException(
@@ -2707,6 +3442,14 @@ export class PontoService {
           throw new BadRequestException(validacao.message);
         }
       }
+      /* Entrada que fica abaixo do descanso de interjornada: avisa chefe e RH na análise
+         (não bloqueia o pedido). */
+      const aviso = await this.avisoInterjornadaCorrecao(
+        func.id,
+        new Date(body.dataReferencia),
+        metadados
+      );
+      if (aviso) metadados = { ...metadados, avisoInterjornada: aviso };
     }
 
     if (body.tipo === "FERIAS" && func.categoria === "ESTAGIARIO") {
@@ -2727,7 +3470,11 @@ export class PontoService {
         meta.cicloNumero != null && meta.cicloNumero !== "" ? Number(meta.cicloNumero) : null;
 
       const saldo = await this.calcularSaldoFeriasFuncionario(func.id);
-      if (!saldo || saldo.diasDisponiveis <= 0) {
+      if (
+        !saldo ||
+        (saldo.diasDisponiveis <= 0 &&
+          !saldo.ciclos.some((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0))
+      ) {
         throw new BadRequestException(
           "Não há dias de férias disponíveis para uma nova solicitação."
         );
@@ -2738,8 +3485,8 @@ export class PontoService {
           ? saldo.ciclos.find((c) => c.numero === cicloNumero)
           : saldo.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0);
 
-      /* Estagiário: sem regras de fracionamento/antecedência/igualar o ciclo;
-         só não pode exceder o saldo nem vender dias (já bloqueado acima). */
+      /* Estagiário: não precisa igualar o ciclo (pode marcar parte); o fracionamento
+         (blocos de 5, até 3 períodos), antecedência e vedação são conferidos adiante. */
       if (func.categoria === "ESTAGIARIO") {
         const disponivel = ciclo?.diasDisponiveis ?? saldo.diasDisponiveis;
         if (total <= 0) {
@@ -2775,15 +3522,121 @@ export class PontoService {
       }
     }
 
+    /* Regras de marcação (CLT / Lei 11.788): antecedência, tamanho e número de períodos,
+       venda, vedação antes de feriado/repouso e data mínima de gozo (ciclo em formação). */
+    if (body.tipo === "FERIAS") {
+      const meta = (body.metadados ?? {}) as Record<string, unknown>;
+      const periodosMeta = Array.isArray(meta.periodos)
+        ? (meta.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+        : [];
+      const periodosFerias = periodosMeta.map((p) => ({
+        inicio: dataCivilPeriodo(String(p.dataInicio ?? "")),
+        fim: dataCivilPeriodo(String(p.dataFim ?? ""))
+      }));
+      /* Alteração: períodos mantidos da solicitação original não são reavaliados quanto a
+         antecedência e vedação (só os novos ou mudados). */
+      let novos: Set<number> | undefined;
+      if (alteracaoDeId) {
+        const original = aprovadas.find((s) => s.id === alteracaoDeId);
+        const metaOrig = (original?.metadados ?? {}) as Record<string, unknown>;
+        const mantidos = new Set(
+          (Array.isArray(metaOrig.periodos)
+            ? (metaOrig.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+            : []
+          ).map(
+            (p) =>
+              `${dataCivilPeriodo(String(p.dataInicio ?? ""))}|${dataCivilPeriodo(String(p.dataFim ?? ""))}`
+          )
+        );
+        novos = new Set(
+          periodosFerias
+            .map((p, i) => (mantidos.has(`${p.inicio}|${p.fim}`) ? -1 : i))
+            .filter((i) => i >= 0)
+        );
+      }
+      const cfgSol = await this.configSolicitacoesService.getConfig();
+      const datas = periodosFerias
+        .flatMap((p) => [p.inicio, p.fim])
+        .filter(Boolean)
+        .sort();
+      const calendario = await this.calendarioFerias(
+        func.id,
+        datas[0] ?? hojeBrasiliaISO(),
+        somarDiasIso(datas.at(-1) ?? hojeBrasiliaISO(), cfgSol.feriasVedacaoPreFeriadoDias + 1)
+      );
+      const regrasFerias = {
+        antecedenciaMinDias: cfgSol.feriasAntecedenciaMinDias,
+        vedacaoPreFeriadoDias: cfgSol.feriasVedacaoPreFeriadoDias
+      };
+      /* Ciclo da marcação: dá o limite por período do estagiário e a data mínima de gozo. */
+      const saldoFerias = await this.calcularSaldoFeriasFuncionario(func.id);
+      const cicloNumMeta =
+        meta.cicloNumero != null && meta.cicloNumero !== "" ? Number(meta.cicloNumero) : null;
+      const cicloFerias =
+        saldoFerias?.ciclos.find((c) => c.numero === cicloNumMeta) ??
+        saldoFerias?.ciclos.find((c) => c.status === "DISPONIVEL" && c.diasDisponiveis > 0);
+      const liberaEm = cicloFerias?.liberaEm ?? null;
+      const errosFerias =
+        func.categoria === "ESTAGIARIO"
+          ? validarPeriodosEstagiario({
+              periodos: periodosFerias,
+              maxPeriodoDias: (cicloFerias?.diasPorCiclo ?? 30) <= 15 ? 10 : 30,
+              regras: regrasFerias,
+              hoje: hojeBrasiliaISO(),
+              calendario,
+              liberaEm,
+              novos
+            })
+          : validarPeriodosFerias({
+              periodos: periodosFerias,
+              diasVenda: Number(meta.diasVendidos ?? 0),
+              regras: {
+                antecedenciaMinDias: cfgSol.feriasAntecedenciaMinDias,
+                minimoGrandePeriodo: cfgSol.feriasMinimoGrandePeriodo,
+                minimoOutrosPeriodos: cfgSol.feriasMinimoOutrosPeriodos,
+                maxPeriodos: cfgSol.feriasMaxPeriodos,
+                maxDiasVenda: cfgSol.feriasMaxDiasVenda,
+                vedacaoPreFeriadoDias: cfgSol.feriasVedacaoPreFeriadoDias
+              },
+              hoje: hojeBrasiliaISO(),
+              calendario,
+              liberaEm,
+              novos
+            });
+      if (errosFerias.length) throw new BadRequestException(errosFerias.join(" "));
+    }
+
+    if (body.tipo === "ATESTADO") {
+      body.metadados = await this.prepararCidDoAtestado(body.metadados);
+      metadados = body.metadados;
+    }
+    if (body.tipo === "LICENCA") {
+      const prep = await this.prepararLicenca(func, body);
+      body.metadados = prep.metadados;
+      body.dataReferencia = prep.dataReferencia;
+      body.dataInicio = prep.dataInicio;
+      body.dataFim = prep.dataFim;
+      metadados = body.metadados;
+    }
+
+    if (body.tipo === "HORA_EXTRA" && categoriaSemHoraExtra(func.categoria)) {
+      throw new BadRequestException(
+        `${labelCategoriaSemIntervalo(func.categoria as string)} não faz hora extra: o que passar da jornada é apenas informativo e não vai ao banco de horas.`
+      );
+    }
+
     if (body.tipo === "ENVIO_DOCUMENTO_RH") {
       const solCfg = await this.prisma.configuracaoSolicitacoes.findUnique({
         where: { id: "singleton" },
         select: { tipoAtivoEnvioDocumentoRh: true }
       });
       if (solCfg?.tipoAtivoEnvioDocumentoRh === false) {
-        throw new BadRequestException(
-          "O envio de documento ao RH está desativado. Entre em contato com o RH."
-        );
+        if (!dispensar) {
+          throw new BadRequestException(
+            "O envio de documento ao RH está desativado. Entre em contato com o RH."
+          );
+        }
+        dispensasUsadas.push("Envio de documento desativado em Configurações");
       }
       if (!body.descricao?.trim() || body.descricao.trim().length < 3) {
         throw new BadRequestException("Informe uma descrição com pelo menos 3 caracteres.");
@@ -2793,9 +3646,12 @@ export class PontoService {
       }
     }
 
-    // Salva documento de atestado / envio ao RH se enviado em base64
+    // Salva documento de atestado / abono (opcional) / envio ao RH se enviado em base64
     if (
-      (body.tipo === "ATESTADO" || body.tipo === "ENVIO_DOCUMENTO_RH") &&
+      (body.tipo === "ATESTADO" ||
+        body.tipo === "ABONO" ||
+        body.tipo === "LICENCA" ||
+        body.tipo === "ENVIO_DOCUMENTO_RH") &&
       metadados &&
       typeof metadados.documentoBase64 === "string"
     ) {
@@ -2811,13 +3667,32 @@ export class PontoService {
       metadados = {
         ...resto,
         documentoUrl: url,
-        ...(body.tipo === "ENVIO_DOCUMENTO_RH" && typeof resto.nomeArquivo === "string"
+        ...((body.tipo === "ENVIO_DOCUMENTO_RH" ||
+          body.tipo === "ABONO" ||
+          body.tipo === "LICENCA") &&
+        typeof resto.nomeArquivo === "string"
           ? { nomeArquivo: resto.nomeArquivo }
           : {})
       };
     }
 
     const vaiDiretoAoRh = body.tipo === "ENVIO_DOCUMENTO_RH";
+
+    /* Origem: pedido aberto pelo RH em nome do funcionário (mesma chave que as férias usam). */
+    if (opcoes?.origemRh) {
+      metadados = {
+        ...(metadados ?? {}),
+        origem: "RH",
+        criadaPorRh: {
+          userId: opcoes.origemRh.userId,
+          nome: opcoes.origemRh.nome,
+          em: new Date().toISOString(),
+          ...(dispensar
+            ? { justificativa: opcoes.origemRh.justificativa, dispensas: dispensasUsadas }
+            : {})
+        }
+      };
+    }
 
     const solicitacao = await this.prisma.solicitacao.create({
       data: {
@@ -2827,7 +3702,8 @@ export class PontoService {
         dataInicio: body.dataInicio ? new Date(body.dataInicio) : null,
         dataFim: body.dataFim ? new Date(body.dataFim) : null,
         descricao: body.descricao,
-        apenasInformativo: funcionarioSemRegistroPonto(func) || vaiDiretoAoRh,
+        apenasInformativo:
+          (funcionarioSemRegistroPonto(func) && !usaCreditoBanco && !usaCotaAbono) || vaiDiretoAoRh,
         status: vaiDiretoAoRh ? "AGUARDANDO_RH" : "PENDENTE",
         metadados: metadados ? JSON.parse(JSON.stringify(metadados)) : undefined
       },
@@ -2843,8 +3719,395 @@ export class PontoService {
         this.logger.error(`Falha ao notificar SOLICITACAO_NOVA_GESTOR: ${e}`)
       );
     }
+    if (opcoes?.origemRh) {
+      this.notificarSolicitacaoCriadaPeloRh(solicitacao, opcoes.origemRh.nome).catch((e) =>
+        this.logger.error(`Falha ao notificar SOLICITACAO_CRIADA_PELO_RH: ${e}`)
+      );
+    }
 
     return solicitacao;
+  }
+
+  /** Tempo liberado pelo RH que o funcionário ainda pode usar em abono. */
+  async getCreditoBanco(keycloakSub: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    return this.getCreditoBancoPorFuncionario(func.id);
+  }
+
+  private async getCreditoBancoPorFuncionario(funcionarioId: string) {
+    const func = { id: funcionarioId };
+    const cfg = await this.configSolicitacoesService.getConfig();
+    const hojeIso = hojeBrasiliaISO();
+    const [liberacoes, { uso }] = await Promise.all([
+      carregarLiberacoes(this.prisma, func.id),
+      carregarUsoCredito(this.prisma, func.id)
+    ]);
+    const situacoes = situacaoDasLiberacoes(liberacoes, uso, hojeIso);
+    const abertas = situacoes
+      .filter((x) => x.disponivelMinutos > 0)
+      .sort((a, b) => a.validaAte.localeCompare(b.validaAte))
+      .map((x) => ({ validaAte: x.validaAte, disponivelMinutos: x.disponivelMinutos }));
+    return {
+      disponivelMinutos: totalDisponivel(situacoes),
+      temLiberacao: liberacoes.length > 0,
+      /** Config: pode pedir abono além do tempo liberado (o liberado é usado primeiro). */
+      permitirAlemLimite: !!cfg.abonoAlemLimiteLiberadoRh,
+      liberacoes: abertas
+    };
+  }
+
+  /** Minutos que os períodos do abono consomem (dia útil = jornada; parcial = faixa). */
+  private async consumoDoAbono(
+    funcionarioId: string,
+    metadados: Record<string, unknown> | undefined
+  ) {
+    const periodos = periodosDoAbono({
+      dataInicio: null,
+      dataFim: null,
+      dataReferencia: new Date(),
+      metadados
+    });
+    const primeiro = periodos.map((p) => p.inicio).sort()[0];
+    const ultimo = periodos
+      .map((p) => p.fim)
+      .sort()
+      .at(-1)!;
+    if (!Array.isArray(metadados?.periodos) || !primeiro) {
+      throw new BadRequestException("Informe os períodos do abono para usar o tempo liberado.");
+    }
+    const [calendario, ctx] = await Promise.all([
+      this.calendarioFerias(funcionarioId, primeiro, ultimo),
+      this.getJornadaHistoricoContexto(funcionarioId)
+    ]);
+    const calc = calcularMinutosDoAbono({
+      periodos,
+      diasUteis: calendario.diasUteis,
+      feriados: new Set(calendario.feriados),
+      jornadaDiaMin: (iso) => jornadaEsperadaMin(iso, ctx)
+    });
+    return { ...calc, ultimo };
+  }
+
+  /** Prévia (tela de abono): quanto o abono consumiria do tempo liberado. */
+  async simularCreditoBanco(
+    keycloakSub: string,
+    body: {
+      periodos: Array<{
+        dataInicio: string;
+        dataFim?: string;
+        horarioInicio?: string | null;
+        horarioFim?: string | null;
+      }>;
+    }
+  ) {
+    const func = await this.getFuncionario(keycloakSub);
+    const periodos = (body?.periodos ?? []).map((p) => ({
+      dataInicio: p.dataInicio,
+      dataFim: p.dataFim || p.dataInicio,
+      horarioInicio: p.horarioInicio ?? null,
+      horarioFim: p.horarioFim ?? null
+    }));
+    const consumo = await this.consumoDoAbono(func.id, { periodos });
+    const { disponivelMinutos, permitirAlemLimite } = await this.getCreditoBanco(keycloakSub);
+    return {
+      permitirAlemLimite,
+      minutosTotal: consumo.minutosTotal,
+      dias: consumo.dias.filter((d) => d.minutos > 0),
+      disponivelMinutos
+    };
+  }
+
+  /**
+   * Calcula e confere o consumo do crédito para os períodos do abono. Com `permitirAlem`
+   * (config), o que passar do tempo liberado vira abono comum; retorna null se nada usa crédito.
+   */
+  private async montarCreditoBancoAbono(
+    funcionarioId: string,
+    metadados: Record<string, unknown> | undefined,
+    permitirAlem = false
+  ) {
+    const calc = await this.consumoDoAbono(funcionarioId, metadados);
+    const ultimo = calc.ultimo;
+    if (calc.minutosTotal <= 0) {
+      if (permitirAlem) return null;
+      throw new BadRequestException(
+        "Os dias escolhidos não consomem tempo (fim de semana ou feriado). Escolha dias úteis."
+      );
+    }
+    const hojeIso = hojeBrasiliaISO();
+    const [liberacoes, { uso }] = await Promise.all([
+      carregarLiberacoes(this.prisma, funcionarioId),
+      carregarUsoCredito(this.prisma, funcionarioId)
+    ]);
+    const situacoes = situacaoDasLiberacoes(liberacoes, uso, hojeIso);
+    const disponivel = totalDisponivel(situacoes);
+    const elegivel = situacoes
+      .filter((x) => x.validaAte >= ultimo)
+      .reduce((t, x) => t + x.disponivelMinutos, 0);
+    const alem = Math.max(0, calc.minutosTotal - elegivel);
+    if (alem > 0 && !permitirAlem) {
+      if (calc.minutosTotal > disponivel) {
+        throw new BadRequestException(
+          `O abono consome ${fmtHoraMin(calc.minutosTotal)}, mas o tempo liberado disponível é de ${fmtHoraMin(disponivel)}. Reduza o abono ou peça ao RH para liberar mais tempo.`
+        );
+      }
+      const maisLonge = situacoes
+        .filter((x) => x.disponivelMinutos > 0)
+        .map((x) => x.validaAte)
+        .sort()
+        .at(-1);
+      throw new BadRequestException(
+        maisLonge
+          ? `O tempo liberado vale até ${maisLonge.split("-").reverse().join("/")}; ajuste as datas do abono ou o tempo solicitado.`
+          : "Não há tempo liberado disponível para este abono."
+      );
+    }
+    if (elegivel <= 0) return null;
+    const usar = Math.min(calc.minutosTotal, elegivel);
+    const alocacao = alocarCredito(situacoes, usar, ultimo);
+    if (!alocacao) return null;
+    return {
+      minutosTotal: usar,
+      ...(alem > 0 ? { minutosAlemLimite: alem } : {}),
+      dias: calc.dias.filter((d) => d.minutos > 0),
+      alocacao
+    };
+  }
+
+  /** Saldo e histórico da cota de abono diário (acordo coletivo) do funcionário logado. */
+  async getCotaAbono(keycloakSub: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    return this.getCotaAbonoPorFuncionario(func.id);
+  }
+
+  async getCotaAbonoPorFuncionario(funcionarioId: string) {
+    const cfg = await this.configSolicitacoesService.getConfig();
+    const marcos = await this.prisma.bancoHorasMarco.findMany();
+    const tolerancia = await toleranciaFechamentoDias(this.prisma, funcionarioId);
+    const janela = janelaDoDia(marcos, hojeBrasiliaISO(), tolerancia);
+    const sols = await this.prisma.solicitacao.findMany({
+      where: { funcionarioId, tipo: "ABONO" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, descricao: true, createdAt: true, metadados: true }
+    });
+    const historico = sols
+      .map((s) => {
+        const cota = ((s.metadados ?? {}) as Record<string, unknown>).cotaAbono as
+          | { dias?: string[] }
+          | undefined;
+        return cota
+          ? {
+              id: s.id,
+              status: s.status,
+              descricao: s.descricao,
+              createdAt: s.createdAt,
+              dias: [...(cota.dias ?? [])].sort()
+            }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => !!x);
+    const emUso = historico
+      .filter((h) => (STATUS_SOLICITACAO_COTA_EM_USO as readonly string[]).includes(h.status))
+      .flatMap((h) => h.dias);
+    const usados = emUso.filter((d) => d >= janela.inicio && d <= janela.fim).length;
+    return {
+      cotaDias: cfg.abonoCotaDiasDoisCiclos,
+      janela,
+      usados,
+      saldo: Math.max(0, cfg.abonoCotaDiasDoisCiclos - usados),
+      diasEmUso: emUso.sort(),
+      historico
+    };
+  }
+
+  /** Valida o abono diário da cota: só dias inteiros úteis, um dia por período, dentro do saldo. */
+  private async montarCotaAbono(
+    funcionarioId: string,
+    metadados: Record<string, unknown> | undefined
+  ): Promise<string[]> {
+    if (!Array.isArray(metadados?.periodos) || !metadados.periodos.length) {
+      throw new BadRequestException("Informe os dias do abono.");
+    }
+    const periodos = periodosDoAbono({
+      dataInicio: null,
+      dataFim: null,
+      dataReferencia: new Date(),
+      metadados
+    });
+    if (periodos.some((p) => p.inicio !== p.fim || p.horarioInicio || p.horarioFim)) {
+      throw new BadRequestException(
+        "O abono da cota é apenas diário: cada período deve ser um único dia inteiro (sem horário parcial)."
+      );
+    }
+    const dias = periodos.map((p) => p.inicio).sort();
+    const calendario = await this.calendarioFerias(funcionarioId, dias[0], dias.at(-1)!);
+    const feriados = new Set(calendario.feriados);
+    const naoUtil = dias.find(
+      (d) =>
+        calendario.diasUteis[new Date(`${d}T12:00:00Z`).getUTCDay()] === false || feriados.has(d)
+    );
+    if (naoUtil) {
+      throw new BadRequestException(
+        `${naoUtil.split("-").reverse().join("/")} não é dia útil; escolha dias úteis para o abono.`
+      );
+    }
+    const cota = await this.getCotaAbonoPorFuncionario(funcionarioId);
+    const marcos = await this.prisma.bancoHorasMarco.findMany();
+    const erros = validarCotaAbono({
+      cotaDias: cota.cotaDias,
+      marcos,
+      novos: dias,
+      existentes: cota.diasEmUso,
+      deslocamentoDias: await toleranciaFechamentoDias(this.prisma, funcionarioId)
+    });
+    if (erros.length) throw new BadRequestException(erros.join(" "));
+    return dias;
+  }
+
+  /** Grupo do CID do atestado: valida conforme a configuração e grava o snapshot. */
+  private async prepararCidDoAtestado(metadados: Record<string, unknown> | undefined) {
+    const meta = { ...(metadados ?? {}) };
+    const grupoId = typeof meta.cidGrupoId === "string" ? meta.cidGrupoId : null;
+    delete meta.cidGrupoId;
+    delete meta.cidGrupo;
+    const cfg = await this.configSolicitacoesService.getConfig();
+    const modo = cfg.atestadoCidModo;
+    if (modo === "DESATIVADO") return meta;
+    if (!grupoId) {
+      if (modo === "OBRIGATORIO") {
+        throw new BadRequestException("Informe o grupo do CID do atestado.");
+      }
+      return meta;
+    }
+    const grupo = await this.prisma.cidGrupo.findUnique({ where: { id: grupoId } });
+    if (!grupo || !grupo.ativo) {
+      throw new BadRequestException("Grupo do CID inválido ou desativado.");
+    }
+    meta.cidGrupo = { id: grupo.id, codigo: grupo.codigo, descricao: grupo.descricao };
+    return meta;
+  }
+
+  /** Tipos de licença que o funcionário pode pedir, com o saldo usado na janela de cada um. */
+  async getTiposLicenca(keycloakSub: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    const tipos = await listarTiposLicenca(this.prisma, true);
+    const sols = await this.prisma.solicitacao.findMany({
+      where: {
+        funcionarioId: func.id,
+        tipo: "LICENCA",
+        status: { in: ["PENDENTE", "AGUARDANDO_RH", "APROVADA"] }
+      },
+      select: { metadados: true }
+    });
+    return tipos
+      .filter((t) => !t.categorias.length || t.categorias.includes(String(func.categoria ?? "")))
+      .map((t) => ({
+        ...t,
+        resumo: resumoRegra(t),
+        datasUsadas: datasUsadasDoTipo(sols, t.id)
+      }));
+  }
+
+  /** Valida o pedido de licença contra o tipo escolhido e monta o snapshot da regra. */
+  private async prepararLicenca(
+    func: { id: string; categoria: string | null },
+    body: {
+      dataReferencia: string;
+      dataInicio?: string;
+      dataFim?: string;
+      metadados?: Record<string, unknown>;
+    }
+  ) {
+    const meta = { ...(body.metadados ?? {}) };
+    const tipoId = typeof meta.tipoLicencaId === "string" ? meta.tipoLicencaId : null;
+    delete meta.tipoLicencaId;
+    delete meta.tipoLicenca;
+    if (!tipoId) throw new BadRequestException("Escolha o tipo de licença.");
+    const tipos = await listarTiposLicenca(this.prisma, false);
+    const tipo: TipoLicencaRegra | undefined = tipos.find((t) => t.id === tipoId);
+    if (!tipo) throw new BadRequestException("Tipo de licença não encontrado.");
+
+    /* Períodos: lista informada (não consecutivos/parcial) ou o intervalo único da solicitação. */
+    const periodosBrutos = Array.isArray(meta.periodos)
+      ? (meta.periodos as Array<Record<string, unknown>>)
+      : [
+          {
+            dataInicio: body.dataInicio ?? body.dataReferencia,
+            dataFim: body.dataFim ?? body.dataInicio ?? body.dataReferencia,
+            horarioInicio: meta.horarioInicio ?? null,
+            horarioFim: meta.horarioFim ?? null
+          }
+        ];
+    const periodos = periodosDoAbono({
+      dataInicio: null,
+      dataFim: null,
+      dataReferencia: new Date(body.dataReferencia),
+      metadados: { periodos: periodosBrutos }
+    });
+    if (!periodos.length) throw new BadRequestException("Informe o período da licença.");
+    const primeiro = periodos.map((p) => p.inicio).sort()[0];
+    const ultimo = periodos
+      .map((p) => p.fim)
+      .sort()
+      .at(-1)!;
+
+    const [calendario, ctx, sols] = await Promise.all([
+      this.calendarioFerias(func.id, primeiro, ultimo),
+      this.getJornadaHistoricoContexto(func.id),
+      this.prisma.solicitacao.findMany({
+        where: {
+          funcionarioId: func.id,
+          tipo: "LICENCA",
+          status: { in: ["PENDENTE", "AGUARDANDO_RH", "APROVADA"] }
+        },
+        select: { metadados: true }
+      })
+    ]);
+    const comProrrogacao = meta.comProrrogacao === true;
+    const r = validarPedidoLicenca({
+      tipo,
+      categoria: func.categoria,
+      periodos,
+      comProrrogacao,
+      saldo: { datasUsadas: datasUsadasDoTipo(sols, tipo.id) },
+      diasUteis: calendario.diasUteis,
+      feriados: new Set(calendario.feriados),
+      jornadaDiaMin: (iso) => jornadaEsperadaMin(iso, ctx)
+    });
+    if (r.erros.length) throw new BadRequestException(r.erros.join(" "));
+    if (tipo.exigeDocumento && typeof meta.documentoBase64 !== "string") {
+      throw new BadRequestException("Anexe o documento comprobatório desta licença.");
+    }
+    delete meta.comProrrogacao;
+    delete meta.horarioInicio;
+    delete meta.horarioFim;
+
+    return {
+      dataReferencia: new Date(`${primeiro}T12:00:00-03:00`).toISOString(),
+      dataInicio: intervaloDiaBrasilia(primeiro).inicio.toISOString(),
+      dataFim: fimDiaCivilBrasilia(ultimo).toISOString(),
+      metadados: {
+        ...meta,
+        periodos: periodos.map((p) => ({
+          dataInicio: intervaloDiaBrasilia(p.inicio).inicio.toISOString(),
+          dataFim: fimDiaCivilBrasilia(p.fim).toISOString(),
+          horarioInicio: p.horarioInicio,
+          horarioFim: p.horarioFim
+        })),
+        /* Snapshot da regra: mudar o ACT depois não altera o que já foi pedido/aprovado. */
+        tipoLicenca: {
+          id: tipo.id,
+          nome: tipo.nome,
+          resumo: resumoRegra(tipo),
+          codigoSistema: tipo.codigoSistema,
+          efeito: tipo.efeito,
+          comProrrogacao,
+          unidades: r.unidades,
+          datas: r.datas,
+          limiteAplicado: r.limiteAplicado
+        }
+      }
+    };
   }
 
   private async notificarEnvioDocumentoRh(solicitacao: {
@@ -2868,6 +4131,43 @@ export class PontoService {
       corpo,
       destinatarios
     );
+  }
+
+  /** Funcionário e chefe sabem que o RH abriu o pedido em nome do funcionário. */
+  private async notificarSolicitacaoCriadaPeloRh(
+    solicitacao: {
+      funcionarioId: string;
+      tipo: string;
+      descricao: string | null;
+      funcionario: { user: { name: string } | null };
+    },
+    rhNome: string
+  ) {
+    const [dest, chefe] = await Promise.all([
+      this.notificacaoService.getFuncionarioDestinatario(solicitacao.funcionarioId),
+      this.notificacaoService.getGestorDoFuncionario(solicitacao.funcionarioId)
+    ]);
+    const funcNome = solicitacao.funcionario.user?.name ?? "Funcionário";
+    const tipoLabel = TIPO_SOLICITACAO_LABEL[solicitacao.tipo] ?? solicitacao.tipo;
+    const detalhe = solicitacao.descricao ? `\n\nDescrição: ${solicitacao.descricao}` : "";
+    if (dest) {
+      await this.notificacaoService.dispararEvento(
+        "SOLICITACAO_CRIADA_PELO_RH",
+        `O RH abriu uma solicitação de ${tipoLabel} em seu nome`,
+        `O RH (${rhNome}) registrou uma solicitação de ${tipoLabel} em seu nome. Ela segue o ` +
+          `fluxo normal (chefe imediato e RH).${detalhe}\n\nAcompanhe em Solicitações.`,
+        [dest]
+      );
+    }
+    if (chefe && chefe.externalId !== dest?.externalId) {
+      await this.notificacaoService.dispararEvento(
+        "SOLICITACAO_CRIADA_PELO_RH",
+        `Solicitação de ${tipoLabel} de ${funcNome} aberta pelo RH`,
+        `O RH (${rhNome}) abriu uma solicitação de ${tipoLabel} em nome de ${funcNome}; ela ` +
+          `aguarda a sua análise.${detalhe}`,
+        [chefe]
+      );
+    }
   }
 
   private async notificarNovaSolicitacaoGestor(solicitacao: {
@@ -2963,6 +4263,300 @@ export class PontoService {
     });
   }
 
+  /** Solicitação de férias do funcionário aguardando a assinatura dos documentos do RH. */
+  private async feriasAguardandoAssinatura(keycloakSub: string, id: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    if (solicitacao.funcionarioId !== func.id) {
+      throw new ForbiddenException("Esta solicitação não pertence a você.");
+    }
+    if (solicitacao.tipo !== "FERIAS") {
+      throw new BadRequestException("Esta solicitação não é de férias.");
+    }
+    if (solicitacao.status !== "AGUARDANDO_DOCUMENTO_FUNCIONARIO") {
+      throw new BadRequestException(
+        "Estes documentos não estão aguardando a sua assinatura (a etapa mudou ou já foram tratados)."
+      );
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const docs = Array.isArray(meta.documentosFerias)
+      ? (meta.documentosFerias as DocumentoFeriasMeta[])
+      : [];
+    const user = await this.prisma.user.findUnique({
+      where: { id: func.userId },
+      select: { name: true }
+    });
+    return { func, solicitacao, meta, docs, nome: user?.name ?? "Funcionário" };
+  }
+
+  private documentoFeriasPendente(docs: DocumentoFeriasMeta[], indice: number) {
+    const doc = docs[indice];
+    if (!doc) throw new NotFoundException("Documento de férias não encontrado.");
+    if (doc.urlAssinado || doc.rejeicao) {
+      throw new BadRequestException(
+        `${doc.rotulo ?? "Este documento"} já foi ${doc.urlAssinado ? "assinado" : "rejeitado"}.`
+      );
+    }
+    return doc;
+  }
+
+  /**
+   * Funcionário assina pelo sistema UM documento de férias (cada documento tem assinatura
+   * própria). Quando todos estão assinados, a solicitação volta ao RH para aprovação.
+   * Vale em Solicitações → Férias e em Minhas Requisições do RH (mesma solicitação).
+   */
+  async assinarDocumentoFerias(
+    keycloakSub: string,
+    id: string,
+    indice: number,
+    aceite: boolean,
+    origem: { ipReal: string; ipGateway: string | null; userAgent: string | null }
+  ) {
+    if (!aceite) {
+      throw new BadRequestException(
+        "Confirme que leu e concorda com o documento antes de assinar."
+      );
+    }
+    const { meta, docs, nome } = await this.feriasAguardandoAssinatura(keycloakSub, id);
+    const doc = this.documentoFeriasPendente(docs, indice);
+    const assinadoEm = new Date();
+    const urlAssinado = await this.documentoService.assinarDocumentoFerias({
+      documentoUrl: doc.url,
+      solicitacaoId: id,
+      ordem: indice + 1,
+      assinatura: { gestorNome: nome, assinadoEm, ...origem }
+    });
+    const assinatura = {
+      nome,
+      em: assinadoEm.toISOString(),
+      ipReal: origem.ipReal,
+      ipGateway: origem.ipGateway,
+      userAgent: origem.userAgent,
+      codigo: codigoCienciaGestorExibido(nome, assinadoEm, origem.ipReal, origem.userAgent)
+    };
+    const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
+    const todosAssinados = novos.every((d) => !!d.urlAssinado);
+    const aviso = novos.find((d) => d.tipo === "AVISO");
+
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        metadados: {
+          ...meta,
+          documentosFerias: novos,
+          /* Concluída: todos os documentos assinados (a aprovação do RH depende disso). */
+          ...(todosAssinados
+            ? { assinaturaFerias: { ...assinatura, documentos: novos.length } }
+            : {})
+        } as unknown as Prisma.InputJsonValue,
+        ...(todosAssinados
+          ? {
+              status: "AGUARDANDO_RH" as const,
+              documentoRetornoUrl: aviso?.urlAssinado ?? urlAssinado,
+              documentoRetornoEm: assinadoEm
+            }
+          : {})
+      }
+    });
+
+    if (todosAssinados) {
+      this.avisarRhFerias(
+        `Documentos de férias assinados — ${nome}`,
+        `${nome} assinou pelo sistema todos os documentos de férias ` +
+          `(${novos.map((d) => d.rotulo ?? d.tipo).join(", ")}).\n\n` +
+          "A solicitação aguarda a aprovação do RH."
+      );
+    }
+    return atualizada;
+  }
+
+  /**
+   * Funcionário rejeita UM documento de férias com justificativa: a solicitação volta ao
+   * RH, que corrige e reenvia os documentos (o reenvio zera as assinaturas).
+   */
+  async rejeitarDocumentoFerias(
+    keycloakSub: string,
+    id: string,
+    indice: number,
+    justificativaBruta: string
+  ) {
+    const justificativa = (justificativaBruta ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException(
+        "Informe a justificativa da rejeição (mínimo de 10 caracteres)."
+      );
+    }
+    const { meta, docs, nome } = await this.feriasAguardandoAssinatura(keycloakSub, id);
+    const doc = this.documentoFeriasPendente(docs, indice);
+    const rejeicao = { nome, em: new Date().toISOString(), justificativa };
+    const novos = docs.map((d, i) => (i === indice ? { ...d, rejeicao } : d));
+
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        status: "AGUARDANDO_RH",
+        metadados: {
+          ...meta,
+          documentosFerias: novos,
+          rejeicaoDocumentoFerias: { ...rejeicao, documento: doc.rotulo ?? doc.tipo }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+
+    this.avisarRhFerias(
+      `Documento de férias rejeitado — ${nome}`,
+      `${nome} rejeitou o documento "${doc.rotulo ?? doc.tipo}".\n\n` +
+        `Justificativa: ${justificativa}\n\n` +
+        "Corrija e reenvie os documentos de férias em Aprovações (etapa RH)."
+    );
+    return atualizada;
+  }
+
+  /** Rodada (2º/3º período) de férias aprovada, aguardando a assinatura do funcionário. */
+  private async rodadaFeriasAguardandoAssinatura(keycloakSub: string, id: string, ordem: number) {
+    const func = await this.getFuncionario(keycloakSub);
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    if (solicitacao.funcionarioId !== func.id) {
+      throw new ForbiddenException("Esta solicitação não pertence a você.");
+    }
+    if (solicitacao.tipo !== "FERIAS" || solicitacao.status !== "APROVADA") {
+      throw new BadRequestException("Esta solicitação não é de férias aprovadas.");
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const rodada = rodadasDe(meta)[String(ordem)];
+    if (!rodada || rodada.situacao !== "AGUARDANDO_ASSINATURA") {
+      throw new BadRequestException(
+        "Estes documentos não estão aguardando a sua assinatura (a etapa mudou ou já foram tratados)."
+      );
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: func.userId },
+      select: { name: true }
+    });
+    return { solicitacao, meta, rodada, nome: user?.name ?? "Funcionário" };
+  }
+
+  /** Funcionário assina UM documento da rodada de um período futuro das férias. */
+  async assinarDocumentoRodadaFerias(
+    keycloakSub: string,
+    id: string,
+    ordem: number,
+    indice: number,
+    aceite: boolean,
+    origem: { ipReal: string; ipGateway: string | null; userAgent: string | null }
+  ) {
+    if (!aceite) {
+      throw new BadRequestException(
+        "Confirme que leu e concorda com o documento antes de assinar."
+      );
+    }
+    const { meta, rodada, nome } = await this.rodadaFeriasAguardandoAssinatura(
+      keycloakSub,
+      id,
+      ordem
+    );
+    const docs = rodada.documentos ?? [];
+    const doc = this.documentoFeriasPendente(docs as DocumentoFeriasMeta[], indice);
+    const assinadoEm = new Date();
+    const urlAssinado = await this.documentoService.assinarDocumentoFerias({
+      documentoUrl: doc.url,
+      solicitacaoId: id,
+      ordem: ordemArquivoRodada(ordem, indice),
+      assinatura: { gestorNome: nome, assinadoEm, ...origem }
+    });
+    const assinatura = {
+      nome,
+      em: assinadoEm.toISOString(),
+      ipReal: origem.ipReal,
+      ipGateway: origem.ipGateway,
+      userAgent: origem.userAgent,
+      codigo: codigoCienciaGestorExibido(nome, assinadoEm, origem.ipReal, origem.userAgent)
+    };
+    const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
+    const concluida = novos.every((d) => !!d.urlAssinado);
+    const novaRodada: RodadaFeriasMeta = {
+      ...rodada,
+      documentos: novos,
+      ...(concluida
+        ? { situacao: "CONCLUIDA" as const, concluidaEm: assinadoEm.toISOString() }
+        : {})
+    };
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        metadados: {
+          ...meta,
+          rodadasFerias: { ...rodadasDe(meta), [String(ordem)]: novaRodada }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+    if (concluida) {
+      this.avisarRhFerias(
+        `Documentos do ${ordem}º período de férias assinados — ${nome}`,
+        `${nome} assinou pelo sistema os documentos do ${ordem}º período de férias ` +
+          `(${rodada.inicio.split("-").reverse().join("/")} a ${rodada.fim.split("-").reverse().join("/")}): ` +
+          `${novos.map((d) => d.rotulo ?? d.tipo).join(", ")}.`
+      );
+    }
+    return atualizada;
+  }
+
+  /** Funcionário rejeita um documento da rodada: o RH corrige e reenvia. */
+  async rejeitarDocumentoRodadaFerias(
+    keycloakSub: string,
+    id: string,
+    ordem: number,
+    indice: number,
+    justificativaBruta: string
+  ) {
+    const justificativa = (justificativaBruta ?? "").trim();
+    if (justificativa.length < 10) {
+      throw new BadRequestException(
+        "Informe a justificativa da rejeição (mínimo de 10 caracteres)."
+      );
+    }
+    const { meta, rodada, nome } = await this.rodadaFeriasAguardandoAssinatura(
+      keycloakSub,
+      id,
+      ordem
+    );
+    const docs = rodada.documentos ?? [];
+    const doc = this.documentoFeriasPendente(docs as DocumentoFeriasMeta[], indice);
+    const rejeicao = { nome, em: new Date().toISOString(), justificativa };
+    const novos = docs.map((d, i) => (i === indice ? { ...d, rejeicao } : d));
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        metadados: {
+          ...meta,
+          rodadasFerias: {
+            ...rodadasDe(meta),
+            [String(ordem)]: { ...rodada, documentos: novos, situacao: "REJEITADA" }
+          }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+    this.avisarRhFerias(
+      `Documento do ${ordem}º período de férias rejeitado — ${nome}`,
+      `${nome} rejeitou o documento "${doc.rotulo ?? doc.tipo}" do ${ordem}º período.\n\n` +
+        `Justificativa: ${justificativa}\n\n` +
+        "Corrija e reenvie os documentos em Aprovações → Rodadas de férias."
+    );
+    return atualizada;
+  }
+
+  /** Aviso ao RH sobre a assinatura/rejeição dos documentos de férias. */
+  private avisarRhFerias(titulo: string, corpo: string) {
+    this.notificacaoService
+      .getUsuariosRh()
+      .then((dest) =>
+        dest.length
+          ? this.notificacaoService.dispararEvento("SOLICITACAO_AGUARDANDO_RH", titulo, corpo, dest)
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar o RH (férias): ${e}`));
+  }
+
   /* Permite ao funcionário substituir o documento anexado a uma solicitação
      (ex.: atestado médico) enquanto ela ainda não foi aprovada/rejeitada pelo RH.
      Após a decisão final do RH, o documento não pode mais ser alterado. */
@@ -3009,6 +4603,41 @@ export class PontoService {
 
   /* ─── Saldo de Férias ─── */
 
+  /** Calendário da vedação de férias: dias úteis da jornada e feriados integrais (sem abono). */
+  async calendarioFerias(
+    funcionarioId: string,
+    de: string,
+    ate: string
+  ): Promise<CalendarioFerias> {
+    const jornada = await this.getJornadaEfetiva(funcionarioId);
+    const diasUteis: boolean[] = JSON.parse(
+      typeof jornada.diasUteis === "string"
+        ? jornada.diasUteis
+        : "[false,true,true,true,true,true,false]"
+    );
+    const { inicio, fim } = intervaloColunaDate(de, ate);
+    const feriados = await this.prisma.feriadoConfig.findMany({
+      where: { data: { gte: inicio, lte: fim }, marcoHorario: null, tipo: { not: "ABONO" } },
+      select: { data: true }
+    });
+    return { diasUteis, feriados: feriados.map((f) => dataCivilISO(f.data)) };
+  }
+
+  /** Calendário + regra de vedação para o formulário de férias conferir na tela. */
+  async getCalendarioFerias(keycloakSub: string, de: string, ate: string) {
+    const ok = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d ?? "");
+    if (!ok(de) || !ok(ate) || de > ate) {
+      throw new BadRequestException("Informe o intervalo (de/ate) no formato AAAA-MM-DD.");
+    }
+    if (diasCorridos(de, ate) > 800) throw new BadRequestException("Intervalo muito longo.");
+    const func = await this.getFuncionario(keycloakSub);
+    const cfgSol = await this.configSolicitacoesService.getConfig();
+    return {
+      vedacaoPreFeriadoDias: cfgSol.feriasVedacaoPreFeriadoDias,
+      ...(await this.calendarioFerias(func.id, de, ate))
+    };
+  }
+
   async getSaldoFerias(keycloakSub: string) {
     const func = await this.getFuncionario(keycloakSub);
     return this.calcularSaldoFeriasFuncionario(func.id);
@@ -3023,10 +4652,12 @@ export class PontoService {
     if (!func?.dataAdmissao) return null;
 
     const isEstagiario = func.categoria === "ESTAGIARIO";
-    const duracaoCicloMeses = isEstagiario ? 6 : 12;
-    const diasPorCiclo = 30; // Estagiário e CLT: 30 dias por ciclo (única regra do estagiário)
-    // Estagiário não acumula ciclos; demais funcionários acumulam até 2
-    const maxAcumulo = isEstagiario ? 1 : 2;
+    /* Ciclo de 12 meses para todos. Estagiário (Lei 11.788): 15 dias aos 6 meses e 30 ao
+       completar 1 ano (menos o já usufruído); marcação liberada antes, gozo só após o
+       período aquisitivo (`liberaEm`). */
+    const duracaoCicloMeses = 12;
+    const diasPorCiclo = 30;
+    const maxAcumulo = 2;
 
     const hoje = new Date();
     const admissao = new Date(func.dataAdmissao);
@@ -3034,22 +4665,6 @@ export class PontoService {
     const mesesTotal =
       (hoje.getFullYear() - admissao.getFullYear()) * 12 + (hoje.getMonth() - admissao.getMonth());
     const ciclosVencidos = Math.floor(mesesTotal / duracaoCicloMeses);
-
-    if (ciclosVencidos === 0) {
-      return {
-        dataAdmissao: admissao,
-        ciclosVencidos: 0,
-        diasDisponiveis: 0,
-        diasGozo: 0,
-        diasVendidos: 0,
-        totalVencido: 0,
-        obrigatorio: false,
-        isEstagiario,
-        duracaoCicloMeses,
-        diasPorCiclo,
-        ciclos: []
-      };
-    }
 
     const STATUS_EM_ANALISE = [
       "PENDENTE",
@@ -3094,19 +4709,31 @@ export class PontoService {
     }
 
     const totalVencido = Math.min(ciclosVencidos, maxAcumulo) * diasPorCiclo;
-    const diasDisponiveis = Math.max(0, totalVencido - diasGozo - diasVendidos);
+    const ciclosVisiveis = Math.min(ciclosVencidos, maxAcumulo);
+    /* Ciclo em formação (ainda não vencido): pode ser marcado, mas só usufruído a partir de
+       `liberaEm`. Empregado: só no 1º ano; estagiário: sempre que o ciclo seguinte não passa
+       do contrato (15 dias aos 6 meses). */
+    const cicloFormacaoNum = ciclosVencidos + 1;
+    const temFormacao = isEstagiario ? ciclosVencidos < maxAcumulo : ciclosVencidos === 0;
+    const mesesNoCicloAtual = mesesTotal % duracaoCicloMeses;
+    const cotaFormacao = temFormacao ? (isEstagiario ? 15 : diasPorCiclo) : 0;
+    /* O saldo exibido soma o ciclo em formação só enquanto não há ciclo vencido (1º ano);
+       depois o ciclo seguinte aparece em `ciclos`, mas o saldo é o que já venceu. */
+    const diasDisponiveis = Math.max(
+      0,
+      totalVencido + (ciclosVencidos === 0 ? cotaFormacao : 0) - diasGozo - diasVendidos
+    );
+    const disponivelVencido = Math.max(0, totalVencido - diasGozo - diasVendidos);
 
     let obrigatorio: boolean;
     if (isEstagiario) {
-      const mesesNoCicloAtual = mesesTotal % duracaoCicloMeses;
-      obrigatorio = ciclosVencidos >= 1 && diasDisponiveis > 0 && mesesNoCicloAtual >= 5;
+      obrigatorio = ciclosVencidos >= 1 && disponivelVencido > 0 && mesesNoCicloAtual >= 11;
     } else {
       const mesesNoPeriodoAcumulo = mesesTotal % (maxAcumulo * 12);
       obrigatorio =
         ciclosVencidos >= maxAcumulo && diasDisponiveis > 0 && mesesNoPeriodoAcumulo >= 23;
     }
 
-    const ciclosVisiveis = Math.min(ciclosVencidos, maxAcumulo);
     type CicloDetalhe = {
       numero: number;
       inicio: Date;
@@ -3118,28 +4745,46 @@ export class PontoService {
       status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
       solicitacaoId: string | null;
       solicitacaoStatus: string | null;
+      /** Ciclo ainda não vencido: dá para marcar, mas só usufruir a partir de `liberaEm`. */
+      emFormacao: boolean;
+      liberaEm: string | null;
     };
 
-    const ciclosBase: CicloDetalhe[] = Array.from({ length: ciclosVisiveis }, (_, i) => {
-      const cicloNum = ciclosVencidos - ciclosVisiveis + i + 1;
-      const inicio = new Date(admissao);
-      inicio.setMonth(admissao.getMonth() + (cicloNum - 1) * duracaoCicloMeses);
-      const fim = new Date(inicio);
-      fim.setMonth(fim.getMonth() + duracaoCicloMeses);
-      fim.setDate(fim.getDate() - 1);
-      return {
-        numero: cicloNum,
-        inicio,
-        fim,
-        diasPorCiclo,
-        diasGozo: 0,
-        diasVendidos: 0,
-        diasDisponiveis: diasPorCiclo,
-        status: "DISPONIVEL" as const,
-        solicitacaoId: null,
-        solicitacaoStatus: null
-      };
-    });
+    const ciclosBase: CicloDetalhe[] = Array.from(
+      { length: ciclosVisiveis + (temFormacao ? 1 : 0) },
+      (_, i) => {
+        const cicloNum = ciclosVencidos - ciclosVisiveis + i + 1;
+        const emFormacao = cicloNum === cicloFormacaoNum && temFormacao;
+        const inicio = new Date(admissao);
+        inicio.setMonth(admissao.getMonth() + (cicloNum - 1) * duracaoCicloMeses);
+        const fim = new Date(inicio);
+        fim.setMonth(fim.getMonth() + duracaoCicloMeses);
+        fim.setDate(fim.getDate() - 1);
+        const cota = emFormacao ? cotaFormacao : diasPorCiclo;
+        const liberaEmData = new Date(inicio);
+        liberaEmData.setMonth(liberaEmData.getMonth() + (isEstagiario ? 6 : 12));
+        const liberaEm =
+          emFormacao && (!isEstagiario || mesesNoCicloAtual < 6)
+            ? dataCivilISO(
+                emFormacao && !isEstagiario ? new Date(fim.getTime() + 86400000) : liberaEmData
+              )
+            : null;
+        return {
+          numero: cicloNum,
+          inicio,
+          fim,
+          diasPorCiclo: cota,
+          diasGozo: 0,
+          diasVendidos: 0,
+          diasDisponiveis: cota,
+          status: "DISPONIVEL" as const,
+          solicitacaoId: null,
+          solicitacaoStatus: null,
+          emFormacao,
+          liberaEm
+        };
+      }
+    );
 
     // Atribui consumo por cicloNumero explícito; demais FIFO nos ciclos livres
     const consumoPorCiclo = new Map<
@@ -3202,7 +4847,7 @@ export class PontoService {
         if (gozoRest + vendaRest <= 0) break;
         const usado = consumoPorCiclo.get(c.numero);
         const ocupado = usado ? usado.diasGozo + usado.diasVendidos : 0;
-        const livre = Math.max(0, diasPorCiclo - ocupado);
+        const livre = Math.max(0, c.diasPorCiclo - ocupado);
         if (livre <= 0) continue;
         const gozoTake = Math.min(gozoRest, livre);
         const vendaTake = Math.min(vendaRest, livre - gozoTake);
@@ -3217,7 +4862,7 @@ export class PontoService {
       if (!uso) return c;
       const gozo = uso.diasGozo;
       const venda = uso.diasVendidos;
-      const disp = Math.max(0, diasPorCiclo - gozo - venda);
+      const disp = Math.max(0, c.diasPorCiclo - gozo - venda);
       const emAnalise = STATUS_EM_ANALISE.includes(
         uso.solicitacaoStatus as (typeof STATUS_EM_ANALISE)[number]
       );
@@ -3298,6 +4943,109 @@ export class PontoService {
       });
     });
 
+    return { ok: true };
+  }
+
+  /* ─── Requerimentos de cadastro (Dependentes / Formação / Cursos) ─── */
+
+  /** Pendentes do funcionário, cada um com os dados atuais daquele tipo para edição. */
+  async getRequerimentosCadastro(keycloakSub: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    const pendentes = await this.prisma.requerimentoCadastro.findMany({
+      where: { funcionarioId: func.id, status: "PENDENTE" },
+      select: { tipo: true, status: true, criadoEm: true },
+      orderBy: { tipo: "asc" }
+    });
+    if (!pendentes.length) return [];
+    const dataIso = (d: Date | null) => (d ? dataCivilISO(d) : null);
+    const [dependentes, formacoes, capacitacoes] = await Promise.all([
+      this.prisma.dependente.findMany({
+        where: { funcionarioId: func.id },
+        orderBy: { createdAt: "asc" }
+      }),
+      this.prisma.formacaoAcademica.findMany({
+        where: { funcionarioId: func.id },
+        orderBy: { createdAt: "asc" }
+      }),
+      this.prisma.capacitacao.findMany({
+        where: { funcionarioId: func.id },
+        orderBy: { createdAt: "asc" }
+      })
+    ]);
+    const atuais = {
+      DEPENDENTES: dependentes.map((d) => ({
+        nome: d.nome,
+        cpf: d.cpf,
+        dataNascimento: dataIso(d.dataNascimento)
+      })),
+      FORMACAO_ACADEMICA: formacoes.map((f) => ({
+        grauEscolaridade: f.grauEscolaridade,
+        curso: f.curso,
+        instituicao: f.instituicao,
+        conclusao: dataIso(f.conclusao)
+      })),
+      CAPACITACOES: capacitacoes.map((c) => ({
+        nome: c.nome,
+        instituicao: c.instituicao,
+        conclusao: dataIso(c.conclusao)
+      }))
+    };
+    return pendentes.map((r) => ({ ...r, itens: atuais[r.tipo] }));
+  }
+
+  async responderRequerimentoCadastro(
+    keycloakSub: string,
+    tipoStr: string,
+    body: {
+      itens?: Array<DependenteInput | FormacaoAcademicaInput | CapacitacaoInput>;
+      semRegistros?: boolean;
+    }
+  ) {
+    const tipo = tipoStr as (typeof TIPOS_REQUERIMENTO_CADASTRO)[number];
+    if (!TIPOS_REQUERIMENTO_CADASTRO.includes(tipo)) {
+      throw new BadRequestException("Tipo de requerimento inválido.");
+    }
+    const func = await this.getFuncionario(keycloakSub);
+    const req = await this.prisma.requerimentoCadastro.findUnique({
+      where: { funcionarioId_tipo: { funcionarioId: func.id, tipo } }
+    });
+    if (!req || req.status !== "PENDENTE") {
+      throw new BadRequestException("Nenhum requerimento pendente encontrado.");
+    }
+
+    const itens = Array.isArray(body.itens) ? body.itens : [];
+    if (!itens.length && !body.semRegistros) {
+      throw new BadRequestException(
+        "Adicione ao menos um registro ou marque que não possui registros."
+      );
+    }
+
+    if (tipo === "DEPENDENTES") {
+      const deps = itens as DependenteInput[];
+      if (deps.some((d) => !d.nome?.trim())) {
+        throw new BadRequestException("Informe o nome de todos os dependentes.");
+      }
+      if (deps.some((d) => d.cpf?.trim() && !cpfValido(d.cpf))) {
+        throw new BadRequestException("Há CPF de dependente inválido.");
+      }
+    } else if (tipo === "FORMACAO_ACADEMICA") {
+      if ((itens as FormacaoAcademicaInput[]).some((f) => !f.curso?.trim())) {
+        throw new BadRequestException("Informe o curso de todas as formações.");
+      }
+    } else if ((itens as CapacitacaoInput[]).some((c) => !c.nome?.trim())) {
+      throw new BadRequestException("Informe o nome de todos os cursos/capacitações.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      if (tipo === "DEPENDENTES") await syncDependentes(tx, func.id, itens as DependenteInput[]);
+      else if (tipo === "FORMACAO_ACADEMICA")
+        await syncFormacoesAcademicas(tx, func.id, itens as FormacaoAcademicaInput[]);
+      else await syncCapacitacoes(tx, func.id, itens as CapacitacaoInput[]);
+      await tx.requerimentoCadastro.update({
+        where: { id: req.id },
+        data: { status: "RESPONDIDO", respondidoEm: new Date() }
+      });
+    });
     return { ok: true };
   }
 
@@ -3509,7 +5257,7 @@ export class PontoService {
       }),
       this.prisma.feriadoConfig.findMany({
         where: { data: { gte: feriadoIni, lte: feriadoFim } },
-        select: { data: true, nome: true, marcoHorario: true, marcoLado: true }
+        select: { data: true, nome: true, tipo: true, marcoHorario: true, marcoLado: true }
       }),
       this.prisma.configuracaoSistema.findUnique({
         where: { id: "singleton" },
@@ -3524,6 +5272,18 @@ export class PontoService {
 
     const inicioAtividades = inicioAtividadesUsuario(func.user);
 
+    const mm2 = String(mes).padStart(2, "0");
+    const inicioMes = intervaloDiaBrasilia(`${ano}-${mm2}-01`).inicio;
+    const fimMes = intervaloDiaBrasilia(
+      `${ano}-${mm2}-${String(new Date(ano, mes, 0).getDate()).padStart(2, "0")}`
+    ).fim;
+    const cicloEmCasaMes = await diasCicloCompletoEmCasa(
+      this.prisma,
+      funcionarioId,
+      inicioMes,
+      fimMes
+    );
+
     const quadro = montarRelatorioQuadro(
       registros,
       afastamentos,
@@ -3535,7 +5295,21 @@ export class PontoService {
       cfgMult?.bancoHorasDomingoPct ?? 200,
       cfgMult?.bancoHorasFeriadoPct ?? 200,
       inicioAtividades,
-      { forcarSemIntervalo: categoriaSemIntervaloAlmoco(func.categoria) }
+      {
+        forcarSemIntervalo: categoriaSemIntervaloAlmoco(func.categoria),
+        diasCicloCompletoEmCasa: cicloEmCasaMes.dias,
+        exigenciasCicloPresencial: (
+          await exigenciasCicloPresencial(
+            this.prisma,
+            funcionarioId,
+            inicioMes,
+            fimMes,
+            jornadaCtx,
+            cicloEmCasaMes.dias
+          )
+        ).porDia,
+        diaNeutro: await montarDiaNeutro(this.prisma, funcionarioId)
+      }
     );
 
     const horasExtrasMinutos = quadro.dias
@@ -3544,7 +5318,7 @@ export class PontoService {
     const horasFaltaMinutos = quadro.dias
       .filter((d) => (d.saldoMin ?? 0) < 0)
       .reduce((s, d) => s + Math.abs(d.saldoMin ?? 0), 0);
-    const diasTrabalhados = quadro.dias.filter((d) => d.statusInterno === "OK").length;
+    const diasTrabalhados = quadro.diasTrabalhados;
 
     return {
       horasTrabalhadasMinutos: quadro.horasTrabalhadasMinutos,

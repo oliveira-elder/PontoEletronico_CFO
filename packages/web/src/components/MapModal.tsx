@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
+import Leaflet from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { XIcon } from "./icons";
 
 interface LeafletLayer {
@@ -12,6 +14,7 @@ interface LeafletLayer {
 interface LeafletMap {
   setView(ll: [number, number], zoom?: number): LeafletMap;
   on(event: string, handler: (e: LeafletEvent) => void): void;
+  invalidateSize(): LeafletMap;
   remove(): void;
 }
 interface LeafletStatic {
@@ -25,7 +28,8 @@ interface LeafletEvent {
   target: { getLatLng(): { lat: number; lng: number } };
   latlng: { lat: number; lng: number };
 }
-declare const L: LeafletStatic;
+/* Leaflet via pacote npm (antes vinha de <script> global no index.html, removido). */
+const L = Leaflet as unknown as LeafletStatic;
 
 export interface MapResult {
   lat: number;
@@ -42,8 +46,27 @@ interface Props {
   minRaio?: number;
   maxRaio?: number;
   hideRaio?: boolean;
+  /** Texto já preenchido no campo de busca ao abrir (ex.: endereço configurado). */
+  buscaInicial?: string;
   onConfirm: (r: MapResult) => void;
   onClose: () => void;
+}
+
+/**
+ * Monta o texto de busca a partir de um endereço: "Logradouro, Nº, Bairro, Cidade - UF".
+ * O complemento fica de fora porque costuma atrapalhar a geocodificação.
+ */
+export function textoBuscaEndereco(e: {
+  logradouro?: string | null;
+  numero?: string | null;
+  bairro?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+}): string {
+  const cidadeUf = [e.cidade?.trim(), e.uf?.trim()].filter(Boolean).join(" - ");
+  return [e.logradouro?.trim(), e.numero?.trim(), e.bairro?.trim(), cidadeUf]
+    .filter(Boolean)
+    .join(", ");
 }
 
 async function nominatimSearch(
@@ -117,6 +140,7 @@ export function MapModal({
   minRaio = 10,
   maxRaio = 2000,
   hideRaio = false,
+  buscaInicial = "",
   onConfirm,
   onClose
 }: Props) {
@@ -129,24 +153,35 @@ export function MapModal({
   const [raioM, setRaioM] = useState(Math.max(raio, minRaio));
   const [geocoding, setGeocoding] = useState(false);
   const [enderecoDetect, setEnderecoDetect] = useState("");
-  const [busca, setBusca] = useState("");
+  const [busca, setBusca] = useState(buscaInicial);
   const [buscando, setBuscando] = useState(false);
   const [buscaErro, setBuscaErro] = useState(false);
+  /* Texto dos campos de coordenada enquanto o usuário digita (evita reformatar a cada tecla). */
+  const [coordTexto, setCoordTexto] = useState<{ lat: string; lng: string } | null>(null);
+  const reverseAbortRef = useRef<AbortController | null>(null);
+  const reverseTimerRef = useRef<number | undefined>(undefined);
 
-  /* Geocodificação reversa */
-  async function reverseGeocode(la: number, ln: number) {
+  /* Geocodificação reversa: agrupa cliques/arrastes seguidos e cancela a consulta
+     anterior, para que uma resposta antiga não sobrescreva a posição mais recente. */
+  function reverseGeocode(la: number, ln: number) {
+    window.clearTimeout(reverseTimerRef.current);
+    reverseAbortRef.current?.abort();
     setGeocoding(true);
-    try {
-      const r = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${la}&lon=${ln}&format=json`,
-        { headers: { "Accept-Language": "pt-BR" } }
-      );
-      const data = await r.json();
-      setEnderecoDetect(data.display_name ?? "");
-    } catch {
-      /* silencioso */
-    }
-    setGeocoding(false);
+    reverseTimerRef.current = window.setTimeout(async () => {
+      const ctrl = new AbortController();
+      reverseAbortRef.current = ctrl;
+      try {
+        const r = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${la}&lon=${ln}&format=json`,
+          { headers: { "Accept-Language": "pt-BR" }, signal: ctrl.signal }
+        );
+        const data = await r.json();
+        setEnderecoDetect(data.display_name ?? "");
+      } catch {
+        /* silencioso (inclui cancelamento) */
+      }
+      if (!ctrl.signal.aborted) setGeocoding(false);
+    }, 350);
   }
 
   /* Mover mapa + marcador para uma posição */
@@ -185,7 +220,8 @@ export function MapModal({
 
     const map = L.map(mapRef.current, { zoomControl: true }).setView([lat, lng], 16);
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    /* Host único (sem subdomínios a/b/c): recomendado pelo OSM e mais rápido via HTTP/2. */
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>',
       maxZoom: 19
     }).addTo(map);
@@ -227,7 +263,23 @@ export function MapModal({
 
     reverseGeocode(lat, lng);
 
+    /* O mapa é criado antes do modal terminar de ser dimensionado: sem recalcular o
+       tamanho, só parte dos quadros carrega e o resto fica cinza até um resize. */
+    const raf = requestAnimationFrame(() => map.invalidateSize());
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(mapRef.current);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+
     return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(reverseTimerRef.current);
+      reverseAbortRef.current?.abort();
       map.remove();
       leafletRef.current = null;
     };
@@ -265,7 +317,7 @@ export function MapModal({
           display: "flex",
           flexDirection: "column",
           boxShadow: "0 24px 80px rgba(10,5,6,0.28)",
-          maxHeight: "92vh"
+          maxHeight: "92dvh"
         }}
       >
         {/* Header */}
@@ -386,14 +438,18 @@ export function MapModal({
         )}
 
         {/* Mapa */}
-        <div ref={mapRef} style={{ flex: 1, minHeight: 320 }} />
+        {/* Altura fixa relativa à tela: o Leaflet precisa de um container com tamanho
+            definido, e em telas baixas os controles abaixo ganham rolagem própria. */}
+        <div ref={mapRef} style={{ height: "clamp(220px, 45dvh, 440px)", flexShrink: 0 }} />
 
         {/* Controles */}
         <div
           style={{
             padding: "14px 20px",
             borderTop: "1px solid rgba(122,30,38,0.08)",
-            flexShrink: 0,
+            flex: "1 1 auto",
+            minHeight: 0,
+            overflowY: "auto",
             background: "var(--cream-50)"
           }}
         >
@@ -430,10 +486,21 @@ export function MapModal({
                 <input
                   type="text"
                   inputMode="decimal"
-                  value={pos[key].toFixed(6).replace(",", ".")}
+                  value={coordTexto ? coordTexto[key] : pos[key].toFixed(6)}
+                  onFocus={() =>
+                    setCoordTexto({ lat: pos.lat.toFixed(6), lng: pos.lng.toFixed(6) })
+                  }
+                  onBlur={() => setCoordTexto(null)}
                   onChange={(e) => {
-                    const v = parseFloat(e.target.value.replace(",", "."));
-                    if (!isNaN(v)) {
+                    const texto = e.target.value;
+                    setCoordTexto((c) => ({
+                      lat: c?.lat ?? pos.lat.toFixed(6),
+                      lng: c?.lng ?? pos.lng.toFixed(6),
+                      [key]: texto
+                    }));
+                    const v = parseFloat(texto.replace(",", "."));
+                    const limite = key === "lat" ? 90 : 180;
+                    if (!isNaN(v) && Math.abs(v) <= limite) {
                       const newPos = { ...pos, [key]: v };
                       setPos(newPos);
                       markerRef.current?.setLatLng([newPos.lat, newPos.lng]);

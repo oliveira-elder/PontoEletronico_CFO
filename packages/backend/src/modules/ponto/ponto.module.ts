@@ -8,6 +8,7 @@ import { ConfigService } from "./config.service";
 import { GestaoController } from "./gestao.controller";
 import { GestaoService } from "./gestao.service";
 import { FotoService } from "./foto.service";
+import { SeloIcpModule } from "../selo-icp/selo-icp.module";
 import { DocumentoService } from "./documento.service";
 import { FeriadosService } from "./feriados.service";
 import { FeriadoConfigService } from "./feriado-config.service";
@@ -17,7 +18,7 @@ import { ApiServidoraModule } from "../api-servidora/api-servidora.module";
 import { NotificacaoModule } from "../notificacao/notificacao.module";
 
 @Module({
-  imports: [PrismaModule, HttpModule, ApiServidoraModule, NotificacaoModule],
+  imports: [PrismaModule, HttpModule, ApiServidoraModule, NotificacaoModule, SeloIcpModule],
   controllers: [PontoController, ConfigController, ConfigBrandingController, GestaoController],
   providers: [
     PontoService,

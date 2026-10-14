@@ -4,7 +4,6 @@ import {
   HomeIcon,
   ClockIcon,
   CalendarIcon,
-  BarChart2Icon,
   InboxIcon,
   UsersIcon,
   SettingsIcon,
@@ -15,9 +14,11 @@ import {
   ClipboardListIcon,
   TerminalIcon,
   CrownIcon,
-  ActivityIcon
+  ActivityIcon,
+  FileTextIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
+import { paginaRhLiberada, type PaginaRh } from "../../utils/recursosRh";
 
 interface NavItem {
   path: string;
@@ -29,7 +30,7 @@ const mainNav: NavItem[] = [
   { path: "/ponto", label: "Início", icon: <HomeIcon size={18} /> },
   { path: "/ponto/registrar", label: "Registrar Ponto", icon: <ClockIcon size={18} /> },
   { path: "/ponto/historico", label: "Histórico", icon: <CalendarIcon size={18} /> },
-  { path: "/ponto/relatorios", label: "Relatórios", icon: <BarChart2Icon size={18} /> },
+  { path: "/ponto/folhas-assinadas", label: "Folhas assinadas", icon: <FileTextIcon size={18} /> },
   { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> }
 ];
 
@@ -89,7 +90,7 @@ function SidebarLink({ item, expanded }: { item: NavItem; expanded: boolean }) {
 /* ─── Sidebar ─── */
 export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => void }) {
   const [expanded, setExpanded] = useState(false);
-  const { user, hasRole, logout } = useAuth();
+  const { user, hasRole, logout, podeRh } = useAuth();
 
   const isAdmin = !!user?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
   const isSuperAdmin = !!user?.isSuperAdmin;
@@ -104,10 +105,20 @@ export function Sidebar({ onExpandChange }: { onExpandChange?: (v: boolean) => v
   const isRH = isAdmin || hasRole("RH_AUDITORIA");
 
   const visibleAprovacaoNav = isGestor ? aprovacaoNav : [];
-  const visibleDashboardNav = isRH ? dashboardNav : [];
-  const visibleGestaoRhNav = isRH ? gestaoRhNav : [];
-  const visibleAuditoriaNav = isRH ? auditoriaNav : [];
-  const visibleAdminBottomNav = isAdmin || isRH ? adminBottomNav : [];
+  /* Perfil do RH: cada página de RH só aparece se houver ao menos uma aba liberada. */
+  const paginaPorPath: Record<string, PaginaRh> = {
+    "/ponto/dashboard": "dashboard",
+    "/ponto/gestao": "gestao",
+    "/ponto/requisicoes-rh": "requisicoes",
+    "/ponto/auditoria": "auditoria",
+    "/ponto/configuracoes": "configuracoes"
+  };
+  const liberadoRh = (item: NavItem) =>
+    !paginaPorPath[item.path] || paginaRhLiberada(podeRh, paginaPorPath[item.path]);
+  const visibleDashboardNav = isRH ? dashboardNav.filter(liberadoRh) : [];
+  const visibleGestaoRhNav = isRH ? gestaoRhNav.filter(liberadoRh) : [];
+  const visibleAuditoriaNav = isRH ? auditoriaNav.filter(liberadoRh) : [];
+  const visibleAdminBottomNav = isAdmin || isRH ? adminBottomNav.filter(liberadoRh) : [];
   const visibleSuperAdminNav = isSuperAdmin ? superAdminNav : [];
 
   function setExp(v: boolean) {

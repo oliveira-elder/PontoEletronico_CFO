@@ -13,17 +13,37 @@ import { api } from "../../hooks/useApi";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import {
   FeriasDetalheBlock,
+  LinksDocumentosFerias,
+  AssinarDocumentosFerias,
+  AssinarRodadasFerias,
+  AbonoDetalheBlock,
+  AvisoInterjornadaBlock,
   LinkDocumentoAnexado,
   LogTimelineGestor,
   textoCorrecaoPontoFuncionario
 } from "./solicitacaoUi";
-import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
+import {
+  MSG_SOLICITACAO_APENAS_INFORMATIVA,
+  categoriaSemIntervaloAlmoco
+} from "../../utils/categoriaPonto";
 import {
   hojeBrasiliaISO,
   instanteCivilBrasilia,
   normalizarHorarioParcial,
-  somarDiasCivil
+  somarDiasCivil,
+  dataCivilPeriodo
 } from "../../utils/horario-brasilia";
+import {
+  motivoVedacaoInicio,
+  validarPeriodosEstagiario,
+  type CalendarioFerias
+} from "../../utils/feriasRegras";
+import {
+  SolicitanteProvider,
+  useApiSolicitante
+} from "../../components/solicitacao/SolicitanteContext";
+import { FormLicenca } from "../../components/licenca/FormLicenca";
+import { CotaAbonoCard, type CotaAbono } from "../../components/abono/CotaAbonoCard";
 import { InputHorario } from "../../components/ponto/InputHorario";
 
 /* ══════════════════════════════════════════
@@ -101,13 +121,15 @@ interface ConfigSolicitacoes {
   tipoAtivoDayOff?: boolean;
   tipoAtivoHoraExtra?: boolean;
   tipoAtivoEnvioDocumentoRh?: boolean;
+  /** Grupo do CID no atestado: OBRIGATORIO | OPCIONAL | DESATIVADO. */
+  atestadoCidModo?: "OBRIGATORIO" | "OPCIONAL" | "DESATIVADO";
 }
 
 const TIPO_LABEL: Record<TipoSolicitacao, string> = {
   CORRECAO_PONTO: "Correção de Ponto",
   ATESTADO: "Atestado Médico",
   FERIAS: "Férias",
-  LICENCA: "Licença",
+  LICENCA: "Licença e Outros",
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
@@ -163,11 +185,17 @@ function fmtTime(iso: string) {
   }
 }
 
+/** Dias corridos entre duas datas, contados no calendário de Brasília (inclusive). */
 function diffDias(inicio: string, fim: string): number {
   if (!inicio || !fim) return 0;
-  const d1 = new Date(inicio);
-  const d2 = new Date(fim);
-  return Math.max(0, Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1);
+  const ini = dataCivilPeriodo(inicio);
+  const fi = dataCivilPeriodo(fim);
+  const utc = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const dias = Math.round((utc(fi) - utc(ini)) / 86_400_000) + 1;
+  return Number.isFinite(dias) ? Math.max(0, dias) : 0;
 }
 
 function mensagemStatusCorrecaoPonto(status: StatusSolicitacao): string {
@@ -221,12 +249,17 @@ const TIPO_FLAG: Record<TipoSolicitacao, keyof ConfigSolicitacoes> = {
 
 function TipoSeletor({
   onSelect,
-  config
+  config,
+  excluir
 }: {
   onSelect: (t: TipoSolicitacao) => void;
   config: ConfigSolicitacoes | null;
+  /** RH: tipos que não entram aqui (férias e correção de ponto têm fluxo próprio). */
+  excluir?: TipoSolicitacao[];
 }) {
   const tipos = (Object.keys(TIPO_LABEL) as TipoSolicitacao[]).filter((t) => {
+    if (excluir?.includes(t)) return false;
+    if (excluir) return true; /* RH: mostra todos; o servidor confere ou exige a dispensa */
     const flag = TIPO_FLAG[t];
     const val = config?.[flag];
     return val === undefined || val === true;
@@ -378,7 +411,7 @@ function FormCorrecaoPonto({
       .get<{ categoria?: string }>("/ponto/status")
       .then((status) => {
         const cat = status?.categoria;
-        setSemIntervaloAlmoco(cat === "ESTAGIARIO");
+        setSemIntervaloAlmoco(categoriaSemIntervaloAlmoco(cat));
       })
       .catch(() => {});
   }, []);
@@ -899,6 +932,20 @@ function FormAtestado({
   const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
   const [documentoMime, setDocumentoMime] = useState<string>("image/jpeg");
   const [nomeArquivo, setNomeArquivo] = useState("");
+  /* Grupo do CID (dado de saúde: visível só ao RH). */
+  const [cidGrupos, setCidGrupos] = useState<
+    Array<{ id: string; codigo: string; descricao: string }>
+  >([]);
+  const [cidGrupoId, setCidGrupoId] = useState("");
+  const cidModo = config?.atestadoCidModo ?? "OBRIGATORIO";
+
+  useEffect(() => {
+    if (cidModo === "DESATIVADO") return;
+    api
+      .get<Array<{ id: string; codigo: string; descricao: string }>>("/ponto/config/cid-grupos")
+      .then((l) => setCidGrupos(l ?? []))
+      .catch(() => setCidGrupos([]));
+  }, [cidModo]);
 
   const isMobile = useIsMobile(768);
   const dias = diffDias(dataInicio, dataFim);
@@ -926,8 +973,10 @@ function FormAtestado({
     reader.readAsDataURL(file);
   };
 
+  const cidFaltando = cidModo === "OBRIGATORIO" && !cidGrupoId;
+
   const handleSubmit = () => {
-    if (!dataInicio || !descricao) return;
+    if (!dataInicio || !descricao || cidFaltando) return;
     onSubmit({
       tipo: "ATESTADO",
       dataReferencia: new Date(dataInicio + "T12:00:00-03:00").toISOString(),
@@ -940,6 +989,7 @@ function FormAtestado({
         diasDuracao: dias,
         requerHomologacao: dias > limite && dias < limiteInss,
         requerInss: dias >= limiteInss,
+        ...(cidGrupoId && cidModo !== "DESATIVADO" ? { cidGrupoId } : {}),
         documentoBase64: documentoBase64 || undefined,
         documentoMime
       }
@@ -1176,6 +1226,31 @@ function FormAtestado({
         </div>
       </div>
 
+      {cidModo !== "DESATIVADO" && (
+        <div>
+          <label style={labelBase} htmlFor="atestado-cid">
+            Grupo do CID{" "}
+            {cidModo === "OBRIGATORIO" && <span style={{ color: "var(--red)" }}>*</span>}
+          </label>
+          <select
+            id="atestado-cid"
+            style={input}
+            value={cidGrupoId}
+            onChange={(e) => setCidGrupoId(e.target.value)}
+          >
+            <option value="">Selecione o grupo do CID do atestado</option>
+            {cidGrupos.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.codigo} — {g.descricao}
+              </option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "4px 0 0" }}>
+            Informação de saúde protegida (LGPD): fica visível apenas para o RH.
+          </p>
+        </div>
+      )}
+
       <div>
         <label style={labelBase}>
           Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
@@ -1191,7 +1266,7 @@ function FormAtestado({
 
       <button
         className="btn btn-primary"
-        disabled={enviando || !dataInicio || !descricao}
+        disabled={enviando || !dataInicio || !descricao || cidFaltando}
         onClick={handleSubmit}
       >
         {enviando ? "Enviando…" : "Enviar Solicitação"}
@@ -1221,7 +1296,16 @@ interface CicloFerias {
   status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
   solicitacaoId: string | null;
   solicitacaoStatus: string | null;
+  /** Ciclo ainda não vencido: dá para marcar, mas só usufruir a partir de `liberaEm`. */
+  emFormacao?: boolean;
+  liberaEm?: string | null;
 }
+
+/** Calendário neutro (seg–sex) enquanto o real não chegou. */
+const CALENDARIO_PADRAO_FERIAS: CalendarioFerias = {
+  diasUteis: [false, true, true, true, true, true, false],
+  feriados: []
+};
 
 interface SaldoFerias {
   dataAdmissao: string;
@@ -1246,12 +1330,45 @@ function slotsPeriodosIniciais(qtd: number): PeriodoFerias[] {
   }));
 }
 
+/** Data de um período de férias em pt-BR, no dia civil de Brasília (ver dataCivilPeriodo). */
 function fmtPeriodoCurto(iso: string) {
-  try {
-    return new Date(iso).toLocaleDateString("pt-BR");
-  } catch {
-    return iso.slice(0, 10);
-  }
+  const [y, m, d] = dataCivilPeriodo(iso).split("-");
+  return d ? `${d}/${m}/${y}` : iso;
+}
+
+/** Calendário da vedação (feriados e dias úteis) cobrindo os inícios informados. */
+function useCalendarioFerias(inicios: string[]): CalendarioFerias | null {
+  const chave = [...new Set(inicios.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort().join(",");
+  const [cal, setCal] = useState<CalendarioFerias | null>(null);
+  useEffect(() => {
+    if (!chave) return;
+    const datas = chave.split(",");
+    let ativo = true;
+    api
+      .get<CalendarioFerias>(
+        `/ponto/ferias/calendario?de=${datas[0]}&ate=${somarDiasCivil(datas[datas.length - 1], 10)}`
+      )
+      .then((r) => ativo && setCal(r ?? null))
+      .catch(() => ativo && setCal(null));
+    return () => {
+      ativo = false;
+    };
+  }, [chave]);
+  return cal;
+}
+
+/** Erro de vedação do início (feriado/repouso), ou null — mesma regra do backend. */
+function erroVedacao(
+  n: number,
+  inicio: string,
+  dias: number,
+  cal: CalendarioFerias | null
+): string | null {
+  if (!cal || !inicio) return null;
+  const motivo = motivoVedacaoInicio(inicio, dias, cal);
+  return motivo
+    ? `Período ${n}: férias não podem começar em dia sem expediente nem nos ${dias} dias que antecedem feriado ou repouso semanal — ${motivo}`
+    : null;
 }
 
 function FormFerias({
@@ -1271,7 +1388,7 @@ function FormFerias({
     feriasMinimoOutrosPeriodos: 5,
     feriasMaxPeriodos: 3,
     feriasMaxDiasVenda: 10,
-    feriasVedacaoPreFeriadoDias: 2
+    feriasVedacaoPreFeriadoDias: 1
   };
 
   const [saldo, setSaldo] = useState<SaldoFerias | null>(null);
@@ -1283,6 +1400,7 @@ function FormFerias({
   const [diasVenda, setDiasVenda] = useState(0);
   const [descricao, setDescricao] = useState("");
   const [erros, setErros] = useState<string[]>([]);
+  const calendarioFerias = useCalendarioFerias(periodos.map((p) => p.dataInicio));
 
   useEffect(() => {
     api
@@ -1376,9 +1494,11 @@ function FormFerias({
   }, [cicloSelecionado]);
 
   const hojeIso = hojeBrasiliaISO();
-  const minDataStr = isEstagiario
-    ? hojeIso
-    : somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
+  const minAntecedencia = somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
+  const liberaEmCiclo = cicloAtual?.liberaEm ?? null;
+  const minDataStr =
+    liberaEmCiclo && liberaEmCiclo > minAntecedencia ? liberaEmCiclo : minAntecedencia;
+  const maxPeriodoEstagiario = (cicloAtual?.diasPorCiclo ?? diasPorCiclo) <= 15 ? 10 : 30;
 
   const periodosPreenchidos = periodos.filter((p) => p.dataInicio && p.dataFim);
   const totalDiasGozo = periodosPreenchidos.reduce((s, p) => s + p.dias, 0);
@@ -1388,7 +1508,7 @@ function FormFerias({
   const maxVenda = isEstagiario ? 0 : Math.min(cfg.feriasMaxDiasVenda, diasDisponiveisCiclo);
   /** Estagiário: N períodos (só o 1º obrigatório). CLT: limite da config. */
   const maxPeriodosGozo = isEstagiario
-    ? 20
+    ? 3
     : diasVenda > 0
       ? cfg.feriasMaxPeriodos - 1
       : cfg.feriasMaxPeriodos;
@@ -1445,12 +1565,21 @@ function FormFerias({
       } else if (p0.dias <= 0) {
         errs.push("Período 1: a data fim deve ser igual ou posterior ao início.");
       }
-      preenchidos.forEach((p) => {
-        const i = periodos.indexOf(p);
-        if (i === 0) return;
-        if (p.dias <= 0)
-          errs.push(`Período ${i + 1}: a data fim deve ser igual ou posterior ao início.`);
-      });
+      if (preenchidos.length > 0) {
+        errs.push(
+          ...validarPeriodosEstagiario({
+            periodos: preenchidos.map((p) => ({ inicio: p.dataInicio, fim: p.dataFim })),
+            maxPeriodoDias: maxPeriodoEstagiario,
+            regras: {
+              antecedenciaMinDias: cfg.feriasAntecedenciaMinDias,
+              vedacaoPreFeriadoDias: cfg.feriasVedacaoPreFeriadoDias
+            },
+            hoje: hojeIso,
+            calendario: calendarioFerias ?? CALENDARIO_PADRAO_FERIAS,
+            liberaEm: liberaEmCiclo
+          })
+        );
+      }
       if (diasDisponiveisCiclo > 0 && preenchidos.length > 0 && diasRestantes < 0) {
         errs.push(
           `Total excede os ${diasDisponiveisCiclo} dias disponíveis neste ciclo (Restam = ${diasRestantes}d).`
@@ -1466,12 +1595,23 @@ function FormFerias({
 
     preenchidos.forEach((p) => {
       const i = periodos.indexOf(p);
-      if (p.dataInicio < minDataStr)
+      if (liberaEmCiclo && p.dataInicio < liberaEmCiclo)
+        errs.push(
+          `Período ${i + 1}: as férias só podem ser usufruídas a partir de ${liberaEmCiclo.split("-").reverse().join("/")} (fim do período aquisitivo).`
+        );
+      if (p.dataInicio < minAntecedencia)
         errs.push(
           `Período ${i + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
         );
       if (p.dias > 0 && p.dias < cfg.feriasMinimoOutrosPeriodos)
         errs.push(`Período ${i + 1}: mínimo de ${cfg.feriasMinimoOutrosPeriodos} dias.`);
+      const vedado = erroVedacao(
+        i + 1,
+        p.dataInicio,
+        cfg.feriasVedacaoPreFeriadoDias,
+        calendarioFerias
+      );
+      if (vedado) errs.push(vedado);
     });
 
     if (
@@ -1504,7 +1644,12 @@ function FormFerias({
     maxVenda,
     maxPeriodosGozo,
     cfg,
-    minDataStr
+    minDataStr,
+    minAntecedencia,
+    liberaEmCiclo,
+    maxPeriodoEstagiario,
+    hojeIso,
+    calendarioFerias
   ]);
 
   const podeEnviar =
@@ -1533,8 +1678,9 @@ function FormFerias({
       descricao,
       metadados: {
         periodos: preenchidos.map((p) => ({
-          dataInicio: p.dataInicio + "T00:00:00.000Z",
-          dataFim: p.dataFim + "T23:59:59.000Z",
+          /* Fuso de Brasília, como as demais datas da solicitação. */
+          dataInicio: instanteCivilBrasilia(p.dataInicio, "00:00:00").toISOString(),
+          dataFim: instanteCivilBrasilia(p.dataFim, "23:59:59").toISOString(),
           dias: p.dias
         })),
         diasVendidos: diasVendaEfetivo,
@@ -1677,7 +1823,7 @@ function FormFerias({
         >
           {saldo.isEstagiario && (
             <p style={{ fontSize: 11.5, fontWeight: 700, color: "#1e40af", margin: "0 0 6px" }}>
-              Estagiário — 30 dias de férias por ciclo
+              Estagiário — recesso: 15 dias aos 6 meses e 30 dias ao completar 1 ano
             </p>
           )}
           {saldo.obrigatorio && (
@@ -1780,13 +1926,18 @@ function FormFerias({
               {diasJaGozadosCiclo > 0
                 ? ` (${diasJaGozadosCiclo} já gozado${diasJaGozadosCiclo !== 1 ? "s" : ""} neste ciclo)`
                 : ""}
-              . Obrigatório apenas o <strong>1º período</strong>; use “Adicionar período” para
-              quantos quiser. Não é necessário zerar o saldo.
+              . Divida em blocos de 5 dias (até 3 períodos). Não é necessário zerar o saldo.
+              {cicloAtual.liberaEm
+                ? ` O gozo só vale a partir de ${cicloAtual.liberaEm.split("-").reverse().join("/")}.`
+                : ""}
             </>
           ) : (
             <>
               Configurando <strong>ciclo {cicloAtual.numero}</strong> ({diasDisponiveisCiclo} dias a
               programar). Na primeira solicitação, informe todos os períodos até Restam = 0.
+              {cicloAtual.liberaEm
+                ? ` Você já pode marcar, mas só poderá usufruir a partir de ${cicloAtual.liberaEm.split("-").reverse().join("/")} (fim do período aquisitivo).`
+                : ""}
             </>
           )}
         </div>
@@ -1806,9 +1957,11 @@ function FormFerias({
       >
         {isEstagiario ? (
           <>
-            <strong>Estagiário:</strong> única regra — 30 dias de férias por ciclo. Apenas o 1º
-            período é obrigatório; demais períodos são opcionais (botão “Adicionar período”).
-            Solicitações posteriores descontam automaticamente o que já foi gozado.
+            <strong>Recesso do estagiário:</strong> 15 dias com 6 meses (5+5+5, 5+10 ou 10+5) e 30
+            dias com 1 ano (blocos de 5 dias, até 3 períodos) · antecedência mín.{" "}
+            {cfg.feriasAntecedenciaMinDias} dias · não pode começar nos{" "}
+            {cfg.feriasVedacaoPreFeriadoDias} dia(s) que antecedem feriado ou repouso. Marcações
+            posteriores descontam o que já foi gozado.
           </>
         ) : (
           <>
@@ -2233,7 +2386,7 @@ function FormFeriasAlteracao({
     feriasMinimoOutrosPeriodos: 5,
     feriasMaxPeriodos: 3,
     feriasMaxDiasVenda: 10,
-    feriasVedacaoPreFeriadoDias: 2
+    feriasVedacaoPreFeriadoDias: 1
   };
   const metaOriginal = solicitacaoOriginal.metadados;
   const periodosOriginais =
@@ -2245,19 +2398,19 @@ function FormFeriasAlteracao({
     cicloNumero ?? (metaOriginal?.cicloNumero != null ? Number(metaOriginal.cicloNumero) : null);
 
   const hojeIso = hojeBrasiliaISO();
-  const minDataStr = isEstagiario
-    ? hojeIso
-    : somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
+  const minDataStr = somarDiasCivil(hojeIso, cfg.feriasAntecedenciaMinDias);
 
   type PeriodoAlt = { dataInicio: string; dataFim: string; dias: number; bloqueado: boolean };
   const [periodos, setPeriodos] = useState<PeriodoAlt[]>(() =>
     periodosOriginais.map((p) => ({
-      dataInicio: p.dataInicio.slice(0, 10),
-      dataFim: p.dataFim.slice(0, 10),
+      dataInicio: dataCivilPeriodo(p.dataInicio),
+      dataFim: dataCivilPeriodo(p.dataFim),
       dias: p.dias,
-      /* Estagiário: única regra é o saldo de 30 dias/ciclo — períodos sempre editáveis */
-      bloqueado: isEstagiario ? false : p.dataInicio.slice(0, 10) <= minDataStr
+      bloqueado: dataCivilPeriodo(p.dataInicio) <= minDataStr
     }))
+  );
+  const calendarioFerias = useCalendarioFerias(
+    periodos.filter((p) => !p.bloqueado).map((p) => p.dataInicio)
   );
   const [descricao, setDescricao] = useState("");
   const [erros, setErros] = useState<string[]>([]);
@@ -2277,20 +2430,36 @@ function FormFeriasAlteracao({
     const editaveis = periodos.filter((p) => !p.bloqueado);
 
     if (isEstagiario) {
-      editaveis.forEach((p) => {
-        if (!p.dataInicio || !p.dataFim) return;
-        if (p.dias <= 0)
-          errs.push(
-            `Período ${periodos.indexOf(p) + 1}: a data fim deve ser igual ou posterior ao início.`
-          );
-      });
+      const completos = periodos.every((p) => p.dataInicio && p.dataFim);
+      if (completos) {
+        errs.push(
+          ...validarPeriodosEstagiario({
+            periodos: periodos.map((p) => ({ inicio: p.dataInicio, fim: p.dataFim })),
+            maxPeriodoDias: 30,
+            regras: {
+              antecedenciaMinDias: cfg.feriasAntecedenciaMinDias,
+              vedacaoPreFeriadoDias: cfg.feriasVedacaoPreFeriadoDias
+            },
+            hoje: hojeIso,
+            calendario: calendarioFerias ?? CALENDARIO_PADRAO_FERIAS,
+            novos: new Set(periodos.map((p, i) => (p.bloqueado ? -1 : i)).filter((i) => i >= 0))
+          })
+        );
+      }
       setErros(errs);
       return;
     }
 
     editaveis.forEach((p) => {
       if (!p.dataInicio || !p.dataFim) return;
-      if (p.dataInicio <= minDataStr)
+      const vedado = erroVedacao(
+        periodos.indexOf(p) + 1,
+        p.dataInicio,
+        cfg.feriasVedacaoPreFeriadoDias,
+        calendarioFerias
+      );
+      if (vedado) errs.push(vedado);
+      if (p.dataInicio < minDataStr)
         errs.push(
           `Período ${periodos.indexOf(p) + 1}: início deve ter pelo menos ${cfg.feriasAntecedenciaMinDias} dias de antecedência.`
         );
@@ -2310,7 +2479,7 @@ function FormFeriasAlteracao({
       );
     }
     setErros(errs);
-  }, [periodos, cfg, minDataStr, isEstagiario]);
+  }, [periodos, cfg, minDataStr, hojeIso, isEstagiario, calendarioFerias]);
 
   const podeEnviar =
     periodos.some((p) => !p.bloqueado) &&
@@ -2333,8 +2502,9 @@ function FormFeriasAlteracao({
       descricao,
       metadados: {
         periodos: periodos.map((p) => ({
-          dataInicio: p.dataInicio + "T00:00:00.000Z",
-          dataFim: p.dataFim + "T23:59:59.000Z",
+          /* Fuso de Brasília, como as demais datas da solicitação. */
+          dataInicio: instanteCivilBrasilia(p.dataInicio, "00:00:00").toISOString(),
+          dataFim: instanteCivilBrasilia(p.dataFim, "23:59:59").toISOString(),
           dias: p.dias
         })),
         diasVendidos: diasVendaOriginal,
@@ -2524,29 +2694,262 @@ function FormFeriasAlteracao({
 }
 
 /* ══════════════════════════════════════════
-   FORMULÁRIOS SIMPLES: LICENÇA e ABONO
+   FORMULÁRIO: ABONO (vários períodos + documento opcional)
 ══════════════════════════════════════════ */
 
-function FormSimples({
-  tipo,
+interface LinhaAbono {
+  dataInicio: string;
+  dataFim: string;
+  horaInicio: string;
+  horaFim: string;
+}
+
+/** 00:00–23:59 = dia inteiro (padrão); outra faixa = abono parcial (só em período de 1 dia). */
+const HORA_DIA_INICIO = "00:00";
+const HORA_DIA_FIM = "23:59";
+const linhaAbonoVazia = (): LinhaAbono => ({
+  dataInicio: "",
+  dataFim: "",
+  horaInicio: HORA_DIA_INICIO,
+  horaFim: HORA_DIA_FIM
+});
+
+function fimLinha(l: LinhaAbono) {
+  return l.dataFim || l.dataInicio;
+}
+function linhaDiaUnico(l: LinhaAbono) {
+  return !!l.dataInicio && fimLinha(l) === l.dataInicio;
+}
+function linhaParcial(l: LinhaAbono) {
+  return linhaDiaUnico(l) && !(l.horaInicio === HORA_DIA_INICIO && l.horaFim === HORA_DIA_FIM);
+}
+const fmtDiaBr = (iso: string) => iso.split("-").reverse().join("/");
+
+/** Mesmas regras do backend (utils/abono-periodos.ts → validarPeriodosAbono). */
+function errosLinhasAbono(linhas: LinhaAbono[]): string[] {
+  const erros: string[] = [];
+  linhas.forEach((l, i) => {
+    const n = i + 1;
+    if (!l.dataInicio) {
+      erros.push(`Período ${n}: informe a data inicial.`);
+      return;
+    }
+    if (fimLinha(l) < l.dataInicio) erros.push(`Período ${n}: a data final é anterior à inicial.`);
+    if (linhaParcial(l)) {
+      if (!/^\d{2}:\d{2}$/.test(l.horaInicio) || !/^\d{2}:\d{2}$/.test(l.horaFim)) {
+        erros.push(`Período ${n}: informe as horas no formato HH:MM.`);
+      } else if (l.horaFim <= l.horaInicio) {
+        erros.push(`Período ${n}: a hora final deve ser depois da inicial.`);
+      }
+    }
+  });
+  for (let i = 0; i < linhas.length; i++) {
+    for (let j = i + 1; j < linhas.length; j++) {
+      const a = linhas[i];
+      const b = linhas[j];
+      if (!a.dataInicio || !b.dataInicio) continue;
+      if (a.dataInicio > fimLinha(b) || b.dataInicio > fimLinha(a)) continue;
+      const semCruzar =
+        linhaParcial(a) &&
+        linhaParcial(b) &&
+        (a.horaFim <= b.horaInicio || b.horaFim <= a.horaInicio);
+      if (!semCruzar) {
+        erros.push(`Os períodos ${i + 1} e ${j + 1} se sobrepõem (${fmtDiaBr(b.dataInicio)}).`);
+      }
+    }
+  }
+  return erros;
+}
+
+interface CreditoBancoRh {
+  disponivelMinutos: number;
+  temLiberacao: boolean;
+  /** Config: pode pedir abono além do tempo liberado (o liberado é usado primeiro). */
+  permitirAlemLimite?: boolean;
+  liberacoes: Array<{ validaAte: string; disponivelMinutos: number }>;
+}
+
+const fmtHMCredito = (min: number) =>
+  `${Math.floor(Math.abs(min) / 60)}h${String(Math.abs(min) % 60).padStart(2, "0")}`;
+
+function FormAbono({
   onSubmit,
-  enviando,
-  obs
+  enviando
 }: {
-  tipo: TipoSolicitacao;
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
-  obs?: string;
 }) {
-  const [dataInicio, setDataInicio] = useState("");
-  const [dataFim, setDataFim] = useState("");
-  const [horaInicio, setHoraInicio] = useState("");
-  const [horaFim, setHoraFim] = useState("");
+  const [linhas, setLinhas] = useState<LinhaAbono[]>([linhaAbonoVazia()]);
   const [descricao, setDescricao] = useState("");
+  const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
+  const [documentoMime, setDocumentoMime] = useState("application/pdf");
+  const [nomeArquivo, setNomeArquivo] = useState("");
+  const telaEstreita = useIsMobile(480);
 
-  const isAbono = tipo === "ABONO";
-  const dias = diffDias(dataInicio, dataFim || dataInicio);
-  const diaUnico = !dataInicio || dias <= 1;
+  /* Tempo de banco de horas liberado pelo RH (opcional): o abono consome esse crédito. */
+  const [credito, setCredito] = useState<CreditoBancoRh | null>(null);
+  const [usarCredito, setUsarCredito] = useState(false);
+  const [simulacao, setSimulacao] = useState<{
+    minutosTotal: number;
+    disponivelMinutos: number;
+    permitirAlemLimite?: boolean;
+  } | null>(null);
+  const [erroSimulacao, setErroSimulacao] = useState<string | null>(null);
+  /* Abono diário da cota do acordo coletivo (saldo de dias); separado do tempo liberado. */
+  const [cota, setCota] = useState<CotaAbono | null>(null);
+  const [usarCota, setUsarCota] = useState(false);
+
+  const apiSol = useApiSolicitante();
+  useEffect(() => {
+    let ativo = true;
+    apiSol
+      .get<CreditoBancoRh>("/ponto/banco-horas/credito")
+      .then((c) => {
+        if (!ativo) return;
+        setCredito(c);
+        /* O tempo liberado pelo RH é prioritário: já vem marcado quando há saldo. */
+        if (c.disponivelMinutos > 0) setUsarCredito(true);
+      })
+      .catch(() => ativo && setCredito(null));
+    return () => {
+      ativo = false;
+    };
+    // eslint-disable-next-line
+  }, [apiSol.funcionarioId]);
+
+  const erros = errosLinhasAbono(linhas);
+  const preenchidas = linhas.every((l) => l.dataInicio);
+
+  const chavePeriodos = JSON.stringify(
+    linhas.map((l) => [
+      l.dataInicio,
+      fimLinha(l),
+      linhaParcial(l) ? l.horaInicio : "",
+      linhaParcial(l) ? l.horaFim : ""
+    ])
+  );
+  useEffect(() => {
+    if (usarCota || !usarCredito || !preenchidas || erros.length > 0) {
+      setSimulacao(null);
+      setErroSimulacao(null);
+      return;
+    }
+    let ativo = true;
+    const t = setTimeout(() => {
+      apiSol
+        .post<{
+          minutosTotal: number;
+          disponivelMinutos: number;
+          permitirAlemLimite?: boolean;
+        }>("/ponto/banco-horas/credito/simular", {
+          periodos: linhas.map((l) => ({
+            dataInicio: l.dataInicio,
+            dataFim: fimLinha(l),
+            horarioInicio: linhaParcial(l)
+              ? normalizarHorarioParcial(l.horaInicio) || l.horaInicio
+              : null,
+            horarioFim: linhaParcial(l) ? normalizarHorarioParcial(l.horaFim) || l.horaFim : null
+          }))
+        })
+        .then((r) => {
+          if (!ativo) return;
+          setSimulacao(r);
+          setErroSimulacao(null);
+        })
+        .catch((e: Error) => {
+          if (!ativo) return;
+          setSimulacao(null);
+          setErroSimulacao(e.message || "Não foi possível calcular o tempo do abono.");
+        });
+    }, 350);
+    return () => {
+      ativo = false;
+      clearTimeout(t);
+    };
+  }, [usarCredito, usarCota, chavePeriodos]);
+
+  const permitirAlem = !!credito?.permitirAlemLimite;
+  const creditoOk =
+    !usarCredito ||
+    (!!simulacao &&
+      (permitirAlem ||
+        (simulacao.minutosTotal > 0 && simulacao.minutosTotal <= simulacao.disponivelMinutos)));
+  /* Cota: só dias inteiros, um dia por período, dentro do saldo. */
+  const errosCota: string[] = [];
+  if (usarCota) {
+    if (linhas.some((l) => l.dataInicio && (fimLinha(l) !== l.dataInicio || linhaParcial(l)))) {
+      errosCota.push("A cota é só de abono diário: cada período deve ser um único dia inteiro.");
+    }
+    if (cota && linhas.length > cota.saldo) {
+      errosCota.push(
+        `Você tem saldo de ${cota.saldo} dia(s) na cota; o pedido tem ${linhas.length}.`
+      );
+    }
+  }
+  /* Abono livre desligado e sem tempo liberado: não há como pedir abono (exceto pela cota). */
+  const abonoBloqueado =
+    !usarCota && !!credito && !credito.permitirAlemLimite && credito.disponivelMinutos <= 0;
+  const podeEnviar =
+    preenchidas &&
+    erros.length === 0 &&
+    errosCota.length === 0 &&
+    !!descricao.trim() &&
+    !enviando &&
+    (usarCota || creditoOk) &&
+    !abonoBloqueado;
+
+  const atualizar = (idx: number, campos: Partial<LinhaAbono>) =>
+    setLinhas((prev) =>
+      prev.map((l, i) => {
+        if (i !== idx) return l;
+        const nova = { ...l, ...campos };
+        /* Vários dias = sempre dia inteiro: volta as horas para 00:00–23:59. */
+        if (nova.dataInicio && fimLinha(nova) !== nova.dataInicio) {
+          nova.horaInicio = HORA_DIA_INICIO;
+          nova.horaFim = HORA_DIA_FIM;
+        }
+        return nova;
+      })
+    );
+
+  const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNomeArquivo(file.name);
+    setDocumentoMime(file.type);
+    const reader = new FileReader();
+    reader.onload = (ev) => setDocumentoBase64(ev.target?.result as string);
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const handleSubmit = () => {
+    if (!podeEnviar) return;
+    const inicios = linhas.map((l) => l.dataInicio).sort();
+    const fins = linhas.map(fimLinha).sort();
+    const primeiro = inicios[0];
+    const ultimo = fins[fins.length - 1];
+    onSubmit({
+      tipo: "ABONO",
+      dataReferencia: instanteCivilBrasilia(primeiro, "12:00:00").toISOString(),
+      dataInicio: instanteCivilBrasilia(primeiro, "00:00:00").toISOString(),
+      dataFim: instanteCivilBrasilia(ultimo, "23:59:59").toISOString(),
+      descricao: descricao.trim(),
+      metadados: {
+        tipoAbono: primeiro < hojeBrasiliaISO() ? "PASSADO" : "FUTURO",
+        periodos: linhas.map((l) => ({
+          dataInicio: instanteCivilBrasilia(l.dataInicio, "00:00:00").toISOString(),
+          dataFim: instanteCivilBrasilia(fimLinha(l), "23:59:59").toISOString(),
+          horarioInicio: linhaParcial(l)
+            ? normalizarHorarioParcial(l.horaInicio) || l.horaInicio
+            : null,
+          horarioFim: linhaParcial(l) ? normalizarHorarioParcial(l.horaFim) || l.horaFim : null
+        })),
+        ...(usarCota ? { usarCotaAbono: true } : usarCredito ? { usarCreditoBanco: true } : {}),
+        ...(documentoBase64 ? { documentoBase64, documentoMime, nomeArquivo } : {})
+      }
+    });
+  };
 
   const labelBase: React.CSSProperties = {
     fontSize: 12,
@@ -2563,153 +2966,422 @@ function FormSimples({
     fontSize: 13,
     boxSizing: "border-box"
   };
-
-  const aplicarAtalho = (periodo: "MATUTINO" | "VESPERTINO") => {
-    if (periodo === "MATUTINO") {
-      setHoraInicio("08:00");
-      setHoraFim("12:00");
-    } else {
-      setHoraInicio("13:00");
-      setHoraFim("18:00");
-    }
-  };
-
-  const handleSubmit = () => {
-    if (!dataInicio || !descricao) return;
-    const metadados: Record<string, unknown> =
-      tipo === "ABONO"
-        ? {
-            tipoAbono: new Date(dataInicio) < new Date() ? "PASSADO" : "FUTURO",
-            horarioInicio: diaUnico
-              ? normalizarHorarioParcial(horaInicio) || horaInicio || null
-              : null,
-            horarioFim: diaUnico ? normalizarHorarioParcial(horaFim) || horaFim || null : null
-          }
-        : {};
-    onSubmit({
-      tipo,
-      dataReferencia: new Date(dataInicio + "T12:00:00-03:00").toISOString(),
-      dataInicio: new Date(dataInicio + "T00:00:00-03:00").toISOString(),
-      dataFim: new Date((dataFim || dataInicio) + "T23:59:59.999-03:00").toISOString(),
-      descricao,
-      metadados
-    });
+  /* Campo compacto para caber data e hora na mesma linha. */
+  const inputLinha: React.CSSProperties = { ...input, padding: "8px 6px", fontSize: 12.5 };
+  const btnAtalho: React.CSSProperties = {
+    padding: "3px 9px",
+    borderRadius: 999,
+    border: "1px solid rgba(122,30,38,0.18)",
+    background: "#fff",
+    color: "var(--ink-600)",
+    fontSize: 11.5,
+    fontWeight: 600,
+    cursor: "pointer"
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {obs && (
-        <p
-          style={{
-            fontSize: 12.5,
-            color: "var(--ink-500)",
-            margin: 0,
-            padding: "10px 12px",
-            background: "rgba(122,30,38,0.04)",
-            borderRadius: "var(--radius-md)",
-            border: "1px solid rgba(122,30,38,0.1)"
-          }}
-        >
-          {obs}
+      {/* Caixa explicativa */}
+      <div
+        style={{
+          padding: "12px 14px",
+          background: "rgba(37,99,235,0.05)",
+          border: "1px solid rgba(37,99,235,0.15)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 12.5,
+          color: "var(--ink-700)",
+          lineHeight: 1.55
+        }}
+      >
+        <p style={{ margin: "0 0 6px", fontWeight: 700, color: "#1e40af" }}>
+          ℹ️ Como funciona o abono
         </p>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div>
-          <label style={labelBase}>
-            Data Inicial <span style={{ color: "var(--red)" }}>*</span>
-          </label>
-          <input
-            type="date"
-            style={input}
-            value={dataInicio}
-            onChange={(e) => {
-              const novoInicio = e.target.value;
-              setDataInicio(novoInicio);
-              if (isAbono && dataFim && dataFim !== novoInicio) {
-                setHoraInicio("");
-                setHoraFim("");
-              }
-            }}
-          />
-        </div>
-        <div>
-          <label style={labelBase}>Data Final</label>
-          <input
-            type="date"
-            style={input}
-            value={dataFim}
-            min={dataInicio}
-            onChange={(e) => {
-              const novoFim = e.target.value;
-              setDataFim(novoFim);
-              if (isAbono && novoFim !== dataInicio) {
-                setHoraInicio("");
-                setHoraFim("");
-              }
-            }}
-          />
-        </div>
+        <ul
+          style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 3 }}
+        >
+          <li>
+            Pode ser pedido para <strong>datas passadas ou futuras</strong>.
+          </li>
+          <li>
+            Cada linha é um período. Use <strong>+ Adicionar período</strong> para incluir outros
+            dias ou horários <strong>na mesma solicitação</strong>.
+          </li>
+          <li>
+            Hora <strong>00:00 a 23:59 = dia inteiro</strong>. Mude a hora só se o abono for{" "}
+            <strong>parcial</strong> (ex.: 08:00 a 10:00).
+          </li>
+          <li>
+            Horário parcial só vale em período de <strong>1 dia</strong>; um período de vários dias
+            é sempre dia inteiro.
+          </li>
+          <li>
+            O <strong>documento é opcional</strong> (imagem ou PDF), mas ajuda o chefe e o RH a
+            analisar.
+          </li>
+          <li>
+            O pedido passa pelo <strong>chefe</strong> e depois pelo <strong>RH</strong>. Só depois
+            de aprovado o abono vale no ponto e no banco de horas.
+          </li>
+        </ul>
       </div>
 
-      {isAbono && dataInicio && dias > 0 && (
-        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>
-          Duração:{" "}
-          <strong>
-            {dias} dia{dias !== 1 ? "s" : ""}
-          </strong>
-          {diaUnico ? " — dia inteiro ou período" : " — dias inteiros"}
-        </p>
+      <CotaAbonoCard
+        url={apiSol.url("/ponto/abono/cota")}
+        onCarregou={setCota}
+        recarregar={enviando ? 1 : 0}
+      />
+      {cota && cota.cotaDias > 0 && (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12.5,
+            cursor: cota.saldo > 0 ? "pointer" : "not-allowed",
+            opacity: cota.saldo > 0 ? 1 : 0.6
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={usarCota}
+            disabled={cota.saldo <= 0}
+            onChange={(e) => setUsarCota(e.target.checked)}
+          />
+          <strong>Pedir como abono diário do acordo coletivo</strong>
+          <span style={{ color: "var(--ink-500)" }}>
+            (desconta {linhas.length} dia(s) do saldo de {cota.saldo})
+          </span>
+        </label>
+      )}
+      {usarCota && errosCota.length > 0 && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--red)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2
+          }}
+        >
+          {errosCota.map((e) => (
+            <span key={e}>⚠ {e}</span>
+          ))}
+        </div>
       )}
 
-      {isAbono && diaUnico && dataInicio ? (
-        <div>
-          <label style={labelBase}>Período do abono (atalhos)</label>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => aplicarAtalho("MATUTINO")}
-            >
-              ☀️ Matutino (08:00–12:00)
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => aplicarAtalho("VESPERTINO")}
-            >
-              🌆 Vespertino (13:00–18:00)
-            </button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={labelBase}>Horário inicial</label>
-              <InputHorario
-                style={{ ...input, maxWidth: 140 }}
-                value={horaInicio}
-                onChange={setHoraInicio}
-              />
-            </div>
-            <div>
-              <label style={labelBase}>Horário final</label>
-              <InputHorario
-                style={{ ...input, maxWidth: 140 }}
-                value={horaFim}
-                onChange={setHoraFim}
-              />
-            </div>
-          </div>
-          <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-            Deixe em branco se o abono cobrir o dia inteiro.
-          </p>
+      {abonoBloqueado && (
+        <div
+          style={{
+            padding: "12px 14px",
+            background: "rgba(200,57,63,0.06)",
+            border: "1px solid rgba(200,57,63,0.25)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "var(--ink-700)",
+            lineHeight: 1.55
+          }}
+        >
+          <strong style={{ color: "var(--red)" }}>Abono livre desativado.</strong> Neste momento o
+          abono só pode ser pedido com tempo de banco de horas liberado pelo RH, e você não tem
+          tempo liberado disponível. Procure o RH.
         </div>
-      ) : (
-        isAbono &&
-        dias > 1 && (
-          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
-            Abonos com mais de um dia são sempre considerados dia inteiro (sem horário parcial).
-          </p>
-        )
       )}
+
+      {/* Tempo liberado pelo RH */}
+      {!usarCota && credito && credito.disponivelMinutos > 0 && (
+        <div
+          style={{
+            padding: "12px 14px",
+            background: "rgba(22,128,61,0.06)",
+            border: "1px solid rgba(22,128,61,0.25)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5,
+            color: "var(--ink-700)",
+            lineHeight: 1.55
+          }}
+        >
+          <p style={{ margin: "0 0 4px", fontWeight: 700, color: "#166534" }}>
+            ⏱ Tempo liberado pelo RH: {fmtHMCredito(credito.disponivelMinutos)} disponíveis
+          </p>
+          <p style={{ margin: "0 0 8px" }}>
+            {credito.liberacoes
+              .map((l) => `${fmtHMCredito(l.disponivelMinutos)} até ${fmtDiaBr(l.validaAte)}`)
+              .join(" · ")}
+            . O RH liberou este tempo do seu banco de horas para você usar como abono. O pedido
+            segue o fluxo normal (chefe e RH); o tempo fica reservado até a decisão.{" "}
+            {credito.permitirAlemLimite
+              ? "O tempo liberado é usado primeiro; o que passar dele segue como abono comum."
+              : "O abono só pode usar o tempo liberado, dentro do limite."}
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={usarCredito} disabled readOnly />
+            <strong>Usar o tempo liberado pelo RH neste abono (prioritário)</strong>
+          </label>
+          {usarCredito && (
+            <div style={{ marginTop: 8 }}>
+              {!preenchidas || erros.length > 0 ? (
+                <span style={{ color: "var(--ink-500)" }}>
+                  Informe os períodos para calcular o tempo consumido.
+                </span>
+              ) : erroSimulacao ? (
+                <span style={{ color: "var(--red)" }}>⚠ {erroSimulacao}</span>
+              ) : simulacao ? (
+                simulacao.minutosTotal <= 0 && !permitirAlem ? (
+                  <span style={{ color: "var(--red)" }}>
+                    ⚠ Os dias escolhidos não consomem tempo (fim de semana ou feriado). Escolha dias
+                    úteis.
+                  </span>
+                ) : simulacao.minutosTotal > simulacao.disponivelMinutos && permitirAlem ? (
+                  <span>
+                    Este abono usa <strong>{fmtHMCredito(simulacao.disponivelMinutos)}</strong> do
+                    tempo liberado e{" "}
+                    <strong>
+                      {fmtHMCredito(simulacao.minutosTotal - simulacao.disponivelMinutos)}
+                    </strong>{" "}
+                    como abono comum, além do limite liberado pelo RH.
+                  </span>
+                ) : simulacao.minutosTotal > simulacao.disponivelMinutos ? (
+                  <span style={{ color: "var(--red)" }}>
+                    ⚠ O abono consome {fmtHMCredito(simulacao.minutosTotal)}, mas só há{" "}
+                    {fmtHMCredito(simulacao.disponivelMinutos)} disponíveis.
+                  </span>
+                ) : (
+                  <span>
+                    Este abono consome <strong>{fmtHMCredito(simulacao.minutosTotal)}</strong> do
+                    tempo liberado; sobram{" "}
+                    <strong>
+                      {fmtHMCredito(simulacao.disponivelMinutos - simulacao.minutosTotal)}
+                    </strong>
+                    . Dia inteiro vale a sua jornada do dia; fim de semana e feriado não consomem.
+                  </span>
+                )
+              ) : (
+                <span style={{ color: "var(--ink-500)" }}>Calculando…</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Períodos */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {linhas.map((l, i) => {
+          const diaUnico = linhaDiaUnico(l);
+          const variosDias = !!l.dataInicio && !diaUnico;
+          return (
+            <div
+              key={i}
+              style={{
+                padding: "10px 12px",
+                border: "1px solid rgba(122,30,38,0.12)",
+                borderRadius: "var(--radius-md)",
+                background: "var(--cream-50)"
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 8
+                }}
+              >
+                <strong style={{ fontSize: 12.5, color: "var(--burgundy-600)" }}>
+                  Período {i + 1}
+                  <span style={{ fontWeight: 500, color: "var(--ink-500)" }}>
+                    {" "}
+                    ·{" "}
+                    {!l.dataInicio
+                      ? "informe as datas"
+                      : linhaParcial(l)
+                        ? `parcial ${l.horaInicio}–${l.horaFim}`
+                        : variosDias
+                          ? `${diffDias(l.dataInicio, fimLinha(l))} dias inteiros`
+                          : "dia inteiro"}
+                  </span>
+                </strong>
+                {linhas.length > 1 && (
+                  <button
+                    type="button"
+                    title="Remover período"
+                    aria-label={`Remover período ${i + 1}`}
+                    onClick={() => setLinhas((prev) => prev.filter((_, k) => k !== i))}
+                    style={{ ...btnAtalho, color: "var(--red)", padding: "2px 10px" }}
+                  >
+                    −
+                  </button>
+                )}
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  /* Datas e horas na mesma linha; no celular estreito, 2 por linha. */
+                  gridTemplateColumns: telaEstreita
+                    ? "1fr 1fr"
+                    : "minmax(0, 1.4fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr)",
+                  gap: 6
+                }}
+              >
+                <div>
+                  <label style={labelBase}>
+                    Data inicial <span style={{ color: "var(--red)" }}>*</span>
+                  </label>
+                  <input
+                    type="date"
+                    style={inputLinha}
+                    value={l.dataInicio}
+                    onChange={(e) => atualizar(i, { dataInicio: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={labelBase}>Data final</label>
+                  <input
+                    type="date"
+                    style={inputLinha}
+                    value={l.dataFim}
+                    min={l.dataInicio || undefined}
+                    onChange={(e) => atualizar(i, { dataFim: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={labelBase}>Hora inicial</label>
+                  <InputHorario
+                    style={{ ...inputLinha, opacity: variosDias ? 0.6 : 1 }}
+                    value={l.horaInicio}
+                    disabled={variosDias}
+                    onChange={(v) => atualizar(i, { horaInicio: v })}
+                  />
+                </div>
+                <div>
+                  <label style={labelBase}>Hora final</label>
+                  <InputHorario
+                    style={{ ...inputLinha, opacity: variosDias ? 0.6 : 1 }}
+                    value={l.horaFim}
+                    disabled={variosDias}
+                    onChange={(v) => atualizar(i, { horaFim: v })}
+                  />
+                </div>
+              </div>
+              {diaUnico && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  <button
+                    type="button"
+                    style={btnAtalho}
+                    onClick={() =>
+                      atualizar(i, { horaInicio: HORA_DIA_INICIO, horaFim: HORA_DIA_FIM })
+                    }
+                  >
+                    Dia inteiro
+                  </button>
+                  <button
+                    type="button"
+                    style={btnAtalho}
+                    onClick={() => atualizar(i, { horaInicio: "08:00", horaFim: "12:00" })}
+                  >
+                    ☀️ Matutino (08:00–12:00)
+                  </button>
+                  <button
+                    type="button"
+                    style={btnAtalho}
+                    onClick={() => atualizar(i, { horaInicio: "13:00", horaFim: "18:00" })}
+                  >
+                    🌆 Vespertino (13:00–18:00)
+                  </button>
+                </div>
+              )}
+              {variosDias && (
+                <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "6px 0 0" }}>
+                  Períodos de mais de um dia são sempre dia inteiro.
+                </p>
+              )}
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          style={{ alignSelf: "flex-start" }}
+          onClick={() => setLinhas((prev) => [...prev, linhaAbonoVazia()])}
+        >
+          + Adicionar período
+        </button>
+      </div>
+
+      {preenchidas && erros.length > 0 && (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--red)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2
+          }}
+        >
+          {erros.map((e) => (
+            <span key={e}>⚠ {e}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Documento (opcional) */}
+      <div>
+        <label style={labelBase}>Documento (opcional)</label>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="file"
+            id="abono-arquivo"
+            accept="image/*,application/pdf"
+            style={{ display: "none" }}
+            onChange={handleArquivo}
+          />
+          <label
+            htmlFor="abono-arquivo"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "7px 14px",
+              border: "1px solid rgba(122,30,38,0.22)",
+              borderRadius: "var(--radius-md)",
+              cursor: "pointer",
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: "var(--burgundy-600)",
+              background: "#fff"
+            }}
+          >
+            📎 Anexar documento (imagem ou PDF)
+          </label>
+          {nomeArquivo && (
+            <>
+              <span style={{ fontSize: 12, color: "var(--ink-500)" }}>✓ {nomeArquivo}</span>
+              <button
+                type="button"
+                style={{ ...btnAtalho, color: "var(--red)" }}
+                onClick={() => {
+                  setDocumentoBase64(null);
+                  setNomeArquivo("");
+                }}
+              >
+                Remover
+              </button>
+            </>
+          )}
+        </div>
+        {documentoBase64 && documentoMime.startsWith("image/") && (
+          <img
+            src={documentoBase64}
+            alt="Prévia do documento"
+            style={{
+              marginTop: 8,
+              maxHeight: 160,
+              objectFit: "contain",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid rgba(0,0,0,0.1)"
+            }}
+          />
+        )}
+      </div>
 
       <div>
         <label style={labelBase}>
@@ -2723,11 +3395,7 @@ function FormSimples({
           placeholder="Descreva o motivo..."
         />
       </div>
-      <button
-        className="btn btn-primary"
-        disabled={enviando || !dataInicio || !descricao}
-        onClick={handleSubmit}
-      >
+      <button className="btn btn-primary" disabled={!podeEnviar} onClick={handleSubmit}>
         {enviando ? "Enviando…" : "Enviar Solicitação"}
       </button>
     </div>
@@ -2904,13 +3572,29 @@ function FormHoraExtra({
 }) {
   const hoje = hojeBrasiliaISO();
   /* Limite mínimo configurado (em minutos) — carregado da API; 120 enquanto carrega */
-  const [limiteMin, setLimiteMin] = useState<number>(120);
+  const [limiteConfigMin, setLimiteMin] = useState<number>(120);
   const [cfgCarregada, setCfgCarregada] = useState(false);
 
   const [data, setData] = useState(hoje);
   const [horas, setHoras] = useState("");
   const [minutos, setMinutos] = useState("0");
   const [descricao, setDescricao] = useState("");
+  /* Dia em home office / híbrido em casa: nenhuma HE entra sem aprovação,
+     então qualquer tempo pode ser solicitado (o backend confere o mesmo). */
+  const [diaRemoto, setDiaRemoto] = useState(false);
+
+  useEffect(() => {
+    if (!data) return;
+    let ativo = true;
+    /* Mesma apuração do banco de horas: local das batidas do dia (casa/CFO). */
+    api
+      .get<{ remoto: boolean }>(`/ponto/hora-extra/local-do-dia?data=${encodeURIComponent(data)}`)
+      .then((r) => ativo && setDiaRemoto(!!r?.remoto))
+      .catch(() => ativo && setDiaRemoto(false));
+    return () => {
+      ativo = false;
+    };
+  }, [data]);
 
   useEffect(() => {
     api
@@ -2949,6 +3633,7 @@ function FormHoraExtra({
     boxSizing: "border-box"
   };
 
+  const limiteMin = diaRemoto ? 1 : limiteConfigMin;
   const horasNum = Math.max(0, parseInt(horas) || 0);
   const minutosNum = Math.max(0, Math.min(59, parseInt(minutos) || 0));
   const totalMin = horasNum * 60 + minutosNum;
@@ -2982,8 +3667,19 @@ function FormHoraExtra({
         }}
       >
         ⏱️ Use este formulário para solicitar <strong>antecipadamente</strong> horas extras ao seu
-        chefe. O mínimo permitido é <strong>{cfgCarregada ? limiteLabel : "…"}</strong>, conforme
-        configuração do sistema.
+        chefe.{" "}
+        {diaRemoto ? (
+          <>
+            Neste dia suas batidas não foram todas no CFO (<strong>home office/híbrido</strong>):
+            conforme ACT, nenhuma hora extra entra no banco de horas sem aprovação, então qualquer
+            tempo pode ser solicitado.
+          </>
+        ) : (
+          <>
+            O mínimo permitido é <strong>{cfgCarregada ? limiteLabel : "…"}</strong>, conforme
+            configuração do sistema.
+          </>
+        )}
       </div>
 
       <div>
@@ -3365,16 +4061,21 @@ function AlterarFeriasModal({
    MODAL NOVA SOLICITAÇÃO
 ══════════════════════════════════════════ */
 
-function NovaModal({
+export function NovaModal({
   onClose,
   onCriada,
-  solicitacoesFerias = []
+  solicitacoesFerias = [],
+  rhFuncionario
 }: {
   onClose: () => void;
   onCriada: (s: Solicitacao) => void;
   solicitacoesFerias?: Solicitacao[];
+  /** Modo RH: abre a solicitação em nome deste funcionário (mesmo fluxo; fica marcada). */
+  rhFuncionario?: { id: string; nome: string };
 }) {
   const [tipo, setTipo] = useState<TipoSolicitacao | null>(null);
+  const [dispensar, setDispensar] = useState(false);
+  const [justDispensa, setJustDispensa] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [ok, setOk] = useState(false);
   const [erro, setErro] = useState("");
@@ -3393,7 +4094,18 @@ function NovaModal({
     setEnviando(true);
     setErro("");
     try {
-      const nova = await api.post<Solicitacao>("/ponto/solicitacoes", data);
+      if (rhFuncionario && dispensar && justDispensa.trim().length < 10) {
+        throw new Error("Informe a justificativa da dispensa (mínimo de 10 caracteres).");
+      }
+      const nova = rhFuncionario
+        ? await api.post<Solicitacao>(
+            `/auditoria/rh/funcionarios/${rhFuncionario.id}/solicitacoes`,
+            {
+              ...data,
+              rh: { dispensarPrazos: dispensar, justificativa: justDispensa.trim() }
+            }
+          )
+        : await api.post<Solicitacao>("/ponto/solicitacoes", data);
       onCriada(nova);
       setOk(true);
       setTimeout(onClose, 1600);
@@ -3414,145 +4126,190 @@ function NovaModal({
         : "Nova Solicitação";
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(10,5,6,0.55)",
-        zIndex: 200,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 16,
-        overflow: "hidden"
-      }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
+    <SolicitanteProvider funcionarioId={rhFuncionario?.id}>
       <div
         style={{
-          background: "#fff",
-          borderRadius: "var(--radius-xl)",
-          width: "100%",
-          maxWidth: 560,
-          maxHeight: "calc(100dvh - 32px)",
-          boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
+          position: "fixed",
+          inset: 0,
+          background: "rgba(10,5,6,0.55)",
+          zIndex: 200,
           display: "flex",
-          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 16,
           overflow: "hidden"
         }}
+        onClick={(e) => e.target === e.currentTarget && onClose()}
       >
-        {ok ? (
-          <div style={{ textAlign: "center", padding: "52px 28px" }}>
-            <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
-            <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>Solicitação enviada!</p>
-            <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
-              {tipo === "ENVIO_DOCUMENTO_RH"
-                ? "Documento encaminhado ao RH para análise."
-                : "Aguardando análise do chefe."}
-            </p>
-          </div>
-        ) : (
-          <>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "20px 28px 16px",
-                borderBottom: "1px solid rgba(122,30,38,0.08)",
-                flexShrink: 0
-              }}
-            >
-              <div>
-                {tipo && (
-                  <button
-                    onClick={() => setTipo(null)}
-                    style={{
-                      fontSize: 12,
-                      color: "var(--ink-500)",
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      marginBottom: 4
-                    }}
-                  >
-                    ← Voltar
-                  </button>
-                )}
-                <h2 style={{ fontSize: 19, fontFamily: "var(--font-display)", margin: 0 }}>
-                  {tituloModal}
-                </h2>
-              </div>
-              <button
-                onClick={onClose}
+        <div
+          style={{
+            background: "#fff",
+            borderRadius: "var(--radius-xl)",
+            width: "100%",
+            maxWidth: rhFuncionario ? 760 : 560,
+            maxHeight: "calc(100dvh - 32px)",
+            boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden"
+          }}
+        >
+          {ok ? (
+            <div style={{ textAlign: "center", padding: "52px 28px" }}>
+              <CheckCircleIcon size={40} style={{ color: "var(--green)", margin: "0 auto 12px" }} />
+              <p style={{ fontFamily: "var(--font-display)", fontSize: 20 }}>
+                Solicitação enviada!
+              </p>
+              <p style={{ fontSize: 13, color: "var(--ink-500)" }}>
+                {rhFuncionario
+                  ? `Aberta pelo RH em nome de ${rhFuncionario.nome}. O funcionário e o chefe foram avisados.`
+                  : tipo === "ENVIO_DOCUMENTO_RH"
+                    ? "Documento encaminhado ao RH para análise."
+                    : "Aguardando análise do chefe."}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div
                 style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 20,
-                  color: "var(--ink-500)"
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "20px 28px 16px",
+                  borderBottom: "1px solid rgba(122,30,38,0.08)",
+                  flexShrink: 0
                 }}
               >
-                ✕
-              </button>
-            </div>
+                <div>
+                  {tipo && (
+                    <button
+                      onClick={() => setTipo(null)}
+                      style={{
+                        fontSize: 12,
+                        color: "var(--ink-500)",
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        marginBottom: 4
+                      }}
+                    >
+                      ← Voltar
+                    </button>
+                  )}
+                  <h2 style={{ fontSize: 19, fontFamily: "var(--font-display)", margin: 0 }}>
+                    {tituloModal}
+                  </h2>
+                </div>
+                <button
+                  onClick={onClose}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    fontSize: 20,
+                    color: "var(--ink-500)"
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
 
-            <div
-              style={{
-                padding: "16px 28px 28px",
-                overflowY: "auto",
-                flex: 1,
-                minHeight: 0,
-                WebkitOverflowScrolling: "touch"
-              }}
-            >
-              {erro && (
-                <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
-              )}
+              <div
+                style={{
+                  padding: "16px 28px 28px",
+                  overflowY: "auto",
+                  flex: 1,
+                  minHeight: 0,
+                  WebkitOverflowScrolling: "touch"
+                }}
+              >
+                {erro && (
+                  <p style={{ fontSize: 12.5, color: "var(--red)", marginBottom: 12 }}>⚠️ {erro}</p>
+                )}
 
-              {!tipo && <TipoSeletor onSelect={setTipo} config={config} />}
-              {tipo === "CORRECAO_PONTO" && (
-                <FormCorrecaoPonto onSubmit={handleSubmit} enviando={enviando} />
-              )}
-              {tipo === "ATESTADO" && (
-                <FormAtestado config={config} onSubmit={handleSubmit} enviando={enviando} />
-              )}
-              {tipo === "FERIAS" && (
-                <FormFerias
-                  config={config}
-                  onSubmit={handleSubmit}
-                  enviando={enviando}
-                  solicitacoesFerias={solicitacoesFerias}
-                />
-              )}
-              {tipo === "LICENCA" && (
-                <FormSimples
-                  tipo="LICENCA"
-                  onSubmit={handleSubmit}
-                  enviando={enviando}
-                  obs="Preencha o período de licença e descreva a justificativa."
-                />
-              )}
-              {tipo === "ABONO" && (
-                <FormSimples
-                  tipo="ABONO"
-                  onSubmit={handleSubmit}
-                  enviando={enviando}
-                  obs="O abono pode ser solicitado para datas passadas ou futuras."
-                />
-              )}
-              {tipo === "DAY_OFF" && <FormDayOff onSubmit={handleSubmit} enviando={enviando} />}
-              {tipo === "HORA_EXTRA" && (
-                <FormHoraExtra onSubmit={handleSubmit} enviando={enviando} />
-              )}
-              {tipo === "ENVIO_DOCUMENTO_RH" && (
-                <FormEnvioDocumentoRh onSubmit={handleSubmit} enviando={enviando} />
-              )}
-            </div>
-          </>
-        )}
+                {rhFuncionario && (
+                  <div
+                    style={{
+                      marginBottom: 14,
+                      padding: "10px 12px",
+                      border: "1px solid rgba(122,30,38,0.25)",
+                      background: "rgba(122,30,38,0.04)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: 12.5,
+                      lineHeight: 1.5
+                    }}
+                  >
+                    <strong style={{ color: "var(--burgundy-600)" }}>
+                      🏢 Solicitação aberta pelo RH em nome de {rhFuncionario.nome}
+                    </strong>
+                    <p style={{ margin: "4px 0 6px", color: "var(--ink-600)" }}>
+                      Segue o mesmo fluxo do funcionário (chefe → RH) e fica marcada como feita pelo
+                      RH. Férias: use a aba Férias. Correção de ponto: use o Histórico.
+                    </p>
+                    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={dispensar}
+                        onChange={(e) => setDispensar(e.target.checked)}
+                      />
+                      <span>Dispensar prazos e regras de antecedência (exige justificativa)</span>
+                    </label>
+                    {dispensar && (
+                      <textarea
+                        rows={2}
+                        value={justDispensa}
+                        onChange={(e) => setJustDispensa(e.target.value)}
+                        placeholder="Justificativa da dispensa (mín. 10 caracteres)"
+                        style={{
+                          width: "100%",
+                          boxSizing: "border-box",
+                          marginTop: 6,
+                          padding: "7px 10px",
+                          border: "1px solid rgba(122,30,38,0.2)",
+                          borderRadius: "var(--radius-md)",
+                          fontFamily: "inherit",
+                          fontSize: 13
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
+                {!tipo && (
+                  <TipoSeletor
+                    onSelect={setTipo}
+                    config={config}
+                    excluir={rhFuncionario ? ["FERIAS", "CORRECAO_PONTO"] : undefined}
+                  />
+                )}
+                {tipo === "CORRECAO_PONTO" && (
+                  <FormCorrecaoPonto onSubmit={handleSubmit} enviando={enviando} />
+                )}
+                {tipo === "ATESTADO" && (
+                  <FormAtestado config={config} onSubmit={handleSubmit} enviando={enviando} />
+                )}
+                {tipo === "FERIAS" && (
+                  <FormFerias
+                    config={config}
+                    onSubmit={handleSubmit}
+                    enviando={enviando}
+                    solicitacoesFerias={solicitacoesFerias}
+                  />
+                )}
+                {tipo === "LICENCA" && <FormLicenca onSubmit={handleSubmit} enviando={enviando} />}
+                {tipo === "ABONO" && <FormAbono onSubmit={handleSubmit} enviando={enviando} />}
+                {tipo === "DAY_OFF" && <FormDayOff onSubmit={handleSubmit} enviando={enviando} />}
+                {tipo === "HORA_EXTRA" && (
+                  <FormHoraExtra onSubmit={handleSubmit} enviando={enviando} />
+                )}
+                {tipo === "ENVIO_DOCUMENTO_RH" && (
+                  <FormEnvioDocumentoRh onSubmit={handleSubmit} enviando={enviando} />
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </SolicitanteProvider>
   );
 }
 
@@ -3602,6 +4359,19 @@ function AtestadoGuiaSection({
     reader.readAsDataURL(file);
   };
 
+  /* Férias com Aviso/Recibo do RH: assinatura pelo sistema (sem upload de retorno). */
+  if (isFerias && Array.isArray(s.metadados?.documentosFerias)) {
+    return (
+      <>
+        <AssinarDocumentosFerias solicitacao={s} onAssinado={onAtualizado} />
+        <AssinarRodadasFerias solicitacao={s} onAssinado={onAtualizado} />
+      </>
+    );
+  }
+  if (isFerias && s.status === "APROVADA" && s.metadados?.rodadasFerias) {
+    return <AssinarRodadasFerias solicitacao={s} onAssinado={onAtualizado} />;
+  }
+
   if (!s.guiaMedicoUrl && !s.documentoRetornoUrl) return null;
 
   const podeEnviarOuEditarRetorno =
@@ -3623,7 +4393,7 @@ function AtestadoGuiaSection({
             📄{" "}
             <strong>
               {isFerias
-                ? "O RH enviou sua folha de pagamento de férias"
+                ? "O RH enviou os documentos das suas férias"
                 : "O RH enviou sua guia médica"}
             </strong>
             {s.guiaMedicoEnviadaEm ? ` em ${fmtDateTime(s.guiaMedicoEnviadaEm)}` : ""}.
@@ -3643,7 +4413,7 @@ function AtestadoGuiaSection({
           {s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" && (
             <p style={{ margin: "8px 0 0", fontSize: 12, color: cor, lineHeight: 1.5 }}>
               {isFerias
-                ? "Baixe a folha de pagamento, assine e envie o documento assinado de volta pelo sistema para que o RH possa concluir a aprovação."
+                ? "Baixe os documentos, assine e envie o documento assinado de volta pelo sistema para que o RH possa concluir a aprovação."
                 : "Vá à consulta com o médico do trabalho e envie aqui o documento de retorno (resultado/aptidão) para que o RH possa concluir a análise."}
             </p>
           )}
@@ -3663,16 +4433,20 @@ function AtestadoGuiaSection({
               alignItems: "center"
             }}
           >
-            <LinkDocumentoAnexado
-              href={s.guiaMedicoUrl}
-              label={
-                isFerias
-                  ? "Ver documento — Folha de pagamento de férias"
-                  : "Ver documento — Guia médica"
-              }
-              variant={isFerias ? "folha" : "guia"}
-              style={{ marginTop: 0 }}
-            />
+            {isFerias ? (
+              <LinksDocumentosFerias
+                meta={s.metadados}
+                guiaMedicoUrl={s.guiaMedicoUrl}
+                style={{ marginTop: 0 }}
+              />
+            ) : (
+              <LinkDocumentoAnexado
+                href={s.guiaMedicoUrl}
+                label="Ver documento — Guia médica"
+                variant="guia"
+                style={{ marginTop: 0 }}
+              />
+            )}
             {podeEnviarOuEditarRetorno && (
               <>
                 <input
@@ -3840,11 +4614,14 @@ function DocumentoAnexadoSection({
 function SolicitacaoCard({
   s,
   onAtualizado,
-  onAlterar
+  onAlterar,
+  antecedenciaFeriasDias = 30
 }: {
   s: Solicitacao;
   onAtualizado: () => void;
   onAlterar?: (s: Solicitacao) => void;
+  /** Antecedência mínima configurada: só períodos que começam depois dela podem mudar. */
+  antecedenciaFeriasDias?: number;
 }) {
   const borderColor =
     {
@@ -3899,7 +4676,7 @@ function SolicitacaoCard({
     s.dataInicio
   ) {
     const horarioPeriodo =
-      (tipo === "ATESTADO" || tipo === "ABONO") &&
+      (tipo === "ATESTADO" || tipo === "ABONO" || tipo === "LICENCA") &&
       typeof meta?.horarioInicio === "string" &&
       typeof meta?.horarioFim === "string" &&
       meta.horarioInicio &&
@@ -3922,7 +4699,16 @@ function SolicitacaoCard({
           </>
         );
     }
-    if (tipo === "ATESTADO" && meta?.documentoUrl) subInfo = <>{subInfo} · 📎 doc. anexado</>;
+    if (tipo === "ABONO" && Array.isArray(meta?.periodos) && meta.periodos.length > 1) {
+      subInfo = (
+        <>
+          {subInfo} · {meta.periodos.length} períodos
+        </>
+      );
+    }
+    if ((tipo === "ATESTADO" || tipo === "ABONO" || tipo === "LICENCA") && meta?.documentoUrl) {
+      subInfo = <>{subInfo} · 📎 doc. anexado</>;
+    }
   }
 
   const statusInfo = isCorrecaoPonto ? mensagemStatusCorrecaoPonto(s.status) : "";
@@ -4070,6 +4856,10 @@ function SolicitacaoCard({
       {tipo === "ATESTADO" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} />}
 
       {tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
+      {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
+        tipo
+      ) && <AbonoDetalheBlock meta={s.metadados} />}
+      {tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
       {tipo === "FERIAS" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} tipo="FERIAS" />}
 
@@ -4079,9 +4869,10 @@ function SolicitacaoCard({
         (() => {
           const periodos =
             (s.metadados?.periodos as Array<{ dataInicio: string }> | undefined) ?? [];
-          const minAlteracao = new Date();
-          minAlteracao.setDate(minAlteracao.getDate() + 30);
-          const temPeriodoAlteravel = periodos.some((p) => new Date(p.dataInicio) > minAlteracao);
+          const minAlteracao = somarDiasCivil(hojeBrasiliaISO(), antecedenciaFeriasDias);
+          const temPeriodoAlteravel = periodos.some(
+            (p) => dataCivilPeriodo(p.dataInicio) > minAlteracao
+          );
           if (!temPeriodoAlteravel) return null;
           return (
             <div style={{ marginTop: 10 }}>
@@ -4189,6 +4980,18 @@ export function SolicitacoesPage() {
   const [loading, setLoading] = useState(true);
   const [modalAberto, setModalAberto] = useState(false);
   const [alterandoFerias, setAlterandoFerias] = useState<Solicitacao | null>(null);
+  /* Antecedência de férias configurada (mesma usada no formulário de alteração). */
+  const [antecedenciaFeriasDias, setAntecedenciaFeriasDias] = useState(30);
+  useEffect(() => {
+    api
+      .get<ConfigSolicitacoes>("/ponto/config/solicitacoes")
+      .then((c) => {
+        if (c?.feriasAntecedenciaMinDias != null) {
+          setAntecedenciaFeriasDias(c.feriasAntecedenciaMinDias);
+        }
+      })
+      .catch(() => {});
+  }, []);
   type FiltroView = StatusSolicitacao | "TODAS" | "FERIAS_TODAS";
   const [filtro, setFiltro] = useState<FiltroView>("TODAS");
   const [pagina, setPagina] = useState(1);
@@ -4361,6 +5164,7 @@ export function SolicitacoesPage() {
                   s={s}
                   onAtualizado={carregar}
                   onAlterar={setAlterandoFerias}
+                  antecedenciaFeriasDias={antecedenciaFeriasDias}
                 />
               ))
             )}

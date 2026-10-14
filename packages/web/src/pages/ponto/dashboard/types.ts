@@ -36,6 +36,8 @@ export interface GestaoDashboardStats {
     categoria: string;
     contratoTermino: string;
   }[];
+  /** Antecedência (dias) configurada para o aviso de fim de contrato. */
+  contratoAvisoDias?: number;
   chefesPorLotacao: { gerenciaId: string; nome: string; temChefe: boolean }[];
   totalDependentes: number;
   dependentesMedia: number;
@@ -144,7 +146,7 @@ export const LABEL_TIPO_SOLICITACAO: Record<string, string> = {
   CORRECAO_PONTO: "Correção de Ponto",
   ATESTADO: "Atestado",
   FERIAS: "Férias",
-  LICENCA: "Licença",
+  LICENCA: "Licença e Outros",
   ABONO: "Abono",
   DAY_OFF: "Day Off",
   HORA_EXTRA: "Hora Extra",

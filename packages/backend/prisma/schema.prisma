@@ -14,29 +14,29 @@ enum PublicationStatus {
 }
 
 model User {
-  id                 String         @id @default(cuid())
-  email              String         @unique
-  emailReal          String?        @unique // e-mail organizacional real (ex: @cfo.org.br), definido pelo RH/admin
-  name               String
-  externalId         String?        @unique
+  id                         String                    @id @default(cuid())
+  email                      String                    @unique
+  emailReal                  String?                   @unique // e-mail organizacional real (ex: @cfo.org.br), definido pelo RH/admin
+  name                       String
+  externalId                 String?                   @unique
   /// Data/hora do último login (última chamada de /auth/me) — usado para indicar
   /// na Gestão se o funcionário já fez login hoje.
-  ultimoLoginEm      DateTime?
+  ultimoLoginEm              DateTime?
   /// Data/hora do PRIMEIRO login real (gravada uma única vez, nunca sobrescrita).
   /// É o marco de "início de atividades" do funcionário — dias anteriores a ela não
   /// contam falta nem saldo negativo no histórico/banco de horas/auditoria, pois o
   /// funcionário pode ter sido cadastrado pelo RH bem antes do seu primeiro acesso.
-  primeiroLoginEm    DateTime?
-  memberships        Membership[]
-  chatSession        ChatSession[]
-  funcionario        Funcionario?
-  gerenciasGeridas   Gerencia[]     @relation("GerenciaResponsavel")
-  requisicoesCriadas RequisicaoRh[] @relation("RequisicaoRhCriador")
-  superAdminConcessao SuperAdminConcessao?
-  superAdminConcessoesFeitas SuperAdminConcessao[] @relation("SuperAdminConcessaoPor")
-  superAdminRevogacoes       SuperAdminConcessao[] @relation("SuperAdminRevogadoPor")
+  primeiroLoginEm            DateTime?
+  memberships                Membership[]
+  chatSession                ChatSession[]
+  funcionario                Funcionario?
+  gerenciasGeridas           Gerencia[]                @relation("GerenciaResponsavel")
+  requisicoesCriadas         RequisicaoRh[]            @relation("RequisicaoRhCriador")
+  superAdminConcessao        SuperAdminConcessao?
+  superAdminConcessoesFeitas SuperAdminConcessao[]     @relation("SuperAdminConcessaoPor")
+  superAdminRevogacoes       SuperAdminConcessao[]     @relation("SuperAdminRevogadoPor")
   sistemaStartsSolicitados   SistemaStartSolicitacao[] @relation("SistemaStartSolicitante")
-  createdAt          DateTime       @default(now())
+  createdAt                  DateTime                  @default(now())
 
   /// Índices trigram (pg_trgm) — aceleram a busca por pessoa (nome/e-mail) nas
   /// telas de Logs (ex.: "registro de fulano").
@@ -353,6 +353,12 @@ enum TipoFlexibilidade {
   BANCO_HORAS
 }
 
+/// Nível do cargo do empregado (concursado).
+enum NivelCargo {
+  MEDIO
+  SUPERIOR
+}
+
 enum CategoriaFuncional {
   ESTAGIARIO
   MENOR_APRENDIZ
@@ -382,87 +388,137 @@ model BancoHorasMarco {
   @@index([mes, dia])
 }
 
+/// Tempo do banco de horas liberado pelo RH para o funcionário usar via Abono (crédito com validade;
+/// debita o saldo do banco na data da liberação e sobrevive à zeragem do ciclo).
+model BancoHorasLiberacao {
+  id                     String      @id @default(cuid())
+  funcionarioId          String
+  minutos                Int
+  /// Último dia (Brasília) em que o abono com este crédito pode ser tirado.
+  validaAte              DateTime    @db.Date
+  justificativa          String
+  liberadoPorNome        String
+  liberadoPorUserId      String?
+  /// Início do ciclo do banco em que o saldo foi debitado (YYYY-MM-DD).
+  cicloInicio            String?
+  /// Minutos revogados pelo RH (parte não usada no momento da revogação).
+  minutosRevogados       Int         @default(0)
+  /// Minutos devolvidos ao banco na revogação (só se o ciclo ainda é o mesmo).
+  devolvidoAoBancoMin    Int         @default(0)
+  revogadaEm             DateTime?
+  revogadaPorNome        String?
+  revogacaoJustificativa String?
+  /// Aviso de vencimento já enviado.
+  avisoVencimentoEm      DateTime?
+  createdAt              DateTime    @default(now())
+  funcionario            Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, validaAte])
+}
+
 model ConfiguracaoSistema {
-  id                     String            @id @default("singleton")
+  id                                 String            @id @default("singleton")
   // Instituição
-  nome                   String            @default("Conselho Federal de Odontologia")
-  cnpj                   String            @default("33.368.957/0001-00")
-  endereco               String?
-  numero                 String?
-  bairro                 String?
-  cidade                 String?
-  uf                     String?
-  cep                    String?
-  telefone               String?
-  emailInstitucional     String?
+  nome                               String            @default("Conselho Federal de Odontologia")
+  cnpj                               String            @default("33.368.957/0001-00")
+  endereco                           String?
+  numero                             String?
+  bairro                             String?
+  cidade                             String?
+  uf                                 String?
+  cep                                String?
+  telefone                           String?
+  emailInstitucional                 String?
   // Geolocalização
-  lat                    Float             @default(-15.7876)
-  lng                    Float             @default(-47.9040)
-  raioMetros             Int               @default(200)
+  lat                                Float             @default(-15.7876)
+  lng                                Float             @default(-47.9040)
+  raioMetros                         Int               @default(200)
   // Modos de registro
-  modoDesktop            Boolean           @default(true)
-  modoMobile             Boolean           @default(true)
-  modoHibrido            Boolean           @default(false)
-  modoViagem             Boolean           @default(false)
-  desktopCheckSubrede    Boolean           @default(true)
-  desktopCheckGeo        Boolean           @default(false)
-  mobileCheckSubrede     Boolean           @default(true)
-  mobileCheckGeo         Boolean           @default(true)
-  mobileExigirFoto       Boolean           @default(true)
-  hibridoExigirFoto      Boolean           @default(true)
+  modoDesktop                        Boolean           @default(true)
+  modoMobile                         Boolean           @default(true)
+  modoHibrido                        Boolean           @default(false)
+  modoViagem                         Boolean           @default(false)
+  desktopCheckSubrede                Boolean           @default(true)
+  desktopCheckGeo                    Boolean           @default(false)
+  mobileCheckSubrede                 Boolean           @default(true)
+  mobileCheckGeo                     Boolean           @default(true)
+  mobileExigirFoto                   Boolean           @default(true)
+  hibridoExigirFoto                  Boolean           @default(true)
   // Jornada padrão
-  horaEntrada            String            @default("08:00")
-  horaSaida              String            @default("17:00")
+  horaEntrada                        String            @default("08:00")
+  horaSaida                          String            @default("17:00")
   // Janela permitida para bater ponto / solicitar ajuste (horário de Brasília)
-  pontoHorarioMinimo     String            @default("06:00")
-  pontoHorarioMaximo     String            @default("23:59")
-  jornadaDiariaMin       Int               @default(480)
-  jornadaSemanalMin      Int               @default(2400)
-  diasUteis              String            @default("[false,true,true,true,true,true,false]")
+  pontoHorarioMinimo                 String            @default("06:00")
+  pontoHorarioMaximo                 String            @default("23:59")
+  jornadaDiariaMin                   Int               @default(480)
+  jornadaSemanalMin                  Int               @default(2400)
+  diasUteis                          String            @default("[false,true,true,true,true,true,false]")
   // Flexibilidade / tolerâncias
-  tipoFlexibilidade      TipoFlexibilidade @default(FIXO)
-  toleranciaEntradaMin   Int               @default(5)
-  toleranciaSaidaMin     Int               @default(5)
-  toleranciaHoraExtraMin Int               @default(10)
-  toleranciaCalculoMin   Int               @default(0)
+  tipoFlexibilidade                  TipoFlexibilidade @default(FIXO)
+  toleranciaEntradaMin               Int               @default(5)
+  toleranciaSaidaMin                 Int               @default(5)
+  toleranciaHoraExtraMin             Int               @default(10)
+  toleranciaCalculoMin               Int               @default(0)
   // Intervalo do almoço
-  almocoPodeIniciarA     String            @default("11:30")
-  almocoPodeIniciarAte   String            @default("13:00")
-  almocoMinMin           Int               @default(60)
-  almocoMaxMin           Int               @default(90)
+  almocoPodeIniciarA                 String            @default("11:30")
+  almocoPodeIniciarAte               String            @default("13:00")
+  almocoMinMin                       Int               @default(60)
+  almocoMaxMin                       Int               @default(90)
   // Modo híbrido
-  hibridoMaxDiasSemana   Int               @default(2)
-  hibridoExigeAprovacao  Boolean           @default(true)
+  hibridoMaxDiasSemana               Int               @default(2)
+  hibridoExigeAprovacao              Boolean           @default(true)
   // Modo viagem
-  viagemJanelaMinutos    Int               @default(120)
-  viagemExigeAprovacao   Boolean           @default(true)
+  viagemJanelaMinutos                Int               @default(120)
+  viagemExigeAprovacao               Boolean           @default(true)
   // Banco de horas
-  bancoHorasLimiteMin    Int               @default(120)
-  bancoHorasVigenciaDias Int               @default(30)
+  bancoHorasLimiteMin                Int               @default(120)
+  bancoHorasVigenciaDias             Int               @default(30)
+  /// Tolerância (dias) do fechamento do banco: a zeragem ocorre N dias após a data-marco (global; individual sobrepõe).
+  bancoHorasToleranciaFechamentoDias Int               @default(0)
+  /// Exame médico ocupacional periódico: periodicidade (meses) e antecedência do aviso (dias).
+  exameOcupacionalPeriodicidadeMeses Int               @default(12)
+  exameOcupacionalAvisoDias          Int               @default(30)
+
+  /// Validade sugerida (dias) do tempo de banco liberado pelo RH para abono.
+  bancoHorasLiberacaoValidadeDias Int       @default(180)
   // Multiplicadores de banco de horas para trabalho em fins de semana/feriados (%)
-  bancoHorasSabadoPct    Int               @default(100) // 100% = 1h→1h (banco normal)
-  bancoHorasDomingoPct   Int               @default(200) // 200% = 1h→2h (hora em dobro)
-  bancoHorasFeriadoPct   Int               @default(200) // 200% = 1h→2h (hora em dobro)
+  bancoHorasSabadoPct             Int       @default(100) // 100% = 1h→1h (banco normal)
+  bancoHorasDomingoPct            Int       @default(200) // 200% = 1h→2h (hora em dobro)
+  bancoHorasFeriadoPct            Int       @default(200) // 200% = 1h→2h (hora em dobro)
+  /// Antecedência (dias) para alertar o fim do contrato de Estagiário/Jovem Aprendiz.
+  contratoAvisoAntecedenciaDias   Int       @default(90)
   // Hora extra — limite (em minutos) acima da jornada que dispara solicitação automática
-  horaExtraLimiteAuto    Int               @default(120)
+  horaExtraLimiteAuto             Int       @default(120)
+  /// Descanso mínimo de interjornada (min) entre a última saída e a próxima entrada. 660 = 11h (CLT art. 66); 0 = desativado.
+  interjornadaMin                 Int       @default(660)
+  /// Dias em casa (home office/híbrido) só são "OK" com o ciclo completo de batidas, a partir desta data (civil, Brasília). Nulo = desligado.
+  cicloCompletoEmCasaDesde        DateTime? @db.Date
+  /// Ponto presencial: dia só "OK" com o ciclo de batidas que a lei exige para a jornada do dia, a partir desta data. Nulo = desligado.
+  cicloCompletoPresencialDesde    DateTime? @db.Date
+  /// Jornada acima disso (min) exige o intervalo de almoço (CLT art. 71: 6 h). Tempo mínimo = almocoMinMin.
+  intervaloLongoAcimaDeMin        Int       @default(360)
+  /// Jornada acima disso (min), até o limite longo, exige intervalo curto (CLT art. 71: 4 h).
+  intervaloCurtoAcimaDeMin        Int       @default(240)
+  /// Tempo mínimo (min) do intervalo curto (CLT art. 71: 15 min).
+  intervaloCurtoMinMin            Int       @default(15)
   /// 1º dia do mês de go-live (Start do sistema). Null = ainda em fase de teste.
-  dataInicioProducao     DateTime?         @db.Date
-  updatedAt              DateTime          @updatedAt
-  createdAt              DateTime          @default(now())
+  dataInicioProducao              DateTime? @db.Date
+  updatedAt                       DateTime  @updatedAt
+  createdAt                       DateTime  @default(now())
 }
 
 /// Super admin concedido pela UI (além da lista SUPER_ADMIN_USERNAMES no env).
 model SuperAdminConcessao {
-  id               String    @id @default(cuid())
-  userId           String    @unique
-  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String    @id @default(cuid())
+  userId             String    @unique
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   concedidoPorUserId String
-  concedidoPor     User      @relation("SuperAdminConcessaoPor", fields: [concedidoPorUserId], references: [id])
-  ativo            Boolean   @default(true)
-  createdAt        DateTime  @default(now())
-  revogadoAt       DateTime?
-  revogadoPorUserId String?
-  revogadoPor      User?     @relation("SuperAdminRevogadoPor", fields: [revogadoPorUserId], references: [id], onDelete: SetNull)
+  concedidoPor       User      @relation("SuperAdminConcessaoPor", fields: [concedidoPorUserId], references: [id])
+  ativo              Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  revogadoAt         DateTime?
+  revogadoPorUserId  String?
+  revogadoPor        User?     @relation("SuperAdminRevogadoPor", fields: [revogadoPorUserId], references: [id], onDelete: SetNull)
 }
 
 enum StatusSistemaStart {
@@ -476,44 +532,44 @@ enum StatusSistemaStart {
 
 /// Solicitação de Start / go-live do sistema (mês de produção).
 model SistemaStartSolicitacao {
-  id                 String             @id @default(cuid())
-  mesReferencia      String // YYYY-MM
-  status             StatusSistemaStart @default(AGUARDANDO_GERTI)
-  solicitadoPorUserId String
-  solicitadoPor      User               @relation("SistemaStartSolicitante", fields: [solicitadoPorUserId], references: [id])
-  observacaoSolicitante String?
+  id                     String             @id @default(cuid())
+  mesReferencia          String // YYYY-MM
+  status                 StatusSistemaStart @default(AGUARDANDO_GERTI)
+  solicitadoPorUserId    String
+  solicitadoPor          User               @relation("SistemaStartSolicitante", fields: [solicitadoPorUserId], references: [id])
+  observacaoSolicitante  String?
   aprovadoGertiPorUserId String?
-  aprovadoGertiEm    DateTime?
-  observacaoGerti    String?
-  aprovadoRhPorUserId String?
-  aprovadoRhEm       DateTime?
-  observacaoRh       String?
-  rejeitadoPorUserId String?
-  rejeitadoEm        DateTime?
-  observacaoRejeicao String?
-  executadoEm        DateTime?
-  marcoId            String? // BancoHorasMarco.id criado na execução
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
+  aprovadoGertiEm        DateTime?
+  observacaoGerti        String?
+  aprovadoRhPorUserId    String?
+  aprovadoRhEm           DateTime?
+  observacaoRh           String?
+  rejeitadoPorUserId     String?
+  rejeitadoEm            DateTime?
+  observacaoRejeicao     String?
+  executadoEm            DateTime?
+  marcoId                String? // BancoHorasMarco.id criado na execução
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
 
   @@index([status])
   @@index([createdAt])
 }
 
 model Gerencia {
-  id                   String                @id @default(cuid())
+  id                   String                        @id @default(cuid())
   nome                 String
-  sigla                String                @unique
+  sigla                String                        @unique
   responsavel          String?
   responsavelMatricula String?
   responsavelUserId    String? // FK → User.id (gestor responsável)
-  responsavelUser      User?                 @relation("GerenciaResponsavel", fields: [responsavelUserId], references: [id], onDelete: SetNull)
+  responsavelUser      User?                         @relation("GerenciaResponsavel", fields: [responsavelUserId], references: [id], onDelete: SetNull)
   descricao            String?
-  ativa                Boolean               @default(true)
+  ativa                Boolean                       @default(true)
   funcionarios         Funcionario[]
   substituicoes        GerenteSubstituicao[]
   lotacaoHistorico     FuncionarioLotacaoHistorico[]
-  createdAt            DateTime              @default(now())
+  createdAt            DateTime                      @default(now())
 }
 
 /// Passagem de bastão: gerente titular ↔ substituto no período informado.
@@ -579,6 +635,42 @@ model RequerimentoEndereco {
   funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
 }
 
+/// Permissão de um funcionário do RH (Perfis do RH): aba ("auditoria.registros") ou função
+/// ("auditoria.funcionarios.corrigir-ponto"). Linha existente = liberado; sem linha = sem acesso.
+/// Catálogo em backend/src/utils/recursos-rh.ts.
+model PermissaoRh {
+  id             String      @id @default(cuid())
+  funcionarioId  String
+  recurso        String
+  concedidoPorId String?
+  concedidoEm    DateTime    @default(now())
+  funcionario    Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@unique([funcionarioId, recurso])
+}
+
+/// Tipos de requerimento de cadastro que o RH pede ao próprio funcionário preencher
+/// (além do endereço, que tem modelo próprio).
+enum TipoRequerimentoCadastro {
+  DEPENDENTES
+  FORMACAO_ACADEMICA
+  CAPACITACOES
+}
+
+/// Requerimento de cadastro por tipo — mesmo fluxo do RequerimentoEndereco: o RH solicita
+/// (individual ou para todos), o funcionário responde em "Minhas Requisições".
+model RequerimentoCadastro {
+  id            String                   @id @default(cuid())
+  funcionarioId String
+  tipo          TipoRequerimentoCadastro
+  status        String                   @default("PENDENTE") // PENDENTE | RESPONDIDO
+  criadoEm      DateTime                 @default(now())
+  respondidoEm  DateTime?
+  funcionario   Funcionario              @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@unique([funcionarioId, tipo])
+}
+
 model EnderecoResidencial {
   id            String      @id @default(cuid())
   funcionarioId String      @unique
@@ -619,109 +711,134 @@ model JornadaPeriodo {
   bancoHorasLimiteMin    Int               @default(120)
   bancoHorasVigenciaDias Int               @default(30)
   horaExtraLimiteAuto    Int               @default(120)
+  /// Jornada para estagiários/jovens aprendizes: sem almoço, banco de horas e hora extra.
+  paraEstagiarios        Boolean           @default(false)
   funcionarios           Funcionario[]
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
 }
 
 model Funcionario {
-  id                        String                     @id @default(cuid())
-  userId                    String                     @unique
-  matricula                 String?                    @unique // nullable: usuários AD sincronizados podem não ter matrícula
-  cpf                       String?
-  cargo                     String                     @default("")
-  departamento              String?
-  gerenciaId                String?
-  jornadaPeriodoId          String?
-  jornadaPeriodoDesde       DateTime?                  @db.Date
-  jornadaPeriodoAssociadoEm DateTime?
-  modoHomeOffice            Boolean                    @default(false)
-  modoHibridoLocal          Boolean                    @default(false)
-  categoria                 CategoriaFuncional         @default(CONCURSADO)
+  id                                 String                           @id @default(cuid())
+  userId                             String                           @unique
+  matricula                          String?                          @unique // nullable: usuários AD sincronizados podem não ter matrícula
+  cpf                                String?
+  cargo                              String                           @default("")
+  /// Nível do cargo (só empregado/concursado): Médio ou Superior.
+  nivelCargo                         NivelCargo?
+  departamento                       String?
+  gerenciaId                         String?
+  jornadaPeriodoId                   String?
+  jornadaPeriodoDesde                DateTime?                        @db.Date
+  jornadaPeriodoAssociadoEm          DateTime?
+  modoHomeOffice                     Boolean                          @default(false)
+  modoHibridoLocal                   Boolean                          @default(false)
+  categoria                          CategoriaFuncional               @default(CONCURSADO)
   /// A partir desta data o funcionário passa a ter obrigação de ponto (ex.: assessor → concursado).
   /// Dias anteriores e efeitos de solicitações informativas não entram no cálculo.
-  pontoObrigatorioDesde     DateTime?                  @db.Date
-  ativo                     Boolean                    @default(true)
+  pontoObrigatorioDesde              DateTime?                        @db.Date
+  ativo                              Boolean                          @default(true)
   /// Marcado pelo RH quando os campos manuais do cadastro (cargo, categoria, gerência etc.)
   /// já foram revisados/preenchidos após a sincronização automática com o AD.
-  camposManuaisConfigurados Boolean                    @default(false)
-  jornadaHorasDia           Int                        @default(8)
-  extensionsId              String?                    @unique // id na API externa de ramais
-  section                   String? // seção (slug) na API externa
-  subsecao                  String? // subseção (slug), quando aplicável
-  isManager                 Boolean                    @default(false) // gerente da seção
+  camposManuaisConfigurados          Boolean                          @default(false)
+  jornadaHorasDia                    Int                              @default(8)
+  extensionsId                       String?                          @unique // id na API externa de ramais
+  section                            String? // seção (slug) na API externa
+  subsecao                           String? // subseção (slug), quando aplicável
+  isManager                          Boolean                          @default(false) // gerente da seção
   /// Supervisor de estágio (ESTAGIARIO / MENOR_APRENDIZ) — aprova solicitações no lugar do gerente
-  supervisorEstagioId       String?
-  supervisorEstagio         Funcionario?               @relation("SupervisorEstagio", fields: [supervisorEstagioId], references: [id], onDelete: SetNull)
-  supervisionadosEstagio    Funcionario[]              @relation("SupervisorEstagio")
-  ramal                     String? // ramal telefônico
-  sala                      String? // sala/room
-  andar                     String? // andar/floor
-  user                      User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  gerencia                  Gerencia?                  @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
-  jornadaPeriodo            JornadaPeriodo?            @relation(fields: [jornadaPeriodoId], references: [id], onDelete: SetNull)
-  registros                 RegistroPonto[]
-  periodos                  PeriodoPonto[]
-  afastamentos              Afastamento[]
-  solicitacoes              Solicitacao[]
-  documentosRh              DocumentoRhEnvio[]
-  requisicoes               RequisicaoRhDestinatario[]
-  jornadas                  JornadaTrabalho[]
-  enderecoResidencial       EnderecoResidencial?
-  requerimentoEndereco      RequerimentoEndereco?
-  fotoPerfilUrl             String?
-  solicitarAtualizacaoFoto  Boolean                    @default(false)
-  dataNascimento            DateTime?                  @db.Date
-  dataAdmissao              DateTime?                  @db.Date
+  supervisorEstagioId                String?
+  supervisorEstagio                  Funcionario?                     @relation("SupervisorEstagio", fields: [supervisorEstagioId], references: [id], onDelete: SetNull)
+  supervisionadosEstagio             Funcionario[]                    @relation("SupervisorEstagio")
+  ramal                              String? // ramal telefônico
+  sala                               String? // sala/room
+  andar                              String? // andar/floor
+  user                               User                             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  gerencia                           Gerencia?                        @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
+  jornadaPeriodo                     JornadaPeriodo?                  @relation(fields: [jornadaPeriodoId], references: [id], onDelete: SetNull)
+  registros                          RegistroPonto[]
+  periodos                           PeriodoPonto[]
+  afastamentos                       Afastamento[]
+  solicitacoes                       Solicitacao[]
+  documentosRh                       DocumentoRhEnvio[]
+  requisicoes                        RequisicaoRhDestinatario[]
+  jornadas                           JornadaTrabalho[]
+  enderecoResidencial                EnderecoResidencial?
+  requerimentoEndereco               RequerimentoEndereco?
+  requerimentosCadastro              RequerimentoCadastro[]
+  permissoesRh                       PermissaoRh[]
+  modalidadeHistorico                FuncionarioModalidadeHistorico[]
+  bancoHorasLiberacoes               BancoHorasLiberacao[]
+  /// Tolerância individual do fechamento do banco (dias após a data-marco); null = usa a global.
+  bancoHorasToleranciaFechamentoDias Int?
+  fotoPerfilUrl                      String?
+  solicitarAtualizacaoFoto           Boolean                          @default(false)
+  dataNascimento                     DateTime?                        @db.Date
+  dataAdmissao                       DateTime?                        @db.Date
   /// Data de desligamento — fonte de verdade da inatividade: preenchida (hoje ou passado)
   /// desativa o funcionário na hora; preenchida no futuro é aplicada por cron diário
   /// (ver GestaoService.cronDesligamentos). Reativar (ativo=true) limpa este campo.
-  dataDesligamento          DateTime?                  @db.Date
+  dataDesligamento                   DateTime?                        @db.Date
 
   // ── Dados pessoais (RH) ──────────────────────────────────────────────
-  rg                        String?
-  rgOrgaoEmissor            String?
-  rgUf                      String?
-  rgDataEmissao             DateTime?                  @db.Date
-  raca                      String?
-  genero                    String?
-  emailPessoal              String?
-  telefone                  String?
-  dependentes               Dependente[]
+  rg             String?
+  rgOrgaoEmissor String?
+  rgUf           String?
+  rgDataEmissao  DateTime?    @db.Date
+  raca           String?
+  genero         String?
+  emailPessoal   String?
+  telefone       String?
+  dependentes    Dependente[]
 
   // ── Jornada / características (RH) ───────────────────────────────────
-  atividade                 AtividadeTipo?
+  atividade                AtividadeTipo?
   /// "É fiscal?" — mesma mecânica de isManager: quando true, isenta automaticamente
   /// de registro de ponto (ver utils/categoria-jornada.ts, funcionarioSemRegistroPonto).
-  isFiscal                  Boolean                    @default(false)
-  valeTransporte            Boolean                    @default(false)
+  isFiscal                 Boolean        @default(false)
+  valeTransporte           Boolean        @default(false)
   /// Override manual de "Registro de ponto" (select, mesmo padrão de UX da Jornada).
   /// null = usa a sugestão automática (categoria/isManager/isFiscal); preenchido = override do RH.
-  registroPontoObrigatorio  Boolean?
+  registroPontoObrigatorio Boolean?
 
   // ── Cargo e Lotação (Fase 1: valor atual; Fase 2: histórico versionado) ─
-  cargoData                 DateTime?                  @db.Date
-  lotacaoInicio             DateTime?                  @db.Date
-  lotacaoTermino            DateTime?                  @db.Date
+  cargoData      DateTime? @db.Date
+  lotacaoInicio  DateTime? @db.Date
+  lotacaoTermino DateTime? @db.Date
 
   // ── Capacitação (RH) — 1:N, ver models FormacaoAcademica / Capacitacao ─
-  formacoesAcademicas       FormacaoAcademica[]
-  capacitacoes              Capacitacao[]
+  formacoesAcademicas FormacaoAcademica[]
+  capacitacoes        Capacitacao[]
 
   // ── Específicos de Estágio / Jovem Aprendiz ──────────────────────────
-  bolsaAuxilio              Decimal?
-  curso                     String?
-  contratoInicio            DateTime?                  @db.Date
-  contratoTermino           DateTime?                  @db.Date
-  cargaHoraria              String?
-  diasSemana                String?
+  bolsaAuxilio    Decimal?
+  curso           String?
+  contratoInicio  DateTime? @db.Date
+  contratoTermino DateTime? @db.Date
+  cargaHoraria    String?
+  diasSemana      String?
 
-  createdAt                 DateTime                   @default(now())
-  substituicoesComoTitular  GerenteSubstituicao[]      @relation("SubstituicaoTitular")
-  substituicoesComoSubstituto GerenteSubstituicao[]    @relation("SubstituicaoSubstituto")
-  categoriasHistorico       FuncionarioCategoriaHistorico[]
-  lotacaoHistorico          FuncionarioLotacaoHistorico[]
-  assinaturasCicloBancoHoras AssinaturaCicloBancoHoras[]
+  /// Observações livres do RH sobre o funcionário (seção Geral do cadastro).
+  observacoes String?
+
+  // ── Cessão de Empregado (só CONCURSADO) ──────────────────────────────
+  /// Marcação explícita de cessão — base para estatísticas/gráficos de cedidos.
+  /// Os campos cessao* abaixo são cache do período vigente de FuncionarioCessaoHistorico.
+  cedido             Boolean   @default(false)
+  cessaoInicio       DateTime? @db.Date
+  cessaoFim          DateTime? @db.Date
+  cessaoOrgaoOrigem  String?
+  cessaoOrgaoDestino String?
+
+  createdAt                   DateTime                        @default(now())
+  substituicoesComoTitular    GerenteSubstituicao[]           @relation("SubstituicaoTitular")
+  substituicoesComoSubstituto GerenteSubstituicao[]           @relation("SubstituicaoSubstituto")
+  categoriasHistorico         FuncionarioCategoriaHistorico[]
+  lotacaoHistorico            FuncionarioLotacaoHistorico[]
+  cessoesHistorico            FuncionarioCessaoHistorico[]
+  assinaturasCicloBancoHoras  AssinaturaCicloBancoHoras[]
+  FechamentoSituacao          FechamentoSituacao[]
+  ExameOcupacional            ExameOcupacional[]
 }
 
 /// Dependentes (filhos) do funcionário — lista estruturada (N por funcionário).
@@ -740,14 +857,14 @@ model Dependente {
 /// Formação acadêmica (1:N) — o funcionário pode ter várias, cada uma com seu próprio
 /// grau (Ensino Médio, Superior, Pós etc.), curso, instituição e conclusão.
 model FormacaoAcademica {
-  id                String      @id @default(cuid())
-  funcionarioId     String
-  grauEscolaridade  String?
-  curso             String
-  instituicao       String?
-  conclusao         DateTime?   @db.Date
-  funcionario       Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
-  createdAt         DateTime    @default(now())
+  id               String      @id @default(cuid())
+  funcionarioId    String
+  grauEscolaridade String?
+  curso            String
+  instituicao      String?
+  conclusao        DateTime?   @db.Date
+  funcionario      Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt        DateTime    @default(now())
 
   @@index([funcionarioId])
 }
@@ -789,21 +906,60 @@ model FuncionarioLotacaoHistorico {
   @@index([funcionarioId, vigenciaDesde])
 }
 
+/// Períodos de cessão do Empregado (histórico). Sem sobreposição entre períodos;
+/// o período que cobre hoje (ou o mais recente) é copiado para Funcionario.cessao*.
+model FuncionarioCessaoHistorico {
+  id            String      @id @default(cuid())
+  funcionarioId String
+  inicio        DateTime    @db.Date
+  /// null = cessão em aberto (sem data de término definida)
+  fim           DateTime?   @db.Date
+  orgaoOrigem   String
+  orgaoDestino  String
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  @@index([funcionarioId, inicio])
+}
+
 /// Vigência de categoria funcional — base para isentar períodos sem obrigação de ponto
 /// (ex.: concursado → assessor → concursado: só os trechos como concursado entram no cálculo).
+/// Fechamento do banco de horas quando a obrigação de ponto muda (virou chefe/fiscal/assessor ou voltou a bater).
+model FechamentoSituacao {
+  id              String      @id @default(cuid())
+  funcionarioId   String
+  /// Dia da mudança (Brasília).
+  dataMudanca     DateTime    @db.Date
+  deRotulo        String
+  paraRotulo      String
+  deSemRegistro   Boolean
+  paraSemRegistro Boolean
+  /// Saldo do banco de horas (min) no momento da mudança.
+  saldoMinutos    Int
+  cicloInicio     String?
+  alteradoPorNome String?
+  createdAt       DateTime    @default(now())
+  funcionario     Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, dataMudanca])
+}
+
 model FuncionarioCategoriaHistorico {
-  id             String             @id @default(cuid())
-  funcionarioId  String
-  categoria      CategoriaFuncional
+  id                       String             @id @default(cuid())
+  funcionarioId            String
+  categoria                CategoriaFuncional
   /// Era chefe (isManager) durante esta vigência — antes existia a categoria própria
   /// GERENTE; agora "ser chefe" é uma característica, então a vigência guarda a
   /// categoria real + esta flag, preservando o cálculo histórico de isenção de ponto.
-  isManager      Boolean            @default(false)
-  vigenciaDesde  DateTime           @db.Date
+  isManager                Boolean            @default(false)
+  /// Era fiscal e/ou tinha o override "registro de ponto" do RH durante esta vigência.
+  isFiscal                 Boolean            @default(false)
+  registroPontoObrigatorio Boolean?
+  vigenciaDesde            DateTime           @db.Date
   /// null = vigência atual (aberta)
-  vigenciaAte    DateTime?          @db.Date
-  funcionario    Funcionario        @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
-  createdAt      DateTime           @default(now())
+  vigenciaAte              DateTime?          @db.Date
+  funcionario              Funcionario        @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt                DateTime           @default(now())
 
   @@index([funcionarioId, vigenciaDesde])
 }
@@ -822,25 +978,25 @@ model JornadaTrabalho {
 }
 
 model RegistroPonto {
-  id              String       @id @default(cuid())
-  funcionarioId   String
-  tipo            TipoPonto
-  dataHora        DateTime
-  latitude        Float?
-  longitude       Float?
-  origem          OrigemPonto  @default(WEB)
-  modoRegistro    ModoRegistro @default(DESKTOP)
-  ipOrigem        String?
-  fotoUrl         String?
-  dentroPerimetro Boolean      @default(false)
-  observacao      String?
-  observacoes     Json         @default("[]")
-  ajustado        Boolean      @default(false)
-  ajustadoPor     String?
+  id                String       @id @default(cuid())
+  funcionarioId     String
+  tipo              TipoPonto
+  dataHora          DateTime
+  latitude          Float?
+  longitude         Float?
+  origem            OrigemPonto  @default(WEB)
+  modoRegistro      ModoRegistro @default(DESKTOP)
+  ipOrigem          String?
+  fotoUrl           String?
+  dentroPerimetro   Boolean      @default(false)
+  observacao        String?
+  observacoes       Json         @default("[]")
+  ajustado          Boolean      @default(false)
+  ajustadoPor       String?
   /// Gerado por solicitação de assessor/gerente — aparece no histórico, não entra em cálculo.
-  apenasInformativo Boolean    @default(false)
-  funcionario     Funcionario  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
-  createdAt       DateTime     @default(now())
+  apenasInformativo Boolean      @default(false)
+  funcionario       Funcionario  @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt         DateTime     @default(now())
 
   @@index([funcionarioId, dataHora])
 }
@@ -884,6 +1040,15 @@ model AssinaturaQuadro {
   assinadoGestorNome           String?
   criadoEm                     DateTime         @default(now())
   criadoPor                    String           @default("SISTEMA")
+  // PDF final imutável (gerado uma vez ao concluir; selado com ICP-Brasil quando houver certificado)
+  pdfFinalUrl                  String?
+  pdfFinalSha256               String?
+  seladoEm                     DateTime?
+  seloSerial                   String?
+  /// Impressão digital dos DADOS do documento: só gera PDF novo quando ela muda
+  pdfFingerprint               String?
+  /// Versões anteriores emitidas: [{ sha256, geradoEm, substituidoEm }]
+  pdfHistorico                 Json?
 
   @@index([status])
 }
@@ -907,23 +1072,110 @@ model AssinaturaCicloBancoHoras {
   @@index([funcionarioId])
 }
 
+/// Grupos do CID-10 oferecidos no atestado médico (gerenciados em Configurações → Solicitações).
+model CidGrupo {
+  id        String   @id @default(cuid())
+  /// Ex.: J00-J99
+  codigo    String   @unique
+  descricao String
+  ativo     Boolean  @default(true)
+  ordem     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Tipos de licença configuráveis (art. 473 da CLT e ACT): regras editadas pelo RH.
+model TipoLicenca {
+  id              String   @id @default(cuid())
+  nome            String
+  ativo           Boolean  @default(true)
+  ordem           Int      @default(0)
+  /// Categorias que podem pedir (vazio = todas).
+  categorias      String[]
+  /// LIMITE (até N) | FIXO (exatamente N) | LIVRE (pelo tempo necessário)
+  modoDuracao     String   @default("LIMITE")
+  /// 0 / null = sem limite.
+  limiteDias      Int?
+  prorrogacaoDias Int?
+  /// CORRIDOS | UTEIS
+  contagem        String   @default("CORRIDOS")
+  consecutivos    Boolean  @default(true)
+  /// DIAS | OCORRENCIAS
+  unidade         String   @default("DIAS")
+  janelaMeses     Int?
+  limiteNaJanela  Int?
+  permiteParcial  Boolean  @default(false)
+  exigeDocumento  Boolean  @default(false)
+  orientacao      String?
+  /// AFASTAMENTO | REDUCAO_JORNADA
+  efeito          String   @default("AFASTAMENTO")
+  reducaoMaxPct   Int?
+  /// Padrão do sistema (identifica o tipo para LICENCA_MATERNIDADE/PATERNIDADE).
+  codigoSistema   String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+/// Exame médico ocupacional PERIÓDICO (ASO). Enviado pelo funcionário ou lançado pelo RH; só vale
+/// depois de confirmado. Dado de saúde (LGPD): visível ao RH autorizado e ao próprio funcionário.
+model ExameOcupacional {
+  id                       String      @id @default(cuid())
+  funcionarioId            String
+  dataRealizacao           DateTime    @db.Date
+  /// AGUARDANDO_CONFERENCIA | CONFIRMADO | DEVOLVIDO
+  situacao                 String      @default("AGUARDANDO_CONFERENCIA")
+  /// APTO | APTO_COM_RESTRICAO | INAPTO (preenchido na confirmação)
+  resultado                String?
+  medico                   String?
+  clinica                  String?
+  proximoVencimento        DateTime?   @db.Date
+  /// Arquivo do ASO (guardado fora da pasta pública; baixado por rota autenticada).
+  arquivoCaminho           String?
+  nomeArquivo              String?
+  mimeType                 String?
+  /// RH | FUNCIONARIO
+  origem                   String      @default("RH")
+  requisicaoDestinatarioId String?
+  motivoDevolucao          String?
+  observacao               String?
+  registradoPorNome        String?
+  registradoPorUserId      String?
+  conferidoPorNome         String?
+  conferidoPorUserId       String?
+  conferidoEm              DateTime?
+  avisoAVencerEm           DateTime?
+  avisoVencidoEm           DateTime?
+  createdAt                DateTime    @default(now())
+  updatedAt                DateTime    @updatedAt
+  funcionario              Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@index([funcionarioId, dataRealizacao])
+  @@index([situacao])
+}
+
 model Afastamento {
-  id            String          @id @default(cuid())
-  funcionarioId String
-  tipo          TipoAfastamento
-  dataInicio    DateTime
-  dataFim       DateTime
+  id                String          @id @default(cuid())
+  funcionarioId     String
+  tipo              TipoAfastamento
+  dataInicio        DateTime
+  dataFim           DateTime
   /// HH:MM — presente junto com horarioFim = atestado/afastamento parcial (não dia inteiro)
-  horarioInicio String?
+  horarioInicio     String?
   /// HH:MM — presente junto com horarioInicio = afastamento parcial
-  horarioFim    String?
-  justificativa String?
-  documentoUrl  String?
-  aprovadoPor   String?
+  horarioFim        String?
+  justificativa     String?
+  documentoUrl      String?
+  aprovadoPor       String?
   /// Gerado por solicitação de assessor/gerente — aparece no histórico, não entra em cálculo.
-  apenasInformativo Boolean     @default(false)
-  funcionario   Funcionario     @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
-  createdAt     DateTime        @default(now())
+  apenasInformativo Boolean         @default(false)
+  /// Solicitação que gerou o afastamento (remoção ao alterar/cancelar férias). Null = legado/manual.
+  solicitacaoId     String?
+  /// Nome do tipo de licença (ex.: "Licença Nojo") para exibição no histórico.
+  rotulo            String?
+  funcionario       Funcionario     @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+
+  @@index([solicitacaoId])
 }
 
 model Solicitacao {
@@ -981,6 +1233,8 @@ model ConfiguracaoSolicitacoes {
   atestadoDiasLimiteInss      Int      @default(14)
   atestadoPrazoEnvioDias      Int      @default(2)
   atestadoTempoRetornoMin     Int      @default(60)
+  /// Tolerância de deslocamento na ida (saída do trabalho → início do atestado parcial).
+  atestadoTempoIdaMin         Int      @default(60)
   atestadoMensagemOriginais   String   @default("Os originais devem ser entregues ao setor de RH.")
   // Regras de Férias
   feriasAntecedenciaMinDias   Int      @default(30)
@@ -988,7 +1242,9 @@ model ConfiguracaoSolicitacoes {
   feriasMinimoOutrosPeriodos  Int      @default(5)
   feriasMaxPeriodos           Int      @default(3)
   feriasMaxDiasVenda          Int      @default(10)
-  feriasVedacaoPreFeriadoDias Int      @default(2)
+  feriasVedacaoPreFeriadoDias Int      @default(1)
+  /// Férias parceladas: dias antes do início do 2º/3º período para avisar o RH a enviar Aviso e Recibo.
+  feriasRodadaAvisoDias       Int      @default(45)
   // Tipos de solicitação ativos no portal do funcionário
   tipoAtivoCorrecaoPonto      Boolean  @default(true)
   tipoAtivoAtestado           Boolean  @default(true)
@@ -998,6 +1254,13 @@ model ConfiguracaoSolicitacoes {
   tipoAtivoDayOff             Boolean  @default(true)
   tipoAtivoHoraExtra          Boolean  @default(true)
   tipoAtivoEnvioDocumentoRh   Boolean  @default(true)
+  /// Abono livre: ligado = funcionário pede abono sem depender do tempo liberado pelo RH (que, se houver, é usado primeiro);
+  /// desligado = só pede abono com tempo liberado pelo RH, dentro do limite.
+  abonoAlemLimiteLiberadoRh   Boolean  @default(true)
+  /// Acordo coletivo: dias de abono diário por funcionário a cada dois ciclos cheios do banco de horas (0 = desativado).
+  abonoCotaDiasDoisCiclos     Int      @default(0)
+  /// Grupo do CID no atestado: OBRIGATORIO | OPCIONAL | DESATIVADO.
+  atestadoCidModo             String   @default("OBRIGATORIO")
   updatedAt                   DateTime @updatedAt
   createdAt                   DateTime @default(now())
 }
@@ -1006,7 +1269,7 @@ model FeriadoConfig {
   id               String   @id @default(cuid())
   data             DateTime @db.Date
   nome             String
-  tipo             String // "NACIONAL" | "DISTRITAL" | "FACULTATIVO" | "MANUAL"
+  tipo             String // "NACIONAL" | "DISTRITAL" | "FACULTATIVO" | "MANUAL" | "ABONO" (abono do RH — não é feriado)
   bloqueiaRegistro Boolean  @default(true)
   origem           String // "API" | "MANUAL"
   observacao       String?
@@ -1113,4 +1376,20 @@ model Notificacao {
 
   @@index([userExternalId, lida])
   @@index([userExternalId, criadoEm(sort: Desc)])
+}
+
+/// Modalidade de trabalho (presencial / home office / híbrido) com vigência: a modalidade vale
+/// do dia `desde` em diante, sem alterar os dias anteriores (cálculos de hora extra e afins).
+model FuncionarioModalidadeHistorico {
+  id            String      @id @default(cuid())
+  funcionarioId String
+  /// Primeiro dia (civil, Brasília) em que esta modalidade vale.
+  desde         DateTime    @db.Date
+  homeOffice    Boolean     @default(false)
+  hibrido       Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
+
+  @@unique([funcionarioId, desde])
+  @@index([funcionarioId])
 }

@@ -15,6 +15,8 @@ export interface JornadaHistoricoContext {
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
   atestadoTempoRetornoMin?: number;
+  /** Tolerância de deslocamento na ida (saída do trabalho até o início do atestado). */
+  atestadoTempoIdaMin?: number;
 }
 
 export interface FuncionarioJornadaInput {
@@ -686,15 +688,11 @@ export function labelAtestadosParciais(
     horarioFim?: string | null;
   }>
 ): string {
-  if (!parciais.length) return "Atestado parcial";
+  if (!parciais.length) return "Atestado médico";
   const soAbono = parciais.every((p) => p.tipo === "ABONO");
   const soAtestado = parciais.every((p) => p.tipo === "ATESTADO" || !p.tipo);
-  const nome = soAbono ? "Abono parcial" : soAtestado ? "Atestado parcial" : "Afastamento parcial";
-  const periodos = parciais
-    .filter((p) => p.horarioInicio && p.horarioFim)
-    .map((p) => `${p.horarioInicio}–${p.horarioFim}`)
-    .join(" + ");
-  return periodos ? `${nome} ${periodos}` : nome;
+  /* Rótulo curto do status: sem "parcial" e sem o horário (o detalhe fica no atestado). */
+  return soAbono ? "Abono" : soAtestado ? "Atestado médico" : "Afastamento";
 }
 
 /**
@@ -850,8 +848,78 @@ export function calcularCreditoDeslocamentoAtestado(
   return Math.max(0, Math.min(retorno.minuto - hf, toleranciaMin));
 }
 
+/** Tipos de registro que representam sair do trabalho (candidatos a "ida" antes do atestado). */
+const TIPOS_SAIDA_TRABALHO = new Set(["SAIDA", "INTERROMPER_EXPEDIENTE", "INICIO_INTERVALO"]);
+
 /**
- * Janelas de atestado parcial (já fundidas) com o horarioFim da última janela
+ * Última atividade do dia ANTES do horarioInicio de um atestado parcial — espelho de
+ * encontrarRetornoAposAtestado. Só conta como "saída para o atestado" se ela própria
+ * for uma saída do trabalho (SAIDA/INTERROMPER_EXPEDIENTE/INICIO_INTERVALO): se a última
+ * atividade foi ENTRADA ou FIM_INTERVALO, o funcionário ainda estava trabalhando.
+ */
+export function encontrarSaidaAntesDoAtestado(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioInicio: string
+): { tipo: string; minuto: number } | null {
+  const hi = horaParaMin(horarioInicio);
+  const ultimaAntes = registros.filter((r) => r.minuto < hi).sort((a, b) => b.minuto - a.minuto)[0];
+  if (!ultimaAntes || !TIPOS_SAIDA_TRABALHO.has(ultimaAntes.tipo)) return null;
+  return ultimaAntes;
+}
+
+/** Janela em que o almoço pode começar na jornada (ex.: 11:30–13:00). */
+export type JanelaInicioAlmoco = { podeIniciarA?: string; podeIniciarAte?: string };
+
+/**
+ * A saída pelo INICIO_INTERVALO foi para o almoço? Só quando ocorreu dentro da janela
+ * de início de almoço da jornada — fora dela (ex.: 10:01) o botão de intervalo foi usado
+ * para sair para o atestado e conta como saída comum.
+ */
+export function saidaEhAlmoco(
+  saida: { tipo: string; minuto: number },
+  janela: JanelaInicioAlmoco = {}
+): boolean {
+  if (saida.tipo !== "INICIO_INTERVALO") return false;
+  const ini = horaParaMin(janela.podeIniciarA ?? "11:30");
+  const fim = horaParaMin(janela.podeIniciarAte ?? "13:00");
+  return saida.minuto >= ini && saida.minuto <= fim;
+}
+
+/**
+ * Crédito de deslocamento (min) na IDA: da saída do trabalho até o início do atestado,
+ * limitado a toleranciaMin. Se a saída foi para o almoço (INICIO_INTERVALO dentro da
+ * janela de almoço da jornada), o almoço mínimo continua sendo almoço e não entra no crédito.
+ */
+export function calcularCreditoDeslocamentoIda(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioInicio: string,
+  toleranciaMin: number,
+  almocoMinMin = 60,
+  janelaAlmoco: JanelaInicioAlmoco = {}
+): number {
+  if (toleranciaMin <= 0) return 0;
+  const saida = encontrarSaidaAntesDoAtestado(registros, horarioInicio);
+  if (!saida) return 0;
+  let deslocamento = horaParaMin(horarioInicio) - saida.minuto;
+  if (saidaEhAlmoco(saida, janelaAlmoco)) deslocamento -= Math.max(0, almocoMinMin);
+  return Math.max(0, Math.min(deslocamento, toleranciaMin));
+}
+
+export type OpcoesDeslocamentoAtestado = {
+  /** Tolerância da volta (fim do atestado → retorno ao trabalho). */
+  toleranciaRetornoMin: number;
+  /** Tolerância da ida (saída do trabalho → início do atestado). */
+  toleranciaIdaMin?: number;
+  /** Almoço mínimo da jornada (descontado quando a saída foi para o almoço). */
+  almocoMinMin?: number;
+  /** Janela de início do almoço da jornada (define se o INICIO_INTERVALO foi almoço). */
+  almocoPodeIniciarA?: string;
+  almocoPodeIniciarAte?: string;
+};
+
+/**
+ * Janelas de atestado parcial (já fundidas) com o horarioInicio da primeira janela
+ * antecipado pelo crédito de ida e o horarioFim da última janela
  * estendido pelo crédito de deslocamento tolerado — uso exclusivo no cálculo da
  * jornada mandatória (calcularJornadaComAtestadosParciais/calcularJornadaComAtestadoParcial).
  * NÃO usar para filtrar registros reais: prepararRegsCalculoAtestadosParciais deve
@@ -861,22 +929,52 @@ export function calcularCreditoDeslocamentoAtestado(
 export function calcularJanelasEfetivasComCreditoDeslocamento(
   janelas: JanelaAtestadoParcial[],
   registros: Array<{ tipo: string; minuto: number }>,
-  toleranciaRetornoMin: number
+  opcoes: number | OpcoesDeslocamentoAtestado
 ): JanelaAtestadoParcial[] {
+  const {
+    toleranciaRetornoMin,
+    toleranciaIdaMin = 0,
+    almocoMinMin = 60,
+    almocoPodeIniciarA,
+    almocoPodeIniciarAte
+  }: OpcoesDeslocamentoAtestado = typeof opcoes === "number"
+    ? { toleranciaRetornoMin: opcoes }
+    : opcoes;
   const fundidas = fundirJanelasAtestadoParcial(janelas);
-  if (!fundidas.length || toleranciaRetornoMin <= 0) return fundidas;
-  const idx = fundidas.length - 1;
-  const credito = calcularCreditoDeslocamentoAtestado(
-    registros,
-    fundidas[idx].horarioFim,
-    toleranciaRetornoMin
-  );
-  if (credito <= 0) return fundidas;
+  if (!fundidas.length) return fundidas;
   const novas = [...fundidas];
-  novas[idx] = {
-    ...novas[idx],
-    horarioFim: minParaHorario(horaParaMin(novas[idx].horarioFim) + credito)
-  };
+
+  /* Volta: estende o fim da última janela. */
+  const ultima = novas.length - 1;
+  const creditoVolta =
+    toleranciaRetornoMin > 0
+      ? calcularCreditoDeslocamentoAtestado(
+          registros,
+          novas[ultima].horarioFim,
+          toleranciaRetornoMin
+        )
+      : 0;
+  if (creditoVolta > 0) {
+    novas[ultima] = {
+      ...novas[ultima],
+      horarioFim: minParaHorario(horaParaMin(novas[ultima].horarioFim) + creditoVolta)
+    };
+  }
+
+  /* Ida: antecipa o início da primeira janela. */
+  const creditoIda = calcularCreditoDeslocamentoIda(
+    registros,
+    novas[0].horarioInicio,
+    toleranciaIdaMin,
+    almocoMinMin,
+    { podeIniciarA: almocoPodeIniciarA, podeIniciarAte: almocoPodeIniciarAte }
+  );
+  if (creditoIda > 0) {
+    novas[0] = {
+      ...novas[0],
+      horarioInicio: minParaHorario(Math.max(0, horaParaMin(novas[0].horarioInicio) - creditoIda))
+    };
+  }
   return novas;
 }
 

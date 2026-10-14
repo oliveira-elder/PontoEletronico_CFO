@@ -8,6 +8,8 @@ import {
   TextoComSetaHorario
 } from "../../components/icons";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
+import { dataCivilPeriodo } from "../../utils/horario-brasilia";
+import { api } from "../../hooks/useApi";
 
 /* ─── Tipos compartilhados ─── */
 
@@ -182,7 +184,7 @@ const TIPO_LABEL: Record<string, string> = {
   CORRECAO_PONTO: "Correção de Ponto",
   ATESTADO: "Atestado Médico",
   FERIAS: "Férias",
-  LICENCA: "Licença",
+  LICENCA: "Licença e Outros",
   ABONO: "Abono de Falta",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
@@ -206,6 +208,12 @@ export function fmtDate(iso: string) {
   }
 }
 
+/** Data de um período de férias em pt-BR, no dia civil de Brasília (ver dataCivilPeriodo). */
+export function fmtDataPeriodoFerias(iso: string) {
+  const [y, m, d] = dataCivilPeriodo(iso).split("-");
+  return d ? `${d}/${m}/${y}` : fmtDate(iso);
+}
+
 export function fmtDateTime(iso: string) {
   try {
     const d = new Date(iso);
@@ -215,14 +223,16 @@ export function fmtDateTime(iso: string) {
   }
 }
 
+/** Dias corridos entre duas datas, contados no calendário de Brasília (inclusive). */
 function diffDias(inicio: string, fim: string): number {
-  try {
-    const d1 = new Date(inicio);
-    const d2 = new Date(fim);
-    return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86_400_000) + 1);
-  } catch {
-    return 1;
-  }
+  const ini = dataCivilPeriodo(inicio);
+  const fi = dataCivilPeriodo(fim);
+  const utc = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const dias = Math.round((utc(fi) - utc(ini)) / 86_400_000) + 1;
+  return Number.isFinite(dias) ? Math.max(1, dias) : 1;
 }
 
 type CorrecaoDiaItem = {
@@ -342,7 +352,7 @@ export function textoResumo(s: SolicitacaoResumo): string {
         const periodosStr = periodos
           .map(
             (p, i) =>
-              `${i + 1}º período: ${fmtDate(p.dataInicio)} a ${fmtDate(p.dataFim)} (${p.dias} dias)`
+              `${i + 1}º período: ${fmtDataPeriodoFerias(p.dataInicio)} a ${fmtDataPeriodoFerias(p.dataFim)} (${p.dias} dias)`
           )
           .join(" | ");
         const vendaStr = diasVenda > 0 ? ` + ${diasVenda} dia(s) vendidos` : "";
@@ -362,6 +372,14 @@ export function textoResumo(s: SolicitacaoResumo): string {
       return `${nome} solicita licença de ${inicio} a ${fim} — ${dias} dia${dias !== 1 ? "s" : ""}.`;
     }
     case "ABONO": {
+      const periodosAbono = periodosAbonoMeta(meta);
+      if (periodosAbono) {
+        const tipoAb =
+          (meta?.tipoAbono as string) === "FUTURO" ? "abono de dia futuro" : "abono de falta";
+        return `${nome} solicita ${tipoAb} — ${periodosAbono
+          .map((p, i) => `${i + 1}º: ${textoPeriodoAbono(p)}`)
+          .join(" | ")}.`;
+      }
       const inicio = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
       const fim = s.dataFim ? fmtDate(s.dataFim) : inicio;
       const tipoAbono =
@@ -452,6 +470,12 @@ export function TipoBadge({ tipo }: { tipo: string }) {
   );
 }
 
+/** Nome do RH que abriu o pedido em nome do funcionário (ou null). */
+function nomeRhCriador(meta: unknown): string | null {
+  const c = (meta as { criadaPorRh?: { nome?: string } } | null | undefined)?.criadaPorRh;
+  return c?.nome ?? null;
+}
+
 export function LogTimelineGestorHistorico({
   s
 }: {
@@ -494,7 +518,13 @@ export function LogTimelineGestorHistorico({
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
-          📤 <strong>Enviada</strong> em {fmtDateTime(s.createdAt)}
+          📤{" "}
+          <strong>
+            {nomeRhCriador(s.metadados)
+              ? `Aberta pelo RH (${nomeRhCriador(s.metadados)})`
+              : "Enviada"}
+          </strong>{" "}
+          em {fmtDateTime(s.createdAt)}
         </p>
         {gestorData ? (
           <p
@@ -617,7 +647,13 @@ export function LogTimelineGestor({ s }: { s: SolicitacaoResumo }) {
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
-          📤 <strong>Enviada</strong> em {fmtDateTime(s.createdAt)}
+          📤{" "}
+          <strong>
+            {nomeRhCriador(s.metadados)
+              ? `Aberta pelo RH (${nomeRhCriador(s.metadados)})`
+              : "Enviada"}
+          </strong>{" "}
+          em {fmtDateTime(s.createdAt)}
         </p>
         {s.gestorResolvidoEm && (
           <p style={{ margin: 0, fontSize: 11.5, color: "#2563eb", lineHeight: 1.45 }}>
@@ -712,8 +748,16 @@ export function SolicitacaoCardRH({
     mostrarAcoes && s.tipo === "FERIAS" && (s.status === "AGUARDANDO_RH" || !s.status);
   const aguardandoRetornoConsulta =
     s.tipo === "ATESTADO" && requerHomologacao && !s.documentoRetornoUrl;
-  const aguardandoFolhaAssinada =
-    s.tipo === "FERIAS" && (!s.guiaMedicoUrl || !s.documentoRetornoUrl);
+  /* Férias: Aviso + Recibo enviados e assinados pelo funcionário (envios antigos: folha +
+     documento de retorno). */
+  const docsFeriasRh = Array.isArray(s.metadados?.documentosFerias)
+    ? (s.metadados!.documentosFerias as Array<{ tipo?: string }>)
+    : null;
+  const feriasDocsEnviados = docsFeriasRh
+    ? docsFeriasRh.some((d) => d.tipo === "AVISO") && docsFeriasRh.some((d) => d.tipo === "RECIBO")
+    : !!s.guiaMedicoUrl;
+  const feriasAssinadas = docsFeriasRh ? !!s.metadados?.assinaturaFerias : !!s.documentoRetornoUrl;
+  const aguardandoFolhaAssinada = s.tipo === "FERIAS" && (!feriasDocsEnviados || !feriasAssinadas);
   const bloqueadoAprovar = aguardandoRetornoConsulta || aguardandoFolhaAssinada;
 
   return (
@@ -840,6 +884,10 @@ export function SolicitacaoCardRH({
         <LogTimelineGestor s={s} />
 
         {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
+        {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
+          s.tipo
+        ) && <AbonoDetalheBlock meta={s.metadados} />}
+        {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
         {s.tipo === "FERIAS" && (s.guiaMedicoUrl || s.documentoRetornoUrl) && (
           <div
@@ -852,11 +900,7 @@ export function SolicitacaoCardRH({
           >
             {s.guiaMedicoUrl && (
               <>
-                <LinkDocumentoAnexado
-                  href={s.guiaMedicoUrl}
-                  label="Ver documento — Folha de pagamento de férias"
-                  variant="folha"
-                />
+                <LinksDocumentosFerias meta={s.metadados} guiaMedicoUrl={s.guiaMedicoUrl} />
                 {s.guiaMedicoEnviadaEm && (
                   <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
                     Enviada em {fmtDateTime(s.guiaMedicoEnviadaEm)}
@@ -864,7 +908,7 @@ export function SolicitacaoCardRH({
                 )}
               </>
             )}
-            {s.documentoRetornoUrl && (
+            {s.documentoRetornoUrl && !Array.isArray(s.metadados?.documentosFerias) && (
               <>
                 <LinkDocumentoAnexado
                   href={s.documentoRetornoUrl}
@@ -891,15 +935,16 @@ export function SolicitacaoCardRH({
           />
         )}
 
-        {s.tipo === "ENVIO_DOCUMENTO_RH" && typeof s.metadados?.documentoUrl === "string" && (
-          <LinkDocumentoAnexado
-            href={s.metadados.documentoUrl as string}
-            nomeArquivo={
-              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
-            }
-            variant="funcionario"
-          />
-        )}
+        {(s.tipo === "ENVIO_DOCUMENTO_RH" || s.tipo === "ABONO" || s.tipo === "LICENCA") &&
+          typeof s.metadados?.documentoUrl === "string" && (
+            <LinkDocumentoAnexado
+              href={s.metadados.documentoUrl as string}
+              nomeArquivo={
+                typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
+              }
+              variant="funcionario"
+            />
+          )}
 
         {s.tipo === "ATESTADO" && s.guiaMedicoUrl && (
           <div
@@ -970,9 +1015,11 @@ export function SolicitacaoCardRH({
                 disabled={bloqueadoAprovar}
                 title={
                   aguardandoFolhaAssinada
-                    ? !s.guiaMedicoUrl
-                      ? "Envie a folha de pagamento de férias ao funcionário antes de aprovar"
-                      : "Aguardando o funcionário enviar a folha de férias assinada"
+                    ? !feriasDocsEnviados
+                      ? "Envie o Aviso e o Recibo de Férias ao funcionário antes de aprovar"
+                      : s.metadados?.rejeicaoDocumentoFerias
+                        ? "O funcionário rejeitou um documento — corrija e reenvie os documentos de férias"
+                        : "Aguardando o funcionário assinar pelo sistema cada documento de férias"
                     : aguardandoRetornoConsulta
                       ? "Aguardando o funcionário enviar o documento de retorno da consulta médica"
                       : undefined
@@ -1052,7 +1099,7 @@ export function SolicitacaoCardRH({
                 fontWeight: 600
               }}
             >
-              🌴 Enviar Folha de Férias
+              🌴 Enviar documentos de férias
             </button>
           )}
         </div>
@@ -1186,6 +1233,12 @@ export function ModalDecisaoRH({
           </div>
 
           {solicitacao.tipo === "FERIAS" && <FeriasDetalheBlock meta={solicitacao.metadados} />}
+          {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
+            solicitacao.tipo
+          ) && <AbonoDetalheBlock meta={solicitacao.metadados} />}
+          {solicitacao.tipo === "CORRECAO_PONTO" && (
+            <AvisoInterjornadaBlock meta={solicitacao.metadados} />
+          )}
 
           <LogTimelineGestor s={solicitacao} />
 
@@ -1217,7 +1270,9 @@ export function ModalDecisaoRH({
             </p>
           )}
           {isAprovar &&
-            solicitacao.tipo === "ENVIO_DOCUMENTO_RH" &&
+            (solicitacao.tipo === "ENVIO_DOCUMENTO_RH" ||
+              solicitacao.tipo === "ABONO" ||
+              solicitacao.tipo === "LICENCA") &&
             typeof solicitacao.metadados?.documentoUrl === "string" && (
               <LinkDocumentoAnexado
                 href={solicitacao.metadados.documentoUrl as string}
@@ -1555,6 +1610,292 @@ export function ModalEnviarGuia({
   );
 }
 
+/** Períodos de uma solicitação de abono (metadados.periodos); null no formato antigo. */
+function periodosAbonoMeta(
+  meta: Record<string, unknown> | null | undefined
+): Array<{ inicio: string; fim: string; horario: string | null }> | null {
+  if (!meta || !Array.isArray(meta.periodos) || !meta.periodos.length) return null;
+  return (meta.periodos as Array<Record<string, unknown>>).map((p) => {
+    const hi = typeof p.horarioInicio === "string" ? p.horarioInicio : null;
+    const hf = typeof p.horarioFim === "string" ? p.horarioFim : null;
+    return {
+      inicio: fmtDataPeriodoFerias(String(p.dataInicio ?? "")),
+      fim: fmtDataPeriodoFerias(String(p.dataFim ?? p.dataInicio ?? "")),
+      horario: hi && hf ? `${hi}–${hf}` : null
+    };
+  });
+}
+
+function textoPeriodoAbono(p: { inicio: string; fim: string; horario: string | null }) {
+  if (p.inicio !== p.fim) return `${p.inicio} a ${p.fim} (dias inteiros)`;
+  return p.horario ? `${p.inicio} ${p.horario}` : `${p.inicio} (dia inteiro)`;
+}
+
+/**
+ * Aviso para quem analisa uma correção de ponto cuja Entrada fica abaixo do descanso de
+ * interjornada (metadados.avisoInterjornada, gravado na criação do pedido). Não bloqueia.
+ */
+export function AvisoInterjornadaBlock({
+  meta
+}: {
+  meta: Record<string, unknown> | null | undefined;
+}) {
+  const a = meta?.avisoInterjornada as
+    | { descansoMin?: number; minimoMin?: number; saidaAnterior?: string }
+    | undefined;
+  if (!a || typeof a.descansoMin !== "number" || typeof a.minimoMin !== "number") return null;
+  const h = (min: number) =>
+    min % 60 === 0
+      ? `${min / 60}h`
+      : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+  return (
+    <div
+      role="note"
+      style={{
+        marginTop: 8,
+        padding: "9px 12px",
+        background: "rgba(247,196,55,0.12)",
+        border: "1px solid rgba(247,196,55,0.45)",
+        borderRadius: "var(--radius-md)",
+        fontSize: 12.5,
+        color: "#6b5200",
+        lineHeight: 1.5
+      }}
+    >
+      ⚠ <strong>Esta entrada desrespeita o descanso de interjornada de {h(a.minimoMin)}</strong>{" "}
+      (descanso de {h(a.descansoMin)}
+      {a.saidaAnterior ? `, última saída em ${fmtDateTime(a.saidaAnterior)}` : ""}). A aprovação é
+      do chefe e do RH e ficará registrada no histórico do ponto.
+    </div>
+  );
+}
+
+export function AbonoDetalheBlock({ meta }: { meta: Record<string, unknown> | null | undefined }) {
+  const periodos = periodosAbonoMeta(meta);
+  const cid = meta?.cidGrupo as { codigo?: string; descricao?: string } | undefined;
+  const tipoLicenca = meta?.tipoLicenca as
+    | { nome?: string; resumo?: string; comProrrogacao?: boolean }
+    | undefined;
+  /* Atestado: grupo do CID (o servidor só envia ao RH e ao próprio funcionário). */
+  const blocoCid = cid?.codigo ? (
+    <p
+      title="Informação de saúde (LGPD): visível apenas ao RH e ao próprio funcionário"
+      style={{
+        margin: "8px 0 0",
+        fontSize: 12.5,
+        color: "var(--ink-800)",
+        padding: "6px 10px",
+        background: "rgba(122,30,38,0.04)",
+        border: "1px solid rgba(122,30,38,0.12)",
+        borderRadius: "var(--radius-md)"
+      }}
+    >
+      🩺 <strong>CID:</strong> {cid.codigo} — {cid.descricao}
+    </p>
+  ) : null;
+  const criada = meta?.criadaPorRh as
+    | { nome?: string; em?: string; dispensas?: string[]; justificativa?: string }
+    | undefined;
+  const doRh = meta?.origem === "RH" || !!criada || !!meta?.criadoPeloRH;
+  /* Origem do pedido: sempre marcada (feito pelo RH × pedido do funcionário). */
+  const blocoOrigem = (
+    <p
+      style={{ margin: "8px 0 0", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}
+    >
+      <TagOrigemFerias meta={meta} />
+      {doRh && criada?.nome && (
+        <span style={{ fontSize: 11.5, color: "var(--ink-500)" }}>por {criada.nome}</span>
+      )}
+      {doRh && criada?.dispensas?.length ? (
+        <span
+          title={`Justificativa: ${criada.justificativa ?? ""}`}
+          style={{ fontSize: 11.5, color: "#92400e" }}
+        >
+          · dispensou: {criada.dispensas.join("; ")}
+        </span>
+      ) : null}
+    </p>
+  );
+  if (!periodos || (!tipoLicenca?.nome && !meta?.periodos && !meta?.creditoBanco)) {
+    return (
+      <>
+        {blocoOrigem}
+        {blocoCid}
+      </>
+    );
+  }
+  const diasCota = (meta?.cotaAbono as { dias?: string[] } | undefined)?.dias?.length ?? 0;
+  const credito = Number(
+    (meta?.creditoBanco as { minutosTotal?: number } | undefined)?.minutosTotal ?? 0
+  );
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        padding: "10px 12px",
+        background: "rgba(37,99,235,0.04)",
+        border: "1px solid rgba(37,99,235,0.14)",
+        borderRadius: "var(--radius-md)"
+      }}
+    >
+      <p
+        style={{
+          margin: "0 0 6px",
+          fontSize: 11,
+          fontWeight: 700,
+          color: "#1e40af",
+          textTransform: "uppercase",
+          letterSpacing: "0.06em"
+        }}
+      >
+        {tipoLicenca?.nome ? "📆 Períodos da licença" : "📆 Períodos do abono"}
+      </p>
+      {tipoLicenca?.nome && (
+        <p style={{ margin: "0 0 6px", fontSize: 12.5, color: "var(--ink-800)" }}>
+          <strong>{tipoLicenca.nome}</strong>
+          {tipoLicenca.resumo ? ` (${tipoLicenca.resumo})` : ""}
+          {tipoLicenca.comProrrogacao ? " — com prorrogação" : ""}
+        </p>
+      )}
+      {periodos.map((p, i) => (
+        <p key={i} style={{ margin: "0 0 3px", fontSize: 12.5, color: "var(--ink-800)" }}>
+          <span style={{ fontWeight: 600 }}>{i + 1}º período:</span> {textoPeriodoAbono(p)}
+        </p>
+      ))}
+      {diasCota > 0 && (
+        <p
+          title="Abono diário da cota do acordo coletivo"
+          style={{
+            margin: "6px 0 0",
+            display: "inline-block",
+            fontSize: 11.5,
+            fontWeight: 700,
+            padding: "2px 9px",
+            borderRadius: 999,
+            background: "rgba(37,99,235,0.08)",
+            color: "#1e40af",
+            border: "1px solid rgba(37,99,235,0.25)"
+          }}
+        >
+          📅 Cota do acordo coletivo · {diasCota} dia(s)
+        </p>
+      )}
+      {credito && credito > 0 && (
+        <p
+          title="Este abono usa tempo do banco de horas liberado pelo RH (já descontado do banco)"
+          style={{
+            margin: "6px 0 0",
+            display: "inline-block",
+            fontSize: 11.5,
+            fontWeight: 700,
+            padding: "2px 9px",
+            borderRadius: 999,
+            background: "rgba(22,128,61,0.08)",
+            color: "#166534",
+            border: "1px solid rgba(22,128,61,0.25)"
+          }}
+        >
+          ⏱ Tempo liberado pelo RH · {Math.floor(credito / 60)}h
+          {String(credito % 60).padStart(2, "0")}
+        </p>
+      )}
+      {blocoOrigem}
+      {blocoCid}
+    </div>
+  );
+}
+
+/** Tag "Pedido do funcionário" × "Feito pelo RH" (férias). */
+export function TagOrigemFerias({ meta }: { meta: Record<string, unknown> | null | undefined }) {
+  const doRh = meta?.origem === "RH";
+  return (
+    <span
+      title={doRh ? "Aberto/alterado pelo RH" : "Pedido feito pelo funcionário"}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 10.5,
+        fontWeight: 700,
+        padding: "2px 8px",
+        borderRadius: 999,
+        letterSpacing: "0.02em",
+        background: doRh ? "rgba(122,30,38,0.08)" : "rgba(37,99,235,0.08)",
+        color: doRh ? "var(--burgundy-600)" : "#1e40af",
+        border: `1px solid ${doRh ? "rgba(122,30,38,0.20)" : "rgba(37,99,235,0.20)"}`
+      }}
+    >
+      {doRh ? "🏢 Feito pelo RH" : "👤 Pedido do funcionário"}
+    </span>
+  );
+}
+
+/** Quem do RH fez, justificativa e — se for o caso — cancelamento/substituição pelo RH. */
+export function DetalheAcaoRhFerias({
+  meta,
+  rhResolvidoEm
+}: {
+  meta: Record<string, unknown> | null | undefined;
+  rhResolvidoEm?: string | null;
+}) {
+  const acao = meta?.acaoRh as string | undefined;
+  const canc = meta?.canceladaPorRh as
+    | { motivo?: string; nome?: string; em?: string; justificativa?: string }
+    | undefined;
+  if (meta?.origem !== "RH" && !canc) return null;
+  const quando = (iso?: string | null) => (iso ? new Date(iso).toLocaleString("pt-BR") : "");
+  const motivoCanc =
+    canc?.motivo === "SUBSTITUIDA"
+      ? "Substituído pelo agendamento do RH"
+      : canc?.motivo === "ALTERADA"
+        ? "Alterado pelo RH"
+        : "Cancelado pelo RH";
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        padding: "8px 10px",
+        borderLeft: "3px solid var(--burgundy-600)",
+        background: "rgba(122,30,38,0.04)",
+        borderRadius: "0 var(--radius-md) var(--radius-md) 0",
+        fontSize: 12,
+        color: "var(--ink-700)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 3
+      }}
+    >
+      {meta?.origem === "RH" && (
+        <span>
+          <strong>
+            {acao === "ALTERADA" ? "Alterado" : "Agendado"} pelo RH
+            {meta?.rhNome ? ` — ${String(meta.rhNome)}` : ""}
+          </strong>
+          {rhResolvidoEm ? ` em ${quando(rhResolvidoEm)}` : ""}
+          {meta?.ignorouVedacao ? " · vedação ignorada" : ""}
+          <br />
+          Justificativa: <em>{String(meta?.justificativaRh ?? "")}</em>
+        </span>
+      )}
+      {canc && (
+        <span style={{ color: "var(--red)" }}>
+          <strong>
+            {motivoCanc}
+            {canc.nome ? ` — ${canc.nome}` : ""}
+          </strong>
+          {canc.em ? ` em ${quando(canc.em)}` : ""}
+          {canc.justificativa ? (
+            <>
+              <br />
+              Justificativa: <em>{canc.justificativa}</em>
+            </>
+          ) : null}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | null | undefined }) {
   if (!meta) return null;
   const periodos = Array.isArray(meta.periodos)
@@ -1562,7 +1903,7 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
     : [];
   const diasVendidos = Number(meta.diasVendidos ?? meta.diasVenda ?? 0);
   const totalGozo = Number(meta.totalDiasGozo ?? periodos.reduce((s, p) => s + p.dias, 0));
-  const isAlteracao = typeof meta.alteracaoDeId === "string";
+  const isAlteracao = typeof meta.alteracaoDeId === "string" && meta.origem !== "RH";
   const cicloNumero = meta.cicloNumero != null ? Number(meta.cicloNumero) : null;
 
   if (periodos.length === 0 && diasVendidos === 0) return null;
@@ -1589,12 +1930,16 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
       >
         🌴 Períodos de férias
         {cicloNumero != null ? ` — ciclo ${cicloNumero}` : ""}
-        {isAlteracao ? " — solicitação de mudança" : ""}
+        {isAlteracao ? " — solicitação de mudança" : ""}{" "}
+        <span style={{ textTransform: "none", letterSpacing: 0, marginLeft: 4 }}>
+          <TagOrigemFerias meta={meta} />
+        </span>
       </p>
       {periodos.map((p, i) => (
         <p key={i} style={{ margin: "0 0 3px", fontSize: 12.5, color: "var(--ink-800)" }}>
-          <span style={{ fontWeight: 600 }}>{i + 1}º período:</span> {fmtDate(p.dataInicio)} a{" "}
-          {fmtDate(p.dataFim)} <span style={{ color: "var(--ink-500)" }}>({p.dias} dias)</span>
+          <span style={{ fontWeight: 600 }}>{i + 1}º período:</span>{" "}
+          {fmtDataPeriodoFerias(p.dataInicio)} a {fmtDataPeriodoFerias(p.dataFim)}{" "}
+          <span style={{ color: "var(--ink-500)" }}>({p.dias} dias)</span>
         </p>
       ))}
       {diasVendidos > 0 ? (
@@ -1623,7 +1968,406 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
           {diasVendidos > 0 ? ` + ${diasVendidos} venda` : ""})
         </p>
       )}
+      <DetalheAcaoRhFerias meta={meta} />
     </div>
+  );
+}
+
+/** Documento de férias enviado pelo RH (corpo do PATCH enviar-folha-ferias). */
+export interface DocumentoFeriasEnvio {
+  tipo: "AVISO" | "RECIBO" | "OUTROS";
+  rotulo?: string;
+  nomeArquivo?: string;
+  mimeType?: string;
+  arquivoBase64: string;
+}
+
+interface LinhaDocFerias {
+  tipo: "AVISO" | "RECIBO" | "OUTROS";
+  rotulo: string;
+  nomeArquivo?: string;
+  mimeType?: string;
+  tamanho?: number;
+  arquivoBase64?: string;
+}
+
+const ROTULO_DOC_FERIAS: Record<string, string> = {
+  AVISO: "Aviso de Férias",
+  RECIBO: "Recibo de Férias",
+  OUTROS: "Outros"
+};
+
+/** Documento de férias do RH, com assinatura ou rejeição do funcionário (metadados). */
+interface DocFeriasMeta {
+  tipo?: string;
+  rotulo?: string;
+  nome?: string | null;
+  url: string;
+  urlAssinado?: string;
+  assinatura?: { nome?: string; em?: string; codigo?: string };
+  rejeicao?: { nome?: string; em?: string; justificativa?: string };
+}
+
+const fmtBrasilia = (iso?: string) =>
+  iso ? new Date(iso).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "";
+
+function docsFeriasDe(meta: Record<string, unknown> | null | undefined): DocFeriasMeta[] {
+  return Array.isArray(meta?.documentosFerias) ? (meta!.documentosFerias as DocFeriasMeta[]) : [];
+}
+
+/**
+ * Documentos de férias enviados pelo RH, cada um com a sua situação: assinado (link da
+ * versão assinada + quem/quando/código), rejeitado (justificativa) ou aguardando.
+ * Envios antigos têm só a folha em `guiaMedicoUrl`.
+ */
+export function LinksDocumentosFerias({
+  meta,
+  guiaMedicoUrl,
+  style
+}: {
+  meta: Record<string, unknown> | null | undefined;
+  guiaMedicoUrl?: string | null;
+  style?: React.CSSProperties;
+}) {
+  const docs = docsFeriasDe(meta);
+  if (!docs.length) {
+    return guiaMedicoUrl ? (
+      <LinkDocumentoAnexado
+        href={guiaMedicoUrl}
+        label="Ver documento — Folha de pagamento de férias"
+        variant="folha"
+        style={style}
+      />
+    ) : null;
+  }
+  return (
+    <>
+      {docs.map((d, i) => (
+        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <LinkDocumentoAnexado
+            href={d.urlAssinado ?? d.url}
+            label={`Ver documento — ${d.rotulo ?? "Documento de férias"}${d.urlAssinado ? " (assinado)" : ""}`}
+            variant={d.urlAssinado ? "retorno" : "folha"}
+            style={style}
+          />
+          {d.assinatura?.em && (
+            <span style={{ fontSize: 11, color: "#065f46" }}>
+              ✍️ Assinado por {d.assinatura.nome} em {fmtBrasilia(d.assinatura.em)}
+              {d.assinatura.codigo ? ` · código ${d.assinatura.codigo}` : ""}
+            </span>
+          )}
+          {d.rejeicao && (
+            <span style={{ fontSize: 11, color: "var(--red)" }}>
+              ✕ Rejeitado por {d.rejeicao.nome} em {fmtBrasilia(d.rejeicao.em)}: “
+              {d.rejeicao.justificativa}”
+            </span>
+          )}
+          {!d.assinatura && !d.rejeicao && (
+            <span style={{ fontSize: 11, color: "#8a6a00" }}>⏳ Aguardando assinatura</span>
+          )}
+        </div>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Funcionário trata cada documento de férias separadamente: abre, e só então assina
+ * (selo digital no rodapé) ou rejeita com justificativa (volta ao RH). Usado em
+ * Solicitações → Férias e em Minhas Requisições do RH — é a mesma solicitação, então o que
+ * for feito em uma tela vale na outra.
+ */
+export function AssinarDocumentosFerias({
+  solicitacao,
+  onAssinado,
+  rodada
+}: {
+  /** Rodada do 2º/3º período: usa os documentos e a situação dela, não os da solicitação. */
+  rodada?: {
+    ordem: number;
+    inicio: string;
+    fim: string;
+    situacao?: string;
+    documentos?: DocFeriasMeta[];
+    enviadaEm?: string;
+    observacao?: string;
+  };
+  solicitacao: {
+    id: string;
+    status: string;
+    metadados?: Record<string, unknown> | null;
+    guiaMedicoUrl?: string | null;
+    guiaMedicoEnviadaEm?: string | null;
+    guiaMedicoObservacao?: string | null;
+  };
+  onAssinado: () => void;
+}) {
+  const docs = rodada ? (rodada.documentos ?? []) : docsFeriasDe(solicitacao.metadados);
+  const pendente = rodada
+    ? rodada.situacao === "AGUARDANDO_ASSINATURA"
+    : solicitacao.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO";
+  const enviadaEm = rodada ? rodada.enviadaEm : solicitacao.guiaMedicoEnviadaEm;
+  const observacao = rodada ? rodada.observacao : solicitacao.guiaMedicoObservacao;
+  const tituloRodada = rodada
+    ? `${rodada.ordem}º período (${rodada.inicio.split("-").reverse().join("/")} a ${rodada.fim.split("-").reverse().join("/")})`
+    : "";
+  const [abertos, setAbertos] = useState<Set<number>>(new Set());
+  const [aceites, setAceites] = useState<Set<number>>(new Set());
+  const [rejeitando, setRejeitando] = useState<number | null>(null);
+  const [justificativa, setJustificativa] = useState("");
+  const [enviando, setEnviando] = useState<number | null>(null);
+  const [erro, setErro] = useState("");
+
+  const marcar = (set: Set<number>, i: number, on: boolean) => {
+    const n = new Set(set);
+    if (on) n.add(i);
+    else n.delete(i);
+    return n;
+  };
+
+  async function acao(i: number, tipo: "assinar" | "rejeitar") {
+    setEnviando(i);
+    setErro("");
+    try {
+      await api.post(
+        rodada
+          ? `/ponto/solicitacoes/${solicitacao.id}/ferias/rodadas/${rodada.ordem}/documentos/${i}/${tipo}`
+          : `/ponto/solicitacoes/${solicitacao.id}/ferias/documentos/${i}/${tipo}`,
+        tipo === "assinar" ? { aceite: true } : { justificativa: justificativa.trim() }
+      );
+      setRejeitando(null);
+      setJustificativa("");
+      onAssinado();
+    } catch (e) {
+      setErro((e as Error).message || "Não foi possível concluir. Tente novamente.");
+    } finally {
+      setEnviando(null);
+    }
+  }
+
+  const rejeitado = docs.find((d) => d.rejeicao);
+  const assinados = docs.filter((d) => d.assinatura).length;
+  const cor = pendente ? "#8a6a00" : rejeitado ? "var(--red)" : "#065f46";
+  const btn = (bg: string, desabilitado: boolean): React.CSSProperties => ({
+    padding: "6px 12px",
+    border: "none",
+    borderRadius: "var(--radius-md)",
+    background: desabilitado ? "#9ca3af" : bg,
+    color: "#fff",
+    cursor: desabilitado ? "not-allowed" : "pointer",
+    fontSize: 12,
+    fontWeight: 700
+  });
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: "10px 12px",
+        background: pendente ? "rgba(247,196,55,0.08)" : "rgba(47,125,79,0.05)",
+        border: `1px solid ${pendente ? "rgba(247,196,55,0.35)" : "rgba(47,125,79,0.20)"}`,
+        borderRadius: "var(--radius-md)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
+      }}
+    >
+      <p style={{ margin: 0, fontSize: 12.5, color: cor, lineHeight: 1.5 }}>
+        📄{" "}
+        <strong>
+          {pendente
+            ? `Documentos ${rodada ? `do ${tituloRodada}` : "das suas férias"} para assinar (${assinados} de ${docs.length} assinado${docs.length === 1 ? "" : "s"})`
+            : rejeitado
+              ? "Você rejeitou um documento — aguardando o RH corrigir e reenviar"
+              : rodada
+                ? `Documentos do ${tituloRodada} assinados`
+                : "Documentos de férias assinados"}
+        </strong>
+        {enviadaEm ? ` — enviados pelo RH em ${fmtBrasilia(enviadaEm)}` : ""}
+      </p>
+      {pendente && observacao && (
+        <p style={{ margin: 0, fontSize: 12, color: "var(--ink-600)", fontStyle: "italic" }}>
+          "{observacao}"
+        </p>
+      )}
+      {pendente && (
+        <p style={{ margin: 0, fontSize: 12, color: "var(--ink-600)", lineHeight: 1.5 }}>
+          Abra e leia cada documento. Depois, <strong>assine</strong> (selo digital no rodapé com
+          seu nome, data e hora de Brasília, IP e navegador) ou <strong>rejeite</strong> com a
+          justificativa — a rejeição devolve ao RH.
+          {rodada ? "" : " A aprovação das férias depende da assinatura de todos os documentos."}
+        </p>
+      )}
+
+      {docs.map((d, i) => {
+        const tratado = !!d.assinatura || !!d.rejeicao;
+        const aberto = abertos.has(i);
+        return (
+          <div
+            key={i}
+            style={{
+              padding: "8px 10px",
+              background: "#fff",
+              border: `1px solid ${d.rejeicao ? "rgba(200,57,63,0.30)" : d.assinatura ? "rgba(47,125,79,0.30)" : "rgba(0,0,0,0.08)"}`,
+              borderRadius: "var(--radius-md)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 12.5, color: "var(--ink-900)" }}>
+                {i + 1}. {d.rotulo ?? "Documento de férias"}
+              </strong>
+              <a
+                href={d.urlAssinado ?? d.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setAbertos((s) => marcar(s, i, true))}
+                style={{ fontSize: 12, fontWeight: 600, color: "var(--burgundy-600)" }}
+              >
+                📄 Abrir documento{d.urlAssinado ? " assinado" : ""}
+              </a>
+              {d.assinatura && (
+                <span style={{ fontSize: 11.5, color: "#065f46", fontWeight: 600 }}>
+                  ✍️ Assinado em {fmtBrasilia(d.assinatura.em)}
+                  {d.assinatura.codigo ? ` · código ${d.assinatura.codigo}` : ""}
+                </span>
+              )}
+              {d.rejeicao && (
+                <span style={{ fontSize: 11.5, color: "var(--red)", fontWeight: 600 }}>
+                  ✕ Rejeitado em {fmtBrasilia(d.rejeicao.em)}
+                </span>
+              )}
+            </div>
+            {d.rejeicao && (
+              <span style={{ fontSize: 12, color: "var(--red)" }}>
+                Justificativa: “{d.rejeicao.justificativa}”
+              </span>
+            )}
+
+            {pendente && !tratado && (
+              <>
+                {!aberto && (
+                  <span style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
+                    Abra o documento para liberar a assinatura ou a rejeição.
+                  </span>
+                )}
+                <label
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "flex-start",
+                    fontSize: 12.5,
+                    color: aberto ? "var(--ink-800)" : "var(--ink-400)",
+                    cursor: aberto ? "pointer" : "not-allowed"
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={!aberto}
+                    checked={aceites.has(i)}
+                    onChange={(e) => setAceites((s) => marcar(s, i, e.target.checked))}
+                    style={{ marginTop: 2 }}
+                  />
+                  Li e concordo com {d.rotulo ?? "este documento"} e assino digitalmente.
+                </label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    disabled={!aberto || !aceites.has(i) || enviando !== null}
+                    onClick={() => void acao(i, "assinar")}
+                    style={btn("#2f7d4f", !aberto || !aceites.has(i) || enviando !== null)}
+                  >
+                    {enviando === i ? "Assinando…" : "✍️ Assinar"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!aberto || enviando !== null}
+                    onClick={() => {
+                      setRejeitando(rejeitando === i ? null : i);
+                      setJustificativa("");
+                    }}
+                    style={btn("var(--red)", !aberto || enviando !== null)}
+                  >
+                    ✕ Rejeitar
+                  </button>
+                </div>
+                {rejeitando === i && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <textarea
+                      rows={2}
+                      value={justificativa}
+                      onChange={(e) => setJustificativa(e.target.value)}
+                      placeholder="Explique o que está errado no documento (mín. 10 caracteres)"
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "8px 10px",
+                        borderRadius: "var(--radius-md)",
+                        border: "1px solid rgba(200,57,63,0.30)",
+                        fontSize: 12.5
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={justificativa.trim().length < 10 || enviando !== null}
+                      onClick={() => void acao(i, "rejeitar")}
+                      style={{
+                        ...btn("var(--red)", justificativa.trim().length < 10 || enviando !== null),
+                        alignSelf: "flex-start"
+                      }}
+                    >
+                      {enviando === i ? "Enviando…" : "Confirmar rejeição (volta ao RH)"}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {erro && <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>⚠️ {erro}</p>}
+    </div>
+  );
+}
+
+/**
+ * Rodadas de Aviso/Recibo dos períodos futuros (2º e 3º) de férias divididas, já aprovadas:
+ * o funcionário assina cada rodada que o RH enviou. Mesma solicitação em Solicitações →
+ * Férias e em Minhas Requisições do RH.
+ */
+export function AssinarRodadasFerias({
+  solicitacao,
+  onAssinado
+}: {
+  solicitacao: {
+    id: string;
+    status: string;
+    metadados?: Record<string, unknown> | null;
+  };
+  onAssinado: () => void;
+}) {
+  if (solicitacao.status !== "APROVADA") return null;
+  const raw = solicitacao.metadados?.rodadasFerias;
+  if (!raw || typeof raw !== "object") return null;
+  const rodadas = Object.values(
+    raw as Record<string, NonNullable<Parameters<typeof AssinarDocumentosFerias>[0]["rodada"]>>
+  )
+    .filter((r) => r.documentos?.length)
+    .sort((a, b) => a.ordem - b.ordem);
+  if (!rodadas.length) return null;
+  return (
+    <>
+      {rodadas.map((r) => (
+        <AssinarDocumentosFerias
+          key={r.ordem}
+          solicitacao={solicitacao}
+          rodada={r}
+          onAssinado={onAssinado}
+        />
+      ))}
+    </>
   );
 }
 
@@ -1632,28 +2376,59 @@ export function ModalEnviarFolhaFerias({
   onConfirm,
   onClose,
   loading,
-  erro
+  erro,
+  titulo = "Enviar Documentos de Férias"
 }: {
+  titulo?: string;
   solicitacao: SolicitacaoResumo;
-  onConfirm: (folhaBase64: string, observacao: string) => void;
+  onConfirm: (documentos: DocumentoFeriasEnvio[], observacao: string) => void;
   onClose: () => void;
   loading: boolean;
   erro?: string;
 }) {
   const [obs, setObs] = useState(
-    "Segue em anexo a folha de pagamento de férias para sua assinatura. Após assinar, envie o documento de volta pelo sistema."
+    "Seguem em anexo os documentos de férias para sua assinatura. Após assinar, envie o documento de volta pelo sistema."
   );
-  const [base64, setBase64] = useState<string | null>(null);
-  const [nomeArquivo, setNomeArquivo] = useState<string | null>(null);
+  /* Por padrão: Aviso de Férias, Recibo de Férias e Outros; "+" adiciona outros. */
+  const [docs, setDocs] = useState<LinhaDocFerias[]>([
+    { tipo: "AVISO", rotulo: "" },
+    { tipo: "RECIBO", rotulo: "" },
+    { tipo: "OUTROS", rotulo: "" }
+  ]);
 
-  const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const anexar = (idx: number, file: File | undefined) => {
     if (!file) return;
-    setNomeArquivo(file.name);
     const reader = new FileReader();
-    reader.onload = (ev) => setBase64(ev.target?.result as string);
+    reader.onload = (ev) =>
+      setDocs((prev) =>
+        prev.map((d, k) =>
+          k === idx
+            ? {
+                ...d,
+                nomeArquivo: file.name,
+                mimeType: file.type,
+                tamanho: file.size,
+                arquivoBase64: ev.target?.result as string
+              }
+            : d
+        )
+      );
     reader.readAsDataURL(file);
   };
+
+  const anexados = docs.filter((d) => d.arquivoBase64);
+  const tamanhoTotal = anexados.reduce((s, d) => s + (d.tamanho ?? 0), 0);
+  const LIMITE_BYTES = 10 * 1024 * 1024;
+  const outrosSemDescricao = anexados.some((d) => d.tipo === "OUTROS" && !d.rotulo.trim());
+  /* Aviso e Recibo de Férias são obrigatórios; "Outros" é opcional. */
+  const faltaObrigatorio = (["AVISO", "RECIBO"] as const).filter(
+    (t) => !anexados.some((d) => d.tipo === t)
+  );
+  const podeEnviar =
+    !loading &&
+    faltaObrigatorio.length === 0 &&
+    tamanhoTotal <= LIMITE_BYTES &&
+    !outrosSemDescricao;
 
   const periodos = Array.isArray(solicitacao.metadados?.periodos)
     ? (solicitacao.metadados!.periodos as Array<{
@@ -1708,7 +2483,7 @@ export function ModalEnviarFolhaFerias({
                 fontFamily: "var(--font-display)"
               }}
             >
-              Enviar Folha de Pagamento de Férias
+              {titulo}
             </p>
             <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "var(--ink-500)" }}>
               Férias · <strong>{solicitacao.funcionario.user.name}</strong>
@@ -1739,8 +2514,8 @@ export function ModalEnviarFolhaFerias({
               </p>
               {periodos.map((p, i) => (
                 <p key={i} style={{ margin: "0 0 2px", fontSize: 13, color: "var(--ink-800)" }}>
-                  {i + 1}º: {fmtDate(p.dataInicio)} a {fmtDate(p.dataFim)} —{" "}
-                  <strong>{p.dias} dias</strong>
+                  {i + 1}º: {fmtDataPeriodoFerias(p.dataInicio)} a {fmtDataPeriodoFerias(p.dataFim)}{" "}
+                  — <strong>{p.dias} dias</strong>
                 </p>
               ))}
               {Number(solicitacao.metadados?.diasVendidos ?? 0) > 0 && (
@@ -1750,43 +2525,144 @@ export function ModalEnviarFolhaFerias({
               )}
             </div>
           )}
-          <div>
-            <label
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, color: "var(--ink-700)" }}>
+              Documentos de férias <span style={{ color: "var(--red)" }}>*</span>
+              <span style={{ fontWeight: 400, color: "var(--ink-500)" }}>
+                {" "}
+                — Aviso e Recibo obrigatórios; Outros opcional (PDF ou imagem; até 10 MB no total)
+              </span>
+            </p>
+            {docs.map((d, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  padding: "8px 10px",
+                  border: "1px solid rgba(47,125,79,0.18)",
+                  borderRadius: "var(--radius-md)",
+                  background: d.arquivoBase64 ? "rgba(47,125,79,0.05)" : "#fff"
+                }}
+              >
+                <strong style={{ fontSize: 12.5, color: "#2f7d4f", minWidth: 120 }}>
+                  {ROTULO_DOC_FERIAS[d.tipo] ?? "Outros"}
+                  {d.tipo === "OUTROS" ? (
+                    <span style={{ fontWeight: 400, color: "var(--ink-500)" }}> (opcional)</span>
+                  ) : (
+                    <span style={{ color: "var(--red)" }}> *</span>
+                  )}
+                </strong>
+                {d.tipo === "OUTROS" && (
+                  <input
+                    type="text"
+                    value={d.rotulo}
+                    placeholder="Descrição (ex.: Termo de opção)"
+                    onChange={(e) =>
+                      setDocs((prev) =>
+                        prev.map((x, k) => (k === i ? { ...x, rotulo: e.target.value } : x))
+                      )
+                    }
+                    style={{
+                      flex: "1 1 160px",
+                      padding: "6px 8px",
+                      border: "1px solid rgba(122,30,38,0.14)",
+                      borderRadius: "var(--radius-md)",
+                      fontSize: 12
+                    }}
+                  />
+                )}
+                <input
+                  id={`doc-ferias-${i}`}
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    anexar(i, e.target.files?.[0]);
+                    e.target.value = "";
+                  }}
+                />
+                <label
+                  htmlFor={`doc-ferias-${i}`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 12px",
+                    border: "1px solid rgba(47,125,79,0.35)",
+                    borderRadius: "var(--radius-md)",
+                    background: "rgba(47,125,79,0.06)",
+                    color: "#2f7d4f",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    maxWidth: 220,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap"
+                  }}
+                  title={d.nomeArquivo}
+                >
+                  📎 {d.nomeArquivo ?? "Selecionar arquivo"}
+                </label>
+                {(d.arquivoBase64 || i >= 3) && (
+                  <button
+                    type="button"
+                    title={i >= 3 ? "Remover linha" : "Remover arquivo"}
+                    onClick={() =>
+                      setDocs((prev) =>
+                        i >= 3
+                          ? prev.filter((_, k) => k !== i)
+                          : prev.map((x, k) => (k === i ? { tipo: x.tipo, rotulo: x.rotulo } : x))
+                      )
+                    }
+                    style={{
+                      border: "none",
+                      background: "none",
+                      color: "var(--red)",
+                      cursor: "pointer",
+                      fontSize: 14
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setDocs((prev) => [...prev, { tipo: "OUTROS", rotulo: "" }])}
               style={{
-                display: "block",
-                marginBottom: 6,
-                fontSize: 12.5,
-                fontWeight: 600,
-                color: "var(--ink-700)"
-              }}
-            >
-              Folha de Pagamento (PDF) <span style={{ color: "var(--red)" }}>*</span>
-            </label>
-            <input
-              id="folha-ferias-file"
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={handleArquivo}
-              style={{ display: "none" }}
-            />
-            <label
-              htmlFor="folha-ferias-file"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 7,
-                padding: "9px 16px",
-                border: "1px solid rgba(47,125,79,0.35)",
+                alignSelf: "flex-start",
+                padding: "5px 12px",
+                border: "1px dashed rgba(47,125,79,0.45)",
                 borderRadius: "var(--radius-md)",
-                background: "rgba(47,125,79,0.06)",
+                background: "#fff",
                 color: "#2f7d4f",
                 cursor: "pointer",
-                fontSize: 12.5,
+                fontSize: 12,
                 fontWeight: 600
               }}
             >
-              📎 {nomeArquivo ?? "Selecionar PDF"}
-            </label>
+              + Adicionar outro documento
+            </button>
+            {tamanhoTotal > LIMITE_BYTES && (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>
+                Os arquivos somam {(tamanhoTotal / 1024 / 1024).toFixed(1)} MB — o limite é 10 MB.
+              </p>
+            )}
+            {faltaObrigatorio.length > 0 && anexados.length > 0 && (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>
+                Falta anexar: {faltaObrigatorio.map((t) => ROTULO_DOC_FERIAS[t]).join(" e ")}.
+              </p>
+            )}
+            {outrosSemDescricao && (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>
+                Informe a descrição de cada documento em “Outros”.
+              </p>
+            )}
           </div>
           <div>
             <label
@@ -1834,20 +2710,34 @@ export function ModalEnviarFolhaFerias({
               Cancelar
             </button>
             <button
-              onClick={() => base64 && onConfirm(base64, obs)}
-              disabled={loading || !base64}
+              onClick={() =>
+                podeEnviar &&
+                onConfirm(
+                  anexados.map((d) => ({
+                    tipo: d.tipo,
+                    rotulo: d.tipo === "OUTROS" ? d.rotulo.trim() : undefined,
+                    nomeArquivo: d.nomeArquivo,
+                    mimeType: d.mimeType,
+                    arquivoBase64: d.arquivoBase64!
+                  })),
+                  obs
+                )
+              }
+              disabled={!podeEnviar}
               style={{
                 padding: "10px 24px",
                 border: "none",
                 borderRadius: "var(--radius-md)",
-                background: loading || !base64 ? "#9ca3af" : "#2f7d4f",
+                background: !podeEnviar ? "#9ca3af" : "#2f7d4f",
                 color: "#fff",
-                cursor: loading || !base64 ? "not-allowed" : "pointer",
+                cursor: !podeEnviar ? "not-allowed" : "pointer",
                 fontSize: 13,
                 fontWeight: 700
               }}
             >
-              {loading ? "Enviando…" : "🌴 Enviar Folha"}
+              {loading
+                ? "Enviando…"
+                : `🌴 Enviar ${anexados.length || ""} documento${anexados.length === 1 ? "" : "s"}`}
             </button>
           </div>
         </div>

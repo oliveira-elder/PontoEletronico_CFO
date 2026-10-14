@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { nomeArquivoRelatorioMes } from "./nomeArquivo";
 import type { ResumoHistorico } from "./historicoTransform";
 
 export type RelatorioMesPdf = ResumoHistorico & {
@@ -206,6 +207,6 @@ export function gerarRelatorioPdf(
     }
   }
 
-  const filename = `relatorio-frequencia-${String(rel.mes).padStart(2, "0")}-${rel.ano}.pdf`;
+  const filename = nomeArquivoRelatorioMes(rel.mes, rel.ano);
   doc.save(filename);
 }

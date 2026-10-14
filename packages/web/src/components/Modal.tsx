@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 
 /** Modal genérico (overlay + card), promovido do padrão usado em AuditoriaPage.tsx. */
 export function Modal({
@@ -7,7 +8,8 @@ export function Modal({
   subtitle,
   onClose,
   children,
-  maxWidth = 520
+  maxWidth = 520,
+  maxHeight = "min(80vh, 640px)"
 }: {
   eyebrow?: string;
   title: string;
@@ -15,8 +17,10 @@ export function Modal({
   onClose: () => void;
   children: React.ReactNode;
   maxWidth?: number;
+  maxHeight?: string;
 }) {
-  return (
+  /* Portal no <body>: um ancestral com transform/animation prende o position:fixed e encolhe o modal. */
+  return createPortal(
     <div
       style={{
         position: "fixed",
@@ -36,7 +40,7 @@ export function Modal({
           borderRadius: "var(--radius-xl)",
           width: "100%",
           maxWidth,
-          maxHeight: "min(80vh, 640px)",
+          maxHeight,
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
@@ -82,6 +86,7 @@ export function Modal({
         </div>
         <div style={{ padding: "20px 24px", overflowY: "auto" }}>{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

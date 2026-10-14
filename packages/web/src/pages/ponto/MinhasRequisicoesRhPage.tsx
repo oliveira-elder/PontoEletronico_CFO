@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { MeuExameCard } from "../../components/saude/MeuExameCard";
+import { FormEnviarExame } from "../../components/saude/FormEnviarExame";
+import type { ExameOcupacional } from "../../components/saude/tipos";
 import { Link } from "react-router-dom";
 import {
   ArrowLeftIcon,
@@ -10,9 +13,29 @@ import {
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { RequerimentoEnderecoCard } from "../../components/RequerimentoEnderecoCard";
-import { LinkDocumentoAnexado } from "./solicitacaoUi";
+import {
+  RequerimentoCadastroCard,
+  type RequerimentoCadastroPendente
+} from "../../components/RequerimentoCadastroCard";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import {
+  AssinarDocumentosFerias,
+  AssinarRodadasFerias,
+  LinkDocumentoAnexado
+} from "./solicitacaoUi";
 
 /* ── Tipos ─────────────────────────────────────────────── */
+
+/** Solicitação de férias do próprio funcionário (GET /ponto/solicitacoes). */
+interface FeriasParaAssinar {
+  id: string;
+  tipo: string;
+  status: string;
+  metadados?: Record<string, unknown> | null;
+  guiaMedicoUrl?: string | null;
+  guiaMedicoEnviadaEm?: string | null;
+  guiaMedicoObservacao?: string | null;
+}
 type TipoReq = "PERIODICO" | "EXAME_MEDICO" | "FERIAS" | "ASSINATURA_DOCUMENTOS" | "OUTRO";
 type StatusDest = "PENDENTE" | "VISUALIZADO" | "RESPONDIDO";
 
@@ -68,11 +91,14 @@ function prazoInfo(prazo?: string): { label: string; color: string } | null {
 function MinhaReqCard({
   item,
   token,
-  onAtualizar
+  onAtualizar,
+  exameDaRequisicao
 }: {
   item: MinhaReqItem;
   token: string;
   onAtualizar: () => void;
+  /** Exame periódico enviado em resposta a esta requisição (tipo Exame Médico). */
+  exameDaRequisicao?: ExameOcupacional;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [texto, setTexto] = useState("");
@@ -301,6 +327,33 @@ function MinhaReqCard({
                 />
               )}
             </div>
+          ) : req.tipo === "EXAME_MEDICO" ? (
+            exameDaRequisicao?.situacao === "AGUARDANDO_CONFERENCIA" ? (
+              <div
+                style={{
+                  padding: "12px 14px",
+                  background: "rgba(26,79,122,0.06)",
+                  border: "1px solid rgba(26,79,122,0.18)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: 13
+                }}
+              >
+                ⏳ Exame de {exameDaRequisicao.dataRealizacao.split("-").reverse().join("/")}{" "}
+                enviado. Aguardando a conferência do RH.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {exameDaRequisicao?.situacao === "DEVOLVIDO" && (
+                  <p style={{ margin: 0, fontSize: 12.5, color: "#b91c1c" }}>
+                    ↩ Devolvido pelo RH: {exameDaRequisicao.motivoDevolucao}. Reenvie abaixo.
+                  </p>
+                )}
+                <p style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-700)", margin: 0 }}>
+                  Enviar o exame médico periódico
+                </p>
+                <FormEnviarExame destinatarioId={item.id} onEnviado={onAtualizar} />
+              </div>
+            )
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <p style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-700)", margin: 0 }}>
@@ -392,6 +445,13 @@ export function MinhasRequisicoesRhPage() {
   const [filtroStatus, setFiltroStatus] = useState<StatusDest | "">("");
   const [filtroTipo, setFiltroTipo] = useState<TipoReq | "">("");
   const [reqEnderecoPendente, setReqEnderecoPendente] = useState(false);
+  const [reqsCadastro, setReqsCadastro] = useState<RequerimentoCadastroPendente[]>([]);
+  /* Férias com Aviso/Recibo do RH aguardando a assinatura do funcionário (mesma pendência
+     de Solicitações → Férias). */
+  const [feriasParaAssinar, setFeriasParaAssinar] = useState<FeriasParaAssinar[]>([]);
+  const [examesPeriodicos, setExamesPeriodicos] = useState<ExameOcupacional[]>([]);
+  const [versaoExames, setVersaoExames] = useState(0);
+  const isMobile = useIsMobile(768);
 
   const carregar = useCallback(async () => {
     const tk = token();
@@ -402,18 +462,35 @@ export function MinhasRequisicoesRhPage() {
     setLoading(true);
     setErro(null);
     try {
-      const [data, req] = await Promise.all([
+      const [data, req, cadastro, sols] = await Promise.all([
         api.get<MinhaReqItem[]>("/requisicoes-rh/minhas", tk),
         api
           .get<{ id: string; status: string } | null>("/ponto/requerimento-endereco", tk)
-          .catch(() => null)
+          .catch(() => null),
+        api.get<RequerimentoCadastroPendente[]>("/ponto/requerimento-cadastro", tk).catch(() => []),
+        api.get<FeriasParaAssinar[]>("/ponto/solicitacoes", tk).catch(() => [])
       ]);
+      setFeriasParaAssinar(
+        (sols ?? []).filter(
+          (x) =>
+            x.tipo === "FERIAS" &&
+            ((x.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" &&
+              Array.isArray(x.metadados?.documentosFerias)) ||
+              /* Período futuro (2º/3º) com Aviso/Recibo enviados e ainda sem assinatura. */
+              (x.status === "APROVADA" &&
+                Object.values(
+                  (x.metadados?.rodadasFerias ?? {}) as Record<string, { situacao?: string }>
+                ).some((r) => r.situacao === "AGUARDANDO_ASSINATURA")))
+        )
+      );
       setItems(data ?? []);
       setReqEnderecoPendente(req?.status === "PENDENTE");
+      setReqsCadastro(cadastro ?? []);
     } catch (e) {
       setErro((e as Error).message);
     } finally {
       setLoading(false);
+      setVersaoExames((v) => v + 1);
     }
   }, [token]);
 
@@ -508,6 +585,31 @@ export function MinhasRequisicoesRhPage() {
         </div>
       </div>
 
+      {/* Documentos de férias aguardando assinatura */}
+      {feriasParaAssinar.map((f) => (
+        <div
+          key={f.id}
+          style={{
+            background: "#fff",
+            border: "1px solid rgba(47,125,79,0.20)",
+            borderRadius: "var(--radius-lg)",
+            padding: "14px 16px",
+            marginBottom: 12
+          }}
+        >
+          <p style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: "#2f7d4f" }}>
+            🌴 Férias — documentos para assinar
+          </p>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--ink-500)" }}>
+            Também disponível em Solicitações → Férias. Assinando aqui, a pendência sai de lá.
+          </p>
+          {f.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" && (
+            <AssinarDocumentosFerias solicitacao={f} onAssinado={carregar} />
+          )}
+          <AssinarRodadasFerias solicitacao={f} onAssinado={carregar} />
+        </div>
+      ))}
+
       {/* Requerimento de endereço residencial */}
       {reqEnderecoPendente && (
         <RequerimentoEnderecoCard
@@ -516,6 +618,19 @@ export function MinhasRequisicoesRhPage() {
           }}
         />
       )}
+
+      {/* Requerimentos de cadastro: dependentes, formação acadêmica, cursos/capacitações */}
+      {reqsCadastro.map((r) => (
+        <RequerimentoCadastroCard
+          key={r.tipo}
+          requerimento={r}
+          isMobile={isMobile}
+          onRespondido={() => setReqsCadastro((l) => l.filter((x) => x.tipo !== r.tipo))}
+        />
+      ))}
+
+      {/* Exame médico periódico: situação, envio e histórico */}
+      <MeuExameCard recarregar={versaoExames} onMudou={(m) => setExamesPeriodicos(m.exames)} />
 
       {/* Filtros */}
       {!loading && !erro && items.length > 0 && (
@@ -698,7 +813,15 @@ export function MinhasRequisicoesRhPage() {
       {!loading && !erro && itensFiltrados.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {itensFiltrados.map((item) => (
-            <MinhaReqCard key={item.id} item={item} token={tk} onAtualizar={carregar} />
+            <MinhaReqCard
+              key={item.id}
+              item={item}
+              token={tk}
+              onAtualizar={carregar}
+              exameDaRequisicao={examesPeriodicos.find(
+                (e) => e.requisicaoDestinatarioId === item.id && e.situacao !== "CONFIRMADO"
+              )}
+            />
           ))}
         </div>
       )}

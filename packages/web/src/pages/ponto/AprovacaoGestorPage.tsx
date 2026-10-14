@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -18,17 +19,21 @@ import {
 } from "../../components/icons";
 import {
   FeriasDetalheBlock,
+  AbonoDetalheBlock,
+  AvisoInterjornadaBlock,
   LinkDocumentoAnexado,
   LogTimelineGestorHistorico,
   ModalDecisaoRH,
   ModalEnviarGuia,
   ModalEnviarFolhaFerias,
+  type DocumentoFeriasEnvio,
   SolicitacaoCardRH,
   textoResumo,
   type SolicitacaoResumo
 } from "./solicitacaoUi";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
 import { StartSistemaAprovacaoCard } from "./StartSistemaAprovacaoCard";
+import { PainelRodadasFeriasRh } from "./PainelRodadasFeriasRh";
 
 /* ══════════════════════════════════════════
    TIPOS
@@ -46,6 +51,8 @@ type StatusSolicitacao =
 
 interface Solicitacao {
   id: string;
+  /** Dono da solicitação — usado para esconder as ações nas demandas do próprio usuário. */
+  funcionarioId?: string;
   tipo: string;
   dataReferencia: string;
   dataInicio: string | null;
@@ -84,7 +91,7 @@ const TIPO_LABEL: Record<string, string> = {
   CORRECAO_PONTO: "Correção de Ponto",
   ATESTADO: "Atestado Médico",
   FERIAS: "Férias",
-  LICENCA: "Licença",
+  LICENCA: "Licença e Outros",
   ABONO: "Abono de Falta",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
@@ -327,6 +334,17 @@ function ModalDecisao({
               <TextoComSetaHorario texto={resumo} />
             </p>
             {solicitacao.tipo === "FERIAS" && <FeriasDetalheBlock meta={solicitacao.metadados} />}
+            {[
+              "ABONO",
+              "LICENCA",
+              "ATESTADO",
+              "DAY_OFF",
+              "HORA_EXTRA",
+              "ENVIO_DOCUMENTO_RH"
+            ].includes(solicitacao.tipo) && <AbonoDetalheBlock meta={solicitacao.metadados} />}
+            {solicitacao.tipo === "CORRECAO_PONTO" && (
+              <AvisoInterjornadaBlock meta={solicitacao.metadados} />
+            )}
             {solicitacao.descricao && (
               <p
                 style={{
@@ -341,20 +359,23 @@ function ModalDecisao({
                 Justificativa: "{solicitacao.descricao}"
               </p>
             )}
-            {isCienciaAtestado && typeof solicitacao.metadados?.documentoUrl === "string" && (
-              <div style={{ marginTop: 10 }}>
-                <LinkDocumentoAnexado
-                  href={solicitacao.metadados.documentoUrl as string}
-                  nomeArquivo={
-                    typeof solicitacao.metadados?.nomeArquivo === "string"
-                      ? solicitacao.metadados.nomeArquivo
-                      : "Atestado"
-                  }
-                  variant="funcionario"
-                  style={{ marginTop: 0 }}
-                />
-              </div>
-            )}
+            {(isCienciaAtestado || solicitacao.tipo === "ABONO") &&
+              typeof solicitacao.metadados?.documentoUrl === "string" && (
+                <div style={{ marginTop: 10 }}>
+                  <LinkDocumentoAnexado
+                    href={solicitacao.metadados.documentoUrl as string}
+                    nomeArquivo={
+                      typeof solicitacao.metadados?.nomeArquivo === "string"
+                        ? solicitacao.metadados.nomeArquivo
+                        : solicitacao.tipo === "ABONO"
+                          ? "Documento do abono"
+                          : "Atestado"
+                    }
+                    variant="funcionario"
+                    style={{ marginTop: 0 }}
+                  />
+                </div>
+              )}
           </div>
 
           {/* Pergunta de confirmação */}
@@ -620,6 +641,10 @@ function SolicitacaoCard({
         </div>
 
         {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
+        {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
+          s.tipo
+        ) && <AbonoDetalheBlock meta={s.metadados} />}
+        {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
         {/* ── Justificativa do funcionário (secundária) ── */}
         {s.descricao && (
@@ -648,15 +673,16 @@ function SolicitacaoCard({
           />
         )}
 
-        {s.tipo === "ENVIO_DOCUMENTO_RH" && typeof s.metadados?.documentoUrl === "string" && (
-          <LinkDocumentoAnexado
-            href={s.metadados.documentoUrl as string}
-            nomeArquivo={
-              typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
-            }
-            variant="funcionario"
-          />
-        )}
+        {(s.tipo === "ENVIO_DOCUMENTO_RH" || s.tipo === "ABONO") &&
+          typeof s.metadados?.documentoUrl === "string" && (
+            <LinkDocumentoAnexado
+              href={s.metadados.documentoUrl as string}
+              nomeArquivo={
+                typeof s.metadados?.nomeArquivo === "string" ? s.metadados.nomeArquivo : null
+              }
+              variant="funcionario"
+            />
+          )}
 
         {!mostrarAcoes && (s.gestorResolvidoEm || s.gestorObservacao || s.observacaoGestor) && (
           <LogTimelineGestorHistorico s={s} />
@@ -780,6 +806,11 @@ function etapaInicialFromUrl(
 
 export function AprovacaoGestorPage() {
   const { user, hasRole, token } = useAuth();
+  /* Ninguém decide as próprias demandas de RH (o backend também bloqueia): nas listas,
+     as ações somem e aparece um aviso no lugar. */
+  const meuFuncionarioId = user?.funcionario?.id ?? null;
+  const ehMinha = (s: { funcionarioId?: string }) =>
+    !!meuFuncionarioId && s.funcionarioId === meuFuncionarioId;
   const [searchParams, setSearchParams] = useSearchParams();
 
   // "Chefe" é a característica isManager (não mais a categoria GERENTE) — fonte oficial de acesso.
@@ -1076,20 +1107,22 @@ export function AprovacaoGestorPage() {
     setFeedbackMsg("");
   }
 
-  async function confirmarEnviarFolha(folhaBase64: string, observacao: string) {
+  async function confirmarEnviarFolha(documentos: DocumentoFeriasEnvio[], observacao: string) {
     if (!modalFolhaSol) return;
     setModalLoading(true);
     setModalFolhaErro("");
     try {
       await api.patch(`/auditoria/rh/solicitacoes/${modalFolhaSol.id}/enviar-folha-ferias`, {
-        folhaBase64,
+        documentos,
         observacao
       });
       setModalFolhaSol(null);
-      setFeedbackMsg("Folha de férias enviada ao funcionário para assinatura.");
+      setFeedbackMsg(
+        `${documentos.length} documento(s) de férias enviado(s) ao funcionário para assinatura.`
+      );
       await Promise.all([carregar(), carregarStats()]);
     } catch (e) {
-      setModalFolhaErro((e as Error).message || "Erro ao enviar folha. Tente novamente.");
+      setModalFolhaErro((e as Error).message || "Erro ao enviar os documentos. Tente novamente.");
     } finally {
       setModalLoading(false);
     }
@@ -1687,8 +1720,11 @@ export function AprovacaoGestorPage() {
                               style={{ gap: 4, fontSize: 12 }}
                               title="Baixar PDF do quadro"
                               onClick={() => {
-                                const matricula = a.periodo.funcionario.matricula ?? a.id;
-                                const filename = `quadro-${matricula}-${String(a.periodo.mes).padStart(2, "0")}-${a.periodo.ano}.pdf`;
+                                const filename = nomeArquivoRelatorioMes(
+                                  a.periodo.mes,
+                                  a.periodo.ano,
+                                  { nomePessoa: a.periodo.funcionario.user?.name }
+                                );
                                 api
                                   .download(`/auditoria/assinaturas/${a.id}/pdf`, filename, token())
                                   .catch((e: unknown) =>
@@ -1913,6 +1949,8 @@ export function AprovacaoGestorPage() {
         </div>
       )}
 
+      {etapa === "rh" && <PainelRodadasFeriasRh onMensagem={setFeedbackMsg} />}
+
       {/* ── Filtros e Lista ── */}
       {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
         <>
@@ -2049,25 +2087,26 @@ export function AprovacaoGestorPage() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {solicitacoesFiltradas.map((s) =>
-                etapa === "rh" ? (
-                  <SolicitacaoCardRH
-                    key={s.id}
-                    s={s}
-                    mostrarAcoes={aba === "pendentes"}
-                    onDecidir={abrirModalRH}
-                    onEnviarGuia={abrirModalGuia}
-                    onEnviarFolhaFerias={abrirModalFolha}
-                  />
-                ) : (
-                  <SolicitacaoCard
-                    key={s.id}
-                    s={s}
-                    mostrarAcoes={aba === "pendentes"}
-                    onDecidir={abrirModal}
-                  />
-                )
-              )}
+              {solicitacoesFiltradas.map((s) => (
+                <React.Fragment key={s.id}>
+                  {aba === "pendentes" && ehMinha(s) && <AvisoPropriaSolicitacao />}
+                  {etapa === "rh" ? (
+                    <SolicitacaoCardRH
+                      s={s}
+                      mostrarAcoes={aba === "pendentes" && !ehMinha(s)}
+                      onDecidir={abrirModalRH}
+                      onEnviarGuia={abrirModalGuia}
+                      onEnviarFolhaFerias={abrirModalFolha}
+                    />
+                  ) : (
+                    <SolicitacaoCard
+                      s={s}
+                      mostrarAcoes={aba === "pendentes" && !ehMinha(s)}
+                      onDecidir={abrirModal}
+                    />
+                  )}
+                </React.Fragment>
+              ))}
             </div>
           )}
 
@@ -2168,25 +2207,27 @@ export function AprovacaoGestorPage() {
             </div>
           ) : (
             solicitacoesFiltradas.map((s) => (
-              <CardCorrecaoRH
-                key={s.id}
-                s={s}
-                mostrarAcoes={aba === "pendentes"}
-                onAprovar={() => {
-                  setModalAdminSol(s);
-                  setModalAdminDecisao("APROVAR");
-                  setModalAdminObs("");
-                  setModalAdminErro("");
-                  setFeedbackMsg("");
-                }}
-                onRejeitar={() => {
-                  setModalAdminSol(s);
-                  setModalAdminDecisao("REJEITAR");
-                  setModalAdminObs("");
-                  setModalAdminErro("");
-                  setFeedbackMsg("");
-                }}
-              />
+              <React.Fragment key={s.id}>
+                {aba === "pendentes" && ehMinha(s) && <AvisoPropriaSolicitacao />}
+                <CardCorrecaoRH
+                  s={s}
+                  mostrarAcoes={aba === "pendentes" && !ehMinha(s)}
+                  onAprovar={() => {
+                    setModalAdminSol(s);
+                    setModalAdminDecisao("APROVAR");
+                    setModalAdminObs("");
+                    setModalAdminErro("");
+                    setFeedbackMsg("");
+                  }}
+                  onRejeitar={() => {
+                    setModalAdminSol(s);
+                    setModalAdminDecisao("REJEITAR");
+                    setModalAdminObs("");
+                    setModalAdminErro("");
+                    setFeedbackMsg("");
+                  }}
+                />
+              </React.Fragment>
             ))
           )}
           {totalPages > 1 && (
@@ -2288,6 +2329,28 @@ export function AprovacaoGestorPage() {
         />
       )}
     </div>
+  );
+}
+
+/** Aviso no lugar das ações quando a demanda é do próprio usuário logado. */
+function AvisoPropriaSolicitacao() {
+  return (
+    <p
+      role="note"
+      style={{
+        margin: "0 0 -4px",
+        padding: "8px 12px",
+        borderRadius: "var(--radius-md) var(--radius-md) 0 0",
+        background: "rgba(247,196,55,0.14)",
+        border: "1px solid rgba(247,196,55,0.40)",
+        color: "#6b5200",
+        fontSize: 12.5,
+        fontWeight: 600
+      }}
+    >
+      🔒 Esta demanda é sua: você não pode aprová-la, rejeitá-la ou dar andamento. Ela deve ser
+      tratada por outro responsável.
+    </p>
   );
 }
 

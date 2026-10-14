@@ -113,6 +113,12 @@ export interface Funcionario {
     criadoEm: string;
     respondidoEm?: string | null;
   } | null;
+  requerimentosCadastro?: {
+    tipo: "DEPENDENTES" | "FORMACAO_ACADEMICA" | "CAPACITACOES";
+    status: string;
+    criadoEm: string;
+    respondidoEm?: string | null;
+  }[];
   ativo: boolean;
   camposManuaisConfigurados?: boolean;
   loginHoje?: boolean;
@@ -140,6 +146,7 @@ export interface Funcionario {
   // ── Jornada / características (RH) ──
   atividade?: Atividade | null;
   isFiscal?: boolean;
+  nivelCargo?: "MEDIO" | "SUPERIOR" | null;
   valeTransporte?: boolean;
   registroPontoObrigatorio?: boolean | null;
 
@@ -159,6 +166,15 @@ export interface Funcionario {
   contratoTermino?: string | null;
   cargaHoraria?: string | null;
   diasSemana?: string | null;
+
+  observacoes?: string | null;
+
+  // ── Cessão de Empregado ──
+  cedido?: boolean;
+  cessaoInicio?: string | null;
+  cessaoFim?: string | null;
+  cessaoOrgaoOrigem?: string | null;
+  cessaoOrgaoDestino?: string | null;
 
   user: {
     id: string;
@@ -339,19 +355,9 @@ export function formatTelefone(value: string): string {
   return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
 }
 
-/** RG: sem padrão nacional único — usa o agrupamento mais comum (2-3-3-1, ex.: SP). */
+/** RG: números corridos, sem pontuação, até 15 dígitos. */
 export function formatRg(value: string): string {
-  const raw = value.trim();
-  const d = raw.replace(/\D/g, "");
-  /* RG com dígito verificador "X" (comum em alguns estados) — preserva um "X" final não numérico. */
-  const temXFinal = /x$/i.test(raw) && d.length > 0;
-  const base = temXFinal ? d.slice(0, 8) : d.slice(0, 9);
-  let out: string;
-  if (base.length <= 2) out = base;
-  else if (base.length <= 5) out = `${base.slice(0, 2)}.${base.slice(2)}`;
-  else if (base.length <= 8) out = `${base.slice(0, 2)}.${base.slice(2, 5)}.${base.slice(5)}`;
-  else out = `${base.slice(0, 2)}.${base.slice(2, 5)}.${base.slice(5, 8)}-${base.slice(8)}`;
-  return temXFinal ? `${out}-X` : out;
+  return value.replace(/\D/g, "").slice(0, 15);
 }
 
 export const CAT: Record<
@@ -417,6 +423,7 @@ export const FORM_VAZIO = {
   // Jornada / características
   atividade: "" as Atividade | "",
   isFiscal: false,
+  nivelCargo: "" as "" | "MEDIO" | "SUPERIOR",
   valeTransporte: false,
   registroPontoObrigatorio: null as boolean | null,
 
@@ -436,7 +443,16 @@ export const FORM_VAZIO = {
   contratoInicio: "",
   contratoTermino: "",
   cargaHoraria: "",
-  diasSemana: ""
+  diasSemana: "",
+
+  observacoes: "",
+
+  // Cessão de Empregado
+  cedido: false,
+  cessaoInicio: "",
+  cessaoFim: "",
+  cessaoOrgaoOrigem: "",
+  cessaoOrgaoDestino: ""
 };
 
 export type FuncionarioFormState = typeof FORM_VAZIO;
@@ -484,10 +500,17 @@ export function formFromFuncionario(f: Funcionario): FuncionarioFormState {
     genero: f.genero ?? "",
     emailPessoal: f.emailPessoal ?? "",
     telefone: f.telefone ?? "",
-    dependentes: f.dependentes ?? [],
+    /* Datas de sub-itens (dependentes/formações/capacitações) vêm do backend como
+       ISO completo (ex.: "2017-12-05T00:00:00.000Z") — sem passar por dataOuVazio,
+       o <input type="date"> rejeita o valor e mostra em branco mesmo com dado salvo. */
+    dependentes: (f.dependentes ?? []).map((d) => ({
+      ...d,
+      dataNascimento: dataOuVazio(d.dataNascimento)
+    })),
 
     atividade: f.atividade ?? "",
     isFiscal: f.isFiscal ?? false,
+    nivelCargo: f.nivelCargo ?? "",
     valeTransporte: f.valeTransporte ?? false,
     registroPontoObrigatorio: f.registroPontoObrigatorio ?? null,
 
@@ -496,14 +519,27 @@ export function formFromFuncionario(f: Funcionario): FuncionarioFormState {
     lotacaoInicio: dataOuVazio(f.lotacaoInicio),
     lotacaoTermino: dataOuVazio(f.lotacaoTermino),
 
-    formacoesAcademicas: f.formacoesAcademicas ?? [],
-    capacitacoes: f.capacitacoes ?? [],
+    formacoesAcademicas: (f.formacoesAcademicas ?? []).map((fa) => ({
+      ...fa,
+      conclusao: dataOuVazio(fa.conclusao)
+    })),
+    capacitacoes: (f.capacitacoes ?? []).map((c) => ({
+      ...c,
+      conclusao: dataOuVazio(c.conclusao)
+    })),
 
     bolsaAuxilio: f.bolsaAuxilio != null ? String(f.bolsaAuxilio) : "",
     curso: f.curso ?? "",
     contratoInicio: dataOuVazio(f.contratoInicio),
     contratoTermino: dataOuVazio(f.contratoTermino),
     cargaHoraria: f.cargaHoraria ?? "",
-    diasSemana: f.diasSemana ?? ""
+    diasSemana: f.diasSemana ?? "",
+
+    observacoes: f.observacoes ?? "",
+    cedido: f.cedido ?? false,
+    cessaoInicio: dataOuVazio(f.cessaoInicio),
+    cessaoFim: dataOuVazio(f.cessaoFim),
+    cessaoOrgaoOrigem: f.cessaoOrgaoOrigem ?? "",
+    cessaoOrgaoDestino: f.cessaoOrgaoDestino ?? ""
   };
 }

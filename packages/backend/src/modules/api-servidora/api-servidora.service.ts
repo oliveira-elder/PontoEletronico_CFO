@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { TIPO_ABONO } from "../../utils/feriado-rotulo";
 import { randomBytes, createHash } from "crypto";
 import { PrismaService } from "../../prisma/prisma.service";
 
@@ -153,6 +154,8 @@ export class ApiServidoraService {
 
   async getFeriados() {
     const feriados = await this.prisma.feriadoConfig.findMany({
+      /* Abono do RH não é feriado: não é publicado na API externa. */
+      where: { tipo: { not: TIPO_ABONO } },
       orderBy: { data: "asc" },
       select: {
         id: true,

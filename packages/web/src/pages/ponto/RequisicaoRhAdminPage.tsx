@@ -10,6 +10,7 @@ import {
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import { LinkDocumentoAnexado } from "./solicitacaoUi";
+import { SemAcessoRh } from "../../components/SemAcessoRh";
 
 /* ── Tipos ─────────────────────────────────────────────── */
 type TipoReq = "PERIODICO" | "EXAME_MEDICO" | "FERIAS" | "ASSINATURA_DOCUMENTOS" | "OUTRO";
@@ -1290,7 +1291,7 @@ function ReqCard({ item, token }: { item: ReqRhListItem; token: string }) {
 
 /* ── Página principal ──────────────────────────────────── */
 export function RequisicaoRhAdminPage() {
-  const { token } = useAuth();
+  const { token, podeRh, permissoesRhCarregadas } = useAuth();
   const [items, setItems] = useState<ReqRhListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -1344,6 +1345,10 @@ export function RequisicaoRhAdminPage() {
     return true;
   });
 
+  if (permissoesRhCarregadas && !podeRh("requisicoes.requisicoes")) {
+    return <SemAcessoRh pagina="Requisições do RH" />;
+  }
+
   return (
     <div style={{ maxWidth: 900, margin: "0 auto" }}>
       {/* Header */}
@@ -1392,24 +1397,26 @@ export function RequisicaoRhAdminPage() {
           >
             <RefreshCwIcon size={13} /> Atualizar
           </button>
-          <button
-            onClick={() => setShowModal(true)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "8px 16px",
-              border: "none",
-              borderRadius: "var(--radius-md)",
-              background: "var(--burgundy-600)",
-              color: "#fff",
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: "pointer"
-            }}
-          >
-            <PlusIcon size={14} /> Nova Requisição
-          </button>
+          {podeRh("requisicoes.requisicoes.criar") && (
+            <button
+              onClick={() => setShowModal(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 16px",
+                border: "none",
+                borderRadius: "var(--radius-md)",
+                background: "var(--burgundy-600)",
+                color: "#fff",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer"
+              }}
+            >
+              <PlusIcon size={14} /> Nova Requisição
+            </button>
+          )}
         </div>
       </div>
 

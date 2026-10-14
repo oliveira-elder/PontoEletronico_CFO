@@ -104,6 +104,17 @@ export default defineConfig({
       }
     }
   },
+  /* Produção: o container serve o build estático com `vite preview` (rápido, sem HMR nem
+     varredura de arquivos). Mesmo proxy de /api, /uploads e /auth do servidor de dev. */
+  preview: {
+    port: 12010,
+    host: "0.0.0.0",
+    strictPort: true,
+    allowedHosts: true
+  },
+  build: {
+    chunkSizeWarningLimit: 1500
+  },
   optimizeDeps: {
     include: ["keycloak-js", "react-is", "recharts", "lucide-react"]
   }

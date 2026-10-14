@@ -5,13 +5,20 @@ import { AuditLogWriterService } from "../common/audit-log-writer.service";
 
 /* Endpoints de alta frequência que poluiriam o log sem valor diagnóstico.
    /api/auth/me FOI REMOVIDO daqui de propósito: é o endpoint de login/sincronização
-   de sessão — precisamos dele para rastreabilidade de quem acessou o sistema. */
+   de sessão — precisamos dele para rastreabilidade de quem acessou o sistema.
+   /api/logs/entries e /api/auditoria/logs (telas de Logs) foram ADICIONADOS de
+   propósito: a tela de Logs se auto-atualiza ao vivo via SSE quando chega um
+   evento novo — sem este skip, o próprio GET /api/logs/entries grava uma linha,
+   que emite outro evento SSE, que dispara outro GET /api/logs/entries, num loop
+   infinito de "sucesso" que já aconteceu em produção. */
 const SKIP_PATHS = new Set([
   "/api/ponto/status",
   "/api/ponto/config/sistema",
   "/api/ponto/config/branding",
   "/api/logs/stream",
-  "/api/logs/metrics/system"
+  "/api/logs/metrics/system",
+  "/api/logs/entries",
+  "/api/auditoria/logs"
 ]);
 
 /* Chaves de body que não devem ser persistidas */

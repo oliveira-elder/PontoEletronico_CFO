@@ -186,3 +186,16 @@ export function formatarDataExtensoPt(
   if (!raw) return raw;
   return raw.charAt(0).toLocaleUpperCase("pt-BR") + raw.slice(1);
 }
+
+/**
+ * Data civil (Brasília) de uma data de período de férias (`metadados.periodos`).
+ * Formato atual: instante em Brasília (00:00:00 / 23:59:59 -03:00). Formato legado: a data
+ * civil marcada como UTC ("AAAA-MM-DDT00:00:00.000Z" / "T23:59:59.000Z") — lida pela parte
+ * da data, pois convertê-la para Brasília daria o dia anterior.
+ */
+export function dataCivilPeriodo(iso: string): string {
+  if (/^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?Z|T23:59:59(\.\d+)?Z)?$/.test(iso ?? "")) {
+    return iso.slice(0, 10);
+  }
+  return dataBrasiliaISO(iso);
+}

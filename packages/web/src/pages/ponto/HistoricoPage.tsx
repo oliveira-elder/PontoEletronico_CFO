@@ -1,4 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
+import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
+import {
+  observacaoHoraExtra,
+  observacaoInterjornada,
+  TIPO_OBS_HORA_EXTRA,
+  TIPO_OBS_INTERJORNADA,
+  type InterjornadaDia
+} from "../../utils/horaExtraDecisao";
 import { Link } from "react-router-dom";
 import {
   FilterIcon,
@@ -17,6 +26,7 @@ import {
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api, isRequestAborted } from "../../hooks/useApi";
+import { VisualizadorPdfProtegido } from "../../components/assinatura/VisualizadorPdfProtegido";
 import {
   type StatusDia,
   type ObservacaoRegistro,
@@ -35,6 +45,11 @@ import {
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoriaPonto";
 import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
+import {
+  PendenciasAssinatura,
+  estiloLinhaPendente,
+  type PendenciasFolha
+} from "../../components/PendenciasAssinatura";
 
 /* Badges de resumo/status ~15% maiores que o .badge padrão (11px / 2×8) */
 const BADGE_HISTORICO_STYLE: React.CSSProperties = {
@@ -54,6 +69,8 @@ interface AssinaturaQuadro {
   assinadoGestorEm: string | null;
   assinadoGestorNome: string | null;
   saldoRegularizado?: boolean;
+  /** O que impede a assinatura (dias e solicitações do mês em andamento). */
+  pendencias?: PendenciasFolha | null;
   periodo: {
     mes: number;
     ano: number;
@@ -274,13 +291,17 @@ function DestaqueAtencaoAssinatura() {
 function BannerAssinatura({
   assinatura,
   saldoOk,
+  pendencias,
   onAssinar
 }: {
   assinatura: AssinaturaQuadro;
   saldoOk: boolean;
+  /** Pendências a exibir (do backend ou, na falta, calculadas pelo histórico da tela). */
+  pendencias?: PendenciasFolha | null;
   onAssinar: () => void;
 }) {
   const fmtDt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("pt-BR") : "—");
+  const [visualizar, setVisualizar] = useState(false);
 
   if (assinatura.status === "PENDENTE_FUNCIONARIO") {
     if (!saldoOk) {
@@ -298,12 +319,12 @@ function BannerAssinatura({
             <AlertCircleIcon size={18} style={{ color: "#B91C1C", flexShrink: 0, marginTop: 2 }} />
             <div style={{ flex: 1, minWidth: 220 }}>
               <p style={{ fontSize: 13.5, color: "#7F1D1D", margin: 0, lineHeight: 1.55 }}>
-                <strong>Assinatura bloqueada — há correções pendentes.</strong> Há dias com cálculo
-                de saldo irregular (Falta ou Pendente) ou solicitações de correção em andamento.
-                Abra <strong>Histórico</strong>, localize o mês da folha e regularize em{" "}
-                <strong>Solicitações → Nova solicitação → Correção de ponto</strong> (ou{" "}
+                <strong>Assinatura bloqueada — há inconsistências nesta folha.</strong> Os dias
+                destacados na tabela (registro iniciado e não completado) precisam ser regularizados
+                em <strong>Solicitações → Nova solicitação → Correção de ponto</strong> (ou{" "}
                 <strong>Atestado médico</strong>, se for o caso).
               </p>
+              <PendenciasAssinatura pendencias={pendencias} />
             </div>
             <button
               className="btn btn-sm"
@@ -415,7 +436,7 @@ function BannerAssinatura({
             api
               .download(
                 `/ponto/assinaturas/${assinatura.id}/pdf`,
-                `quadro-${assinatura.periodo.mes}-${assinatura.periodo.ano}.pdf`
+                nomeArquivoRelatorioMes(assinatura.periodo.mes, assinatura.periodo.ano)
               )
               .catch((e: unknown) =>
                 alert("Erro ao baixar PDF: " + ((e as Error)?.message ?? "desconhecido"))
@@ -425,6 +446,21 @@ function BannerAssinatura({
           <DownloadIcon size={12} />
           Baixar PDF
         </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: 12, flexShrink: 0 }}
+          onClick={() => setVisualizar(true)}
+        >
+          👁 Visualizar
+        </button>
+        {visualizar && (
+          <VisualizadorPdfProtegido
+            caminho={`/ponto/assinaturas/${assinatura.id}/pdf`}
+            titulo={`Folha de ponto ${String(assinatura.periodo.mes).padStart(2, "0")}/${assinatura.periodo.ano}`}
+            onClose={() => setVisualizar(false)}
+          />
+        )}
       </div>
     );
   }
@@ -436,19 +472,25 @@ function BannerAssinatura({
 function StatusPill({
   status,
   obs,
+  abono,
   atestadoParcial,
   atestadoParcialHorario,
-  onClickAtestado
+  onClickAtestado,
+  modalidade
 }: {
   status: StatusDia;
   obs?: string;
+  /** "Home Office"/"Híbrido": o OK vira "OK - …". */
+  modalidade?: string;
+  /** Abono do RH: o status é exatamente o nome cadastrado (sem "Feriado:"). */
+  abono?: boolean;
   atestadoParcial?: boolean;
   atestadoParcialHorario?: string;
   onClickAtestado?: () => void;
 }) {
   if (atestadoParcial) {
     const label = badgeLabelParcial(obs);
-    const clicavel = label === "Atestado médico parcial" && !!onClickAtestado;
+    const clicavel = label === "Atestado médico" && !!onClickAtestado;
     const titulo = clicavel
       ? "Clique para ver os detalhes do atestado"
       : (obs ?? `${label}${atestadoParcialHorario ? ` ${atestadoParcialHorario}` : ""}`);
@@ -478,7 +520,8 @@ function StatusPill({
   const map: Record<StatusDia, { label: string; cls: string }> = {
     OK: { label: "OK", cls: "badge-green" },
     FALTA: { label: "Falta", cls: "badge-red" },
-    PENDENTE: { label: "Pendente", cls: "badge-amber" },
+    PENDENTE: { label: "Em andamento", cls: "badge-amber" },
+    INCONSISTENTE: { label: "Inconsistente", cls: "badge-orange" },
     AFASTAMENTO: { label: "Afastamento", cls: "badge-blue" },
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
@@ -490,21 +533,26 @@ function StatusPill({
     (status === "AFASTAMENTO" ||
       status === "FERIADO" ||
       status === "FOLGA" ||
-      status === "ISENTO") &&
+      status === "ISENTO" ||
+      status === "INCONSISTENTE") &&
     obs
       ? obs
       : undefined;
   return (
     <span className={`badge ${cls}`} style={BADGE_HISTORICO_STYLE} title={titulo}>
       {status === "ISENTO"
-        ? "Isento — Comissionado/Chefe"
+        ? obs || "Isento — Comissionado/Chefe"
         : status === "AFASTAMENTO" && obs
           ? obs
           : status === "FERIADO" && obs
-            ? `Feriado: ${obs}`
+            ? abono
+              ? obs
+              : `Feriado: ${obs}`
             : status === "FOLGA" && obs && obs !== "Sem Expediente" && obs !== "Folga"
               ? obs
-              : label}
+              : status === "OK" && modalidade
+                ? `OK - ${modalidade}`
+                : label}
     </span>
   );
 }
@@ -811,7 +859,11 @@ function ModalObservacoes({
                 {textoObservacaoLegivel(o.texto)}
               </p>
               <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--ink-400)" }}>
-                Registrado em {fmtObsData(o.data)}
+                {o.tipo === TIPO_OBS_HORA_EXTRA
+                  ? "Banco de horas · hora extra"
+                  : o.tipo === TIPO_OBS_INTERJORNADA
+                    ? "Descanso de interjornada"
+                    : `Registrado em ${fmtObsData(o.data)}`}
               </p>
             </div>
           ))}
@@ -840,6 +892,14 @@ interface AtestadoDetalhe {
     creditoMin: number;
     toleranciaMin: number;
     horaRetorno: string;
+  } | null;
+  /** Ida: saída do trabalho antes do início do atestado. */
+  deslocamentoIda?: {
+    deslocamentoRealMin: number;
+    creditoMin: number;
+    toleranciaMin: number;
+    horaSaida: string;
+    paraAlmoco: boolean;
   } | null;
 }
 
@@ -1009,9 +1069,24 @@ function ModalAtestadoDetalhe({ data, onClose }: { data: string; onClose: () => 
                     : "—"
                 }
               />
+              {a.deslocamentoIda && (
+                <LinhaDetalheAtestado
+                  label="Deslocamento (ida)"
+                  valor={
+                    `Saída registrada às ${a.deslocamentoIda.horaSaida}` +
+                    (a.deslocamentoIda.paraAlmoco
+                      ? " (para o almoço; almoço mínimo descontado)"
+                      : "") +
+                    ` — creditados ${a.deslocamentoIda.creditoMin} min` +
+                    (a.deslocamentoIda.deslocamentoRealMin > a.deslocamentoIda.creditoMin
+                      ? ` (deslocamento real de ${a.deslocamentoIda.deslocamentoRealMin} min, limitado pela tolerância de ${a.deslocamentoIda.toleranciaMin} min)`
+                      : "")
+                  }
+                />
+              )}
               {a.deslocamento && (
                 <LinhaDetalheAtestado
-                  label="Tempo de deslocamento"
+                  label="Deslocamento (volta)"
                   valor={
                     `Retorno registrado às ${a.deslocamento.horaRetorno} — creditados ${a.deslocamento.creditoMin} min` +
                     (a.deslocamento.atrasoRealMin > a.deslocamento.creditoMin
@@ -1205,7 +1280,7 @@ function BotaoObservacoes({
     <button
       type="button"
       onClick={onClick}
-      title="Ver observações de ajuste de ponto"
+      title="Ver observações do dia"
       aria-label="Ver observações de ajuste de ponto"
       style={{
         display: "inline-flex",
@@ -1425,8 +1500,11 @@ export function HistoricoPage() {
   const [dataInicioProducao, setDataInicioProducao] = useState<string | null>(null);
   const [periodoTeste, setPeriodoTeste] = useState(false);
   const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
+  const [interjornadaPorDia, setInterjornadaPorDia] = useState<Record<string, InterjornadaDia>>({});
+  const [rotuloModalidadePorDia, setRotuloModalidadePorDia] = useState<Record<string, string>>({});
   const [saldoMesBanco, setSaldoMesBanco] = useState(0);
   const [saldoAcumuladoMesAnterior, setSaldoAcumuladoMesAnterior] = useState(0);
+  const [saldoAcumuladoMesFim, setSaldoAcumuladoMesFim] = useState(0);
   const [ocultarBancoHoras, setOcultarBancoHoras] = useState(false);
   const [registros, setRegistros] = useState<DiaRegistro[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1484,8 +1562,11 @@ export function HistoricoPage() {
           setDataInicioProducao(data?.dataInicioProducao ?? null);
           setPeriodoTeste(!!data?.periodoTeste);
           setBancoPorDia(data?.bancoPorDia ?? {});
+          setInterjornadaPorDia(data?.interjornadaPorDia ?? {});
+          setRotuloModalidadePorDia(data?.rotuloModalidadePorDia ?? {});
           setSaldoMesBanco(data?.saldoMesBanco ?? 0);
           setSaldoAcumuladoMesAnterior(data?.saldoAcumuladoMesAnterior ?? 0);
+          setSaldoAcumuladoMesFim(data?.saldoAcumuladoMes ?? 0);
           setOcultarBancoHoras(
             !!data?.ocultarBancoHoras || categoriaSemVisibilidadeBancoHoras(data?.categoria)
           );
@@ -1509,7 +1590,10 @@ export function HistoricoPage() {
                   pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
                   semRegistroPonto: !!data?.semRegistroPonto,
                   periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
-                  exigirIntervalo: data?.categoria !== "ESTAGIARIO"
+                  periodosCessao: data?.periodosCessao ?? [],
+                  exigirIntervalo: !categoriaSemIntervaloAlmoco(data?.categoria),
+                  diasCicloCompletoEmCasa: data?.cicloCompletoEmCasa?.dias,
+                  exigenciasCicloPresencial: data?.cicloCompletoPresencial?.porDia
                 }
               ),
               feriados,
@@ -1523,6 +1607,7 @@ export function HistoricoPage() {
             setBancoPorDia({});
             setSaldoMesBanco(0);
             setSaldoAcumuladoMesAnterior(0);
+            setSaldoAcumuladoMesFim(0);
             setJornadaInfo(JORNADA_PADRAO);
             setRegistros(transformarHistorico([], [], mes, ano));
           }
@@ -1588,10 +1673,9 @@ export function HistoricoPage() {
   async function exportarPdf() {
     setExportandoPdf(true);
     try {
-      const nomeMesPad = String(mes).padStart(2, "0");
       await api.download(
         `/ponto/assinaturas/rascunho-pdf?mes=${mes}&ano=${ano}`,
-        `rascunho-frequencia-${nomeMesPad}-${ano}.pdf`
+        nomeArquivoRelatorioMes(mes, ano, { rascunho: true })
       );
     } catch (e: unknown) {
       alert("Erro ao gerar PDF: " + ((e as Error)?.message ?? "desconhecido"));
@@ -1650,16 +1734,11 @@ export function HistoricoPage() {
     month: "long",
     year: "numeric"
   });
-  const bancoDiasList = Object.values(bancoPorDia ?? {});
-  const usarBanco = bancoDiasList.length > 0;
-  /** Em atestado parcial, preferir o cálculo do transform (novas regras) ao banco legado. */
+  /** Saldo do dia = banco de horas (fonte única; já aplica atestado, abono, HE e isenção). */
   const minutosDiaExibidos = (r: (typeof registros)[number], isoKey: string) => {
     const bancoDia = bancoPorDia?.[isoKey];
-    if (r.status === "FERIADO") {
+    if (r.status === "FERIADO" && !bancoDia) {
       return { trab: r.horasMin, jornada: 0, saldo: 0 };
-    }
-    if (r.atestadoParcial) {
-      return { trab: r.horasMin, jornada: r.jornadaMin, saldo: r.horasMin - r.jornadaMin };
     }
     return {
       trab: r.horasMin,
@@ -1671,20 +1750,80 @@ export function HistoricoPage() {
     };
   };
   const totalTrabMin = registros
-    .filter((r) => !r.apenasInformativo && (r.status === "OK" || r.status === "PENDENTE"))
+    .filter(
+      (r) =>
+        !r.apenasInformativo &&
+        (r.status === "OK" || r.status === "PENDENTE" || r.status === "INCONSISTENTE")
+    )
     .reduce((s, r) => {
       const [d, m, a] = r.data.split("/");
       return s + minutosDiaExibidos(r, `${a}-${m}-${d}`).trab;
     }, 0);
   const totalFaltas = registros.filter((r) => !r.apenasInformativo && r.status === "FALTA").length;
+  const totalInconsistentes = registros.filter(
+    (r) => !r.apenasInformativo && r.status === "INCONSISTENTE"
+  ).length;
   const hojeIsoAssin = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-${String(hoje.getDate()).padStart(2, "0")}`;
   const temDiasIrregularesAssin = registros.some((r) => {
     if (r.apenasInformativo) return false;
-    if (r.status !== "FALTA" && r.status !== "PENDENTE") return false;
+    /* Só o Inconsistente (registro iniciado e não completado) impede assinar; Falta não. */
+    if (r.status !== "INCONSISTENTE") return false;
     const [d, m, a] = r.data.split("/");
     return `${a}-${m}-${d}` !== hojeIsoAssin;
   });
   const saldoOkAssinatura = assinatura?.saldoRegularizado !== false && !temDiasIrregularesAssin;
+
+  /* O que mostrar quando a assinatura está bloqueada: a lista do backend (dias e solicitações
+     do mês) e, para os dias, a conta desta tela quando o backend não os trouxe. */
+  const pendenciasAssinatura: PendenciasFolha | null =
+    assinatura?.status === "PENDENTE_FUNCIONARIO" && !saldoOkAssinatura
+      ? (() => {
+          const doBackend = assinatura.pendencias;
+          const diasFront = registros
+            .filter((r) => {
+              if (r.apenasInformativo) return false;
+              if (r.status !== "INCONSISTENTE") return false;
+              const [d, m, a] = r.data.split("/");
+              return `${a}-${m}-${d}` !== hojeIsoAssin;
+            })
+            .map((r) => {
+              const [d, m, a] = r.data.split("/");
+              return {
+                iso: `${a}-${m}-${d}`,
+                status: "INCONSISTENTE" as const,
+                motivo:
+                  r.obs?.replace(/^Ciclo incompleto( em casa)? — falta: /, "falta ") ??
+                  "registro incompleto"
+              };
+            });
+          return {
+            dias: doBackend?.dias?.length ? doBackend.dias : diasFront,
+            solicitacoes: doBackend?.solicitacoes ?? [],
+            erroConferencia: !!doBackend?.erroConferencia
+          };
+        })()
+      : null;
+  /* Linhas da tabela a destacar (discreto): dias a regularizar e dias de solicitação em análise. */
+  const motivoPorDia = new Map<string, string>();
+  const diasEmSolicitacao = new Set<string>();
+  if (pendenciasAssinatura) {
+    pendenciasAssinatura.dias.forEach((d) =>
+      motivoPorDia.set(d.iso, `Inconsistente — ${d.motivo}. Regularize para assinar.`)
+    );
+    pendenciasAssinatura.solicitacoes.forEach((sol) => {
+      for (let t = new Date(`${sol.inicio}T12:00:00`); ; t.setDate(t.getDate() + 1)) {
+        const iso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+        if (iso > sol.fim) break;
+        diasEmSolicitacao.add(iso);
+        if (!motivoPorDia.has(iso)) {
+          motivoPorDia.set(
+            iso,
+            `${sol.tipoLabel} ${sol.etapa}. A assinatura libera quando concluir.`
+          );
+        }
+      }
+    });
+  }
   const totalOK = registros.filter((r) => !r.apenasInformativo && r.status === "OK").length;
   const totalAfastamentos = registros.filter(
     (r) => !r.apenasInformativo && r.status === "AFASTAMENTO"
@@ -1713,32 +1852,13 @@ export function HistoricoPage() {
       return s + minutosDiaExibidos(r, `${a}-${m}-${d}`).jornada;
     }, 0);
 
-  /* Ajusta saldo do mês: troca saldos de atestado parcial do banco pelo cálculo atual */
-  let saldoMesAjustado = saldoMesBanco;
-  if (usarBanco) {
-    for (const r of registros) {
-      const [d, m, a] = r.data.split("/");
-      const isoKey = `${a}-${m}-${d}`;
-      const bancoDia = bancoPorDia?.[isoKey];
-      if (r.status === "FERIADO" && bancoDia && !bancoDia.neutro) {
-        saldoMesAjustado -= bancoDia.saldoDiaMinutos;
-        continue;
-      }
-      if (!r.atestadoParcial || r.apenasInformativo) continue;
-      if (!bancoDia) continue;
-      saldoMesAjustado = saldoMesAjustado - bancoDia.saldoDiaMinutos + (r.horasMin - r.jornadaMin);
-    }
-  }
+  /* Saldo do mês = soma do banco de horas do mês (mesma conta da página Banco de Horas). */
+  const saldoMesAjustado = saldoMesBanco;
 
-  /* Acumulado ao fim do mês anterior = saldo no início do 1º dia do mês no ciclo. */
-  const diasBancoOrdenados = Object.keys(bancoPorDia ?? {}).sort();
-  const saldoAcumuladoAnteriorExibido =
-    diasBancoOrdenados.length > 0
-      ? (() => {
-          const primeiro = bancoPorDia![diasBancoOrdenados[0]];
-          return primeiro.saldoAcumuladoMinutos - primeiro.saldoDiaMinutos;
-        })()
-      : saldoAcumuladoMesAnterior;
+  /* Acumulado do ciclo no fim do mês anterior e no fim deste mês: vêm do banco (servidor),
+     que já considera a zeragem do ciclo e as liberações do RH. */
+  const saldoAcumuladoAnteriorExibido = saldoAcumuladoMesAnterior;
+  const totalAcumuladoMes = saldoAcumuladoMesFim;
 
   const fmtSaldoBanco = (min: number) => {
     const h = Math.floor(Math.abs(min) / 60);
@@ -1773,6 +1893,15 @@ export function HistoricoPage() {
       <span className="badge badge-green" style={BADGE_HISTORICO_STYLE}>
         {totalOK} dias OK
       </span>
+      {totalInconsistentes > 0 && (
+        <span
+          className="badge badge-orange"
+          style={BADGE_HISTORICO_STYLE}
+          title="Dias com registro iniciado e não completado — regularize para assinar a folha"
+        >
+          {totalInconsistentes} inconsistente{totalInconsistentes !== 1 ? "s" : ""}
+        </span>
+      )}
       {totalFaltas > 0 && (
         <span className="badge badge-red" style={BADGE_HISTORICO_STYLE}>
           {totalFaltas} falta{totalFaltas !== 1 ? "s" : ""}
@@ -1803,15 +1932,11 @@ export function HistoricoPage() {
             Saldo: {fmtSaldoBanco(saldoMesAjustado)}
           </span>
           <span
-            className={
-              saldoAcumuladoAnteriorExibido + saldoMesAjustado >= 0
-                ? "badge badge-green"
-                : "badge badge-red"
-            }
+            className={totalAcumuladoMes >= 0 ? "badge badge-green" : "badge badge-red"}
             style={BADGE_HISTORICO_STYLE}
             title={`Soma: acumulado de ${labelMesAnterior} + saldo do mês`}
           >
-            Total: {fmtSaldoBanco(saldoAcumuladoAnteriorExibido + saldoMesAjustado)}
+            Total: {fmtSaldoBanco(totalAcumuladoMes)}
           </span>
         </>
       )}
@@ -2021,6 +2146,7 @@ export function HistoricoPage() {
         <BannerAssinatura
           assinatura={assinatura}
           saldoOk={saldoOkAssinatura}
+          pendencias={pendenciasAssinatura}
           onAssinar={() => {
             if (saldoOkAssinatura) setModalAssinar(true);
           }}
@@ -2072,12 +2198,32 @@ export function HistoricoPage() {
                     `${String(hoje.getDate()).padStart(2, "0")}/${String(hoje.getMonth() + 1).padStart(2, "0")}/${hoje.getFullYear()}`;
                   const isoKey = dataPtParaIso(r.data);
                   const bancoDia = bancoPorDia?.[isoKey];
+                  const usaSaldoBanco = true;
+                  /* Informativo da HE rejeitada entra junto das observações do dia. */
+                  const observacoesBase = bancoDia?.horaExtra
+                    ? [...(r.observacoes ?? []), observacaoHoraExtra(bancoDia.horaExtra)]
+                    : (r.observacoes ?? []);
+                  /* Entrada com descanso de interjornada abaixo do mínimo (se a correção
+                     aprovada já deixou a nota no registro, não repete). */
+                  const interDia = interjornadaPorDia[isoKey];
+                  const observacoesDia =
+                    interDia && !observacoesBase.some((o) => /interjornada/i.test(o.texto))
+                      ? [...observacoesBase, observacaoInterjornada(interDia)]
+                      : observacoesBase;
                   return (
                     <tr
                       key={i}
+                      title={motivoPorDia.get(isoKey)}
                       style={{
                         background: isHoje ? "rgba(122,30,38,0.03)" : undefined,
-                        opacity: r.status === "FUTURO" ? 0.5 : 1
+                        opacity: r.status === "FUTURO" ? 0.5 : 1,
+                        ...(motivoPorDia.has(isoKey)
+                          ? estiloLinhaPendente(
+                              pendenciasAssinatura?.dias.some((d) => d.iso === isoKey)
+                                ? "dia"
+                                : "solicitacao"
+                            )
+                          : {})
                       }}
                     >
                       <td style={{ fontFamily: "var(--font-mono)", fontSize: 13 }}>
@@ -2190,10 +2336,8 @@ export function HistoricoPage() {
                                 : (bancoDia?.jornadaEsperadaMinutos ?? r.jornadaMin)
                             }
                             status={r.status}
-                            saldoBancoMin={
-                              r.atestadoParcial ? undefined : bancoDia?.saldoDiaMinutos
-                            }
-                            saldoBancoNeutro={r.atestadoParcial ? false : bancoDia?.neutro}
+                            saldoBancoMin={usaSaldoBanco ? bancoDia?.saldoDiaMinutos : undefined}
+                            saldoBancoNeutro={usaSaldoBanco ? bancoDia?.neutro : false}
                           />
                         </td>
                       )}
@@ -2209,9 +2353,11 @@ export function HistoricoPage() {
                           <StatusPill
                             status={r.status}
                             obs={r.obs}
+                            abono={r.abono}
                             atestadoParcial={r.atestadoParcial}
                             atestadoParcialHorario={r.atestadoParcialHorario}
                             onClickAtestado={() => setModalAtestado({ data: isoKey })}
+                            modalidade={rotuloModalidadePorDia[isoKey]}
                           />
                           {r.apenasInformativo && (
                             <span
@@ -2234,11 +2380,11 @@ export function HistoricoPage() {
                             </span>
                           )}
                           <BotaoObservacoes
-                            observacoes={r.observacoes ?? []}
+                            observacoes={observacoesDia}
                             onClick={() =>
                               setModalObs({
                                 dia: `${r.diaSemana}, ${r.data}`,
-                                observacoes: r.observacoes ?? []
+                                observacoes: observacoesDia
                               })
                             }
                           />
@@ -2308,10 +2454,14 @@ export function HistoricoPage() {
       >
         <InfoIcon size={13} style={{ color: "var(--ink-500)" }} />
         {[
-          { cls: "badge-green", label: "Jornada completa" },
-          { cls: "badge-amber", label: "Pendente (saída não registrada)" },
-          { cls: "badge-red", label: "Falta" },
-          { cls: "badge-blue", label: "Afastamento / Atestado médico parcial" },
+          {
+            cls: "badge-green",
+            label: "OK / OK - Home Office / OK - Híbrido (ciclo de batidas completo)"
+          },
+          { cls: "badge-amber", label: "Em andamento (dia de hoje)" },
+          { cls: "badge-orange", label: "Inconsistente (registro iniciado e não completado)" },
+          { cls: "badge-red", label: "Falta (nenhum registro no dia)" },
+          { cls: "badge-blue", label: "Afastamento / Atestado médico" },
           { cls: "badge-gray", label: "Feriado ou sem expediente" }
         ].map((item) => (
           <span

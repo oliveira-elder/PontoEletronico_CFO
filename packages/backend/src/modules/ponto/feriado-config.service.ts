@@ -1,9 +1,25 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit
+} from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { HttpService } from "@nestjs/axios";
 import { firstValueFrom } from "rxjs";
 import { PrismaService } from "../../prisma/prisma.service";
 import { dataBrasiliaISO, hojeBrasiliaISO } from "../../utils/horario-brasilia";
+import { TIPOS_FERIADO, TIPO_ABONO, ehDiaAbonado } from "../../utils/feriado-rotulo";
+
+function validarTipo(tipo: string | undefined) {
+  if (tipo !== undefined && !TIPOS_FERIADO.includes(tipo)) {
+    throw new BadRequestException("Tipo de feriado inválido.");
+  }
+}
+
+/** Abono do RH é sempre dia inteiro e sempre bloqueia o registro de ponto. */
+const REGRAS_ABONO = { bloqueiaRegistro: true, marcoHorario: null, marcoLado: null };
 
 const DF_FIXOS: { mes: number; dia: number; nome: string }[] = [
   { mes: 4, dia: 28, nome: "Fundação de Brasília" },
@@ -123,6 +139,8 @@ export class FeriadoConfigService implements OnModuleInit {
       const existing = await this.prisma.feriadoConfig.findUnique({
         where: { data: u.data }
       });
+      /* Abono do RH configurado nesta data: a importação não sobrescreve. */
+      if (existing && ehDiaAbonado(existing)) continue;
       if (existing) {
         await this.prisma.feriadoConfig.update({
           where: { data: u.data },
@@ -149,6 +167,10 @@ export class FeriadoConfigService implements OnModuleInit {
     marcoHorario?: string | null;
     marcoLado?: string | null;
   }) {
+    validarTipo(body.tipo);
+    if (body.tipo === TIPO_ABONO && !body.nome?.trim()) {
+      throw new BadRequestException("Informe o nome exibido no status do abono.");
+    }
     return this.prisma.feriadoConfig.create({
       data: {
         data: new Date(`${body.data}T00:00:00.000Z`),
@@ -158,7 +180,8 @@ export class FeriadoConfigService implements OnModuleInit {
         bloqueiaRegistro: body.bloqueiaRegistro ?? true,
         observacao: body.observacao ?? null,
         marcoHorario: body.marcoHorario ?? null,
-        marcoLado: body.marcoLado ?? null
+        marcoLado: body.marcoLado ?? null,
+        ...(body.tipo === TIPO_ABONO ? REGRAS_ABONO : {})
       }
     });
   }
@@ -176,6 +199,11 @@ export class FeriadoConfigService implements OnModuleInit {
   ) {
     const existe = await this.prisma.feriadoConfig.findUnique({ where: { id } });
     if (!existe) throw new NotFoundException("Feriado não encontrado");
+    validarTipo(body.tipo);
+    const seraAbono = (body.tipo ?? existe.tipo) === TIPO_ABONO;
+    if (seraAbono && body.nome !== undefined && !body.nome.trim()) {
+      throw new BadRequestException("Informe o nome exibido no status do abono.");
+    }
     return this.prisma.feriadoConfig.update({
       where: { id },
       data: {
@@ -184,7 +212,8 @@ export class FeriadoConfigService implements OnModuleInit {
         ...(body.bloqueiaRegistro !== undefined && { bloqueiaRegistro: body.bloqueiaRegistro }),
         ...(body.observacao !== undefined && { observacao: body.observacao || null }),
         ...("marcoHorario" in body && { marcoHorario: body.marcoHorario ?? null }),
-        ...("marcoLado" in body && { marcoLado: body.marcoLado ?? null })
+        ...("marcoLado" in body && { marcoLado: body.marcoLado ?? null }),
+        ...(seraAbono ? REGRAS_ABONO : {})
       }
     });
   }
@@ -192,6 +221,9 @@ export class FeriadoConfigService implements OnModuleInit {
   async toggleBloqueio(id: string) {
     const f = await this.prisma.feriadoConfig.findUnique({ where: { id } });
     if (!f) throw new NotFoundException("Feriado não encontrado");
+    if (ehDiaAbonado(f)) {
+      throw new BadRequestException("Dia abonado pelo RH sempre bloqueia o registro de ponto.");
+    }
     return this.prisma.feriadoConfig.update({
       where: { id },
       data: { bloqueiaRegistro: !f.bloqueiaRegistro }
@@ -205,6 +237,7 @@ export class FeriadoConfigService implements OnModuleInit {
 
   async isBloqueado(data: Date): Promise<{
     bloqueado: boolean;
+    abono?: boolean;
     nome?: string;
     marcoHorario?: string | null;
     marcoLado?: string | null;
@@ -216,6 +249,7 @@ export class FeriadoConfigService implements OnModuleInit {
     if (f?.bloqueiaRegistro)
       return {
         bloqueado: true,
+        abono: ehDiaAbonado(f),
         nome: f.nome,
         marcoHorario: f.marcoHorario,
         marcoLado: f.marcoLado

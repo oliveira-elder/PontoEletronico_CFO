@@ -99,7 +99,13 @@ function SsoCallbackError({ error }: { error: string | null }) {
   );
 }
 
-function ContaDesativadaScreen({ onLogout }: { onLogout: () => void }) {
+function ContaDesativadaScreen({
+  onLogout,
+  mensagem
+}: {
+  onLogout: () => void;
+  mensagem?: React.ReactNode;
+}) {
   return (
     <div
       style={{
@@ -149,9 +155,13 @@ function ContaDesativadaScreen({ onLogout }: { onLogout: () => void }) {
           margin: 0
         }}
       >
-        Sua conta foi desativada pelo RH ou administrador do sistema.
-        <br />
-        Entre em contato com o seu setor de Recursos Humanos para reativação.
+        {mensagem ?? (
+          <>
+            Sua conta foi desativada pelo RH ou administrador do sistema.
+            <br />
+            Entre em contato com o seu setor de Recursos Humanos para reativação.
+          </>
+        )}
       </p>
       <button
         onClick={onLogout}
@@ -270,8 +280,15 @@ function SemMatriculaScreen({ onLogout }: { onLogout: () => void }) {
 }
 
 export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { authenticated, contaDesativada, semMatricula, ensureInitialized, initError, logout } =
-    useAuth();
+  const {
+    authenticated,
+    contaDesativada,
+    contaCedida,
+    semMatricula,
+    ensureInitialized,
+    initError,
+    logout
+  } = useAuth();
   const location = useLocation();
   const [checking, setChecking] = useState(!authenticated);
   const [ssoError, setSsoError] = useState(false);
@@ -301,6 +318,20 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
   if (checking) return <PageSpinner label="Verificando sessão…" />;
   if (ssoError) return <SsoCallbackError error={initError} />;
   if (contaDesativada) return <ContaDesativadaScreen onLogout={logout} />;
+  if (contaCedida)
+    return (
+      <ContaDesativadaScreen
+        onLogout={logout}
+        mensagem={
+          <>
+            Sua cessão a outro órgão está em vigor. Durante o período de cessão, o acesso ao
+            sistema, o registro de ponto e o banco de horas ficam suspensos.
+            <br />
+            Em caso de dúvida, procure o setor de Recursos Humanos.
+          </>
+        }
+      />
+    );
   if (semMatricula) return <SemMatriculaScreen onLogout={logout} />;
   if (!authenticated) return <Navigate to="/login" state={{ from: location }} replace />;
 

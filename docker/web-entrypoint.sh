@@ -31,5 +31,19 @@ else
   fi
 fi
 
-echo "[web] Iniciando Vite na porta 12010..."
+# Produção (padrão): build estático + `vite preview` — muito mais rápido que o servidor de
+# desenvolvimento (sem transformar módulos a cada acesso, sem HMR e sem varredura de arquivos).
+# Para desenvolver com recarga automática: WEB_MODE=dev.
+if [ "${WEB_MODE:-prod}" = "dev" ]; then
+  echo "[web] Modo desenvolvimento — Vite dev na porta 12010..."
+  exec npm run dev -w @intranet/web -- --host 0.0.0.0 --port 12010
+fi
+
+echo "[web] Gerando build de produção..."
+if npm run build -w @intranet/web; then
+  echo "[web] Build OK — servindo build estático na porta 12010..."
+  cd /app/packages/web && exec npx vite preview --host 0.0.0.0 --port 12010 --strictPort
+fi
+
+echo "[web] AVISO: build falhou — usando o servidor de desenvolvimento."
 exec npm run dev -w @intranet/web -- --host 0.0.0.0 --port 12010

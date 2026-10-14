@@ -4,6 +4,7 @@ import { AppLayout } from "../components/layout/AppLayout";
 import { RequireAuth } from "../components/auth/RequireAuth";
 import { RouteErrorPage } from "../components/RouteErrorPage";
 import { LoginPage } from "../pages/LoginPage";
+import { VerificarDocumentoPage } from "../pages/VerificarDocumentoPage";
 import { DashboardPage } from "../pages/ponto/DashboardPage";
 import { RegistroPontoPage } from "../pages/ponto/RegistroPontoPage";
 
@@ -29,6 +30,9 @@ const GerenciasPage = lazy(() =>
 const ConfiguracoesPage = lazy(() =>
   import("../pages/ponto/ConfiguracoesPage").then((m) => ({ default: m.ConfiguracoesPage }))
 );
+const PerfisRhPage = lazy(() =>
+  import("../pages/ponto/PerfisRhPage").then((m) => ({ default: m.PerfisRhPage }))
+);
 const GestaoUsuariosPage = lazy(() =>
   import("../pages/ponto/GestaoUsuariosPage").then((m) => ({ default: m.GestaoUsuariosPage }))
 );
@@ -42,6 +46,9 @@ const DashboardConsolidadoPage = lazy(() =>
 );
 const AprovacaoGestorPage = lazy(() =>
   import("../pages/ponto/AprovacaoGestorPage").then((m) => ({ default: m.AprovacaoGestorPage }))
+);
+const FolhasAssinadasPage = lazy(() =>
+  import("../pages/ponto/FolhasAssinadasPage").then((m) => ({ default: m.FolhasAssinadasPage }))
 );
 const BancoHorasPage = lazy(() =>
   import("../pages/ponto/BancoHorasPage").then((m) => ({ default: m.BancoHorasPage }))
@@ -71,6 +78,13 @@ export const router = createBrowserRouter([
   /* Página de login — pública */
   { path: "/login", element: <LoginPage />, errorElement: <RouteErrorPage /> },
 
+  /* Verificação pública de documento assinado (QR Code) — sem login */
+  {
+    path: "/verificar/:codigo?",
+    element: <VerificarDocumentoPage />,
+    errorElement: <RouteErrorPage />
+  },
+
   /* Redireciona raiz para /login */
   { path: "/", element: <Navigate to="/login" replace /> },
 
@@ -88,6 +102,8 @@ export const router = createBrowserRouter([
       { path: "registrar", element: <RegistroPontoPage /> },
       { path: "historico", element: <HistoricoPage /> },
       { path: "banco-horas", element: <BancoHorasPage /> },
+      { path: "folhas-assinadas", element: <FolhasAssinadasPage /> },
+      { path: "saude-ocupacional", element: <Navigate to="/ponto/auditoria" replace /> },
       { path: "documentos-rh", element: <DocumentosRhPage /> },
       { path: "relatorios", element: <RelatoriosPage /> },
       { path: "solicitacoes", element: <SolicitacoesPage /> },
@@ -96,6 +112,7 @@ export const router = createBrowserRouter([
       { path: "gestao/:id/editar", element: <FuncionarioFormPage /> },
       { path: "gerencias", element: <GerenciasPage /> },
       { path: "usuarios", element: <GestaoUsuariosPage /> },
+      { path: "perfis-rh", element: <PerfisRhPage /> },
       { path: "sistema", element: <SistemaSuperAdminPage /> },
       { path: "configuracoes", element: <ConfiguracoesPage /> },
       { path: "auditoria", element: <AuditoriaPage /> },

@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import { api } from "../hooks/useApi";
 import { useAuth } from "../auth/AuthContext";
 import { MapPinIcon } from "./icons";
-import { MapModal } from "./MapModal";
+import { MapModal, textoBuscaEndereco } from "./MapModal";
 import { geocodificarEndereco } from "../utils/geocode";
+import { AvisoOriginaisRh } from "./AvisoOriginaisRh";
 
 interface Props {
   onRespondido?: () => void;
@@ -274,6 +275,8 @@ export function RequerimentoEnderecoCard({ onRespondido }: Props) {
             )}
           </div>
 
+          <AvisoOriginaisRh tipo="ENDERECO" />
+
           {erro && <p style={{ fontSize: 12, color: "var(--red)", margin: 0 }}>{erro}</p>}
 
           <button
@@ -305,6 +308,7 @@ export function RequerimentoEnderecoCard({ onRespondido }: Props) {
           lng={lng ?? -47.904}
           raio={20}
           titulo="Minha Localização Residencial"
+          buscaInicial={textoBuscaEndereco(form)}
           hideRaio
           onConfirm={(r) => {
             setLat(r.lat);

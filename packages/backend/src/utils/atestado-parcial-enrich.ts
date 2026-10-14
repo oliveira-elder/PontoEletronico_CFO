@@ -1,4 +1,5 @@
 import { dataBrasiliaISO, dataCivilFimAfastamento } from "./horario-brasilia";
+import { periodosDoAbono } from "./abono-periodos";
 
 type MetaHorario = { horarioInicio?: unknown; horarioFim?: unknown };
 
@@ -39,18 +40,30 @@ export function enriquecerAfastamentosComSolicitacoes<T extends AfastamentoComHo
     metadados: unknown;
   }>
 ): T[] {
-  const solsParciais = solicitacoes
-    .map((s) => {
-      const h = horariosDeMetadados(s.metadados);
-      if (!h) return null;
-      const inicioRef = s.dataInicio ?? s.dataReferencia;
-      return {
+  const solsParciais = solicitacoes.flatMap((s) => {
+    /* Abono com vários períodos: horário de cada período parcial (1 dia). */
+    const meta = (s.metadados ?? {}) as { periodos?: unknown };
+    if (Array.isArray(meta.periodos) && meta.periodos.length) {
+      return periodosDoAbono(s)
+        .filter((p) => p.horarioInicio && p.horarioFim)
+        .map((p) => ({
+          diaInicio: p.inicio,
+          diaFim: p.fim,
+          horarioInicio: p.horarioInicio!,
+          horarioFim: p.horarioFim!
+        }));
+    }
+    const h = horariosDeMetadados(s.metadados);
+    if (!h) return [];
+    const inicioRef = s.dataInicio ?? s.dataReferencia;
+    return [
+      {
         diaInicio: dataBrasiliaISO(inicioRef),
         diaFim: dataCivilFimAfastamento(inicioRef, s.dataFim ?? inicioRef),
         ...h
-      };
-    })
-    .filter((x): x is NonNullable<typeof x> => !!x);
+      }
+    ];
+  });
 
   if (!solsParciais.length) return afastamentos;
 

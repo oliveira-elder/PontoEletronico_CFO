@@ -39,10 +39,32 @@ export class AuditLogWriterService {
   ) {}
 
   write(params: AuditLogWriteParams): void {
+    /* Falha de autenticação (401/403) sem NENHUM traço de "quem" — nem
+       actorUserId, nem username, nem conteúdo submetido (payload/query) —
+       é ruído puro (ex.: healthcheck do Docker batendo em /api/auth/me sem
+       token a cada 10s). Mesmo critério de MonitorAuditIngestService.shouldSkipPush,
+       agora aplicado também à gravação interna, não só ao envio ao monitor
+       externo. Uma tentativa de login com usuário/senha errados SEMPRE carrega
+       o usuário digitado no corpo (hasTraceableContent=true), então nunca cai
+       aqui — continua sendo gravada normalmente. */
+    const isUntraceableAuthFailure =
+      (params.statusCode === 401 || params.statusCode === 403) &&
+      !params.actorUserId &&
+      !params.username &&
+      !params.hasTraceableContent;
+    if (isUntraceableAuthFailure) return;
+
+    /* hasTraceableContent não é coluna do AuditLog (existe só para a decisão de
+       push do MonitorAuditIngestService) — precisa ficar de fora do `data` do
+       Prisma, senão TODA gravação falha com PrismaClientValidationError
+       (argumento desconhecido), derrubando o log inteiro silenciosamente. */
+    const { hasTraceableContent: _omitTraceable, ...dbFields } = params;
+    void _omitTraceable;
+
     /* Fire-and-forget — não bloqueia a resposta */
     this.prisma.auditLog
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .create({ data: params as any })
+      .create({ data: dbFields as any })
       .then((log) => {
         this.logsSse?.emit({
           id: log.id,

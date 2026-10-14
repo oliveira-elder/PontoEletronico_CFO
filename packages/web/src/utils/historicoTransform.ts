@@ -1,12 +1,20 @@
+import type { AjusteHoraExtraDia, InterjornadaDia } from "./horaExtraDecisao";
+import { cicloCompleto, cicloCompletoEmCasa, textoCicloIncompleto } from "./cicloCompleto";
 /* Transformação e resumo do histórico — mesma lógica da página /ponto/historico */
 
 import { calcHorasTrabalhadasMinutos, analisarAlmocoCurto } from "./calcHorasTrabalhadas";
 import { dataCivilISO } from "./horario-brasilia";
 
+/**
+ * FALTA = nenhum registro no dia útil (o funcionário optou por faltar; o banco desconta).
+ * INCONSISTENTE = registro iniciado e não completado corretamente; impede assinar a folha.
+ * PENDENTE = dia de hoje, ainda em andamento.
+ */
 export type StatusDia =
   | "OK"
   | "FALTA"
   | "PENDENTE"
+  | "INCONSISTENTE"
   | "AFASTAMENTO"
   | "FERIADO"
   | "FUTURO"
@@ -45,6 +53,8 @@ export interface Pausa {
 export interface DiaRegistro {
   data: string;
   diaSemana: string;
+  /** Abono do RH: status exibido é só o nome (sem "Feriado:"); dia sempre neutro. */
+  abono?: boolean;
   entrada: string | null;
   inicioIntervalo: string | null;
   fimIntervalo: string | null;
@@ -99,13 +109,28 @@ export interface ApiAfastamento {
   apenasInformativo?: boolean;
   horarioInicio?: string | null;
   horarioFim?: string | null;
+  /** Nome do tipo de licença (ex.: "Licença Nojo"). */
+  rotulo?: string | null;
 }
 
 export interface ApiFeriado {
   data: string;
   nome: string;
+  /** "ABONO" = abono do RH (não é feriado): dia neutro, status = nome. */
+  tipo?: string | null;
   marcoHorario?: string | null;
   marcoLado?: string | null;
+}
+
+export const TIPO_ABONO = "ABONO";
+
+export function ehDiaAbonado(f: { tipo?: string | null } | null | undefined): boolean {
+  return f?.tipo === TIPO_ABONO;
+}
+
+/** Rótulo do dia: abono do RH → o nome puro; feriado → "Feriado: nome". */
+export function rotuloFeriado(f: { nome: string; tipo?: string | null }): string {
+  return ehDiaAbonado(f) ? f.nome : `Feriado: ${f.nome}`;
 }
 
 export interface Multiplicadores {
@@ -129,6 +154,7 @@ export interface JornadaHistorico {
   toleranciaCalculoMin?: number;
   horaExtraLimiteAuto?: number;
   atestadoTempoRetornoMin?: number;
+  atestadoTempoIdaMin?: number;
 }
 
 export interface HistoricoApiResponse {
@@ -146,6 +172,7 @@ export interface HistoricoApiResponse {
   categoria?: string;
   /** Períodos (vigências) sem obrigação de ponto — assessor/gerente intercalados. */
   periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+  periodosCessao?: Array<{ inicio: string; fim: string | null }>;
   /** Saldo diário do banco de horas (chave YYYY-MM-DD) — mesma fonte de /ponto/banco-horas. */
   bancoPorDia?: Record<
     string,
@@ -155,9 +182,23 @@ export interface HistoricoApiResponse {
       saldoAcumuladoMinutos: number;
       jornadaEsperadaMinutos: number;
       observacao?: string;
+      abono?: boolean;
       neutro: boolean;
+      /** HE rejeitada: creditado/rejeitado no dia e texto do informativo. */
+      horaExtra?: AjusteHoraExtraDia;
     }
   >;
+  /** Dias OK batidos em casa: "Home Office" ou "Híbrido" (status "OK - …"). */
+  rotuloModalidadePorDia?: Record<string, string>;
+  /** Dias em casa que exigem o ciclo completo de batidas (status OK só com ele). */
+  cicloCompletoEmCasa?: { desde: string | null; dias: string[] };
+  /** Ponto presencial: dias que exigem o ciclo, com o tipo de intervalo e o tempo mínimo. */
+  cicloCompletoPresencial?: {
+    desde: string | null;
+    porDia: Record<string, ExigenciaCicloPresencial>;
+  };
+  /** Dias (YYYY-MM-DD) com entrada abaixo do descanso de interjornada. */
+  interjornadaPorDia?: Record<string, InterjornadaDia>;
   saldoMesBanco?: number;
   saldoAcumuladoMes?: number;
   /** Acumulado do ciclo ao fim do mês anterior ao consultado. */
@@ -195,7 +236,8 @@ export const JORNADA_PADRAO: JornadaHistorico = {
   toleranciaSaidaMin: 5,
   toleranciaCalculoMin: 0,
   horaExtraLimiteAuto: 120,
-  atestadoTempoRetornoMin: 60
+  atestadoTempoRetornoMin: 60,
+  atestadoTempoIdaMin: 60
 };
 
 const TIPO_AFASTAMENTO_LABEL: Record<string, string> = {
@@ -329,8 +371,39 @@ function calcularCreditoDeslocamentoAtestado(
   return Math.max(0, Math.min(retorno.minuto - hf, toleranciaMin));
 }
 
+/** Tipos de registro que representam sair do trabalho (candidatos a "ida" antes do atestado). */
+const TIPOS_SAIDA_TRABALHO = new Set(["SAIDA", "INTERROMPER_EXPEDIENTE", "INICIO_INTERVALO"]);
+
 /**
- * Janelas de atestado parcial com o horarioFim da última janela estendido pelo
+ * Crédito de deslocamento (min) na IDA: da última atividade antes do horarioInicio do
+ * atestado — se for saída/interrupção/início do almoço — até o início, limitado à
+ * tolerância. Saída para o almoço desconta o almoço mínimo. Espelha
+ * calcularCreditoDeslocamentoIda do backend (jornada-historico.ts).
+ */
+function calcularCreditoDeslocamentoIda(
+  registros: Array<{ tipo: string; minuto: number }>,
+  horarioInicio: string,
+  toleranciaMin: number,
+  almocoMinMin = 60,
+  janelaAlmoco: { podeIniciarA?: string; podeIniciarAte?: string } = {}
+): number {
+  if (toleranciaMin <= 0) return 0;
+  const hi = toMin(horarioInicio);
+  const saida = registros.filter((r) => r.minuto < hi).sort((a, b) => b.minuto - a.minuto)[0];
+  if (!saida || !TIPOS_SAIDA_TRABALHO.has(saida.tipo)) return 0;
+  let deslocamento = hi - saida.minuto;
+  /* Almoço só é descontado se o início do intervalo caiu na janela de almoço da jornada. */
+  const ehAlmoco =
+    saida.tipo === "INICIO_INTERVALO" &&
+    saida.minuto >= toMin(janelaAlmoco.podeIniciarA ?? "11:30") &&
+    saida.minuto <= toMin(janelaAlmoco.podeIniciarAte ?? "13:00");
+  if (ehAlmoco) deslocamento -= Math.max(0, almocoMinMin);
+  return Math.max(0, Math.min(deslocamento, toleranciaMin));
+}
+
+/**
+ * Janelas de atestado parcial com o horarioInicio da primeira janela antecipado
+ * pelo crédito de ida e o horarioFim da última janela estendido pelo
  * crédito de deslocamento tolerado. Espelha
  * calcularJanelasEfetivasComCreditoDeslocamento do backend — uso exclusivo no
  * cálculo da jornada mandatória, nunca para filtrar registros reais.
@@ -338,19 +411,39 @@ function calcularCreditoDeslocamentoAtestado(
 function calcularJanelasEfetivasComCreditoDeslocamento(
   janelas: Array<{ horarioInicio: string; horarioFim: string }>,
   registros: Array<{ tipo: string; minuto: number }>,
-  toleranciaRetornoMin: number
+  opcoes: {
+    toleranciaRetornoMin: number;
+    toleranciaIdaMin?: number;
+    almocoMinMin?: number;
+    almocoPodeIniciarA?: string;
+    almocoPodeIniciarAte?: string;
+  }
 ): Array<{ horarioInicio: string; horarioFim: string }> {
+  const { toleranciaRetornoMin, toleranciaIdaMin = 0, almocoMinMin = 60 } = opcoes;
   const fundidas = fundirJanelasAtestadoParcial(janelas);
-  if (!fundidas.length || toleranciaRetornoMin <= 0) return fundidas;
-  const idx = fundidas.length - 1;
-  const credito = calcularCreditoDeslocamentoAtestado(
-    registros,
-    fundidas[idx].horarioFim,
-    toleranciaRetornoMin
-  );
-  if (credito <= 0) return fundidas;
+  if (!fundidas.length) return fundidas;
   const novas = [...fundidas];
-  novas[idx] = { ...novas[idx], horarioFim: fmtMinDia(toMin(novas[idx].horarioFim) + credito) };
+  const idx = novas.length - 1;
+  const credito =
+    toleranciaRetornoMin > 0
+      ? calcularCreditoDeslocamentoAtestado(registros, novas[idx].horarioFim, toleranciaRetornoMin)
+      : 0;
+  if (credito > 0) {
+    novas[idx] = { ...novas[idx], horarioFim: fmtMinDia(toMin(novas[idx].horarioFim) + credito) };
+  }
+  const creditoIda = calcularCreditoDeslocamentoIda(
+    registros,
+    novas[0].horarioInicio,
+    toleranciaIdaMin,
+    almocoMinMin,
+    { podeIniciarA: opcoes.almocoPodeIniciarA, podeIniciarAte: opcoes.almocoPodeIniciarAte }
+  );
+  if (creditoIda > 0) {
+    novas[0] = {
+      ...novas[0],
+      horarioInicio: fmtMinDia(Math.max(0, toMin(novas[0].horarioInicio) - creditoIda))
+    };
+  }
   return novas;
 }
 
@@ -779,28 +872,20 @@ function atestadoParcialDispensaSaida(
   return true;
 }
 
+/** Rótulo curto do status do dia com afastamento parcial (sem "parcial" nem horário). */
 function labelAtestadosParciais(
   parciais: Array<{ horarioInicio?: string | null; horarioFim?: string | null; tipo?: string }>
 ): string {
-  if (!parciais.length) return "Atestado médico parcial";
+  if (!parciais.length) return "Atestado médico";
   const soAbono = parciais.every((p) => p.tipo === "ABONO");
   const soAtestado = parciais.every((p) => p.tipo === "ATESTADO" || !p.tipo);
-  const nome = soAbono
-    ? "Abono parcial"
-    : soAtestado
-      ? "Atestado médico parcial"
-      : "Afastamento parcial";
-  const periodos = parciais
-    .filter((p) => p.horarioInicio && p.horarioFim)
-    .map((p) => `${p.horarioInicio}–${p.horarioFim}`)
-    .join(" + ");
-  return periodos ? `${nome} (${periodos})` : nome;
+  return soAbono ? "Abono" : soAtestado ? "Atestado médico" : "Afastamento";
 }
 
 export function badgeLabelParcial(obs?: string): string {
-  if (obs?.startsWith("Abono parcial")) return "Abono parcial";
-  if (obs?.startsWith("Afastamento parcial")) return "Afastamento parcial";
-  return "Atestado médico parcial";
+  if (obs?.startsWith("Abono")) return "Abono";
+  if (obs?.startsWith("Afastamento")) return "Afastamento";
+  return "Atestado médico";
 }
 
 function toMin(h: string): number {
@@ -877,6 +962,12 @@ function afastamentoDoDia(
   return afastamentosDoDia(isoKey, afastamentos)[0];
 }
 
+/** Exigência do ciclo no ponto presencial (backend: exigenciasCicloPresencial). */
+export interface ExigenciaCicloPresencial {
+  modo: "ALMOCO" | "ALMOCO_OU_PAUSA";
+  minimoMin: number;
+}
+
 export function transformarHistorico(
   registros: ApiRegistro[],
   afastamentos: ApiAfastamento[],
@@ -890,10 +981,18 @@ export function transformarHistorico(
     pontoObrigatorioDesde?: string | null;
     semRegistroPonto?: boolean;
     periodosSemObrigacao?: Array<{ inicio: string; fim: string | null }>;
+    /** Cessão a outro órgão: dias neutros com o rótulo "Isento — Cedido". */
+    periodosCessao?: Array<{ inicio: string; fim: string | null }>;
     /** false para estagiário / menor aprendiz */
     exigirIntervalo?: boolean;
+    /** Dias em casa que exigem o ciclo completo de batidas para serem "OK". */
+    diasCicloCompletoEmCasa?: string[];
+    /** Ponto presencial: dias que exigem o ciclo, com o tipo de intervalo pela jornada. */
+    exigenciasCicloPresencial?: Record<string, ExigenciaCicloPresencial>;
   }
 ): DiaRegistro[] {
+  const exigePresencial = opts?.exigenciasCicloPresencial ?? {};
+  const diasCiclo = new Set(opts?.diasCicloCompletoEmCasa ?? []);
   const hoje = new Date();
   const diasNoMes = new Date(ano, mes, 0).getDate();
   const NOMES_DIA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -903,7 +1002,12 @@ export function transformarHistorico(
   const periodosSemObrigacao = opts?.periodosSemObrigacao ?? [];
   const exigirIntervaloGlobal = opts?.exigirIntervalo !== false;
 
+  const periodosCessao = opts?.periodosCessao ?? [];
+  const diaEmCessao = (isoKey: string): boolean =>
+    periodosCessao.some((p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim));
+
   const diaEmPeriodoSemObrigacao = (isoKey: string): boolean => {
+    if (diaEmCessao(isoKey)) return true;
     if (periodosSemObrigacao.length > 0) {
       return periodosSemObrigacao.some(
         (p) => isoKey >= p.inicio && (p.fim == null || isoKey <= p.fim)
@@ -948,6 +1052,30 @@ export function transformarHistorico(
     const dayRegsCalc = dayRegs.filter((r) => !r.apenasInformativo);
 
     if (isFuture && fimDeSemana) continue;
+
+    /* Abono do RH: dia neutro para todos — nem falta nem crédito, mesmo com batidas
+       (que continuam visíveis). O status é exatamente o nome cadastrado. */
+    if (ehDiaAbonado(feriadoDia) && !(fimDeSemana && dayRegs.length === 0)) {
+      const hora = (tipo: string) => {
+        const r = dayRegs.find((x) => x.tipo === tipo);
+        return r ? fmtHora(r.dataHora) : null;
+      };
+      result.push({
+        data: dataStr,
+        diaSemana,
+        entrada: hora("ENTRADA"),
+        inicioIntervalo: hora("INICIO_INTERVALO"),
+        fimIntervalo: hora("FIM_INTERVALO"),
+        saida: hora("SAIDA"),
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "FERIADO",
+        abono: true,
+        obs: feriadoDia.nome,
+        apenasInformativo: diaInformativo
+      });
+      continue;
+    }
 
     /* Antes do primeiro login: não conta falta. Batidas do dia ainda entram na presença. */
     if (inicioAtividades && isoKey < inicioAtividades) {
@@ -994,8 +1122,10 @@ export function transformarHistorico(
         jornadaMin: 0,
         status: afastInfo ? "AFASTAMENTO" : "ISENTO",
         obs: afastInfo
-          ? `${TIPO_AFASTAMENTO_LABEL[afastInfo.tipo] ?? "Afastamento"} (informativo)`
-          : "Isento — Comissionado/Chefe",
+          ? `${afastInfo.rotulo || (TIPO_AFASTAMENTO_LABEL[afastInfo.tipo] ?? "Afastamento")} (informativo)`
+          : diaEmCessao(isoKey)
+            ? "Isento — Cedido"
+            : "Isento — Comissionado/Chefe",
         apenasInformativo: true,
         observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
       });
@@ -1030,7 +1160,9 @@ export function transformarHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "AFASTAMENTO",
-        obs: TIPO_AFASTAMENTO_LABEL[afastamentoIntegral.tipo] ?? "Afastamento justificado",
+        obs:
+          afastamentoIntegral.rotulo ||
+          (TIPO_AFASTAMENTO_LABEL[afastamentoIntegral.tipo] ?? "Afastamento justificado"),
         apenasInformativo: diaInformativo
       });
       continue;
@@ -1058,7 +1190,7 @@ export function transformarHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "AFASTAMENTO",
-        obs: `${TIPO_AFASTAMENTO_LABEL[afastamentoInfo.tipo] ?? "Afastamento"} (informativo)`,
+        obs: `${afastamentoInfo.rotulo || (TIPO_AFASTAMENTO_LABEL[afastamentoInfo.tipo] ?? "Afastamento")} (informativo)`,
         apenasInformativo: true
       });
       continue;
@@ -1291,6 +1423,27 @@ export function transformarHistorico(
         calcOpts
       );
       status = "OK";
+      /* Dia em casa: OK só com o ciclo completo (Entrada, Início/Fim do intervalo, Saída; pares
+         adicionais fechados). Turno sem intervalo e feriado parcial não exigem o almoço. */
+      if (diasCiclo.has(isoKey)) {
+        const ciclo = cicloCompletoEmCasa(dayRegs, {
+          semIntervalo: !calcOpts.exigirIntervalo || !!feriadoDia?.marcoHorario
+        });
+        if (!ciclo.completo) {
+          status = "INCONSISTENTE";
+          obs = textoCicloIncompleto(ciclo.faltas);
+        }
+      } else if (exigePresencial[isoKey] && !feriadoDia?.marcoHorario && !semAlmocoAtestado) {
+        /* Presencial: OK só com o intervalo que a jornada exige (almoço; ou almoço/pausa na
+           jornada curta e no turno que começa após a janela). Intervalo automático não conta. */
+        const ciclo = cicloCompleto(dayRegs, {
+          modoIntervalo: obsTurnoEarly ? "ALMOCO_OU_PAUSA" : exigePresencial[isoKey].modo
+        });
+        if (!ciclo.completo) {
+          status = "INCONSISTENTE";
+          obs = textoCicloIncompleto(ciclo.faltas, false);
+        }
+      }
     } else if (entrada && isHoje) {
       const now = hoje.getHours() * 60 + hoje.getMinutes();
       horasMin = calcHorasMinutosDia(dayRegsHoras.length ? dayRegsHoras : dayRegs, now, calcOpts);
@@ -1317,7 +1470,7 @@ export function transformarHistorico(
     } else if (entrada) {
       horasMin = 0;
       status = "FALTA";
-      obs = "Apenas entrada registrada — dia considerado falta";
+      obs = "Apenas a entrada foi registrada — registro incompleto";
     } else {
       status = "PENDENTE";
     }
@@ -1333,7 +1486,13 @@ export function transformarHistorico(
       const janelasEfetivasParciais = calcularJanelasEfetivasComCreditoDeslocamento(
         janelasParciais,
         regsMinParaCredito,
-        jornada.atestadoTempoRetornoMin ?? 60
+        {
+          toleranciaRetornoMin: jornada.atestadoTempoRetornoMin ?? 60,
+          toleranciaIdaMin: jornada.atestadoTempoIdaMin ?? 60,
+          almocoMinMin: jornada.almocoMinMin ?? 60,
+          almocoPodeIniciarA: jornada.almocoPodeIniciarA,
+          almocoPodeIniciarAte: jornada.almocoPodeIniciarAte
+        }
       );
       const jornadaRef = calcularJornadaComAtestadosParciais(
         janelasEfetivasParciais,
@@ -1422,6 +1581,13 @@ export function transformarHistorico(
         )
       : null;
 
+    /* Registro iniciado e não completado = Inconsistente (não é falta nem pendência): a Falta é
+       só o dia útil sem nenhum registro. O dia de hoje, em andamento, segue Pendente. */
+    if (dayRegs.some((r) => !r.apenasInformativo)) {
+      if (status === "FALTA") status = "INCONSISTENTE";
+      else if (status === "PENDENTE" && !isHoje) status = "INCONSISTENTE";
+    }
+
     result.push({
       data: dataStr,
       diaSemana,
@@ -1492,6 +1658,17 @@ export function marcarDiasFeriado(
     const feriado = map[iso];
     const banco = bancoPorDia?.[iso];
     const obsBanco = banco?.observacao ?? "";
+    /* Abono do RH: sempre neutro com o nome como status, mesmo com horas registradas. */
+    if (ehDiaAbonado(feriado) || banco?.abono) {
+      return {
+        ...d,
+        status: "FERIADO" as const,
+        abono: true,
+        horasMin: 0,
+        jornadaMin: 0,
+        obs: feriado?.nome ?? (obsBanco || d.obs)
+      };
+    }
     const feriadoNoBanco =
       obsBanco.startsWith("Feriado:") && (banco?.horasTrabalhadasMinutos ?? 0) === 0;
     const integral = (feriado && !feriado.marcoHorario) || feriadoNoBanco;
@@ -1515,7 +1692,7 @@ export function calcularResumoHistorico(
 ): ResumoHistorico {
   const diasCalc = dias.filter((r) => !r.apenasInformativo);
   const horasTrabalhadasMinutos = diasCalc
-    .filter((r) => r.status === "OK" || r.status === "PENDENTE")
+    .filter((r) => r.status === "OK" || r.status === "PENDENTE" || r.status === "INCONSISTENTE")
     .reduce((s, r) => s + r.horasMin, 0);
   const horasEsperadasMinutos = diasCalc
     .filter(
@@ -1533,7 +1710,9 @@ export function calcularResumoHistorico(
     mes,
     ano,
     diasTrabalhados: diasCalc.filter(
-      (r) => r.horasMin > 0 && (r.status === "OK" || r.status === "PENDENTE")
+      (r) =>
+        r.horasMin > 0 &&
+        (r.status === "OK" || r.status === "PENDENTE" || r.status === "INCONSISTENTE")
     ).length,
     horasTrabalhadasMinutos,
     horasEsperadasMinutos,
@@ -1595,7 +1774,9 @@ export function resumoFromHistoricoApi(
     {
       pontoObrigatorioDesde: data?.pontoObrigatorioDesde ?? null,
       semRegistroPonto: !!data?.semRegistroPonto,
-      periodosSemObrigacao: data?.periodosSemObrigacao ?? []
+      periodosSemObrigacao: data?.periodosSemObrigacao ?? [],
+      diasCicloCompletoEmCasa: data?.cicloCompletoEmCasa?.dias,
+      exigenciasCicloPresencial: data?.cicloCompletoPresencial?.porDia
     }
   );
   const presenca = calcularResumoHistorico(dias, mes, ano);

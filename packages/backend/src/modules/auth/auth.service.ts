@@ -1,4 +1,5 @@
 import { Injectable, ForbiddenException } from "@nestjs/common";
+import { cedidoHoje } from "../../utils/cessao-historico";
 import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh, isGerenciaRhSlug } from "../../common/gerencia-rh.util";
 import {
@@ -225,6 +226,11 @@ export class AuthService {
     // Super admins não são bloqueados mesmo que o registro esteja inativo.
     if (funcionario && !funcionario.ativo && !ctx.isSuperAdmin) {
       throw new ForbiddenException("CONTA_DESATIVADA");
+    }
+
+    // Empregado cedido a outro órgão (período de cessão cobrindo hoje): sem acesso.
+    if (funcionario && !ctx.isSuperAdmin && (await cedidoHoje(this.prisma, funcionario.id))) {
+      throw new ForbiddenException("CONTA_CEDIDA");
     }
 
     if (!funcionario) {

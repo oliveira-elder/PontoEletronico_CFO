@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { nomeArquivoRelatorioCiclo, nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import { Navigate } from "react-router-dom";
 import { CalendarIcon, ChevronDownIcon, Edit2Icon, DownloadIcon } from "../../components/icons";
+import {
+  PendenciasAssinatura,
+  resumoPendencias,
+  type PendenciasFolha
+} from "../../components/PendenciasAssinatura";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
@@ -89,6 +95,14 @@ interface DiaBanco {
   saldoDiaMinutos: number;
   saldoAcumuladoMinutos: number;
   observacao?: string;
+  /** Linha afetada por liberação/revogação de tempo do banco pelo RH. */
+  liberacaoRh?: boolean;
+}
+
+interface CreditoBancoRh {
+  disponivelMinutos: number;
+  temLiberacao: boolean;
+  liberacoes: Array<{ validaAte: string; disponivelMinutos: number }>;
 }
 
 interface CicloBancoHoras {
@@ -116,6 +130,8 @@ interface AssinaturaCicloMes {
   id: string;
   status: StatusAssinatura;
   saldoRegularizado?: boolean;
+  /** O que impede a assinatura (dias e solicitações do mês em andamento). */
+  pendencias?: PendenciasFolha | null;
   bancoHorasSaldoTotalMinutos: number;
   assinadoFuncionarioEm: string | null;
   periodo: {
@@ -592,11 +608,13 @@ function TabelaDiasBanco({
             </thead>
             <tbody>
               {diasMes.map((d) => {
-                const neutro = !!d.observacao;
+                const neutro = !!d.observacao && !d.liberacaoRh;
                 return (
                   <tr
                     key={d.data}
-                    style={neutro ? { background: "rgba(247,196,55,0.06)" } : undefined}
+                    style={
+                      neutro || d.liberacaoRh ? { background: "rgba(247,196,55,0.06)" } : undefined
+                    }
                   >
                     <td style={{ textTransform: "capitalize" }}>
                       {fmtData(d.data)}
@@ -843,7 +861,7 @@ function CardMesBanco({
               <span
                 className="badge badge-red"
                 style={badgeResumoStyle}
-                title="Há correções pendentes"
+                title={resumoPendencias(assinatura?.pendencias)}
               >
                 Pendências
               </span>
@@ -885,6 +903,14 @@ function CardMesBanco({
       </div>
       {aberto && (
         <div style={{ padding: "0 14px 14px" }}>
+          {bloqueadoAssinar && (
+            <div style={{ margin: "0 0 10px" }}>
+              <strong style={{ fontSize: 12.5, color: "var(--ink-900)" }}>
+                Para assinar esta folha, regularize:
+              </strong>
+              <PendenciasAssinatura pendencias={assinatura?.pendencias} />
+            </div>
+          )}
           <TabelaDiasBanco
             diasMes={diasMes}
             saldoAnteriorMes={saldoAnteriorMes}
@@ -926,6 +952,16 @@ export function BancoHorasPage() {
   } | null>(null);
   const [loadingAssinarCiclo, setLoadingAssinarCiclo] = useState(false);
   const [baixandoRelatorioCiclo, setBaixandoRelatorioCiclo] = useState<string | null>(null);
+  const [credito, setCredito] = useState<CreditoBancoRh | null>(null);
+
+  useEffect(() => {
+    const tk = token();
+    if (!tk) return;
+    api
+      .get<CreditoBancoRh>("/ponto/banco-horas/credito", tk)
+      .then(setCredito)
+      .catch(() => setCredito(null));
+  }, []);
 
   const abrirUltimoMes = (cicloInicio: string, dias: DiaBanco[]) => {
     const meses = mesesDeDias(dias);
@@ -1128,24 +1164,23 @@ export function BancoHorasPage() {
       inicio: ciclo.inicio,
       fim: ciclo.fim,
       meses,
-      saldoCiclo: ciclo.saldoMinutos
+      saldoCiclo: ciclo.saldoMinutos ?? 0
     });
   }
 
   async function baixarPdfMes(assinatura: AssinaturaCicloMes) {
     const { mes, ano } = assinatura.periodo;
-    const nomeMesPad = String(mes).padStart(2, "0");
     setBaixandoPdf(assinatura.id);
     try {
       if (assinatura.status === "CONCLUIDA") {
         await api.download(
           `/ponto/assinaturas/${assinatura.id}/pdf`,
-          `folha-${nomeMesPad}-${ano}.pdf`
+          nomeArquivoRelatorioMes(mes, ano)
         );
       } else {
         await api.download(
           `/ponto/assinaturas/rascunho-pdf?mes=${mes}&ano=${ano}`,
-          `rascunho-folha-${nomeMesPad}-${ano}.pdf`
+          nomeArquivoRelatorioMes(mes, ano, { rascunho: true })
         );
       }
     } catch (e: unknown) {
@@ -1161,9 +1196,7 @@ export function BancoHorasPage() {
       const assinado = !!assinaturasCicloDoc[inicio];
       await api.download(
         `/ponto/assinaturas/ciclo-banco-horas/pdf?inicio=${encodeURIComponent(inicio)}&fim=${encodeURIComponent(fim)}`,
-        assinado
-          ? `ciclo-banco-horas-assinado-${inicio}_${fim}.pdf`
-          : `ciclo-banco-horas-${inicio}_${fim}.pdf`
+        nomeArquivoRelatorioCiclo(inicio, fim, assinado)
       );
     } catch (e: unknown) {
       alert("Erro ao gerar relatório do ciclo: " + ((e as Error)?.message ?? "desconhecido"));
@@ -1275,6 +1308,35 @@ export function BancoHorasPage() {
               </p>
             </div>
           </div>
+
+          {credito?.temLiberacao && (
+            <div className="card-flat" style={{ marginBottom: 16 }}>
+              <p className="eyebrow" style={{ marginBottom: 8 }}>
+                Tempo liberado pelo RH
+              </p>
+              <p
+                style={{
+                  fontFamily: "var(--font-display)",
+                  fontSize: 28,
+                  lineHeight: 1,
+                  margin: "0 0 8px",
+                  color: credito.disponivelMinutos > 0 ? "var(--green)" : "var(--ink-500)"
+                }}
+              >
+                {toHM(credito.disponivelMinutos)}
+              </p>
+              <p style={{ fontSize: 13, color: "var(--ink-700)", margin: 0 }}>
+                {credito.disponivelMinutos > 0
+                  ? `Disponível para abono (${credito.liberacoes
+                      .map((l) => `${toHM(l.disponivelMinutos)} até ${fmtData(l.validaAte)}`)
+                      .join(
+                        " · "
+                      )}). Para usar, abra Solicitações → Abono e marque “Usar o tempo liberado pelo RH”.`
+                  : "Todo o tempo liberado pelo RH já foi usado ou venceu."}{" "}
+                O tempo liberado já foi descontado do saldo acima.
+              </p>
+            </div>
+          )}
 
           <div className="card-flat">
             <p className="eyebrow" style={{ marginBottom: 12 }}>

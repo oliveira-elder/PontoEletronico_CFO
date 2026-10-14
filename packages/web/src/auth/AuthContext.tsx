@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import keycloak from "./keycloak";
 import { setAccessTokenProvider } from "./accessToken";
+import { temRecursoRh } from "../utils/recursosRh";
 import { api } from "../hooks/useApi";
 import {
   elevateSuperAdminProfile,
@@ -85,6 +86,8 @@ interface AuthContextType {
   initialized: boolean;
   authenticated: boolean;
   contaDesativada: boolean;
+  /** Empregado cedido a outro órgão (cessão cobrindo hoje): acesso suspenso. */
+  contaCedida: boolean;
   semMatricula: boolean;
   user: AuthUser | null;
   initError: string | null;
@@ -95,6 +98,13 @@ interface AuthContextType {
   logout: () => void;
   hasRole: (role: string) => boolean;
   hasGroup: (group: string) => boolean;
+  /**
+   * Perfil do RH: a aba/função do catálogo (utils/recursosRh) está liberada para o usuário?
+   * Gerente de RH e super admin: sempre. Funções exigem também o Ver da aba-mãe.
+   */
+  podeRh: (recurso: string) => boolean;
+  /** true depois que as permissões do Perfil do RH foram carregadas. */
+  permissoesRhCarregadas: boolean;
   devLogin: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -248,8 +258,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initialized, setInitialized] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [contaDesativada, setContaDesativada] = useState(false);
+  const [contaCedida, setContaCedida] = useState(false);
   const [semMatricula, setSemMatricula] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [permissoesRh, setPermissoesRh] = useState<{
+    carregado: boolean;
+    acessoTotal: boolean;
+    recursos: Set<string>;
+  }>({ carregado: false, acessoTotal: false, recursos: new Set() });
+
+  /* Perfil do RH: carrega as abas/funções liberadas quando o usuário muda. */
+  useEffect(() => {
+    if (!user) {
+      setPermissoesRh({ carregado: false, acessoTotal: false, recursos: new Set() });
+      return;
+    }
+    let cancelado = false;
+    api
+      .get<{ acessoTotal: boolean; recursos: string[] }>("/ponto/perfis-rh/minhas")
+      .then((r) => {
+        if (cancelado) return;
+        setPermissoesRh({
+          carregado: true,
+          acessoTotal: !!r?.acessoTotal || !!user.isSuperAdmin,
+          recursos: new Set(r?.recursos ?? [])
+        });
+      })
+      .catch(() => {
+        if (!cancelado)
+          setPermissoesRh({
+            carregado: true,
+            acessoTotal: !!user.isSuperAdmin,
+            recursos: new Set()
+          });
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [user?.id, user?.isSuperAdmin, user?.roles?.join(",")]);
   const [initError, setInitError] = useState<string | null>(null);
 
   const initPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -378,6 +424,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setContaDesativada(true);
             return;
           }
+          if (msg === "CONTA_CEDIDA" && !cancelled) {
+            setContaCedida(true);
+            return;
+          }
           if (msg === "SEM_MATRICULA" && !cancelled) {
             setSemMatricula(true);
             return;
@@ -482,6 +532,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAccessTokenProvider(token);
   }, []);
 
+  function podeRh(recurso: string): boolean {
+    if (permissoesRh.acessoTotal) return true;
+    return temRecursoRh(permissoesRh.recursos, recurso);
+  }
+
   async function refreshProfile() {
     try {
       const profile = await api.get<AuthUser>("/auth/me");
@@ -489,6 +544,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "";
       if (msg === "CONTA_DESATIVADA") setContaDesativada(true);
+      if (msg === "CONTA_CEDIDA") setContaCedida(true);
       if (msg === "SEM_MATRICULA") setSemMatricula(true);
     }
   }
@@ -527,6 +583,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         initialized,
         authenticated,
         contaDesativada,
+        contaCedida,
         semMatricula,
         user,
         initError,
@@ -537,6 +594,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logout,
         hasRole,
         hasGroup,
+        podeRh,
+        permissoesRhCarregadas: permissoesRh.carregado,
         devLogin,
         refreshProfile
       }}

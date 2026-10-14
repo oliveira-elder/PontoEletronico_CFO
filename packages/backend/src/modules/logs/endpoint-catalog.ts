@@ -134,6 +134,77 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     categoria: "Ponto — Autoatendimento"
   },
   {
+    method: "POST",
+    pathPattern: "/ponto/verificar/conteudo",
+    titulo: "Conferência automática de conteúdo",
+    descricao:
+      "Compara o texto de um PDF enviado (ou a leitura OCR de uma foto) com o documento original, sem login.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/verificar/arquivo/:sha256",
+    titulo: "Verificação pública pelo arquivo",
+    descricao:
+      "Confere a autenticidade de um PDF enviado (pelo SHA-256 calculado no navegador), sem login.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/verificar/:codigo",
+    titulo: "Verificação pública de documento",
+    descricao: "Confere a autenticidade de um documento assinado pelo código/QR Code (sem login).",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/solicitacoes/:id/ferias/documentos/:indice/assinar",
+    titulo: "Assinar documento de férias",
+    descricao:
+      "Funcionário assina pelo sistema um documento de férias enviado pelo RH (selo digital no rodapé).",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/solicitacoes/:id/ferias/rodadas/:ordem/documentos/:indice/assinar",
+    titulo: "Assinar documento do 2º/3º período de férias",
+    descricao:
+      "Funcionário assina pelo sistema um documento da rodada de um período futuro das férias divididas.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/solicitacoes/:id/ferias/rodadas/:ordem/documentos/:indice/rejeitar",
+    titulo: "Rejeitar documento do 2º/3º período de férias",
+    descricao:
+      "Funcionário rejeita, com justificativa, um documento da rodada de um período futuro das férias.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/solicitacoes/:id/ferias/documentos/:indice/rejeitar",
+    titulo: "Rejeitar documento de férias",
+    descricao:
+      "Funcionário rejeita um documento de férias com justificativa; a solicitação volta ao RH.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/ferias/calendario",
+    titulo: "Calendário da vedação de férias",
+    descricao:
+      "Feriados e dias úteis usados para conferir a vedação do início das férias antes de feriado/repouso.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/hora-extra/local-do-dia",
+    titulo: "Local das batidas do dia (hora extra)",
+    descricao:
+      "Indica se as batidas do dia foram no CFO ou em casa, para a regra de hora extra do ACT.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
     method: "GET",
     pathPattern: "/ponto/requerimento-endereco",
     titulo: "Requerimento de endereço",
@@ -145,6 +216,22 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     pathPattern: "/ponto/requerimento-endereco/responder",
     titulo: "Responder requerimento de endereço",
     descricao: "Funcionário informa/confirma o endereço residencial solicitado pelo RH.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/requerimento-cadastro",
+    titulo: "Requerimentos de cadastro",
+    descricao:
+      "Lista os requerimentos pendentes de dependentes, formação acadêmica e cursos, com os dados atuais.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/requerimento-cadastro/:tipo/responder",
+    titulo: "Responder requerimento de cadastro",
+    descricao:
+      "Funcionário informa dependentes, formação acadêmica ou cursos/capacitações solicitados pelo RH.",
     categoria: "Ponto — Autoatendimento"
   },
   {
@@ -453,6 +540,21 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     categoria: "Aprovações"
   },
   {
+    method: "GET",
+    pathPattern: "/auditoria/rh/ferias/rodadas",
+    titulo: "Rodadas de Aviso/Recibo de férias (consulta)",
+    descricao: "Lista os períodos futuros de férias divididas que aguardam Aviso e Recibo do RH.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/auditoria/rh/solicitacoes/:id/ferias/rodadas/:ordem/documentos",
+    titulo: "RH envia Aviso e Recibo do 2º/3º período",
+    descricao:
+      "RH anexa Aviso e Recibo de um período futuro das férias divididas para assinatura do funcionário.",
+    categoria: "Aprovações"
+  },
+  {
     method: "PATCH",
     pathPattern: "/auditoria/rh/solicitacoes/:id/enviar-folha-ferias",
     titulo: "RH envia folha de férias",
@@ -461,9 +563,394 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/banco-horas/liberacoes",
+    titulo: "Tempo de banco liberado pelo RH (consulta)",
+    descricao: "Saldo, tempo liberado, usado e disponível do funcionário para abono.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/banco-horas/liberacoes",
+    titulo: "RH libera tempo do banco para abono",
+    descricao:
+      "RH libera um tempo do banco de horas positivo (com validade e justificativa) para o funcionário usar como abono.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/banco-horas/liberacoes/:liberacaoId/revogar",
+    titulo: "RH revoga tempo de banco liberado",
+    descricao: "RH revoga o tempo liberado e ainda não usado (com justificativa).",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/banco-horas/credito/simular",
+    titulo: "Simular uso do tempo liberado",
+    descricao: "Prévia de quanto o abono consumiria do tempo de banco liberado pelo RH.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/funcionarios/:id/banco-horas/mes",
+    titulo: "Banco de horas do mês (RH)",
+    descricao: "Saldo por dia e acumulado do banco de horas de um mês do funcionário.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/cid-grupos",
+    titulo: "Grupos do CID (dropdown do atestado)",
+    descricao: "Lista os grupos do CID ativos para o atestado médico.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/cid-grupos/gestao",
+    titulo: "Grupos do CID (gestão)",
+    descricao: "RH lista todos os grupos do CID, ativos e inativos.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/cid-grupos",
+    titulo: "RH adiciona grupo do CID",
+    descricao: "Novo grupo do CID para o atestado médico.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/config/cid-grupos/:id",
+    titulo: "RH edita grupo do CID",
+    descricao: "Edita código e descrição de um grupo do CID.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/cid-grupos/:id/ativo",
+    titulo: "RH ativa/desativa grupo do CID",
+    descricao: "Ativa ou desativa um grupo do CID.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/cid-grupos/ordem",
+    titulo: "RH reordena grupos do CID",
+    descricao: "Define a ordem dos grupos do CID.",
+    categoria: "Configurações"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/config/cid-grupos/:id",
+    titulo: "Super usuário exclui grupo do CID",
+    descricao: "Exclusão definitiva (só super usuário).",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/tipos-licenca",
+    titulo: "Tipos de licença (regras)",
+    descricao: "Lista os tipos de licença ativos.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/tipos-licenca/gestao",
+    titulo: "Tipos de licença (gestão)",
+    descricao: "RH lista todos os tipos de licença.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/tipos-licenca",
+    titulo: "RH adiciona tipo de licença",
+    descricao: "Novo tipo de licença com suas regras.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/config/tipos-licenca/:id",
+    titulo: "RH edita tipo de licença",
+    descricao: "Edita as regras de um tipo de licença.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/tipos-licenca/:id/ativo",
+    titulo: "RH ativa/desativa tipo de licença",
+    descricao: "Ativa ou desativa um tipo de licença.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/tipos-licenca/ordem",
+    titulo: "RH reordena tipos de licença",
+    descricao: "Define a ordem dos tipos de licença.",
+    categoria: "Configurações"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/config/tipos-licenca/:id",
+    titulo: "Super usuário exclui tipo de licença",
+    descricao: "Exclusão definitiva (só super usuário).",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/licenca/tipos",
+    titulo: "Tipos de licença do funcionário",
+    descricao: "Tipos permitidos à categoria, com saldo por janela.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/auditoria/rh/solicitacoes/:id/cid",
+    titulo: "RH altera o CID do atestado",
+    descricao: "RH completa ou corrige o grupo do CID do atestado.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitacoes",
+    titulo: "RH abre solicitação em nome do funcionário",
+    descricao:
+      "RH cria atestado, licença, abono, day off, hora extra ou envio de documento pelo funcionário (marcado como do RH).",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitar/perfil",
+    titulo: "Dados do funcionário para solicitação do RH",
+    descricao: "Categoria e perfil usados pelos formulários.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitar/credito-banco",
+    titulo: "Tempo liberado do funcionário (RH)",
+    descricao: "Tempo de banco liberado disponível, para o RH solicitar abono.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitar/credito-banco/simular",
+    titulo: "Simula tempo liberado (RH)",
+    descricao: "Prévia do consumo do tempo liberado.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitar/abono-cota",
+    titulo: "Cota de abono do funcionário (RH)",
+    descricao: "Saldo da cota de abono diário, para o RH solicitar.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/solicitar/licenca-tipos",
+    titulo: "Tipos de licença do funcionário (RH)",
+    descricao: "Tipos de licença permitidos, com saldo, para o RH solicitar.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/banco-horas/tolerancia-fechamento",
+    titulo: "Tolerância do fechamento do banco (global)",
+    descricao: "Consulta a tolerância global, em dias, do fechamento do banco de horas.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/config/banco-horas/tolerancia-fechamento",
+    titulo: "RH define a tolerância global do fechamento",
+    descricao: "Define quantos dias após a data-marco o banco de horas é fechado.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/funcionarios/:id/banco-horas/tolerancia-fechamento",
+    titulo: "Tolerância do fechamento do funcionário",
+    descricao: "Consulta a tolerância individual e a global do funcionário.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/gestao/funcionarios/:id/banco-horas/tolerancia-fechamento",
+    titulo: "RH define a tolerância individual do fechamento",
+    descricao: "Define, para um funcionário, quantos dias o fechamento do banco é adiado.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/funcionarios/:id/fechamentos-situacao",
+    titulo: "Fechamentos do banco por mudança de situação",
+    descricao:
+      "Saldo do banco de horas registrado quando o funcionário passou a não registrar ponto ou voltou a registrar.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/assinaturas/folhas",
+    titulo: "Minhas folhas de ponto assinadas",
+    descricao: "Lista as folhas totalmente assinadas (para baixar) e as que faltam assinar.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/funcionarios/:id/folhas-assinadas",
+    titulo: "Folhas assinadas do funcionário (RH)",
+    descricao: "RH lista as folhas de ponto totalmente assinadas de um funcionário.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/saude-ocupacional/painel",
+    titulo: "Painel de exames ocupacionais",
+    descricao: "RH consulta a situação do exame periódico de todos os funcionários.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/saude-ocupacional/funcionarios/:id/exames",
+    titulo: "Exames do funcionário (RH)",
+    descricao: "RH consulta o histórico de exames de um funcionário.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/saude-ocupacional/funcionarios/:id/exames",
+    titulo: "RH registra exame periódico",
+    descricao: "RH lança um exame periódico já confirmado.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/saude-ocupacional/exames/:id",
+    titulo: "RH edita exame periódico",
+    descricao: "RH corrige os dados de um exame.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/saude-ocupacional/exames/:id/confirmar",
+    titulo: "RH confirma exame enviado",
+    descricao: "RH confere o ASO e confirma o exame enviado pelo funcionário.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/saude-ocupacional/exames/:id/devolver",
+    titulo: "RH devolve exame enviado",
+    descricao: "RH devolve o exame ao funcionário com o motivo.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/saude-ocupacional/solicitar",
+    titulo: "RH solicita exame ao funcionário",
+    descricao: "RH cria a requisição de exame médico para funcionários.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/saude-ocupacional/config",
+    titulo: "Config. de exames ocupacionais",
+    descricao: "Consulta periodicidade e dias de aviso.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/saude-ocupacional/config",
+    titulo: "RH configura exames ocupacionais",
+    descricao: "Define periodicidade (meses) e dias de aviso.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/saude-ocupacional/exames/:id",
+    titulo: "Super usuário exclui exame",
+    descricao: "Exclusão definitiva de um exame lançado.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/saude-ocupacional/exames/:id/arquivo",
+    titulo: "Baixar ASO",
+    descricao: "Download do ASO (RH autorizado ou o próprio funcionário).",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/meus-exames",
+    titulo: "Meus exames médicos",
+    descricao: "Funcionário consulta seus exames e o próximo vencimento.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/meus-exames",
+    titulo: "Enviar meu exame médico",
+    descricao: "Funcionário envia o ASO do exame periódico para conferência.",
+    categoria: "Saúde Ocupacional"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/abono/cota",
+    titulo: "Cota de abono diário (meu saldo)",
+    descricao:
+      "Funcionário consulta o saldo e o histórico da cota de abono diário do acordo coletivo.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/funcionarios/:id/abono/cota",
+    titulo: "Cota de abono diário do funcionário (RH)",
+    descricao: "RH consulta o saldo e o histórico da cota de abono diário de um funcionário.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/banco-horas/credito",
+    titulo: "Tempo de banco liberado pelo RH (meu)",
+    descricao: "Funcionário consulta o tempo liberado pelo RH disponível para abono.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
     pathPattern: "/auditoria/rh/funcionarios/:id/ferias/saldo",
     titulo: "Saldo de férias (RH)",
     descricao: "RH consulta o saldo de férias de um funcionário específico.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/rh/funcionarios/:id/ferias/calendario",
+    titulo: "Calendário de vedação de férias (RH)",
+    descricao: "Feriados e dias úteis do funcionário para conferir a vedação ao agendar férias.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/ferias",
+    titulo: "RH agenda férias",
+    descricao:
+      "RH agenda as férias de um ciclo do funcionário (aprovadas na hora, com justificativa).",
+    categoria: "Aprovações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/auditoria/rh/funcionarios/:id/ferias/:solicitacaoId",
+    titulo: "RH altera férias",
+    descricao:
+      "RH altera férias aprovadas ou em análise; a original é cancelada e os afastamentos refeitos.",
+    categoria: "Aprovações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/rh/funcionarios/:id/ferias/:solicitacaoId/cancelar",
+    titulo: "RH cancela férias",
+    descricao:
+      "RH cancela férias do funcionário com justificativa; remove os afastamentos e libera o saldo.",
     categoria: "Aprovações"
   },
   {
@@ -612,6 +1099,36 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     titulo: "Solicitar endereço a todos",
     descricao:
       "Envia o pedido de confirmação de endereço residencial para todos os funcionários ativos.",
+    categoria: "Gestão de Funcionários"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/requerimento-endereco/alvos",
+    titulo: "Contar destinatários do requerimento de endereço",
+    descricao: "Quantidade de funcionários ativos que receberiam o pedido de endereço.",
+    categoria: "Gestão de Funcionários"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/gestao/funcionarios/:id/requerimento-cadastro/:tipo",
+    titulo: "Solicitar dado cadastral a um funcionário",
+    descricao:
+      "Envia ao funcionário um pedido para informar dependentes, formação acadêmica ou cursos.",
+    categoria: "Gestão de Funcionários"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/requerimento-cadastro/:tipo/alvos",
+    titulo: "Contar destinatários do requerimento de cadastro",
+    descricao: "Quantidade de Empregados e Comissionados ativos que receberiam o pedido.",
+    categoria: "Gestão de Funcionários"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/gestao/requerimento-cadastro/:tipo/todos",
+    titulo: "Solicitar dado cadastral a todos",
+    descricao:
+      "Envia o pedido de dependentes, formação acadêmica ou cursos a todos os Empregados e Comissionados ativos.",
     categoria: "Gestão de Funcionários"
   },
   {
@@ -1315,6 +1832,36 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     titulo: "Corrigir e-mail real do usuário",
     descricao: "Corrige manualmente o e-mail institucional real de um usuário.",
     categoria: "Administração"
+  },
+
+  /* ── Perfis do RH (Gerente de RH) ── */
+  {
+    method: "GET",
+    pathPattern: "/ponto/perfis-rh/minhas",
+    titulo: "Minhas permissões do RH",
+    descricao: "Abas e funções do RH liberadas para o usuário logado (monta menu e abas).",
+    categoria: "Perfis do RH"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/perfis-rh/funcionarios",
+    titulo: "Listar perfis do RH",
+    descricao: "Gerente de RH lista os funcionários do RH e as permissões de cada um.",
+    categoria: "Perfis do RH"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/perfis-rh/funcionarios/:id",
+    titulo: "Salvar perfil do RH",
+    descricao: "Gerente de RH define as abas e funções liberadas para um funcionário do RH.",
+    categoria: "Perfis do RH"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/perfis-rh/copiar",
+    titulo: "Copiar perfil do RH",
+    descricao: "Gerente de RH aplica o perfil de um funcionário do RH a vários outros.",
+    categoria: "Perfis do RH"
   },
 
   /* ── Requisições do RH ao funcionário ── */

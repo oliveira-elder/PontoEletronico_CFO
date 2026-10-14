@@ -203,6 +203,7 @@ button.card-flat:disabled {
 .badge-green  { background: rgba(47,125,79,0.12);  color: var(--green);    border: 1px solid rgba(47,125,79,0.20);  }
 .badge-red    { background: rgba(200,57,63,0.10);  color: var(--red);      border: 1px solid rgba(200,57,63,0.18);  }
 .badge-amber  { background: rgba(247,196,55,0.15); color: #8a6a00;         border: 1px solid rgba(247,196,55,0.30); }
+.badge-orange { background: rgba(217,119,6,0.12);  color: #9a4b00;         border: 1px solid rgba(217,119,6,0.28);  }
 .badge-blue   { background: rgba(30,74,122,0.10);  color: var(--blue-ink); border: 1px solid rgba(30,74,122,0.18);  }
 .badge-gray   { background: rgba(109,110,113,0.10);color: var(--gray-cfo); border: 1px solid rgba(109,110,113,0.20);}
 

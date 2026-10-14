@@ -13,6 +13,8 @@ import {
 import { AuthGuard } from "@nestjs/passport";
 import { Request } from "express";
 import { RolesGuard } from "../auth/roles.guard";
+import { PermissaoRhGuard } from "../auth/permissao-rh.guard";
+import { RecursoRh } from "../auth/recurso-rh.decorator";
 import { Roles } from "../auth/roles.decorator";
 import { ExtensionsService } from "./extensions.service";
 
@@ -27,7 +29,7 @@ function assertSuperAdmin(req: AuthRequest) {
 }
 
 @Controller("admin/extensions")
-@UseGuards(AuthGuard("jwt"), RolesGuard)
+@UseGuards(AuthGuard("jwt"), RolesGuard, PermissaoRhGuard)
 export class ExtensionsController {
   constructor(private readonly extensionsService: ExtensionsService) {}
 
@@ -66,12 +68,14 @@ export class ExtensionsController {
     return this.extensionsService.lookupUser(email.trim());
   }
 
+  @RecursoRh("gestao.ramais.sincronizar")
   @Post("sync")
   @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
   async sync() {
     return this.extensionsService.syncExtensions();
   }
 
+  @RecursoRh("gestao.ramais")
   @Get("sync/status")
   @Roles("ponto-admin", "PONTO_ADMIN", "RH_AUDITORIA")
   async status() {

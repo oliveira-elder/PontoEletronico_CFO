@@ -34,8 +34,15 @@ export function chaveMarcoUnico(ano: number, mes: number, dia: number): string {
 export function expandirMarcosIso(
   marcos: MarcoBancoHorasRef[],
   anoMin: number,
-  anoMax: number
+  anoMax: number,
+  deslocamentoDias = 0
 ): string[] {
+  if (deslocamentoDias > 0) {
+    /* Tolerância do fechamento: a zeragem acontece N dias depois da data-marco. */
+    return expandirMarcosIso(marcos, anoMin - 1, anoMax)
+      .map((d) => somarDiasIso(d, deslocamentoDias))
+      .sort();
+  }
   const set = new Set<string>();
   for (const m of marcos) {
     if (m.ano != null) {
@@ -58,10 +65,12 @@ export function expandirMarcosIso(
  */
 export function resolverCicloBancoHoras(
   marcos: MarcoBancoHorasRef[],
-  hojeIso: string
+  hojeIso: string,
+  /** Tolerância do fechamento (dias após a data-marco), global ou individual. */
+  deslocamentoDias = 0
 ): { cicloInicio: string | null; proximaZeragem: string | null } {
   const [y] = hojeIso.split("-").map(Number);
-  const marcosIso = expandirMarcosIso(marcos, y - 5, y + 2);
+  const marcosIso = expandirMarcosIso(marcos, y - 5, y + 2, deslocamentoDias);
   const marcosPassados = marcosIso.filter((d) => d <= hojeIso);
   const marcosFuturos = marcosIso.filter((d) => d > hojeIso);
 
@@ -94,7 +103,9 @@ export function listarCiclosBancoHoras(
   marcos: MarcoBancoHorasRef[],
   inicioAtividades: string,
   hojeIso: string,
-  dataInicioProducao?: string | null
+  dataInicioProducao?: string | null,
+  /** Tolerância do fechamento (dias após a data-marco), global ou individual. */
+  deslocamentoDias = 0
 ): CicloBancoHorasRef[] {
   if (!hojeIso) return [];
 
@@ -103,7 +114,9 @@ export function listarCiclosBancoHoras(
   if (!origem || origem > hojeIso) return [];
 
   const [y] = hojeIso.split("-").map(Number);
-  const todosMarcos = expandirMarcosIso(marcos, y - 10, y + 1).filter((d) => d <= hojeIso);
+  const todosMarcos = expandirMarcosIso(marcos, y - 10, y + 1, deslocamentoDias).filter(
+    (d) => d <= hojeIso
+  );
   const marcosIso = todosMarcos.filter((d) => d >= origem);
 
   const inicios: string[] = [];

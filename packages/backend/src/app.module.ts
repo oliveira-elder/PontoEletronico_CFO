@@ -18,6 +18,7 @@ import { AdminModule } from "./modules/admin/admin.module";
 import { AuditoriaModule } from "./modules/auditoria/auditoria.module";
 import { ExtensionsModule } from "./modules/extensions/extensions.module";
 import { RequisicaoRhModule } from "./modules/requisicao-rh/requisicao-rh.module";
+import { SaudeOcupacionalModule } from "./modules/saude-ocupacional/saude-ocupacional.module";
 import { LogsModule } from "./modules/logs/logs.module";
 import { IngestModule } from "./modules/ingest/ingest.module";
 import { BackupModule } from "./modules/backup/backup.module";
@@ -25,6 +26,7 @@ import { ApiServidoraModule } from "./modules/api-servidora/api-servidora.module
 import { AssinaturaModule } from "./modules/assinatura/assinatura.module";
 import { NotificacaoModule } from "./modules/notificacao/notificacao.module";
 import { SistemaModule } from "./modules/sistema/sistema.module";
+import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
 
 @Module({
   imports: [
@@ -44,12 +46,14 @@ import { SistemaModule } from "./modules/sistema/sistema.module";
     AuditoriaModule,
     ExtensionsModule,
     RequisicaoRhModule,
+    SaudeOcupacionalModule,
     IngestModule,
     BackupModule,
     ApiServidoraModule,
     AssinaturaModule,
     NotificacaoModule,
-    SistemaModule
+    SistemaModule,
+    PerfisRhModule
   ],
   providers: [
     AuditLogWriterService,

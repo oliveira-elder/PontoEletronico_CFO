@@ -33,6 +33,8 @@ services:
       - -c
       - sed -i 's/\r$$//' /app/docker/backend-entrypoint.sh && exec sh /app/docker/backend-entrypoint.sh
     environment:
+      # Fuso de Brasília em todo o backend (datas formatadas, "hoje", relatórios, avisos).
+      TZ: America/Sao_Paulo
       PORT: "3000"
       DATABASE_URL: postgresql://pontoeletronico:pontoeletronico@postgres:5432/pontoeletronico
       KEYCLOAK_URL: ${KEYCLOAK_URL:-http://192.168.100.112:8080}
@@ -50,6 +52,8 @@ services:
       GLPI_BASE_URL: http://glpi.local
       VIDEO_CONFERENCE_ENABLED: "false"
       SUPER_ADMIN_USERNAMES: ${SUPER_ADMIN_USERNAMES:-elder.oliveira}
+      # Chave do selo (HMAC) dos QR Codes por página dos documentos assinados (.env da raiz)
+      DOC_SEAL_SECRET: ${DOC_SEAL_SECRET:-}
       # MonitorSistema — ingestão de logs e backup (carregado do .env da raiz)
       INGEST_SHARED_KEY: ${INGEST_SHARED_KEY:-}
       BACKUP_AGENT_SHARED_KEY: ${BACKUP_AGENT_SHARED_KEY:-}

@@ -15,9 +15,13 @@ import {
   BarChart2Icon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { REQUERIMENTO_INFO, type TipoRequerimento } from "../../utils/requerimentos";
 import { useAuth } from "../../auth/AuthContext";
 import { api, isRequestAborted } from "../../hooks/useApi";
-import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoriaPonto";
+import {
+  categoriaSemIntervaloAlmoco,
+  categoriaSemVisibilidadeBancoHoras
+} from "../../utils/categoriaPonto";
 import {
   formatarDataExtensoPt,
   hojeBrasiliaISO,
@@ -93,7 +97,7 @@ interface DiaQuinzena {
 function statusQuinzena(dia: DiaRegistro): DiaQuinzena["status"] {
   if (dia.status === "FUTURO") return "FUTURO";
   if (dia.status === "OK") return "OK";
-  if (dia.status === "PENDENTE") return "PARCIAL";
+  if (dia.status === "PENDENTE" || dia.status === "INCONSISTENTE") return "PARCIAL";
   if (dia.horasMin > 0) return "OK";
   return "FALTA";
 }
@@ -383,7 +387,8 @@ interface ReqRhMiniItem {
 
 function RequisicoesRhSection({ token }: { token: string }) {
   const [items, setItems] = useState<ReqRhMiniItem[]>([]);
-  const [reqEnderecoPendente, setReqEnderecoPendente] = useState(false);
+  /** Requerimentos pendentes do funcionário (endereço + dados cadastrais), por tipo. */
+  const [reqsPendentes, setReqsPendentes] = useState<TipoRequerimento[]>([]);
   const [loading, setLoading] = useState(true);
 
   const carregar = useCallback(() => {
@@ -395,11 +400,15 @@ function RequisicoesRhSection({ token }: { token: string }) {
       api.get<ReqRhMiniItem[]>("/requisicoes-rh/minhas", token).catch(() => []),
       api
         .get<{ id: string; status: string } | null>("/ponto/requerimento-endereco", token)
-        .catch(() => null)
+        .catch(() => null),
+      api.get<{ tipo: TipoRequerimento }[]>("/ponto/requerimento-cadastro", token).catch(() => [])
     ])
-      .then(([d, req]) => {
+      .then(([d, req, cadastro]) => {
         setItems(d ?? []);
-        setReqEnderecoPendente(req?.status === "PENDENTE");
+        setReqsPendentes([
+          ...(req?.status === "PENDENTE" ? (["ENDERECO"] as const) : []),
+          ...(cadastro ?? []).map((c) => c.tipo)
+        ]);
       })
       .finally(() => setLoading(false));
   }, [token]);
@@ -408,10 +417,9 @@ function RequisicoesRhSection({ token }: { token: string }) {
     carregar();
   }, [carregar]);
 
-  const pendentes =
-    items.filter((i) => i.status === "PENDENTE").length + (reqEnderecoPendente ? 1 : 0);
+  const pendentes = items.filter((i) => i.status === "PENDENTE").length + reqsPendentes.length;
   const naoRespondidos = items.filter((i) => i.status !== "RESPONDIDO");
-  const recentes = naoRespondidos.slice(0, reqEnderecoPendente ? 2 : 3);
+  const recentes = naoRespondidos.slice(0, Math.max(0, 3 - reqsPendentes.length));
 
   const statusStyle = (s: string) =>
     s === "PENDENTE"
@@ -474,7 +482,7 @@ function RequisicoesRhSection({ token }: { token: string }) {
 
       {loading && <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>Carregando...</p>}
 
-      {!loading && recentes.length === 0 && !reqEnderecoPendente && (
+      {!loading && recentes.length === 0 && reqsPendentes.length === 0 && (
         <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0, fontStyle: "italic" }}>
           {items.length > 0
             ? "Todas as requisições foram respondidas."
@@ -482,11 +490,11 @@ function RequisicoesRhSection({ token }: { token: string }) {
         </p>
       )}
 
-      {!loading && (recentes.length > 0 || reqEnderecoPendente) && (
+      {!loading && (recentes.length > 0 || reqsPendentes.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {/* Item especial: requerimento de endereço residencial */}
-          {reqEnderecoPendente && (
-            <Link to="/ponto/minhas-requisicoes" style={{ textDecoration: "none" }}>
+          {/* Requerimentos do RH para o funcionário preencher (endereço, dependentes, …) */}
+          {reqsPendentes.map((tipo) => (
+            <Link key={tipo} to="/ponto/minhas-requisicoes" style={{ textDecoration: "none" }}>
               <div
                 style={{
                   display: "flex",
@@ -513,7 +521,7 @@ function RequisicoesRhSection({ token }: { token: string }) {
                     fontSize: 16
                   }}
                 >
-                  📍
+                  {REQUERIMENTO_INFO[tipo].icone}
                 </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p
@@ -527,10 +535,10 @@ function RequisicoesRhSection({ token }: { token: string }) {
                       whiteSpace: "nowrap"
                     }}
                   >
-                    Cadastrar Endereço Residencial
+                    {REQUERIMENTO_INFO[tipo].tituloFuncionario}
                   </p>
                   <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
-                    Solicitado pelo RH
+                    Solicitado pelo RH · Apresente os originais no RH
                   </p>
                 </div>
                 <span
@@ -548,7 +556,7 @@ function RequisicoesRhSection({ token }: { token: string }) {
                 </span>
               </div>
             </Link>
-          )}
+          ))}
           {recentes.map((item) => {
             const ss = statusStyle(item.status);
             return (
@@ -733,7 +741,10 @@ export function DashboardPage() {
               pontoObrigatorioDesde: histData?.pontoObrigatorioDesde ?? null,
               semRegistroPonto: !!histData?.semRegistroPonto,
               periodosSemObrigacao: histData?.periodosSemObrigacao ?? [],
-              exigirIntervalo: histData?.categoria !== "ESTAGIARIO"
+              periodosCessao: histData?.periodosCessao ?? [],
+              exigirIntervalo: !categoriaSemIntervaloAlmoco(histData?.categoria),
+              diasCicloCompletoEmCasa: histData?.cicloCompletoEmCasa?.dias,
+              exigenciasCicloPresencial: histData?.cicloCompletoPresencial?.porDia
             }
           ),
           feriados,

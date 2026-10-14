@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from "@nestjs/common";
+import { diaEmCessao, periodosCessao } from "../../utils/cessao-historico";
 import { Cron } from "@nestjs/schedule";
 import * as nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
@@ -178,6 +179,33 @@ export const EVENTOS_NOTIFICACAO = [
     gatilho: "Automático — ao solicitar documento de retorno"
   },
   {
+    id: "FERIAS_RODADA_PENDENTE_RH",
+    titulo: "Aviso e Recibo do 2º/3º Período de Férias Pendentes",
+    descricao:
+      "Avisa o RH quando um período futuro de férias divididas entra na janela de envio do " +
+      "Aviso e do Recibo (prazo configurável em Configurações → Solicitações).",
+    destinatario: "RH",
+    gatilho: "Automático — diariamente, quando faltam N dias para o início do período"
+  },
+  {
+    id: "FERIAS_RODADA_ASSINAR",
+    titulo: "Assinar Documentos do 2º/3º Período de Férias",
+    descricao:
+      "Notifica o funcionário quando o RH envia o Aviso e o Recibo de um período futuro das " +
+      "férias divididas para assinatura.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH enviar os documentos do período"
+  },
+  {
+    id: "SELO_ICP_VENCENDO",
+    titulo: "Certificado do Selo ICP-Brasil Vencendo",
+    descricao:
+      "Avisa o RH quando o certificado e-CNPJ A1 usado para selar os documentos está a 60, 30, 15, " +
+      "7, 3 ou 1 dia(s) do vencimento, ou já venceu.",
+    destinatario: "RH",
+    gatilho: "Automático — diariamente, perto do vencimento do certificado"
+  },
+  {
     id: "REGISTRO_PONTO",
     titulo: "Registro de Ponto",
     descricao:
@@ -185,6 +213,82 @@ export const EVENTOS_NOTIFICACAO = [
       "no ponto eletrônico.",
     destinatario: "Chefe",
     gatilho: "Automático — ao registrar entrada ou saída"
+  },
+  {
+    id: "FERIAS_RH",
+    titulo: "Férias Agendadas, Alteradas ou Canceladas pelo RH",
+    descricao:
+      "Informa o funcionário e o chefe quando o RH agenda, altera ou cancela férias " +
+      "(Auditoria → Funcionário → Férias), com os períodos e a justificativa do RH.",
+    destinatario: "Funcionário e Chefe",
+    gatilho: "Automático — ao RH agendar, alterar ou cancelar férias"
+  },
+  {
+    id: "EXAME_OCUPACIONAL_A_VENCER",
+    titulo: "Exame Médico Periódico a Vencer",
+    descricao:
+      "Avisa o funcionário e o RH quando o exame médico ocupacional periódico está perto de vencer (padrão: 30 dias).",
+    destinatario: "Funcionário e RH",
+    gatilho: "Automático — diariamente, no período de aviso"
+  },
+  {
+    id: "EXAME_OCUPACIONAL_VENCIDO",
+    titulo: "Exame Médico Periódico Vencido",
+    descricao: "Avisa o funcionário e o RH quando o exame médico ocupacional periódico venceu.",
+    destinatario: "Funcionário e RH",
+    gatilho: "Automático — diariamente, após o vencimento"
+  },
+  {
+    id: "EXAME_OCUPACIONAL_ENVIADO",
+    titulo: "Exame Médico Enviado para Conferência",
+    descricao: "Avisa o RH quando o funcionário envia o ASO do exame periódico para conferência.",
+    destinatario: "RH",
+    gatilho: "Automático — ao funcionário enviar o exame"
+  },
+  {
+    id: "EXAME_OCUPACIONAL_DEVOLVIDO",
+    titulo: "Exame Médico Devolvido pelo RH",
+    descricao: "Avisa o funcionário quando o RH devolve o exame enviado, com o motivo.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — ao RH devolver o exame"
+  },
+  {
+    id: "FECHAMENTO_BANCO_MUDANCA_SITUACAO",
+    titulo: "Fechamento do Banco de Horas por Mudança de Situação",
+    descricao:
+      "Avisa o RH e o chefe quando um funcionário passa a não registrar ponto (chefe, assessor, " +
+      "assessor) ou volta a registrar, com o saldo do banco de horas na data da mudança.",
+    destinatario: "RH e Chefe",
+    gatilho:
+      "Automático — ao alterar categoria, chefe, assessor ou registro de ponto do funcionário"
+  },
+  {
+    id: "SOLICITACAO_CRIADA_PELO_RH",
+    titulo: "Solicitação Aberta pelo RH em Nome do Funcionário",
+    descricao:
+      "Informa o funcionário e o chefe quando o RH abre uma solicitação (atestado, licença, " +
+      "abono, day off, hora extra, envio de documento) em nome do funcionário.",
+    destinatario: "Funcionário e Chefe",
+    gatilho: "Automático — ao RH criar a solicitação em Auditoria → Funcionário → Solicitações"
+  },
+  {
+    id: "BANCO_HORAS_LIBERADO",
+    titulo: "Tempo de Banco de Horas Liberado ou Revogado pelo RH",
+    descricao:
+      "Informa o funcionário e o chefe quando o RH libera (ou revoga) tempo do banco de horas " +
+      "para o funcionário usar como abono (Auditoria → Funcionário → Banco de Horas), com a " +
+      "validade e a justificativa do RH.",
+    destinatario: "Funcionário e Chefe",
+    gatilho: "Automático — ao RH liberar ou revogar tempo do banco de horas"
+  },
+  {
+    id: "BANCO_HORAS_LIBERADO_VENCENDO",
+    titulo: "Tempo de Banco de Horas Liberado Perto de Vencer",
+    descricao:
+      "Avisa o funcionário e o RH, 15 dias antes, que há tempo de banco de horas liberado " +
+      "para abono ainda não usado e que vai vencer.",
+    destinatario: "Funcionário e RH",
+    gatilho: "Automático — diariamente, 15 dias antes da validade"
   },
   {
     id: "AFASTAMENTO_REGISTRADO",
@@ -284,6 +388,17 @@ export const EVENTOS_NOTIFICACAO = [
 
 /** Eventos que devem nascer (e permanecer default) com e-mail + sistema ativos. */
 export const EVENTOS_NOTIFICACAO_CRITICOS = new Set([
+  "FERIAS_RH",
+  "SELO_ICP_VENCENDO",
+  "FERIAS_RODADA_PENDENTE_RH",
+  "FERIAS_RODADA_ASSINAR",
+  "EXAME_OCUPACIONAL_A_VENCER",
+  "EXAME_OCUPACIONAL_VENCIDO",
+  "EXAME_OCUPACIONAL_ENVIADO",
+  "EXAME_OCUPACIONAL_DEVOLVIDO",
+  "FECHAMENTO_BANCO_MUDANCA_SITUACAO",
+  "SOLICITACAO_CRIADA_PELO_RH",
+  "BANCO_HORAS_LIBERADO",
   "PAPEL_CRITICO_DESATIVADO",
   "SUPER_ADMIN_CONCEDIDO",
   "SUPER_ADMIN_REVOGADO",
@@ -755,6 +870,52 @@ export class NotificacaoService {
     return func?.user ?? null;
   }
 
+  /** RH e chefe sabem que a obrigação de ponto mudou e qual era o saldo do banco na data. */
+  async notificarFechamentoSituacao(
+    funcionarioId: string,
+    info: {
+      dataMudanca: string;
+      paraSemRegistro: boolean;
+      rotuloNovo: string;
+      saldoMinutos: number;
+      proximaZeragem: string | null;
+    }
+  ) {
+    const [func, rh, chefe] = await Promise.all([
+      this.prisma.funcionario.findUnique({
+        where: { id: funcionarioId },
+        select: { user: { select: { name: true } } }
+      }),
+      this.getUsuariosRh(),
+      this.getGestorDoFuncionario(funcionarioId)
+    ]);
+    const nome = func?.user?.name ?? "Funcionário";
+    const fmtBr = (iso: string) => iso.split("-").reverse().join("/");
+    const hm = (m: number) =>
+      `${m < 0 ? "-" : ""}${Math.floor(Math.abs(m) / 60)}h${String(Math.abs(m) % 60).padStart(2, "0")}`;
+    const saldo = hm(info.saldoMinutos);
+    const corpoBase = info.paraSemRegistro
+      ? `${nome} passa a não registrar ponto a partir de ${fmtBr(info.dataMudanca)} (${info.rotuloNovo}). ` +
+        `Saldo do banco de horas na data: ${saldo}. Os dias seguintes ficam neutros e o saldo fica ` +
+        `congelado até a zeragem${info.proximaZeragem ? ` de ${fmtBr(info.proximaZeragem)}` : ""}.` +
+        (info.saldoMinutos > 0
+          ? " Se houver saldo positivo, libere o tempo para abono em Auditoria → Funcionário → Banco de Horas."
+          : "")
+      : `${nome} volta a registrar ponto a partir de ${fmtBr(info.dataMudanca)}. ` +
+        `Saldo do banco de horas na data: ${saldo}.`;
+    const titulo = info.paraSemRegistro
+      ? `${nome}: passou a não registrar ponto (banco ${saldo})`
+      : `${nome}: voltou a registrar ponto (banco ${saldo})`;
+    const destinatarios = [...rh, ...(chefe ? [chefe] : [])];
+    if (!destinatarios.length) return;
+    await this.dispararEvento(
+      "FECHAMENTO_BANCO_MUDANCA_SITUACAO",
+      titulo,
+      corpoBase,
+      destinatarios
+    );
+  }
+
   async getUsuariosRh(): Promise<DestinatarioNotificacao[]> {
     const gerencias = await this.prisma.gerencia.findMany({
       select: { id: true, nome: true, sigla: true }
@@ -1200,6 +1361,8 @@ export class NotificacaoService {
 
     for (const func of funcionarios) {
       if (funcionarioSemRegistroPonto(func)) continue;
+      /* Cedido a outro órgão ontem: sem obrigação de ponto, nada a cobrar. */
+      if (diaEmCessao(ontemIso, await periodosCessao(this.prisma, func.id))) continue;
 
       const historicoCat = await ensureCategoriaHistorico(this.prisma, func.id);
       const pontoObrigatorioDesde = func.pontoObrigatorioDesde

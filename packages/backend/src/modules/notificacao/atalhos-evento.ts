@@ -69,6 +69,16 @@ export const ATALHOS_EVENTO: Record<string, AtalhoEvento> = {
     label: "Documentos do RH",
     caminho: "Documentos do RH"
   },
+  FERIAS_RODADA_ASSINAR: {
+    path: "/ponto/solicitacoes",
+    label: "Solicitações — Férias",
+    caminho: "Solicitações → Férias"
+  },
+  FERIAS_RODADA_PENDENTE_RH: {
+    path: "/ponto/aprovacoes?etapa=rh",
+    label: "Aprovações — Rodadas de férias",
+    caminho: "Aprovações → Rodadas de férias"
+  },
   DOCUMENTO_RETORNO_PENDENTE: {
     path: "/ponto/solicitacoes",
     label: "Solicitações — Enviar documento",

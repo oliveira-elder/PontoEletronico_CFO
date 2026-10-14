@@ -129,6 +129,25 @@ async function downloadFile(path: string, filename: string, explicitToken?: stri
   URL.revokeObjectURL(url);
 }
 
+/** Arquivo autenticado como Blob (ex.: PDF para o visualizador protegido). */
+async function fetchBlob(path: string, explicitToken?: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const tk = await resolveAccessToken(explicitToken);
+  if (tk) headers["Authorization"] = `Bearer ${tk}`;
+  const res = await fetch(`${BASE}${path}`, { method: "GET", headers, credentials: "include" });
+  if (!res.ok) {
+    let detail = `status ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body?.message ?? detail;
+    } catch {
+      /* sem corpo JSON */
+    }
+    throw new Error(detail);
+  }
+  return res.blob();
+}
+
 export const api = {
   get: <T>(path: string, token?: string, signal?: AbortSignal) =>
     req<T>("GET", path, undefined, token, { authRetried: false, gatewayRetries: 0, signal }),
@@ -136,5 +155,6 @@ export const api = {
   post: <T>(path: string, body: unknown, token?: string) => req<T>("POST", path, body, token),
   patch: <T>(path: string, body?: unknown, token?: string) => req<T>("PATCH", path, body, token),
   delete: <T>(path: string, body?: unknown, token?: string) => req<T>("DELETE", path, body, token),
-  download: (path: string, filename: string, token?: string) => downloadFile(path, filename, token)
+  download: (path: string, filename: string, token?: string) => downloadFile(path, filename, token),
+  blob: (path: string, token?: string) => fetchBlob(path, token)
 };
