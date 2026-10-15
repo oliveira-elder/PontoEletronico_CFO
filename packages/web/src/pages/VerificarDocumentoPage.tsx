@@ -32,7 +32,14 @@ interface Verificacao {
 interface Conteudo {
   encontrado: boolean;
   registro: string | null;
-  veredito: "CONFERE" | "ADULTERADO" | "DIVERGENCIAS" | "VERSAO_ANTERIOR" | "NAO_IDENTIFICADO";
+  veredito:
+    | "CONFERE"
+    | "ADULTERADO"
+    | "INCOMPLETO"
+    | "DIVERGENCIAS"
+    | "VERSAO_ANTERIOR"
+    | "NAO_IDENTIFICADO";
+  valoresAusentes?: number;
   divergencias: Array<{ linha: string; trechos?: string[] }>;
   totalDivergencias?: number;
   linhasRemovidas: number;
@@ -180,9 +187,11 @@ export function VerificarDocumentoPage() {
   /* Cópia autêntica de uma versão anterior, substituída porque os dados mudaram. */
   const anterior = arquivo ? (dados?.arquivo?.versaoAnterior ?? null) : null;
   /* Código autêntico, mas o PDF enviado não confere com nenhuma versão emitida: inválido. */
-  const conteudoConfere = conteudo?.veredito === "CONFERE";
-  const invalido = integridade === false && !anterior && !conteudoConfere;
-  const corAviso = anterior ? "#B45309" : invalido ? "#991B1B" : "#15803D";
+  /* Só o ARQUIVO ORIGINAL (impressão digital idêntica) é válido. O QR sozinho não comprova o
+     conteúdo: uma cópia convertida/alterada carrega o mesmo QR. */
+  const semArquivo = !arquivo;
+  const invalido = integridade === false && !anterior;
+  const corAviso = anterior || semArquivo ? "#B45309" : invalido ? "#991B1B" : "#15803D";
   const cartao: React.CSSProperties = {
     width: "100%",
     maxWidth: 600,
@@ -403,16 +412,18 @@ export function VerificarDocumentoPage() {
               style={{
                 padding: invalido ? 16 : 14,
                 borderRadius: 10,
-                background: anterior
-                  ? "rgba(247,196,55,0.10)"
-                  : invalido
-                    ? "#FEE2E2"
-                    : "rgba(21,128,61,0.07)",
-                border: anterior
-                  ? "1px solid rgba(180,83,9,0.30)"
-                  : invalido
-                    ? "2px solid #B91C1C"
-                    : "1px solid rgba(21,128,61,0.25)",
+                background:
+                  anterior || semArquivo
+                    ? "rgba(247,196,55,0.10)"
+                    : invalido
+                      ? "#FEE2E2"
+                      : "rgba(21,128,61,0.07)",
+                border:
+                  anterior || semArquivo
+                    ? "1px solid rgba(180,83,9,0.30)"
+                    : invalido
+                      ? "2px solid #B91C1C"
+                      : "1px solid rgba(21,128,61,0.25)",
                 borderLeft: invalido ? "6px solid #B91C1C" : undefined
               }}
             >
@@ -429,8 +440,8 @@ export function VerificarDocumentoPage() {
                   : invalido
                     ? "✕ ARQUIVO INVÁLIDO — não confere com o documento original"
                     : integridade === true
-                      ? "✓ Documento autêntico e arquivo íntegro"
-                      : "✓ Documento autêntico"}
+                      ? "✓ DOCUMENTO VÁLIDO — arquivo original, íntegro"
+                      : "⚠ Registro localizado — o conteúdo ainda NÃO foi conferido"}
               </p>
               {invalido && (
                 <p
@@ -458,8 +469,8 @@ export function VerificarDocumentoPage() {
                   : integridade === true
                     ? `O arquivo “${arquivo?.nome ?? ""}” é idêntico ao arquivado pelo sistema: não houve alteração.`
                     : invalido
-                      ? `Este arquivo NÃO corresponde a nenhuma versão emitida pelo sistema para este documento: ele pode ter sido ADULTERADO ou não foi emitido pelo CFO. Não o aceite como válido. O código informado pertence a um documento autêntico — solicite a via original ao RH ou baixe-a pelo sistema.`
-                      : "Para confirmar que o seu arquivo não foi alterado, envie o PDF no item 1."}
+                      ? `Este arquivo NÃO é o original emitido pelo sistema (foi alterado, convertido — ex.: Word — ou regravado). Não o aceite como válido. O resultado da conferência do conteúdo está acima; o código pertence a um documento autêntico — solicite a via original ao RH ou baixe-a pelo sistema.`
+                      : "O QR Code / código só confirma que este registro existe. Uma cópia alterada ou convertida (ex.: Word) carrega o MESMO QR Code — por isso, envie o PDF recebido ou uma foto/escaneamento da página no item 1 para a conferência automática do conteúdo."}
               </p>
             </div>
 
@@ -511,18 +522,28 @@ export function VerificarDocumentoPage() {
 /** Resultado da conferência automática do conteúdo (texto do PDF ou OCR da foto). */
 function ResultadoConteudo({ c, nome }: { c: Conteudo; nome: string }) {
   const cfg = {
-    CONFERE: {
-      cor: "#15803D",
-      fundo: "rgba(21,128,61,0.07)",
-      borda: "1px solid rgba(21,128,61,0.25)",
-      titulo:
-        c.origem === "ocr"
-          ? "✓ A leitura da foto confere com o original"
-          : "✓ O conteúdo do arquivo confere com o original",
-      texto:
-        c.origem === "ocr"
-          ? "Datas, horários e horas lidos na imagem coincidem com o documento arquivado."
-          : "O texto é idêntico ao do documento arquivado (o arquivo foi regravado/reimpresso em PDF, mas o conteúdo não foi alterado)."
+    CONFERE:
+      c.origem === "ocr"
+        ? {
+            cor: "#15803D",
+            fundo: "rgba(21,128,61,0.07)",
+            borda: "1px solid rgba(21,128,61,0.25)",
+            titulo: "✓ A leitura da foto confere com o original",
+            texto: "Datas, horários e horas lidos na imagem coincidem com o documento arquivado."
+          }
+        : {
+            cor: "#B45309",
+            fundo: "rgba(247,196,55,0.10)",
+            borda: "1px solid rgba(180,83,9,0.30)",
+            titulo: "⚠ Valores iguais aos do original, mas o ARQUIVO NÃO É O ORIGINAL",
+            texto: `O arquivo “${nome}” foi regravado ou convertido (ex.: Word, “imprimir em PDF”). Não foram encontrados valores alterados, mas só o arquivo original emitido pelo sistema tem validade: solicite ou baixe o original.`
+          },
+    INCOMPLETO: {
+      cor: "#991B1B",
+      fundo: "#FEE2E2",
+      borda: "2px solid #B91C1C",
+      titulo: "✕ ARQUIVO NÃO É O ORIGINAL — conteúdo incompleto",
+      texto: `O arquivo “${nome}” foi convertido/regravado e ${c.valoresAusentes ?? 0} valor(es) do documento original (datas, horários ou horas) não estão nele — podem ter sido removidos ou perdidos na conversão. Não o aceite como válido.`
     },
     ADULTERADO: {
       cor: "#991B1B",

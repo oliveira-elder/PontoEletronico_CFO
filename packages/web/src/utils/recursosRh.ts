@@ -188,6 +188,11 @@ export const ABAS_RH: AbaRh[] = [
         "Liberar (e revogar) tempo do banco de horas positivo para o funcionário usar como abono."
       ),
       f(
+        "auditoria.funcionarios.arquivos-fiscais",
+        "Extrair AFD e AEJ",
+        "Gerar o Arquivo Fonte de Dados (AFD) e o Arquivo Eletrônico de Jornada (AEJ) da Portaria MTP 671/2021, por funcionário ou por grupo."
+      ),
+      f(
         "auditoria.funcionarios.solicitar",
         "Abrir solicitação em nome do funcionário",
         "Criar atestado, licença, abono, day off, hora extra e envio de documento pelo funcionário (fica marcado como do RH)."

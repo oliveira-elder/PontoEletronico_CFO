@@ -1,3 +1,4 @@
+import { ModalArquivosFiscais } from "../../components/arquivos-fiscais/ModalArquivosFiscais";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { SaudeOcupacionalPage } from "./SaudeOcupacionalPage";
 import { FolhasAssinadasLista } from "../../components/assinatura/FolhasAssinadasLista";
@@ -1440,6 +1441,9 @@ function DetalhesFuncionario({
     | "folhasAssinadas"
     | "ferias"
   >("registros");
+  const podeAuditoriaDet = usePodeAuditoria();
+  const podeArquivosFiscais = podeAuditoriaDet("auditoria.funcionarios.arquivos-fiscais");
+  const [arquivoFiscal, setArquivoFiscal] = useState<"AFD" | "AEJ" | null>(null);
   const [mes, setMes] = useState(String(new Date().getMonth() + 1));
   const [ano, setAno] = useState(String(new Date().getFullYear()));
   const [registros, setRegistros] = useState<Registro[]>([]);
@@ -1644,6 +1648,32 @@ function DetalhesFuncionario({
             </p>
           )}
         </div>
+        {podeArquivosFiscais && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            {(["AFD", "AEJ"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                className="btn btn-ghost btn-sm"
+                title={
+                  t === "AFD"
+                    ? "Arquivo Fonte de Dados (extrato deste funcionário)"
+                    : "Arquivo Eletrônico de Jornada deste funcionário"
+                }
+                onClick={() => setArquivoFiscal(t)}
+              >
+                ⬇ {t}
+              </button>
+            ))}
+          </div>
+        )}
+        {arquivoFiscal && (
+          <ModalArquivosFiscais
+            tipoInicial={arquivoFiscal}
+            funcionario={{ id: funcionario.id, nome: funcionario.user.name }}
+            onClose={() => setArquivoFiscal(null)}
+          />
+        )}
       </div>
 
       {/* Card resumo + controles */}
@@ -10217,6 +10247,7 @@ const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
 export function AuditoriaPage() {
   const { user, token, hasRole, permissoesRhCarregadas } = useAuth();
   const podeAuditoria = usePodeAuditoria();
+  const [arquivosFiscaisGrupo, setArquivosFiscaisGrupo] = useState(false);
   const [aba, setAba] = useState<Aba>("funcionarios");
   const [funcionariosStatusPonto, setFuncionariosStatusPonto] = useState<
     "" | "presente" | "ausente"
@@ -10279,7 +10310,21 @@ export function AuditoriaPage() {
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", minWidth: 0, width: "100%" }}>
       {/* Cabeçalho */}
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 24, position: "relative" }}>
+        {podeAuditoria("auditoria.funcionarios.arquivos-fiscais") && (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            style={{ position: "absolute", right: 0, top: 4 }}
+            title="AFD e AEJ da Portaria MTP 671/2021 para um grupo de funcionários"
+            onClick={() => setArquivosFiscaisGrupo(true)}
+          >
+            ⬇ Arquivos fiscais (AFD / AEJ)
+          </button>
+        )}
+        {arquivosFiscaisGrupo && (
+          <ModalArquivosFiscais tipoInicial="AFD" onClose={() => setArquivosFiscaisGrupo(false)} />
+        )}
         <p className="eyebrow" style={{ marginBottom: 6 }}>
           RH / Compliance
         </p>

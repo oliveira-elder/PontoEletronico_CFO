@@ -1,3 +1,5 @@
+import { ConfigRepPtrp } from "../../components/arquivos-fiscais/ConfigRepPtrp";
+import { ConfigAcordosRep } from "../../components/arquivos-fiscais/ConfigAcordosRep";
 import React, { useState, useEffect, useCallback } from "react";
 import { ToleranciaFechamentoGlobal } from "../../components/banco/ToleranciaFechamento";
 import { GruposCidConfig } from "../../components/atestado/GruposCidConfig";
@@ -2796,6 +2798,8 @@ export function ConfiguracoesPage() {
                 </button>
               </div>
             </Secao>
+            <ConfigRepPtrp />
+            <ConfigAcordosRep />
           </>
         )}
 

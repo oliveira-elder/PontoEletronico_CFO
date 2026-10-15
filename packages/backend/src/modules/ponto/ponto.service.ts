@@ -1,10 +1,12 @@
+import { RepLivroService } from "../rep/rep-livro.service";
 import {
   Injectable,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
   Logger,
-  OnModuleInit
+  OnModuleInit,
+  Optional
 } from "@nestjs/common";
 import { TipoPonto, OrigemPonto, Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -412,7 +414,8 @@ export class PontoService implements OnModuleInit {
     private readonly documentoService: DocumentoService,
     private readonly feriadoConfigService: FeriadoConfigService,
     private readonly notificacaoService: NotificacaoService,
-    private readonly configSolicitacoesService: ConfigSolicitacoesService
+    private readonly configSolicitacoesService: ConfigSolicitacoesService,
+    @Optional() private readonly repLivro?: RepLivroService
   ) {}
 
   /* ─── Helpers ─── */
@@ -1984,20 +1987,32 @@ export class PontoService implements OnModuleInit {
       });
     }
 
-    const registro = await this.prisma.registroPonto.create({
-      data: {
+    /* Batida + marcação ORIGINAL no livro do REP (NSR) na mesma transação (Portaria 671). */
+    const registro = await this.prisma.$transaction(async (tx) => {
+      const criado = await tx.registroPonto.create({
+        data: {
+          funcionarioId: func.id,
+          tipo: dto.tipo as TipoPonto,
+          dataHora: agora,
+          origem: origemPersistida,
+          modoRegistro: modoRegistroEfetivo as import("@prisma/client").ModoRegistro,
+          latitude: dto.latitude,
+          longitude: dto.longitude,
+          dentroPerimetro,
+          observacao: dto.observacao,
+          fotoUrl: fotoUrl ?? null,
+          ...(observacoesRegistro ? { observacoes: observacoesRegistro } : {})
+        }
+      });
+      await this.repLivro?.registrarMarcacao(tx, {
+        registroPontoId: criado.id,
         funcionarioId: func.id,
-        tipo: dto.tipo as TipoPonto,
-        dataHora: agora,
-        origem: origemPersistida,
-        modoRegistro: modoRegistroEfetivo as import("@prisma/client").ModoRegistro,
-        latitude: dto.latitude,
-        longitude: dto.longitude,
-        dentroPerimetro,
-        observacao: dto.observacao,
-        fotoUrl: fotoUrl ?? null,
-        ...(observacoesRegistro ? { observacoes: observacoesRegistro } : {})
-      }
+        cpf: func.cpf ?? null,
+        tipoPonto: criado.tipo,
+        dataHoraMarcacao: agora,
+        origem: origemPersistida
+      });
+      return criado;
     });
 
     /* Verifica hora extra acima do limite configurado e cria solicitação automática */

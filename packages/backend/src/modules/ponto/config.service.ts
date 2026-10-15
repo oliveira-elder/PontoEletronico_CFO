@@ -1,10 +1,14 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Optional } from "@nestjs/common";
+import { RepLivroService } from "../rep/rep-livro.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { chaveMarcoAnual } from "../../utils/banco-horas-marco";
 
 @Injectable()
 export class ConfigService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly repLivro?: RepLivroService
+  ) {}
 
   /* ─── ConfiguracaoSistema (singleton) ─── */
 
@@ -43,6 +47,20 @@ export class ConfigService {
       ...(data as Record<string, unknown>)
     });
     delete safe.dataInicioProducao;
+    if (safe.repTipo !== undefined && !["REP_A", "REP_P"].includes(String(safe.repTipo))) {
+      throw new BadRequestException("Tipo de REP inválido (REP_A ou REP_P).");
+    }
+    for (const [campo, max] of [
+      ["repActProcesso", 17],
+      ["repInpiRegistro", 17],
+      ["repCnoCaepf", 14],
+      ["repResponsavelCpf", 11],
+      ["ptrpDesenvolvedorCnpj", 14]
+    ] as const) {
+      if (safe[campo] != null && String(safe[campo]).replace(/\D/g, "").length > max) {
+        throw new BadRequestException(`${campo}: no máximo ${max} dígitos.`);
+      }
+    }
     if (safe.contratoAvisoAntecedenciaDias !== undefined) {
       const dias = Number(safe.contratoAvisoAntecedenciaDias);
       if (!Number.isInteger(dias) || dias < 1 || dias > 365) {
@@ -132,6 +150,7 @@ export class ConfigService {
       create: { id: "singleton", ...safe },
       update: safe
     });
+    void this.repLivro?.sincronizarEmpresa();
 
     /* Espelha parâmetros da aba Períodos na jornada padrão, para que o cálculo
        de histórico/banco (getJornadaEfetiva) use os mesmos valores salvos na UI. */

@@ -429,6 +429,18 @@ model ConfiguracaoSistema {
   cep                                String?
   telefone                           String?
   emailInstitucional                 String?
+  // REP / PTRP — Portaria MTP 671/2021 (AFD e AEJ)
+  repTipo                            String            @default("REP_A")
+  repActProcesso                     String?
+  repInpiRegistro                    String?
+  repCnoCaepf                        String?
+  repLocalPrestacao                  String?
+  repResponsavelCpf                  String?
+  ptrpNome                           String            @default("Sistema de Ponto Eletrônico CFO")
+  ptrpVersao                         String            @default("1.0")
+  ptrpDesenvolvedorCnpj              String?
+  ptrpDesenvolvedorRazao             String?
+  ptrpDesenvolvedorEmail             String?
   // Geolocalização
   lat                                Float             @default(-15.7876)
   lng                                Float             @default(-47.9040)
@@ -1392,4 +1404,111 @@ model FuncionarioModalidadeHistorico {
 
   @@unique([funcionarioId, desde])
   @@index([funcionarioId])
+}
+
+/// Contador único do NSR (Número Sequencial de Registro) do REP — sem lacunas: incrementado
+/// com bloqueio de linha na MESMA transação que grava a marcação/evento.
+model ContadorNsr {
+  id     String @id @default("singleton")
+  ultimo Int    @default(0)
+}
+
+/// Livro de marcações do REP (base do AFD) — SOMENTE INCLUSÃO (trigger bloqueia UPDATE/DELETE).
+/// Correções ficam no registroPonto (tratamento/PTRP) e aparecem no AEJ; aqui fica o original.
+model MarcacaoRep {
+  id               String    @id @default(cuid())
+  nsr              Int       @unique
+  funcionarioId    String
+  cpf              String
+  tipoPonto        TipoPonto
+  dataHoraMarcacao DateTime
+  dataHoraGravacao DateTime
+  /// 01 mobile · 02 navegador · 03 desktop · 04 dispositivo · 05 outro
+  coletor          String
+  offline          Boolean   @default(false)
+  registroPontoId  String?
+  instanciaId      String?
+  hashAnterior     String?
+  hash             String
+  /// Reconstituída na carga inicial (meses anteriores ao livro).
+  reconstituida    Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  @@index([funcionarioId, dataHoraMarcacao])
+  @@index([dataHoraMarcacao])
+}
+
+/// Eventos do REP (AFD tipos 2, 4, 5 e 6) — SOMENTE INCLUSÃO.
+model EventoRep {
+  id          String   @id @default(cuid())
+  nsr         Int      @unique
+  tipo        Int
+  dataHora    DateTime
+  dados       Json
+  instanciaId String?
+  createdAt   DateTime @default(now())
+
+  @@index([tipo, dataHora])
+}
+
+/// Instância (máquina virtual/servidor) que roda o REP — detectada automaticamente a cada início.
+model InstanciaRep {
+  id               String    @id @default(cuid())
+  codigo           String    @unique
+  impressaoDigital String
+  origem           Json
+  hostname         String?
+  primeiraVez      DateTime  @default(now())
+  ultimaVez        DateTime  @default(now())
+  ativa            Boolean   @default(true)
+  encerradaEm      DateTime?
+}
+
+/// Extrações de AFD/AEJ (comprovação de entrega ao Auditor-Fiscal e controle do maior NSR exportado).
+model ExtracaoArquivoFiscal {
+  id             String   @id @default(cuid())
+  tipo           String
+  oficial        Boolean
+  escopo         String
+  funcionarioIds Json
+  periodoInicio  String
+  periodoFim     String
+  nomeArquivo    String
+  sha256         String
+  assinado       Boolean
+  nsrMaximo      Int?
+  registros      Int
+  acordoId       String?
+  geradoPorId    String?
+  geradoPorNome  String?
+  createdAt      DateTime @default(now())
+}
+
+/// ACT/CCT que autoriza o REP-A (Portaria MTP 671/2021, art. 77) — histórico, nunca excluído.
+model AcordoColetivoRep {
+  id                     String    @id @default(cuid())
+  tipo                   String    @default("ACT")
+  numeroProcesso         String
+  numeroRegistroMediador String?
+  ano                    Int
+  vigenciaInicio         String
+  vigenciaFim            String
+  dataRegistro           String?
+  entidadeSindical       String?
+  clausula               String?
+  observacoes            String?
+  renovacaoDeId          String?
+  status                 String    @default("ATIVO")
+  canceladoEm            DateTime?
+  motivoCancelamento     String?
+  migrado                Boolean   @default(false)
+  pdfNome                String?
+  pdfSha256              String?
+  pdfDados               Bytes?
+  criadoPorId            String?
+  criadoPorNome          String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([vigenciaInicio, vigenciaFim])
 }

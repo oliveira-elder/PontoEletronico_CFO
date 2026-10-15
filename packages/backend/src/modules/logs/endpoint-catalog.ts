@@ -150,6 +150,84 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     categoria: "Ponto — Autoatendimento"
   },
   {
+    method: "POST",
+    pathPattern: "/auditoria/arquivos-fiscais/afd",
+    titulo: "Extração do AFD",
+    descricao: "Gera o Arquivo Fonte de Dados (Portaria MTP 671/2021) do REP — oficial ou extrato.",
+    categoria: "Auditoria"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/arquivos-fiscais/aej",
+    titulo: "Extração do AEJ",
+    descricao:
+      "Gera o Arquivo Eletrônico de Jornada (Portaria MTP 671/2021) dos funcionários escolhidos.",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/arquivos-fiscais/pre-validacao",
+    titulo: "Pré-validação do AFD/AEJ",
+    descricao: "Verifica pendências antes da extração dos arquivos fiscais.",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/acordos-rep",
+    titulo: "Acordos coletivos do REP-A",
+    descricao: "Lista o histórico de ACT/CCT que autorizam o REP-A.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/acordos-rep",
+    titulo: "Cadastrar acordo coletivo do REP-A",
+    descricao: "Cadastra um ACT/CCT autorizador do REP-A.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/acordos-rep/:id",
+    titulo: "Editar acordo coletivo do REP-A",
+    descricao: "Altera os dados de um ACT/CCT cadastrado.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/acordos-rep/:id/renovar",
+    titulo: "Renovar acordo coletivo do REP-A",
+    descricao: "Registra a renovação de um ACT/CCT.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/acordos-rep/:id/cancelar",
+    titulo: "Cancelar acordo coletivo do REP-A",
+    descricao: "Cancela (sem excluir) um ACT/CCT, com motivo.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/acordos-rep/:id/pdf",
+    titulo: "Anexar PDF do acordo coletivo",
+    descricao: "Envia o PDF do ACT/CCT depositado.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/acordos-rep/:id/pdf",
+    titulo: "Baixar PDF do acordo coletivo",
+    descricao: "Baixa o PDF anexado ao ACT/CCT.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/arquivos-fiscais/situacao",
+    titulo: "Situação do livro do REP",
+    descricao: "NSR atual, instância (máquina) e bloqueios do livro de marcações.",
+    categoria: "Auditoria"
+  },
+  {
     method: "GET",
     pathPattern: "/ponto/verificar/:codigo",
     titulo: "Verificação pública de documento",

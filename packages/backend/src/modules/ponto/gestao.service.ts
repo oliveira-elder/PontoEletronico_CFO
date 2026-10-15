@@ -1,3 +1,4 @@
+import { RepLivroService } from "../rep/rep-livro.service";
 import { mensagemCpfObrigatorio } from "../../utils/cpf";
 import { PontoService } from "./ponto.service";
 import { inteiroConfig } from "../../utils/licenca-regras";
@@ -6,7 +7,8 @@ import {
   HttpException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import { registrarMudancaModalidade } from "../../utils/modalidade-historico";
 import { Cron, CronExpression } from "@nestjs/schedule";
@@ -215,7 +217,8 @@ export class GestaoService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificacaoService: NotificacaoService,
-    private readonly pontoService: PontoService
+    private readonly pontoService: PontoService,
+    @Optional() private readonly repLivro?: RepLivroService
   ) {}
 
   /* ─── Gerências ─── */
@@ -623,6 +626,7 @@ export class GestaoService {
       await syncCapacitacoes(tx, funcionario.id, data.capacitacoes);
       return funcionario;
     });
+    void this.repLivro?.sincronizarEmpregados();
     return this.getFuncionario(funcionario.id);
   }
 
@@ -999,6 +1003,7 @@ export class GestaoService {
       this.logger.error(`Falha ao processar substituições após salvar funcionário ${id}: ${e}`)
     );
 
+    void this.repLivro?.sincronizarEmpregados();
     return this.getFuncionario(id);
   }
 

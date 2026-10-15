@@ -33,6 +33,7 @@ import {
 import { SeloIcpService } from "../selo-icp/selo-icp.service";
 import { createHash, createHmac, randomBytes } from "crypto";
 import { extrairLinhasPdf, normalizarTexto, tokensNumericos } from "../../utils/pdf-texto";
+import { aplicarAnotacoesVerificacao } from "../../utils/pdf-anotacoes";
 import { existsSync } from "fs";
 import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { join } from "path";
@@ -285,7 +286,7 @@ const PDF_FONTS = getPdfFonts();
  * Versão do layout da folha em PDF. Aumente a cada mudança visual: as folhas concluídas e AINDA
  * NÃO seladas são regeradas no próximo download; as seladas com ICP-Brasil nunca mudam.
  */
-const VERSAO_LAYOUT_PDF = 5;
+const VERSAO_LAYOUT_PDF = 10;
 
 @Injectable()
 export class AssinaturaService {
@@ -639,8 +640,8 @@ export class AssinaturaService {
     origem?: "pdf" | "ocr";
   }) {
     const linhas = (Array.isArray(body.linhas) ? body.linhas : [])
-      .slice(0, 3000)
-      .map((l) => String(l ?? "").slice(0, 500))
+      .slice(0, 6000)
+      .map((l) => String(l ?? "").slice(0, 4000))
       .filter((l) => l.trim());
     if (!linhas.length) throw new BadRequestException("Não foi possível ler o texto do arquivo.");
     const origem = body.origem === "ocr" ? "ocr" : "pdf";
@@ -704,7 +705,6 @@ export class AssinaturaService {
       linhasOrig = await extrairLinhasPdf(original);
       this.textoOriginalCache.set(shaOrig, linhasOrig);
     }
-    const compactoOrig = linhasOrig.map(normalizarTexto).join("");
     const reg = await this.prisma.assinaturaQuadro.findUnique({
       where: { id: assinaturaId },
       select: { pdfFingerprint: true, periodo: { select: { mes: true, ano: true } } }
@@ -716,13 +716,31 @@ export class AssinaturaService {
     /* 3. Comparação. */
     const divergencias: Array<{ linha: string; trechos?: string[] }> = [];
     let linhasRemovidas = 0;
+    let valoresAusentes = 0;
     if (origem === "pdf") {
-      for (const l of linhas) {
-        const n = normalizarTexto(l);
-        if (n.length < 4) continue;
-        if (!compactoOrig.includes(n)) divergencias.push({ linha: l.trim() });
+      /* PDF regravado/convertido (Word, "imprimir em PDF"…) embaralha a ordem do texto, então a
+         comparação é pelos VALORES: datas, horários, durações e CPF, contando quantas vezes cada
+         um aparece. Valor a mais no arquivo = inserido/alterado; valor a menos = removido ou
+         perdido na conversão. */
+      const contar = (ls: string[]) => {
+        const m = new Map<string, number>();
+        for (const t of ls.flatMap(tokensNumericos)) m.set(t, (m.get(t) ?? 0) + 1);
+        return m;
+      };
+      const orig = contar(linhasOrig);
+      const env = contar(linhas);
+      for (const [t, n] of env) {
+        const extra = n - (orig.get(t) ?? 0);
+        if (extra > 0) {
+          const linha = linhas.find((l) => tokensNumericos(l).includes(t)) ?? "";
+          divergencias.push({
+            linha: linha.trim().slice(0, 160),
+            trechos: [extra > 1 ? `${t} (${extra}x)` : t]
+          });
+        }
       }
-      /* Linhas de dia do original que sumiram do arquivo enviado. */
+      for (const [t, n] of orig) valoresAusentes += Math.max(0, n - (env.get(t) ?? 0));
+      /* Linhas de dia do original que sumiram do arquivo enviado (texto contínuo). */
       const compactoEnviado = linhas.map(normalizarTexto).join("");
       linhasRemovidas = linhasOrig.filter(
         (l) =>
@@ -746,18 +764,21 @@ export class AssinaturaService {
     const veredito =
       registroLido && registroVigente && registroLido !== registroVigente
         ? ("VERSAO_ANTERIOR" as const)
-        : divergencias.length || linhasRemovidas
+        : divergencias.length
           ? origem === "pdf"
             ? ("ADULTERADO" as const)
             : ("DIVERGENCIAS" as const)
-          : ("CONFERE" as const);
+          : origem === "pdf" && valoresAusentes > 0
+            ? ("INCOMPLETO" as const)
+            : ("CONFERE" as const);
     return {
       encontrado: true,
       registro: registroVigente,
       veredito,
       divergencias: divergencias.slice(0, 50),
       totalDivergencias: divergencias.length,
-      linhasRemovidas
+      linhasRemovidas,
+      valoresAusentes
     };
   }
 
@@ -1957,6 +1978,11 @@ export class AssinaturaService {
     return { registros, afastamentos };
   }
 
+  /** Relatório do quadro mensal (mesma apuração da folha) — usado pelo AEJ. */
+  relatorioMensal(funcionarioId: string, mes: number, ano: number) {
+    return this.montarRelatorioParaPdf(funcionarioId, mes, ano);
+  }
+
   private async montarRelatorioParaPdf(funcionarioId: string, mes: number, ano: number) {
     const funcJornada = await this.prisma.funcionario.findUnique({
       where: { id: funcionarioId },
@@ -2806,7 +2832,15 @@ export class AssinaturaService {
 
     try {
       const printer = new PdfPrinter(PDF_FONTS);
-      const pdfDoc = printer.createPdfKitDocument(docDefinition);
+      /* bufferPages: as páginas ficam abertas para receber as anotações de verificação. */
+      const pdfDoc = printer.createPdfKitDocument(docDefinition, { bufferPages: true });
+      if (input.registro) {
+        aplicarAnotacoesVerificacao(pdfDoc, {
+          urlPagina: input.registro.urlPagina,
+          urlDeclaracao: input.verificacao?.url ?? null,
+          codigo: input.verificacao?.codigo ?? null
+        });
+      }
       return await new Promise<Buffer>((resolve, reject) => {
         const chunks: Buffer[] = [];
         pdfDoc.on("data", (chunk: Buffer) => chunks.push(chunk));

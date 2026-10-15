@@ -104,6 +104,21 @@ export interface QuadroPdfInput {
   };
 }
 
+/**
+ * QR Codes e link de verificação NÃO são desenhados na página: o builder reserva o espaço com um
+ * retângulo-marcador (cor quase branca) e o serviço coloca ali ANOTAÇÕES do PDF com o desenho do
+ * QR / o texto do link. Word e a maioria dos conversores importam só o conteúdo da página e
+ * descartam anotações — a cópia convertida sai sem QR e sem link.
+ */
+export const MARCADOR_QR_PAGINA = "#FFFFFE";
+export const MARCADOR_QR_DECLARACAO = "#FFFFFD";
+export const MARCADOR_LINK_DECLARACAO = "#FFFFFC";
+
+const marcador = (cor: string, w: number, h: number) => ({
+  canvas: [{ type: "rect", x: 0, y: 0, w, h, color: cor, lineWidth: 0 }],
+  width: w
+});
+
 export interface RegistroDocumentoPdf {
   /** Muda sempre que o conteúdo do documento muda (deriva da impressão digital dos dados). */
   numero: string;
@@ -721,37 +736,127 @@ function buildTotais(input: QuadroPdfInput): unknown {
 
 /** Lista de ocorrências derivada dos dias (afastamento, feriado, falta, correções…). */
 function buildOcorrencias(input: QuadroPdfInput): unknown {
-  const itens: string[] = [];
+  type Item = { data: string; tipo: string; texto: string; cor: string; registro: string };
+  const itens: Item[] = [];
   for (const d of input.relatorio.dias) {
-    const data = d.iso.split("-").reverse().join("/");
+    const data = d.iso.split("-").reverse().join("/").slice(0, 5);
     if (d.statusInterno === "FUTURO" || d.statusInterno === "FOLGA") continue;
-    if (d.statusInterno === "OK" && !d.ajustes?.length && !/atestado/i.test(d.status)) continue;
     if (d.statusInterno !== "OK" || /atestado/i.test(d.status)) {
-      itens.push(`${data} – ${d.status}`);
+      itens.push({
+        data,
+        tipo:
+          d.statusInterno === "FALTA"
+            ? "Falta"
+            : d.statusInterno === "INCONSISTENTE"
+              ? "Inconsistência"
+              : "Afastamento",
+        texto: d.status,
+        cor:
+          d.statusInterno === "FALTA" || d.statusInterno === "INCONSISTENTE"
+            ? "#B91C1C"
+            : "#1E40AF",
+        registro: "—"
+      });
     }
-    for (const a of d.ajustes ?? []) itens.push(`${data} – ${a}`);
+    for (const a of d.ajustes ?? []) {
+      itens.push({
+        data,
+        tipo: "Correção",
+        texto: a.replace(/ conforme sua solicitação aprovada\.?$/, " (solicitação aprovada)"),
+        cor: "#6B0F1A",
+        registro: "Alterado"
+      });
+    }
+    /* Ajustes automáticos de almoço: mudam só o cálculo do banco, não o registro. */
+    for (const a of d.ajustesAlmoco ?? []) {
+      itens.push({
+        data,
+        tipo: "Almoço",
+        texto: a.replace(/^Almoço /, ""),
+        registro: "Não modificado",
+        cor: "#92400E"
+      });
+    }
   }
   if (!itens.length) return { text: "" };
+
+  /* Tabela em toda a largura; com muitas ocorrências, duas tabelas lado a lado (leitura de cima
+     para baixo, depois a da direita). Datas sem o ano (o período está no cabeçalho). */
+  /* Uma tabela em toda a largura (cabe ~35 linhas na página); acima disso, duas lado a lado. */
+  const duasColunas = itens.length > 36;
+  const tabela = (parte: Item[]) => ({
+    width: "*",
+    table: {
+      headerRows: 1,
+      widths: duasColunas ? [24, 40, "*", 50] : [34, 52, "*", 62],
+      body: [
+        ["Dia", "Tipo", "Ocorrência", "Registro"].map((t) => ({
+          text: t,
+          style: "thCell",
+          fontSize: 6.3
+        })),
+        ...parte.map((it, k) => {
+          const fill = k % 2 === 0 ? "#FFFFFF" : "#F7F7F7";
+          return [
+            { text: it.data, fontSize: 6.6, bold: true, fillColor: fill },
+            { text: it.tipo, fontSize: 6.3, bold: true, color: it.cor, fillColor: fill },
+            { text: it.texto, fontSize: 6.4, color: "#1F2937", fillColor: fill },
+            {
+              text: it.registro,
+              fontSize: 6.1,
+              bold: it.registro !== "—",
+              color: it.registro === "Alterado" ? "#6B0F1A" : "#15803D",
+              fillColor: fill
+            }
+          ];
+        })
+      ]
+    },
+    layout: {
+      hLineWidth: (i: number) => (i === 1 ? 0.6 : 0.3),
+      hLineColor: () => "#E5E7EB",
+      vLineWidth: () => 0,
+      paddingTop: () => 2.2,
+      paddingBottom: () => 2.2,
+      paddingLeft: () => 3,
+      paddingRight: () => 3
+    }
+  });
+  const metade = Math.ceil(itens.length / 2);
+  const temAlteradas = input.relatorio.dias.some((d) => d.ajustes?.length);
+  const temAlmoco = input.relatorio.dias.some((d) => d.ajustesAlmoco?.length);
   return {
     stack: [
-      { text: "Ocorrências do período", style: "sectionTitle", margin: [0, 2, 0, 2] },
       {
-        ul: itens,
-        fontSize: 6.5,
-        color: "#374151",
-        margin: [4, 0, 0, 6] as [number, number, number, number]
+        text: `Ocorrências do período (${itens.length})`,
+        style: "sectionTitle",
+        margin: [0, 4, 0, 3]
       },
-      ...(input.relatorio.dias.some((d) => d.ajustes?.length)
+      duasColunas
+        ? {
+            columns: [tabela(itens.slice(0, metade)), tabela(itens.slice(metade))],
+            columnGap: 12
+          }
+        : tabela(itens),
+      ...(temAlteradas || temAlmoco
         ? [
             {
-              text: "Dias com marcações alteradas: a coluna “Marcações” mostra o horário original batido.",
+              text: [
+                temAlteradas
+                  ? "Correção: marcação alterada por solicitação aprovada — a coluna “Marcações” mostra o horário original batido. "
+                  : "",
+                temAlmoco
+                  ? "Almoço: ajuste automático aplicado somente no cálculo de horas e do banco, conforme a jornada — o registro de ponto NÃO é modificado (os horários batidos permanecem como foram registrados)."
+                  : ""
+              ].join(""),
               fontSize: 6,
               color: "#6B7280",
-              margin: [0, 0, 0, 4] as [number, number, number, number]
+              margin: [0, 4, 0, 4] as [number, number, number, number]
             }
           ]
         : [])
-    ]
+    ],
+    margin: [0, 0, 0, 2]
   };
 }
 
@@ -831,7 +936,9 @@ function buildPaginaDeclaracao(input: QuadroPdfInput, rascunho: boolean): unknow
   const qr = verificacao?.url
     ? {
         columns: [
-          { qr: verificacao.url, fit: 92, width: 100 },
+          input.registro && !rascunho
+            ? { ...marcador(MARCADOR_QR_DECLARACAO, 92, 92), width: 100 }
+            : { qr: verificacao.url, fit: 92, width: 100 },
           {
             width: "*",
             stack: [
@@ -847,13 +954,17 @@ function buildPaginaDeclaracao(input: QuadroPdfInput, rascunho: boolean): unknow
                 color: "#374151",
                 margin: [0, 2, 0, 4] as [number, number, number, number]
               },
-              { text: verificacao.url, fontSize: 7, bold: true, color: "#1E40AF" },
-              {
-                text: `Código: ${verificacao.codigo ?? "—"}`,
-                fontSize: 6.5,
-                color: "#111",
-                margin: [0, 3, 0, 0] as [number, number, number, number]
-              }
+              ...(input.registro && !rascunho
+                ? [marcador(MARCADOR_LINK_DECLARACAO, 330, 24)]
+                : [
+                    { text: verificacao.url, fontSize: 7, bold: true, color: "#1E40AF" },
+                    {
+                      text: `Código: ${verificacao.codigo ?? "—"}`,
+                      fontSize: 6.5,
+                      color: "#111",
+                      margin: [0, 3, 0, 0] as [number, number, number, number]
+                    }
+                  ])
             ]
           }
         ],
@@ -1160,7 +1271,7 @@ function buildAssinaturaRodape(
                 {
                   width: 52,
                   stack: [
-                    { qr: input.registro.urlPagina(paginaAtual, totalPaginas), fit: 52 },
+                    marcador(MARCADOR_QR_PAGINA, 52, 52),
                     { text: "Verificar página", fontSize: 4.8, color: "#555", alignment: "center" }
                   ]
                 }

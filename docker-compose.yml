@@ -54,6 +54,8 @@ services:
       SUPER_ADMIN_USERNAMES: ${SUPER_ADMIN_USERNAMES:-elder.oliveira}
       # Chave do selo (HMAC) dos QR Codes por página dos documentos assinados (.env da raiz)
       DOC_SEAL_SECRET: ${DOC_SEAL_SECRET:-}
+      # Opcional: força a identidade da instância do REP (ex.: após migração planejada)
+      REP_INSTANCIA_ID: ${REP_INSTANCIA_ID:-}
       # MonitorSistema — ingestão de logs e backup (carregado do .env da raiz)
       INGEST_SHARED_KEY: ${INGEST_SHARED_KEY:-}
       BACKUP_AGENT_SHARED_KEY: ${BACKUP_AGENT_SHARED_KEY:-}
@@ -82,6 +84,8 @@ services:
       # Usa packages/backend/dist do host (evita volume nomeado com build antigo)
       - uploads_fotos:/app/uploads
       - ./deploy/keycloak:/app/deploy/keycloak:ro
+      # Identidade da máquina (REP — Portaria 671): detectada a cada início; clonar a VM gera outra
+      - /etc/machine-id:/host/etc/machine-id:ro
     ports:
       - "12003:3000"
     depends_on:

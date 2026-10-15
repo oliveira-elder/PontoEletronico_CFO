@@ -148,6 +148,46 @@ async function fetchBlob(path: string, explicitToken?: string): Promise<Blob> {
   return res.blob();
 }
 
+/** POST que devolve arquivo (ex.: ZIP do AFD/AEJ) e dispara o download. */
+async function postDownload(
+  path: string,
+  body: unknown,
+  filenamePadrao: string,
+  explicitToken?: string
+) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const tk = await resolveAccessToken(explicitToken);
+  if (tk) headers["Authorization"] = `Bearer ${tk}`;
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    let detail = `status ${res.status}`;
+    try {
+      const j = await res.json();
+      detail = j?.message ?? detail;
+    } catch {
+      /* sem corpo JSON */
+    }
+    throw new Error(Array.isArray(detail) ? detail.join(" ") : detail);
+  }
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  const nome = /filename="?([^";]+)"?/.exec(cd)?.[1] ?? filenamePadrao;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return { assinado: res.headers.get("X-Assinado") === "1", nome };
+}
+
 export const api = {
   get: <T>(path: string, token?: string, signal?: AbortSignal) =>
     req<T>("GET", path, undefined, token, { authRetried: false, gatewayRetries: 0, signal }),
@@ -156,5 +196,7 @@ export const api = {
   patch: <T>(path: string, body?: unknown, token?: string) => req<T>("PATCH", path, body, token),
   delete: <T>(path: string, body?: unknown, token?: string) => req<T>("DELETE", path, body, token),
   download: (path: string, filename: string, token?: string) => downloadFile(path, filename, token),
-  blob: (path: string, token?: string) => fetchBlob(path, token)
+  blob: (path: string, token?: string) => fetchBlob(path, token),
+  postDownload: (path: string, body: unknown, filename: string, token?: string) =>
+    postDownload(path, body, filename, token)
 };

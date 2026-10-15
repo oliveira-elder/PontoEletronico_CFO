@@ -99,6 +99,8 @@ export interface DiaQuadroPdf {
   remunerado?: boolean;
   /** Correções/inclusões aprovadas nas batidas do dia (texto "alterado de X para Y"). */
   ajustes?: string[];
+  /** Ajustes automáticos de almoço feitos só no cálculo (o registro não muda). */
+  ajustesAlmoco?: string[];
   /** Mesmas correções, estruturadas: tipo da batida, horário anterior (null = inclusão) e novo. */
   ajustesDetalhe?: Array<{ tipoRegistro: string; anterior: string | null; novo: string }>;
   /** Hora extra creditada ao banco no dia (apuração do banco, com a regra de autorização). */
@@ -146,7 +148,8 @@ function calcHorasMinutosDia(
   regs: RegistroHistorico[],
   agoraMin?: number,
   jornada?: JornadaHistoricoContext,
-  forcarSemIntervalo?: boolean
+  forcarSemIntervalo?: boolean,
+  ajustes?: string[]
 ): number {
   const entrada = regs.find((r) => r.tipo === "ENTRADA");
   return calcHorasTrabalhadasMinutos(
@@ -163,7 +166,8 @@ function calcHorasMinutosDia(
       horaEntrada: jornada?.horaEntrada ?? "08:00",
       horaSaida: jornada?.horaSaida ?? "17:00",
       toleranciaEntradaMin: jornada?.toleranciaEntradaMin ?? 5,
-      toleranciaSaidaMin: jornada?.toleranciaEntradaMin ?? jornada?.toleranciaSaidaMin ?? 5
+      toleranciaSaidaMin: jornada?.toleranciaEntradaMin ?? jornada?.toleranciaSaidaMin ?? 5,
+      ajustes
     }
   );
 }
@@ -357,6 +361,8 @@ export function montarRelatorioQuadro(
     const isHoje = iso === hojeIso;
     const feriadoDia = feriadoMap.get(iso);
     const dayRegs = byDay.get(iso) ?? [];
+    /* Ajustes automáticos de almoço feitos só no cálculo (vão para "Ocorrências do período"). */
+    const ajustesAlmocoDia: string[] = [];
     /* Dia de expediente da jornada (não é fim de semana/folga nem feriado). */
     const diaUtilRemunerado = !fimDeSemana && jornadaEsperadaMin(iso, jornada) > 0 && !feriadoDia;
 
@@ -509,16 +515,40 @@ export function montarRelatorioQuadro(
       let horasMin = 0;
       let statusInterno: StatusDiaQuadro;
       if (entrada && saida) {
-        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+        horasMin = calcHorasMinutosDia(
+          dayRegs,
+          undefined,
+          jornada,
+          forcarSemIntervaloDia,
+          ajustesAlmocoDia
+        );
         statusInterno = "OK";
       } else if (entrada && isHoje) {
-        horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia(), jornada, forcarSemIntervaloDia);
+        horasMin = calcHorasMinutosDia(
+          dayRegs,
+          agoraMinBrasilia(),
+          jornada,
+          forcarSemIntervaloDia,
+          ajustesAlmocoDia
+        );
         statusInterno = "PENDENTE";
       } else if (entrada && inicioIntervalo) {
-        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+        horasMin = calcHorasMinutosDia(
+          dayRegs,
+          undefined,
+          jornada,
+          forcarSemIntervaloDia,
+          ajustesAlmocoDia
+        );
         statusInterno = "INCONSISTENTE";
       } else {
-        horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+        horasMin = calcHorasMinutosDia(
+          dayRegs,
+          undefined,
+          jornada,
+          forcarSemIntervaloDia,
+          ajustesAlmocoDia
+        );
         statusInterno = isHoje ? "PENDENTE" : "INCONSISTENTE";
       }
       const cicloFds = aplicarCiclo(
@@ -546,6 +576,7 @@ export function montarRelatorioQuadro(
         status: `Trabalhado (${tipoLabel})`,
         statusInterno,
         multiplicadorPct: pct,
+        ...(ajustesAlmocoDia.length ? { ajustesAlmoco: [...new Set(ajustesAlmocoDia)] } : {}),
         ...(cicloFds.cicloIncompleto ? { cicloIncompleto: cicloFds.cicloIncompleto } : {})
       });
       continue;
@@ -640,13 +671,31 @@ export function montarRelatorioQuadro(
     let saldoComoFalta = false;
 
     if (entrada && saida) {
-      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+      horasMin = calcHorasMinutosDia(
+        dayRegs,
+        undefined,
+        jornada,
+        forcarSemIntervaloDia,
+        ajustesAlmocoDia
+      );
       statusInterno = "OK";
     } else if (entrada && isHoje) {
-      horasMin = calcHorasMinutosDia(dayRegs, agoraMinBrasilia(), jornada, forcarSemIntervaloDia);
+      horasMin = calcHorasMinutosDia(
+        dayRegs,
+        agoraMinBrasilia(),
+        jornada,
+        forcarSemIntervaloDia,
+        ajustesAlmocoDia
+      );
       statusInterno = "PENDENTE";
     } else if (entrada && (inicioIntervalo || temPausaAberta(dayRegs))) {
-      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+      horasMin = calcHorasMinutosDia(
+        dayRegs,
+        undefined,
+        jornada,
+        forcarSemIntervaloDia,
+        ajustesAlmocoDia
+      );
       statusInterno = "INCONSISTENTE";
     } else if (entrada) {
       /* Só a entrada, em dia passado: registro iniciado e não concluído. O saldo continua
@@ -655,7 +704,13 @@ export function montarRelatorioQuadro(
       statusInterno = "INCONSISTENTE";
       saldoComoFalta = true;
     } else {
-      horasMin = calcHorasMinutosDia(dayRegs, undefined, jornada, forcarSemIntervaloDia);
+      horasMin = calcHorasMinutosDia(
+        dayRegs,
+        undefined,
+        jornada,
+        forcarSemIntervaloDia,
+        ajustesAlmocoDia
+      );
       statusInterno = isHoje ? "PENDENTE" : "INCONSISTENTE";
     }
     const cicloDia = aplicarCiclo(
@@ -771,7 +826,7 @@ export function montarRelatorioQuadro(
       saldoMin = -jornadaMin;
     } else {
       saldoMin = horasMin - jornadaMin;
-      saldoMin += creditoAlmocoDireitoDoDia({
+      const creditoAlmoco = creditoAlmocoDireitoDoDia({
         registros: dayRegs,
         almocoMinMin: jornada.almocoMinMin ?? 60,
         almocoPodeIniciarA: jornada.almocoPodeIniciarA ?? "11:30",
@@ -779,6 +834,12 @@ export function montarRelatorioQuadro(
         agoraMin: isHoje ? agoraMinBrasilia() : undefined,
         exigirIntervalo: !forcarSemIntervaloDia
       });
+      saldoMin += creditoAlmoco;
+      if (creditoAlmoco > 0) {
+        ajustesAlmocoDia.push(
+          `Crédito de ${Math.floor(creditoAlmoco / 60)}h${String(creditoAlmoco % 60).padStart(2, "0")} de almoço não usufruído (pausa/atestado)`
+        );
+      }
     }
 
     dias.push({
@@ -804,6 +865,7 @@ export function montarRelatorioQuadro(
               : statusPdfDe(statusInterno, false),
       statusInterno,
       multiplicadorPct,
+      ...(ajustesAlmocoDia.length ? { ajustesAlmoco: [...new Set(ajustesAlmocoDia)] } : {}),
       ...(ajustesDoDia(dayRegs).length
         ? { ajustes: ajustesDoDia(dayRegs), ajustesDetalhe: ajustesDetalheDoDia(dayRegs) }
         : {}),

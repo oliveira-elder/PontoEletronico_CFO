@@ -37,7 +37,15 @@ export interface CalcHorasOpts {
   toleranciaEntradaMin?: number;
   /** Tolerância simétrica de saída (±N em torno de horaSaida). */
   toleranciaSaidaMin?: number;
+  /**
+   * Coletor opcional dos ajustes AUTOMÁTICOS de almoço feitos só no cálculo (o registro não
+   * muda): almoço curto, excesso na tolerância, retorno presumido e desconto do mínimo.
+   */
+  ajustes?: string[];
 }
+
+const hhmm = (m: number) =>
+  `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
 
 export interface AlmocoCurtoInfo {
   inicioMin: number;
@@ -164,6 +172,9 @@ export function calcHorasTrabalhadasMinutos(
         const duracaoReg = Math.max(0, ts - emAlmocoDesde);
         if (exigirIntervalo && almocoMinMin > 0 && duracaoReg < almocoMinMin) {
           /* Fim antecipado: mantém horário na tela, mas o cálculo usa início+mínimo. */
+          opts.ajustes?.push(
+            `Almoço ${hhmm(emAlmocoDesde)}–${hhmm(ts)} (${duracaoReg} min): conta ${almocoMinMin} min, retorno às ${hhmm(emAlmocoDesde + almocoMinMin)}`
+          );
           minutosAlmocoRegistrados += almocoMinMin;
           entradaMin = emAlmocoDesde + almocoMinMin;
         } else if (
@@ -173,6 +184,11 @@ export function calcHorasTrabalhadasMinutos(
           duracaoReg <= almocoTolMax
         ) {
           /* Excesso dentro da tolerância de entrada (mesmo N): conta como mínimo. */
+          if (duracaoReg !== almocoMinMin) {
+            opts.ajustes?.push(
+              `Almoço ${hhmm(emAlmocoDesde)}–${hhmm(ts)} (${duracaoReg} min): conta ${almocoMinMin} min (tolerância)`
+            );
+          }
           minutosAlmocoRegistrados += almocoMinMin;
           entradaMin = emAlmocoDesde + almocoMinMin;
         } else {
@@ -189,6 +205,9 @@ export function calcHorasTrabalhadasMinutos(
       marcarJanela(ts);
       if (emAlmocoDesde !== null) {
         const retornoPresumido = emAlmocoDesde + almocoMinMin;
+        opts.ajustes?.push(
+          `Almoço sem retorno (início ${hhmm(emAlmocoDesde)}): retorno presumido às ${hhmm(retornoPresumido)}`
+        );
         minutosAlmocoRegistrados += almocoMinMin;
         if (saidaCalc > retornoPresumido) total += saidaCalc - retornoPresumido;
         emAlmocoDesde = null;
@@ -232,7 +251,14 @@ export function calcHorasTrabalhadasMinutos(
     const almocoAbertoTardio = emAlmocoDesde !== null && emAlmocoDesde > fimJanelaAlmocoMin;
     if (emAlmocoDesde === null || almocoAbertoTardio) {
       const deficit = Math.max(0, almocoMinMin - minutosAlmocoRegistrados);
-      if (deficit > 0) total = Math.max(0, total - deficit);
+      if (deficit > 0) {
+        total = Math.max(0, total - deficit);
+        opts.ajustes?.push(
+          minutosAlmocoRegistrados > 0
+            ? `Intervalo de almoço abaixo do mínimo: ${deficit} min descontados`
+            : `Sem intervalo de almoço registrado: ${deficit} min descontados`
+        );
+      }
     }
   }
 

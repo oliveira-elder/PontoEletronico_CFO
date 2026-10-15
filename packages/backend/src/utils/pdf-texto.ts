@@ -70,11 +70,11 @@ export function normalizarTexto(s: string): string {
     .replace(/[^a-z0-9:/+\-.,]/g, "");
 }
 
-/** Datas, horários e durações de uma linha (o que a OCR consegue ler com segurança). */
+/** CPF, datas, horários e durações de uma linha (valores que identificam alteração). */
 export function tokensNumericos(s: string): string[] {
   return (
     s
-      .match(/\d{2}\/\d{2}\/\d{4}|\d{1,2}:\d{2}|[+-]?\d{1,3}h\d{2}m?/gi)
+      .match(/\d{3}\.\d{3}\.\d{3}-\d{2}|\d{2}\/\d{2}\/\d{4}|\d{1,2}:\d{2}|[+-]?\d{1,3}h\d{2}m?/gi)
       ?.map((t) => t.toLowerCase()) ?? []
   );
 }
