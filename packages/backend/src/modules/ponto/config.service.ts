@@ -41,17 +41,13 @@ export class ConfigService {
     };
   }
 
-  async updateSistema(data: Record<string, unknown>) {
+  async updateSistema(data: Record<string, unknown>, responsavelCpf?: string | null) {
     /* Tolerância simétrica: entrada e saída sempre iguais; margem diária desligada. */
     const safe = this.normalizarToleranciasSimetricas({
       ...(data as Record<string, unknown>)
     });
     delete safe.dataInicioProducao;
-    if (safe.repTipo !== undefined && !["REP_A", "REP_P"].includes(String(safe.repTipo))) {
-      throw new BadRequestException("Tipo de REP inválido (REP_A ou REP_P).");
-    }
     for (const [campo, max] of [
-      ["repActProcesso", 17],
       ["repInpiRegistro", 17],
       ["repCnoCaepf", 14],
       ["repResponsavelCpf", 11],
@@ -150,7 +146,7 @@ export class ConfigService {
       create: { id: "singleton", ...safe },
       update: safe
     });
-    void this.repLivro?.sincronizarEmpresa();
+    void this.repLivro?.sincronizarEmpresa(responsavelCpf);
 
     /* Espelha parâmetros da aba Períodos na jornada padrão, para que o cálculo
        de histórico/banco (getJornadaEfetiva) use os mesmos valores salvos na UI. */

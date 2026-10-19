@@ -87,6 +87,62 @@ async function getJson(url: string): Promise<Verificacao> {
   return (await r.json()) as Verificacao;
 }
 
+interface ConteudoMarcacao {
+  encontrado: boolean;
+  registro?: string;
+  veredito: "CONFERE" | "DIVERGENTE" | "NAO_IDENTIFICADO";
+  divergencias: string[];
+  origem: "pdf" | "ocr";
+}
+
+async function postConteudoMarcacao(body: {
+  hash?: string;
+  linhas: string[];
+  origem: "pdf" | "ocr";
+}): Promise<ConteudoMarcacao> {
+  const r = await fetch("/api/ponto/verificar-marcacao/conteudo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const j = (await r.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(j?.message ?? "Não foi possível conferir o conteúdo agora.");
+  }
+  return { ...((await r.json()) as Omit<ConteudoMarcacao, "origem">), origem: body.origem };
+}
+
+const REGISTRO_CRP = /CRP-\d{9}-[0-9A-F]{8}/i;
+
+interface MarcacaoVerificada {
+  encontrado: boolean;
+  registro?: string;
+  selo?: "VALIDO" | "SELO_INVALIDO" | "REGISTRO_DIFERENTE" | null;
+  arquivoOriginal?: boolean;
+  nsr?: string;
+  data?: string;
+  hora?: string;
+  empregador?: { nome: string; cnpj: string };
+  inpi?: string | null;
+  homologacao?: boolean;
+}
+
+/** Comprovante de Registro de Ponto: o código é o hash SHA-256 (64 hexadecimais) da marcação. */
+async function getMarcacao(hash: string, qs = ""): Promise<MarcacaoVerificada> {
+  const r = await fetch(`/api/ponto/verificar-marcacao/${encodeURIComponent(hash)}${qs}`);
+  if (!r.ok) {
+    const j = (await r.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(j?.message ?? "Não foi possível consultar agora. Tente novamente.");
+  }
+  return (await r.json()) as MarcacaoVerificada;
+}
+
+async function getArquivoMarcacao(sha: string): Promise<MarcacaoVerificada> {
+  const r = await fetch(`/api/ponto/verificar-marcacao/arquivo/${sha}`);
+  if (!r.ok) return { encontrado: false };
+  return (await r.json()) as MarcacaoVerificada;
+}
+
 /**
  * Página PÚBLICA (sem login) de verificação de autenticidade — destino do QR Code.
  * Duas formas: enviar o PDF recebido (conferência pelo SHA-256, calculado no navegador — o
@@ -99,6 +155,8 @@ export function VerificarDocumentoPage() {
   const [etapa, setEtapa] = useState("");
   const [codigo, setCodigo] = useState(params.codigo ?? "");
   const [dados, setDados] = useState<Verificacao | null>(null);
+  const [marcacao, setMarcacao] = useState<MarcacaoVerificada | null>(null);
+  const [conteudoMarc, setConteudoMarc] = useState<ConteudoMarcacao | null>(null);
   const [arquivo, setArquivo] = useState<{ nome: string; sha: string } | null>(null);
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
@@ -110,7 +168,25 @@ export function VerificarDocumentoPage() {
   async function consultarCodigo(c: string, sha?: string) {
     setCarregando(true);
     setErro("");
+    setMarcacao(null);
     try {
+      if (/^[0-9a-fA-F]{64}$/.test(c)) {
+        setDados(null);
+        /* Parâmetros do QR do comprovante (registro, página, total e selo). */
+        const qrs = new URLSearchParams();
+        for (const k of ["r", "p", "t", "s"]) {
+          const v = busca.get(k);
+          if (v) qrs.set(k, v);
+        }
+        const m = await getMarcacao(c.toLowerCase(), qrs.toString() ? `?${qrs.toString()}` : "");
+        /* O arquivo enviado (se houver) só é "original" se a impressão digital for a de um PDF emitido. */
+        setMarcacao(
+          sha
+            ? { ...m, arquivoOriginal: (await getArquivoMarcacao(sha)).registro === m.registro }
+            : m
+        );
+        return;
+      }
       const qs = new URLSearchParams();
       if (sha) qs.set("sha256", sha);
       /* Parâmetros do QR da página (registro, página, total e selo). */
@@ -137,6 +213,8 @@ export function VerificarDocumentoPage() {
     setCarregando(true);
     setErro("");
     setConteudo(null);
+    setConteudoMarc(null);
+    const modoComprovante = /^[0-9a-fA-F]{64}$/.test(codigoLimpo);
     try {
       if (ehImagem) {
         /* Papel: leitura por OCR no navegador e comparação automática com o original. */
@@ -144,6 +222,18 @@ export function VerificarDocumentoPage() {
         setEtapa("Lendo a imagem (OCR)…");
         const linhas = await lerImagemOcr(file, (pct) => setEtapa(`Lendo a imagem (OCR)… ${pct}%`));
         setEtapa("Comparando com o original…");
+        if (modoComprovante || REGISTRO_CRP.test(linhas.join(" "))) {
+          setDados(null);
+          setConteudoMarc(
+            await postConteudoMarcacao({
+              hash: modoComprovante ? codigoLimpo.toLowerCase() : undefined,
+              linhas,
+              origem: "ocr"
+            })
+          );
+          if (modoComprovante) await consultarCodigo(codigoLimpo);
+          return;
+        }
         const c = await postConteudo({ codigo: codigoLimpo || undefined, linhas, origem: "ocr" });
         setConteudo(c);
         if (codigoLimpo.length >= 16) await consultarCodigo(codigoLimpo);
@@ -152,11 +242,42 @@ export function VerificarDocumentoPage() {
       setEtapa("Calculando a impressão digital do arquivo…");
       const sha = await sha256Hex(file);
       setArquivo({ nome: file.name, sha });
+      /* Comprovante de ponto (código = hash de 64 caracteres): confere arquivo e conteúdo. */
+      if (modoComprovante) {
+        await consultarCodigo(codigoLimpo, sha);
+        const original = (await getArquivoMarcacao(sha)).encontrado;
+        if (!original) {
+          setEtapa("Lendo o texto do PDF e comparando com o original…");
+          setConteudoMarc(
+            await postConteudoMarcacao({
+              hash: codigoLimpo.toLowerCase(),
+              linhas: await extrairLinhasPdf(file),
+              origem: "pdf"
+            })
+          );
+        }
+        return;
+      }
       /* Com código informado, confere aquele documento; sem código, localiza pelo arquivo. */
       const r =
         codigoLimpo.length >= 16
           ? await getJson(`/api/ponto/verificar/${encodeURIComponent(codigoLimpo)}?sha256=${sha}`)
           : await getJson(`/api/ponto/verificar/arquivo/${sha}`);
+      if (!r.encontrado && !codigoLimpo) {
+        /* Não é folha de ponto: pode ser um comprovante de registro de ponto. */
+        const a = await getArquivoMarcacao(sha);
+        if (a.encontrado) {
+          setDados(null);
+          setMarcacao({ ...a, arquivoOriginal: true });
+          return;
+        }
+        const linhasCrp = await extrairLinhasPdf(file);
+        if (REGISTRO_CRP.test(linhasCrp.join(" "))) {
+          setDados(null);
+          setConteudoMarc(await postConteudoMarcacao({ linhas: linhasCrp, origem: "pdf" }));
+          return;
+        }
+      }
       setDados(r);
       if (r.codigo && !codigoLimpo) setCodigo(r.codigo);
       /* Não é o arquivo emitido: lê o texto e compara o CONTEÚDO com o original. */
@@ -318,6 +439,132 @@ export function VerificarDocumentoPage() {
           <p style={{ fontSize: 12.5, color: "var(--ink-600)", marginTop: 12 }}>⏳ {etapa}</p>
         )}
         {erro && <p style={{ color: "var(--red)", fontSize: 13, marginTop: 14 }}>⚠️ {erro}</p>}
+
+        {/* Comprovante de Registro de Ponto (art. 79): confere pelo hash da marcação */}
+        {/* Conferência do conteúdo do comprovante (texto do PDF ou OCR da foto) */}
+        {conteudoMarc && (
+          <div
+            role="status"
+            style={{
+              marginTop: 14,
+              padding: 14,
+              borderRadius: 10,
+              fontSize: 13,
+              lineHeight: 1.6,
+              background:
+                conteudoMarc.veredito === "CONFERE"
+                  ? "#FFFBEB"
+                  : conteudoMarc.veredito === "DIVERGENTE"
+                    ? "#FEF2F2"
+                    : "#F3F4F6",
+              border: `1px solid ${
+                conteudoMarc.veredito === "CONFERE"
+                  ? "#FDE68A"
+                  : conteudoMarc.veredito === "DIVERGENTE"
+                    ? "#FECACA"
+                    : "#D1D5DB"
+              }`,
+              color:
+                conteudoMarc.veredito === "DIVERGENTE"
+                  ? "#991B1B"
+                  : conteudoMarc.veredito === "CONFERE"
+                    ? "#92400E"
+                    : "var(--ink-700)"
+            }}
+          >
+            {conteudoMarc.veredito === "CONFERE" && (
+              <>
+                <strong>
+                  O texto confere com o comprovante original, mas o arquivo NÃO é o PDF emitido.
+                </strong>{" "}
+                É uma cópia, conversão ou {conteudoMarc.origem === "ocr" ? "foto" : "reprodução"}:
+                não tem a assinatura nem a impressão digital do original. Para efeito de prova,
+                exija o PDF original.
+              </>
+            )}
+            {conteudoMarc.veredito === "DIVERGENTE" && (
+              <>
+                <strong>✕ Documento adulterado ou inválido.</strong> Estes dados não conferem com o
+                comprovante original: {conteudoMarc.divergencias.join(", ")}.
+              </>
+            )}
+            {conteudoMarc.veredito === "NAO_IDENTIFICADO" && (
+              <>
+                <strong>Não foi possível identificar o comprovante</strong> a partir do arquivo.
+                Informe o hash da marcação (64 caracteres) acima e envie o arquivo de novo.
+              </>
+            )}
+          </div>
+        )}
+
+        {marcacao && (
+          <div
+            role="status"
+            style={{
+              marginTop: 14,
+              padding: 14,
+              borderRadius: 10,
+              fontSize: 13,
+              background: marcacao.encontrado ? "#F0FDF4" : "#FEF2F2",
+              border: `1px solid ${marcacao.encontrado ? "#BBF7D0" : "#FECACA"}`,
+              color: marcacao.encontrado ? "#166534" : "#991B1B"
+            }}
+          >
+            {marcacao.encontrado ? (
+              <>
+                <strong>✓ Comprovante autêntico.</strong> Existe no livro do REP uma marcação com
+                este hash:
+                <div style={{ marginTop: 6, color: "var(--ink-900)", lineHeight: 1.6 }}>
+                  NSR <strong style={{ fontFamily: "var(--font-mono)" }}>{marcacao.nsr}</strong> ·{" "}
+                  {marcacao.data} às <strong>{marcacao.hora}</strong>
+                  <br />
+                  {marcacao.empregador?.nome} · CNPJ {marcacao.empregador?.cnpj}
+                  <br />
+                  {marcacao.inpi
+                    ? `Registro do programa no INPI nº ${marcacao.inpi}`
+                    : "Registro do programa no INPI em andamento"}
+                </div>
+                {marcacao.selo === "SELO_INVALIDO" && (
+                  <p style={{ margin: "8px 0 0", color: "#991B1B", fontWeight: 700 }}>
+                    ✕ O QR Code deste documento não tem o selo do sistema: pode ter sido forjado.
+                  </p>
+                )}
+                {marcacao.selo === "REGISTRO_DIFERENTE" && (
+                  <p style={{ margin: "8px 0 0", color: "#B45309", fontWeight: 700 }}>
+                    O selo é autêntico, mas pertence a outro comprovante.
+                  </p>
+                )}
+                {marcacao.arquivoOriginal === undefined && (
+                  <p style={{ margin: "8px 0 0", color: "#B45309", fontWeight: 600 }}>
+                    O QR Code sozinho não comprova o conteúdo: envie o PDF (ou uma foto) do
+                    comprovante abaixo para conferir se ele é o original.
+                  </p>
+                )}
+                {marcacao.arquivoOriginal === false && (
+                  <p style={{ margin: "8px 0 0", color: "#991B1B", fontWeight: 700 }}>
+                    ✕ O arquivo enviado NÃO é o PDF original emitido pelo sistema.
+                  </p>
+                )}
+                {marcacao.arquivoOriginal === true && (
+                  <p style={{ margin: "8px 0 0", color: "#166534", fontWeight: 700 }}>
+                    ✓ O arquivo enviado é o PDF original emitido pelo sistema.
+                  </p>
+                )}
+                {marcacao.homologacao && (
+                  <p style={{ margin: "8px 0 0", color: "#B45309", fontWeight: 700 }}>
+                    Marcação anterior ao início da operação como REP-P (homologação): o comprovante
+                    não tem validade jurídica.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <strong>✕ Hash não encontrado.</strong> Nenhuma marcação do livro do REP tem este
+                código: o comprovante pode ser falso ou ter sido digitado errado.
+              </>
+            )}
+          </div>
+        )}
 
         {/* QR da página: selo do sistema (registro + página + total) */}
         {dados?.registro?.situacao && (

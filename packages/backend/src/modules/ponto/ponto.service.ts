@@ -982,7 +982,9 @@ export class PontoService implements OnModuleInit {
       registrosHoje: registros,
       horasTrabalhadasMinutos,
       jornadaMinutos,
-      proximaAcao: acoesPermitidas[0] ?? null,
+      /* Só o próximo registro PRINCIPAL/obrigatório: a pausa (Interromper Expediente) é opcional e
+         não vira "próximo"; na pausa, o próximo obrigatório é Reiniciar Expediente. */
+      proximaAcao: acoesPermitidas.find((a) => a !== "INTERROMPER_EXPEDIENTE") ?? null,
       acoesPermitidas,
       /* Descanso de interjornada em curso (só informativo; o bloqueio efetivo é no registro). */
       interjornada: await this.interjornadaParaStatus(func.id),
@@ -2004,7 +2006,7 @@ export class PontoService implements OnModuleInit {
           ...(observacoesRegistro ? { observacoes: observacoesRegistro } : {})
         }
       });
-      await this.repLivro?.registrarMarcacao(tx, {
+      const marcacaoRep = await this.repLivro?.registrarMarcacao(tx, {
         registroPontoId: criado.id,
         funcionarioId: func.id,
         cpf: func.cpf ?? null,
@@ -2012,7 +2014,8 @@ export class PontoService implements OnModuleInit {
         dataHoraMarcacao: agora,
         origem: origemPersistida
       });
-      return criado;
+      /* NSR devolvido ao cliente: abre o Comprovante de Registro de Ponto (art. 80, II). */
+      return { ...criado, nsr: marcacaoRep?.nsr ?? null };
     });
 
     /* Verifica hora extra acima do limite configurado e cria solicitação automática */

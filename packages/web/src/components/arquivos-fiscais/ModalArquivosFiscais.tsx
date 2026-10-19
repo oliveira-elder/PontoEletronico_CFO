@@ -6,19 +6,12 @@ type TipoArquivo = "AFD" | "AEJ";
 type Escopo = "todos" | "gerencia" | "funcionarios";
 
 interface PreValidacao {
-  tipoRep: "REP_A" | "REP_P";
+  tipoRep: "REP_P";
   bloqueios: string[];
   avisos: string[];
   funcionarios: number;
   certificado: boolean;
   nsrAtual: number;
-  acordo?: {
-    numeroProcesso: string;
-    tipo: string;
-    ano: number;
-    vigenciaInicio: string;
-    vigenciaFim: string;
-  } | null;
 }
 
 const hojeIso = () =>
@@ -202,7 +195,7 @@ export function ModalArquivosFiscais({
       >
         <div style={{ padding: "18px 22px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--ink-500)", fontWeight: 700 }}>
-            PORTARIA MTP Nº 671/2021 · {pre?.tipoRep === "REP_P" ? "REP-P" : "REP-A"} + PTRP
+            PORTARIA MTP Nº 671/2021 · REP-P + PTRP
           </p>
           <h3 style={{ margin: "2px 0 0", fontFamily: "var(--font-display)", fontSize: 19 }}>
             {grupo ? "Arquivos fiscais (AFD / AEJ)" : `${tipo} — ${funcionario!.nome}`}
@@ -400,14 +393,6 @@ export function ModalArquivosFiscais({
                   ⚠ {a}
                 </div>
               ))}
-              {pre.tipoRep === "REP_A" && pre.acordo && (
-                <p style={{ margin: 0, fontSize: 12, color: "var(--ink-600)" }}>
-                  {pre.acordo.tipo} {pre.acordo.ano} no cabeçalho: processo{" "}
-                  {pre.acordo.numeroProcesso} · vigência{" "}
-                  {pre.acordo.vigenciaInicio.split("-").reverse().join("/")} a{" "}
-                  {pre.acordo.vigenciaFim.split("-").reverse().join("/")}
-                </p>
-              )}
               {!pre.bloqueios.length && (
                 <p style={{ margin: 0, fontSize: 12, color: "#15803D" }}>
                   ✓ Pronto para gerar · {pre.funcionarios} funcionário(s) · NSR atual {pre.nsrAtual}

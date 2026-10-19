@@ -39,6 +39,11 @@ export function campoN(valor: string | number | null | undefined, tamanho: numbe
 }
 
 /** Deslocamento de Brasília no instante (hoje -0300; sem horário de verão desde 2019). */
+/** Fuso de Brasília na data (ex.: "-0300"), gravado junto de cada marcação. */
+export function fusoHorario(d: Date): string {
+  return deslocamentoBrasilia(d);
+}
+
 function deslocamentoBrasilia(d: Date): string {
   const partes = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Sao_Paulo",

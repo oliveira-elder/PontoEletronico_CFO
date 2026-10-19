@@ -114,7 +114,7 @@ export const MARCADOR_QR_PAGINA = "#FFFFFE";
 export const MARCADOR_QR_DECLARACAO = "#FFFFFD";
 export const MARCADOR_LINK_DECLARACAO = "#FFFFFC";
 
-const marcador = (cor: string, w: number, h: number) => ({
+export const marcador = (cor: string, w: number, h: number) => ({
   canvas: [{ type: "rect", x: 0, y: 0, w, h, color: cor, lineWidth: 0 }],
   width: w
 });
@@ -1310,7 +1310,7 @@ function buildAssinaturaRodape(
  * microtexto com o nº de registro e a página. Recortes/colagens de prints desalinham o padrão e
  * o microtexto denuncia de qual registro/página veio o pedaço.
  */
-function buildFundoSeguranca(registro: string) {
+export function buildFundoSeguranca(registro: string) {
   return (paginaAtual: number, tamanho: { width: number; height: number }) => {
     const ondas: unknown[] = [];
     for (let y = 30, k = 0; y < tamanho.height - 20; y += 22, k++) {

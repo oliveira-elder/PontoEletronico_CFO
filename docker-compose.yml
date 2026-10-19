@@ -56,6 +56,10 @@ services:
       DOC_SEAL_SECRET: ${DOC_SEAL_SECRET:-}
       # Opcional: força a identidade da instância do REP (ex.: após migração planejada)
       REP_INSTANCIA_ID: ${REP_INSTANCIA_ID:-}
+      # Certificado e-CNPJ A1 (ICP-Brasil): assina AFD/AEJ (.p7s) e sela os PDFs. O arquivo e a
+      # senha ficam em ./deploy/icp (fora do git); sem eles, os arquivos saem sem assinatura.
+      ICP_A1_PFX_PATH: ${ICP_A1_PFX_PATH:-/app/deploy/icp/ecnpj.pfx}
+      ICP_A1_PFX_PASSPHRASE_FILE: ${ICP_A1_PFX_PASSPHRASE_FILE:-/app/deploy/icp/senha.txt}
       # MonitorSistema — ingestão de logs e backup (carregado do .env da raiz)
       INGEST_SHARED_KEY: ${INGEST_SHARED_KEY:-}
       BACKUP_AGENT_SHARED_KEY: ${BACKUP_AGENT_SHARED_KEY:-}
@@ -84,6 +88,7 @@ services:
       # Usa packages/backend/dist do host (evita volume nomeado com build antigo)
       - uploads_fotos:/app/uploads
       - ./deploy/keycloak:/app/deploy/keycloak:ro
+      - ./deploy/icp:/app/deploy/icp:ro
       # Identidade da máquina (REP — Portaria 671): detectada a cada início; clonar a VM gera outra
       - /etc/machine-id:/host/etc/machine-id:ro
     ports:

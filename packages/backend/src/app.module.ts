@@ -5,6 +5,7 @@ import { ScheduleModule } from "@nestjs/schedule";
 import { PrismaModule } from "./prisma/prisma.module";
 import { RepModule } from "./modules/rep/rep.module";
 import { ArquivosFiscaisModule } from "./modules/arquivos-fiscais/arquivos-fiscais.module";
+import { ComprovanteModule } from "./modules/comprovante/comprovante.module";
 import { AuditLogInterceptor } from "./interceptors/audit-log.interceptor";
 import { AuditLogWriterService } from "./common/audit-log-writer.service";
 import { AuthFailureLogFilter } from "./interceptors/auth-failure-log.filter";
@@ -34,6 +35,7 @@ import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
   imports: [
     RepModule,
     ArquivosFiscaisModule,
+    ComprovanteModule,
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
     PrismaModule,

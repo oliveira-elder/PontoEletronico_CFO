@@ -173,52 +173,113 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
-    pathPattern: "/ponto/config/acordos-rep",
-    titulo: "Acordos coletivos do REP-A",
-    descricao: "Lista o histórico de ACT/CCT que autorizam o REP-A.",
+    pathPattern: "/ponto/config/rep-p",
+    titulo: "Situação do REP-P",
+    descricao: "Identificação, estado da operação, livro, relógio e certificado do REP-P.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/config/rep-p",
+    titulo: "Salvar identificação do REP-P",
+    descricao: "Atualiza a identificação do REP-P (INPI, local, responsável e desenvolvedor).",
     categoria: "Configurações"
   },
   {
     method: "POST",
-    pathPattern: "/ponto/config/acordos-rep",
-    titulo: "Cadastrar acordo coletivo do REP-A",
-    descricao: "Cadastra um ACT/CCT autorizador do REP-A.",
-    categoria: "Configurações"
-  },
-  {
-    method: "PATCH",
-    pathPattern: "/ponto/config/acordos-rep/:id",
-    titulo: "Editar acordo coletivo do REP-A",
-    descricao: "Altera os dados de um ACT/CCT cadastrado.",
-    categoria: "Configurações"
-  },
-  {
-    method: "POST",
-    pathPattern: "/ponto/config/acordos-rep/:id/renovar",
-    titulo: "Renovar acordo coletivo do REP-A",
-    descricao: "Registra a renovação de um ACT/CCT.",
-    categoria: "Configurações"
-  },
-  {
-    method: "POST",
-    pathPattern: "/ponto/config/acordos-rep/:id/cancelar",
-    titulo: "Cancelar acordo coletivo do REP-A",
-    descricao: "Cancela (sem excluir) um ACT/CCT, com motivo.",
-    categoria: "Configurações"
-  },
-  {
-    method: "POST",
-    pathPattern: "/ponto/config/acordos-rep/:id/pdf",
-    titulo: "Anexar PDF do acordo coletivo",
-    descricao: "Envia o PDF do ACT/CCT depositado.",
+    pathPattern: "/ponto/config/rep-p/iniciar-operacao",
+    titulo: "Iniciar operação como REP-P",
+    descricao: "Registra a virada irreversível do sistema para REP-P.",
     categoria: "Configurações"
   },
   {
     method: "GET",
-    pathPattern: "/ponto/config/acordos-rep/:id/pdf",
-    titulo: "Baixar PDF do acordo coletivo",
-    descricao: "Baixa o PDF anexado ao ACT/CCT.",
+    pathPattern: "/ponto/config/rep-p/atestado",
+    titulo: "Atestado Técnico (art. 89)",
+    descricao: "Baixa o Atestado Técnico e Termo de Responsabilidade preenchido, para assinatura.",
     categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/registro-inpi",
+    titulo: "Registro no INPI",
+    descricao: "Consulta o checklist do registro do programa no INPI.",
+    categoria: "Configurações"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/ponto/config/registro-inpi",
+    titulo: "Salvar registro no INPI",
+    descricao: "Atualiza as etapas, o protocolo e o certificado do registro no INPI.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/registro-inpi/certificado-pdf",
+    titulo: "Anexar certificado do INPI",
+    descricao: "Envia o PDF do certificado de registro do programa.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/registro-inpi/certificado-pdf",
+    titulo: "Baixar certificado do INPI",
+    descricao: "Baixa o PDF do certificado de registro do programa.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/hora",
+    titulo: "Hora do servidor",
+    descricao:
+      "Hora do servidor (Hora Legal Brasileira), usada no relógio exibido ao registrar ponto.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/comprovantes",
+    titulo: "Meus comprovantes de ponto",
+    descricao:
+      "Lista os comprovantes de registro de ponto do próprio trabalhador (últimas 48 horas por padrão).",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/comprovantes/ultimas-48h",
+    titulo: "Baixar comprovantes das últimas 48 horas",
+    descricao:
+      "ZIP com os comprovantes de registro de ponto das últimas 48 horas do próprio trabalhador.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/comprovantes/:nsr/pdf",
+    titulo: "Comprovante de registro de ponto (PDF)",
+    descricao: "PDF assinado do comprovante de uma marcação do próprio trabalhador.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/verificar-marcacao/arquivo/:sha256",
+    titulo: "Verificação pública de comprovante pelo arquivo",
+    descricao:
+      "Confere se um PDF é o comprovante original emitido pelo sistema (SHA-256 calculado no navegador).",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/verificar-marcacao/conteudo",
+    titulo: "Verificação pública de comprovante pelo conteúdo",
+    descricao:
+      "Compara o texto de um PDF (ou a leitura OCR de uma foto) com o comprovante original, sem login.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/verificar-marcacao/:hash",
+    titulo: "Verificação pública de comprovante",
+    descricao: "Confere um comprovante de registro de ponto pelo hash da marcação, sem login.",
+    categoria: "Ponto — Autoatendimento"
   },
   {
     method: "GET",

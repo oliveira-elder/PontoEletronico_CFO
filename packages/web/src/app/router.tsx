@@ -7,6 +7,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { VerificarDocumentoPage } from "../pages/VerificarDocumentoPage";
 import { DashboardPage } from "../pages/ponto/DashboardPage";
 import { RegistroPontoPage } from "../pages/ponto/RegistroPontoPage";
+import { MeusComprovantesPage } from "../pages/ponto/MeusComprovantesPage";
 
 /* Páginas pesadas fora do grafo inicial — o retorno do SSO não espera Auditoria (~10k linhas). */
 const HistoricoPage = lazy(() =>
@@ -101,6 +102,7 @@ export const router = createBrowserRouter([
       { index: true, element: <DashboardPage /> },
       { path: "registrar", element: <RegistroPontoPage /> },
       { path: "historico", element: <HistoricoPage /> },
+      { path: "comprovantes", element: <MeusComprovantesPage /> },
       { path: "banco-horas", element: <BancoHorasPage /> },
       { path: "folhas-assinadas", element: <FolhasAssinadasPage /> },
       { path: "saude-ocupacional", element: <Navigate to="/ponto/auditoria" replace /> },

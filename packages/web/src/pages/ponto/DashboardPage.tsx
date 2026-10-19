@@ -15,6 +15,13 @@ import {
   BarChart2Icon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { useHoraServidor } from "../../hooks/useHoraServidor";
+import { ComprovanteModal } from "../../components/comprovante/ComprovanteModal";
+import {
+  acharComprovante,
+  useComprovantes,
+  type ComprovanteItem
+} from "../../hooks/useComprovantes";
 import { REQUERIMENTO_INFO, type TipoRequerimento } from "../../utils/requerimentos";
 import { useAuth } from "../../auth/AuthContext";
 import { api, isRequestAborted } from "../../hooks/useApi";
@@ -116,11 +123,43 @@ function computeQuinzena(diasMes: DiaRegistro[]): DiaQuinzena[] {
     const isoKey = `${a}-${m}-${d}`;
     const dayNum = Number(d);
     if (dayNum < inicioDia || dayNum > fimDia) return [];
-    if (dia.diaSemana === "Sáb" || dia.diaSemana === "Dom") return [];
+    if ((dia.diaSemana === "Sáb" || dia.diaSemana === "Dom") && !(dia.horasMin > 0)) return [];
     return [
       {
         dia: dia.diaSemana,
         data: pad(dayNum),
+        isoKey,
+        isHoje: isoKey === hojeIso,
+        horasMin: dia.horasMin,
+        status: statusQuinzena(dia)
+      }
+    ];
+  });
+}
+
+/** Segunda e domingo (AAAA-MM-DD) da semana de hoje, no fuso de Brasília. */
+function limitesSemanaAtual() {
+  const hoje = new Date(`${hojeBrasiliaISO()}T12:00:00Z`);
+  const dow = hoje.getUTCDay(); // 0 = domingo
+  const seg = new Date(hoje.getTime() - ((dow + 6) % 7) * 86_400_000);
+  const dom = new Date(seg.getTime() + 6 * 86_400_000);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  return { inicio: iso(seg), fim: iso(dom) };
+}
+
+/** Dias da semana atual (segunda a domingo; sábado e domingo só quando houver registro). */
+function computeSemana(diasMes: DiaRegistro[]): DiaQuinzena[] {
+  const hojeIso = hojeBrasiliaISO();
+  const { inicio, fim } = limitesSemanaAtual();
+  return diasMes.flatMap((dia) => {
+    const [d, m, a] = dia.data.split("/");
+    const isoKey = `${a}-${m}-${d}`;
+    if (isoKey < inicio || isoKey > fim) return [];
+    if ((dia.diaSemana === "Sáb" || dia.diaSemana === "Dom") && !(dia.horasMin > 0)) return [];
+    return [
+      {
+        dia: dia.diaSemana,
+        data: pad(Number(d)),
         isoKey,
         isHoje: isoKey === hojeIso,
         horasMin: dia.horasMin,
@@ -230,8 +269,49 @@ function StatPill({
   );
 }
 
+/* ─── Comprovante de Registro de Ponto (art. 79) ─── */
+function BotaoComprovante({
+  c,
+  onAbrir
+}: {
+  c?: ComprovanteItem;
+  onAbrir: (c: ComprovanteItem) => void;
+}) {
+  if (!c) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => onAbrir(c)}
+      title="Comprovante de Registro de Ponto do Trabalhador"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "3px 8px",
+        fontSize: 11,
+        fontWeight: 600,
+        color: "var(--burgundy-600)",
+        background: "#fff",
+        border: "1px solid rgba(122,30,38,0.22)",
+        borderRadius: 999,
+        cursor: "pointer",
+        flexShrink: 0
+      }}
+    >
+      <FileTextIcon size={12} /> Comprovante
+    </button>
+  );
+}
+
 /* ─── Day card ─── */
-function DayCard({ dia, data, isHoje, horasMin, status }: DiaQuinzena) {
+function DayCard({
+  dia,
+  data,
+  isHoje,
+  horasMin,
+  status,
+  semRotuloDia
+}: DiaQuinzena & { semRotuloDia?: boolean }) {
   const pct = status === "FUTURO" ? 0 : Math.min(100, (horasMin / 480) * 100);
   return (
     <div
@@ -250,28 +330,30 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaQuinzena) {
             ? "1px solid rgba(47,125,79,0.20)"
             : "1px solid rgba(122,30,38,0.08)",
         borderRadius: "var(--radius-md)",
-        padding: "12px 4px",
+        padding: semRotuloDia ? "7px 2px" : "12px 4px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 6,
+        gap: semRotuloDia ? 3 : 6,
         boxSizing: "border-box"
       }}
     >
+      {!semRotuloDia && (
+        <p
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: "var(--ink-500)"
+          }}
+        >
+          {dia}
+        </p>
+      )}
       <p
         style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          color: "var(--ink-500)"
-        }}
-      >
-        {dia}
-      </p>
-      <p
-        style={{
-          fontSize: 17,
+          fontSize: semRotuloDia ? 15 : 17,
           fontWeight: 700,
           color: isHoje ? "var(--burgundy-600)" : "var(--ink-900)",
           lineHeight: 1
@@ -303,14 +385,40 @@ function DayCard({ dia, data, isHoje, horasMin, status }: DiaQuinzena) {
   );
 }
 
+/** Organiza os dias em semanas (Seg a Sex; Dom e Sáb só quando houver registro). */
+function montarSemanas(quinzena: DiaQuinzena[]) {
+  const temDom = quinzena.some((d) => d.dia === "Dom");
+  const temSab = quinzena.some((d) => d.dia === "Sáb");
+  const colunas = [
+    ...(temDom ? ["Dom"] : []),
+    "Seg",
+    "Ter",
+    "Qua",
+    "Qui",
+    "Sex",
+    ...(temSab ? ["Sáb"] : [])
+  ];
+  const inicioSemana = temDom ? 0 : 1;
+  const semanas = new Map<string, Record<string, DiaQuinzena>>();
+  for (const d of quinzena) {
+    const dt = new Date(`${d.isoKey}T12:00:00`);
+    dt.setDate(dt.getDate() - ((dt.getDay() - inicioSemana + 7) % 7));
+    const chave = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+    semanas.set(chave, { ...(semanas.get(chave) ?? {}), [d.dia]: d });
+  }
+  return {
+    colunas,
+    semanas: [...semanas.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v)
+  };
+}
+
 /* ─── Seção: Essa Quinzena ─── */
-function QuinzenaSection({ quinzena, compact }: { quinzena: DiaQuinzena[]; compact?: boolean }) {
-  const hojeIso = hojeBrasiliaISO();
-  const [ano, mes, diaMes] = hojeIso.split("-").map(Number);
-  const inicio = diaMes <= 15 ? 1 : 16;
-  const fim = diaMes <= 15 ? 15 : new Date(ano, mes, 0).getDate();
-  const periodoLabel = `${pad(inicio)}–${pad(fim)}/${pad(mes)}`;
-  const colunas = Math.min(Math.max(quinzena.length, 1), compact ? 5 : 10);
+function SemanaSection({ semana, compact }: { semana: DiaQuinzena[]; compact?: boolean }) {
+  const { inicio, fim } = limitesSemanaAtual();
+  const [, mi, di] = inicio.split("-");
+  const [, mf, df] = fim.split("-");
+  const periodoLabel = mi === mf ? `${di}–${df}/${mi}` : `${di}/${mi}–${df}/${mf}`;
+  const grade = montarSemanas(semana);
 
   return (
     <>
@@ -334,7 +442,7 @@ function QuinzenaSection({ quinzena, compact }: { quinzena: DiaQuinzena[]; compa
               margin: 0
             }}
           >
-            Essa Quinzena
+            Essa Semana
           </p>
           <span style={{ fontSize: 12, color: "var(--ink-500)", fontFamily: "var(--font-mono)" }}>
             {periodoLabel}
@@ -353,22 +461,44 @@ function QuinzenaSection({ quinzena, compact }: { quinzena: DiaQuinzena[]; compa
           Ver histórico <ArrowRightIcon size={compact ? 11 : 12} />
         </Link>
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: `repeat(${colunas}, minmax(0, 1fr))`,
-          gap: compact ? 6 : 8,
-          width: "100%"
-        }}
-      >
-        {quinzena.length > 0 ? (
-          quinzena.map((d) => <DayCard key={d.isoKey} {...d} />)
-        ) : (
-          <p style={{ fontSize: 13, color: "var(--ink-500)", gridColumn: "1 / -1" }}>
-            Sem registros nesta quinzena.
-          </p>
-        )}
-      </div>
+      {semana.length > 0 ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${grade.colunas.length}, minmax(0, 1fr))`,
+            gap: 10,
+            width: "100%"
+          }}
+        >
+          {grade.colunas.map((c) => (
+            <p
+              key={`h-${c}`}
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--ink-500)",
+                textAlign: "center",
+                margin: 0
+              }}
+            >
+              {c}
+            </p>
+          ))}
+          {grade.semanas.flatMap((sem, i) =>
+            grade.colunas.map((c) =>
+              sem[c] ? (
+                <DayCard key={sem[c].isoKey} {...sem[c]} semRotuloDia />
+              ) : (
+                <div key={`v-${i}-${c}`} />
+              )
+            )
+          )}
+        </div>
+      ) : (
+        <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Sem registros nesta semana.</p>
+      )}
     </>
   );
 }
@@ -633,11 +763,11 @@ function RequisicoesRhSection({ token }: { token: string }) {
 
 /* ─── Card unificado: Quinzena + Requisições RH ─── */
 function DashboardPainelPrincipal({
-  quinzena,
+  semana,
   compact,
   token
 }: {
-  quinzena: DiaQuinzena[];
+  semana: DiaQuinzena[];
   compact?: boolean;
   token: string;
 }) {
@@ -664,7 +794,7 @@ function DashboardPainelPrincipal({
           borderBottom: "1px solid rgba(122,30,38,0.08)"
         }}
       >
-        <QuinzenaSection quinzena={quinzena} compact={compact} />
+        <SemanaSection semana={semana} compact={compact} />
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <RequisicoesRhSection token={token} />
@@ -677,18 +807,61 @@ function DashboardPainelPrincipal({
 export function DashboardPage() {
   const isMobile = useIsMobile(768);
   const { token, user } = useAuth();
+  const horaServidor = useHoraServidor();
   const [now, setNow] = useState(new Date());
 
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [relatorio, setRelatorio] = useState<ApiRelatorio | null>(null);
   const [bancoHoras, setBancoHoras] = useState<ApiBancoHoras | null>(null);
   const [quinzena, setQuinzena] = useState<DiaQuinzena[]>([]);
+  const [semana, setSemana] = useState<DiaQuinzena[]>([]);
   const [loading, setLoading] = useState(true);
+  const { itens: comprovantes, recarregar: recarregarComprovantes } = useComprovantes({
+    horas: 48
+  });
+  /* Atualização em tempo real: status a cada 30 s; histórico e banco a cada 5 min e ao voltar à aba. */
+  const [tick, setTick] = useState(0);
+  const [comprovanteAberto, setComprovanteAberto] = useState<ComprovanteItem | null>(null);
+  const abrirComprovante = useCallback((c: ComprovanteItem) => setComprovanteAberto(c), []);
 
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1_000);
+    const t = setInterval(() => setNow(horaServidor()), 1_000);
+    return () => clearInterval(t);
+  }, [horaServidor]);
+
+  /* Status do dia (leve): a cada 30 s com a aba visível. */
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      api
+        .get<ApiStatus>("/ponto/status")
+        .then((st) => st && setStatus(st))
+        .catch(() => undefined);
+    }, 30_000);
     return () => clearInterval(t);
   }, []);
+
+  /* Histórico, semana e banco (mais pesados): a cada 5 min e ao voltar para a aba. */
+  useEffect(() => {
+    const atualizar = () => setTick((n) => n + 1);
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") atualizar();
+    }, 5 * 60_000);
+    const aoVoltar = () => {
+      if (document.visibilityState === "visible") atualizar();
+    };
+    document.addEventListener("visibilitychange", aoVoltar);
+    window.addEventListener("focus", aoVoltar);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", aoVoltar);
+      window.removeEventListener("focus", aoVoltar);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (tick > 0) void recarregarComprovantes();
+  }, [tick, recarregarComprovantes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -722,7 +895,6 @@ export function DashboardPage() {
           ocultarBancoHoras: ocultar,
           ...(ocultar ? { horasExtrasMinutos: 0, horasFaltaMinutos: 0, saldoMinutos: 0 } : {})
         });
-        setBancoHoras(null);
         const feriados =
           Array.isArray(feriadosCfg) && feriadosCfg.length > 0
             ? feriadosCfg
@@ -751,7 +923,11 @@ export function DashboardPage() {
           histData?.bancoPorDia
         );
         setQuinzena(computeQuinzena(diasMes));
-        if (ocultar) return;
+        setSemana(computeSemana(diasMes));
+        if (ocultar) {
+          setBancoHoras(null);
+          return;
+        }
         const bancoData = await api
           .get<ApiBancoHoras>("/ponto/banco-horas", undefined, ac.signal)
           .catch((err: unknown) => {
@@ -773,13 +949,15 @@ export function DashboardPage() {
       ac.abort();
       clearTimeout(timeout);
     };
-  }, []);
+  }, [tick]);
 
   const hora = now.getHours();
   const saudacao = hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
   const primeiroNome = (user?.name ?? "").split(" ")[0] || "Olá";
 
   const estado = status?.estado ?? "FORA";
+  /* Horas do dia sempre do servidor (mesma regra da folha: almoço mínimo, pausas, tolerâncias),
+     relidas a cada 30 s — sem estimar no navegador, que não conhece essas regras. */
   const horasHoje = status?.horasTrabalhadasMinutos ?? 0;
   const jornada = status?.jornadaMinutos ?? 480;
   const saldoHoje = horasHoje - jornada;
@@ -1065,7 +1243,7 @@ export function DashboardPage() {
         </div>
 
         {/* Painel principal: quinzena + requisições RH */}
-        <DashboardPainelPrincipal quinzena={quinzena} compact token={token() ?? ""} />
+        <DashboardPainelPrincipal semana={semana} compact token={token() ?? ""} />
 
         {/* Registros hoje */}
         <div
@@ -1087,6 +1265,13 @@ export function DashboardPage() {
           >
             Registros de Hoje
           </p>
+          {comprovanteAberto && (
+            <ComprovanteModal
+              nsr={comprovanteAberto.nsr}
+              rotulo={`${comprovanteAberto.rotulo} ${comprovanteAberto.hora}`}
+              onClose={() => setComprovanteAberto(null)}
+            />
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {(status?.registrosHoje ?? []).map((r, i) => {
               const Ic = getIconForTipo(r.tipo);
@@ -1116,6 +1301,14 @@ export function DashboardPage() {
                   >
                     {TIPO_LABEL[r.tipo] ?? r.tipo}
                   </p>
+                  <BotaoComprovante
+                    c={acharComprovante(comprovantes, {
+                      id: (r as { id?: string }).id,
+                      tipo: r.tipo,
+                      dataHora: r.dataHora
+                    })}
+                    onAbrir={abrirComprovante}
+                  />
                   <p
                     style={{
                       fontFamily: "var(--font-mono)",
@@ -1633,14 +1826,12 @@ export function DashboardPage() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)",
+          gridTemplateColumns: "minmax(0, 1fr) minmax(0, 2fr)",
           gap: 16,
           marginBottom: 24,
           alignItems: "stretch"
         }}
       >
-        <DashboardPainelPrincipal quinzena={quinzena} token={token() ?? ""} />
-
         <div
           className="card-flat"
           style={{
@@ -1663,6 +1854,13 @@ export function DashboardPage() {
           >
             Registros de Hoje
           </p>
+          {comprovanteAberto && (
+            <ComprovanteModal
+              nsr={comprovanteAberto.nsr}
+              rotulo={`${comprovanteAberto.rotulo} ${comprovanteAberto.hora}`}
+              onClose={() => setComprovanteAberto(null)}
+            />
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}>
             {(status?.registrosHoje ?? []).map((r, i) => {
               const Ic = getIconForTipo(r.tipo);
@@ -1695,6 +1893,14 @@ export function DashboardPage() {
                       {TIPO_LABEL[r.tipo] ?? r.tipo}
                     </p>
                   </div>
+                  <BotaoComprovante
+                    c={acharComprovante(comprovantes, {
+                      id: (r as { id?: string }).id,
+                      tipo: r.tipo,
+                      dataHora: r.dataHora
+                    })}
+                    onAbrir={abrirComprovante}
+                  />
                   <p
                     style={{
                       fontFamily: "var(--font-mono)",
@@ -1744,8 +1950,24 @@ export function DashboardPage() {
                 Nenhum registro hoje.
               </p>
             )}
+            <Link
+              to="/ponto/comprovantes"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 12,
+                color: "var(--ink-500)",
+                marginTop: "auto",
+                paddingTop: 6
+              }}
+            >
+              Meus comprovantes <ArrowRightIcon size={12} />
+            </Link>
           </div>
         </div>
+
+        <DashboardPainelPrincipal semana={semana} token={token() ?? ""} />
       </div>
 
       {/* Resumo mês */}

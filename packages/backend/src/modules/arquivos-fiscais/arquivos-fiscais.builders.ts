@@ -1,6 +1,6 @@
 /**
- * Leiautes oficiais (portal gov.br, Portaria MTP nº 671/2021):
- * - AFD versão "004": posições fixas, registros 1/2/3/4/5/6/7/9 + linha de assinatura.
+ * Leiautes oficiais (portal gov.br, Portaria MTP nº 671/2021), para o REP-P:
+ * - AFD versão "004": posições fixas, registros 1/2/4/5/6/7/9 + linha de assinatura.
  * - AEJ versão "002": campos separados por "|", registros 01–08 e 99 + linha de assinatura.
  */
 import {
@@ -13,13 +13,11 @@ import {
   latin1
 } from "../../utils/afd-campos";
 
-export type TipoRep = "REP_A" | "REP_P";
-
 export interface EmpresaRep {
   cnpj: string;
   cnoCaepf: string;
   razaoSocial: string;
-  /** REP-A: nº do processo do ACT (ou 9×17); REP-P: nº de registro no INPI. */
+  /** Nº de registro do programa no INPI (17 dígitos). */
   nrRep: string;
   cnpjDesenvolvedor: string;
 }
@@ -45,7 +43,6 @@ const s = (v: unknown) => (v == null ? "" : String(v));
 
 /** Monta as linhas do AFD (sem a terminação de linha). */
 export function montarAfd(opts: {
-  tipoRep: TipoRep;
   empresa: EmpresaRep;
   inicio: string;
   fim: string;
@@ -122,8 +119,8 @@ export function montarAfd(opts: {
             campoN(s(d.responsavelCpf), 11)
         )
       });
-    } else if (e.tipo === 6 && opts.tipoRep === "REP_P") {
-      /* Eventos sensíveis: no REP-A não se aplicam (só REP-C/REP-P). Sem CRC (item 8). */
+    } else if (e.tipo === 6) {
+      /* Eventos sensíveis do REP-P (02, 07 e 08). Sem CRC (item 8). */
       itens.push({
         nsr: e.nsr,
         tipo: 6,
@@ -132,29 +129,20 @@ export function montarAfd(opts: {
     }
   }
   for (const m of opts.marcacoes) {
-    if (opts.tipoRep === "REP_A") {
-      /* Tipo 3 — marcação REP-C/REP-A (50). */
-      itens.push({
-        nsr: m.nsr,
-        tipo: 3,
-        linha: comCrc(campoN(m.nsr, 9) + "3" + dataHoraDH(m.dataHoraMarcacao) + campoN(m.cpf, 12))
-      });
-    } else {
-      /* Tipo 7 — marcação REP-P (137), hash encadeado gravado no momento da marcação. */
-      itens.push({
-        nsr: m.nsr,
-        tipo: 7,
-        linha:
-          campoN(m.nsr, 9) +
-          "7" +
-          dataHoraDH(m.dataHoraMarcacao) +
-          campoN(m.cpf, 12) +
-          dataHoraDH(m.dataHoraGravacao) +
-          campoN(m.coletor, 2) +
-          (m.offline ? "1" : "0") +
-          campoA(m.hash, 64)
-      });
-    }
+    /* Tipo 7 — marcação REP-P (137), hash encadeado gravado no momento da marcação. */
+    itens.push({
+      nsr: m.nsr,
+      tipo: 7,
+      linha:
+        campoN(m.nsr, 9) +
+        "7" +
+        dataHoraDH(m.dataHoraMarcacao) +
+        campoN(m.cpf, 12) +
+        dataHoraDH(m.dataHoraGravacao) +
+        campoN(m.coletor, 2) +
+        (m.offline ? "1" : "0") +
+        campoA(m.hash, 64)
+    });
   }
   itens.sort((a, b) => a.nsr - b.nsr);
   const contagem: Record<number, number> = { 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 };
@@ -184,6 +172,8 @@ export interface HorarioAej {
 }
 export interface MarcacaoAej {
   vinculo: number;
+  /** Identificador do REP no AEJ (registro 02); vazio nas marcações incluídas manualmente. */
+  idRep?: number;
   dataHora: Date;
   tpMarc: "E" | "S" | "D";
   seq: number;
@@ -201,8 +191,13 @@ export interface AusenciaAej {
 
 const campoPipe = (v: unknown) => latin1(s(v)).trim();
 
+export interface RepAejDef {
+  id: number;
+  nrRep: string;
+}
+
 export function montarAej(opts: {
-  tipoRep: TipoRep;
+  reps: RepAejDef[];
   empresa: EmpresaRep;
   inicio: string;
   fim: string;
@@ -239,7 +234,10 @@ export function montarAej(opts: {
       "002"
     )
   );
-  add("02", linha("02", "1", opts.tipoRep === "REP_A" ? "2" : "3", campoN(empresa.nrRep, 17)));
+  for (const r of opts.reps) {
+    /* tpRep 3 = REP-P; nrRep = nº de registro no INPI. */
+    add("02", linha("02", r.id, "3", campoN(r.nrRep, 17)));
+  }
   for (const v of opts.vinculos) add("03", linha("03", v.id, campoN(v.cpf, 11), v.nome));
   for (const h of opts.horarios) {
     add("04", linha("04", h.codigo, h.durJornadaMin, ...h.pares.flat()));
@@ -251,7 +249,7 @@ export function montarAej(opts: {
         "05",
         m.vinculo,
         dataHoraDH(m.dataHora),
-        "1",
+        m.idRep ?? "",
         m.tpMarc,
         String(m.seq).padStart(3, "0"),
         m.fonte,

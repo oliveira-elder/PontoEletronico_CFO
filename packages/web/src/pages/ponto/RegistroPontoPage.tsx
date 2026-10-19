@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
 import { Link } from "react-router-dom";
+import { ComprovanteModal } from "../../components/comprovante/ComprovanteModal";
+import {
+  acharComprovante,
+  useComprovantes,
+  type ComprovanteItem
+} from "../../hooks/useComprovantes";
 import {
   CheckCircleIcon,
   RefreshCwIcon,
@@ -16,6 +22,7 @@ import { CameraPermissionGuide, useCameraPermission } from "../../components/Cam
 import { MapaGeolocalizacao } from "../../components/MapaGeolocalizacao";
 import { SafariGeoAtivacao } from "../../components/SafariGeoAtivacao";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { useHoraServidor } from "../../hooks/useHoraServidor";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
@@ -687,6 +694,7 @@ function ConfirmacaoRegistro({
   onVoltar: () => void;
 }) {
   const encerrada = registro.tipo === "SAIDA";
+  const [verComprovante, setVerComprovante] = useState(false);
   return (
     <div
       style={{
@@ -876,6 +884,36 @@ function ConfirmacaoRegistro({
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {registro.nsr != null && (
+              <button
+                type="button"
+                onClick={() => setVerComprovante(true)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  padding: "13px",
+                  borderRadius: "var(--radius-md)",
+                  background: "#0F0F10",
+                  color: "#fff",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 15,
+                  fontWeight: 700,
+                  fontFamily: "var(--font-body)"
+                }}
+              >
+                Visualizar comprovante
+              </button>
+            )}
+            {verComprovante && registro.nsr != null && (
+              <ComprovanteModal
+                nsr={registro.nsr}
+                rotulo={`${registro.tipoLabel} ${registro.hora}`}
+                onClose={() => setVerComprovante(false)}
+              />
+            )}
             <Link
               to="/ponto/historico"
               style={{
@@ -927,8 +965,13 @@ export function RegistroPontoPage() {
   const permCamera = useCameraPermission();
 
   /* Estado de UI */
+  const horaServidor = useHoraServidor();
   const [now, setNow] = useState(new Date());
   const [registros, setRegistros] = useState<RegistroDia[]>([]);
+  const { itens: comprovantes, recarregar: recarregarComprovantes } = useComprovantes({
+    horas: 48
+  });
+  const [comprovanteAberto, setComprovanteAberto] = useState<ComprovanteItem | null>(null);
   const [cameraAberta, setCameraAberta] = useState(false);
   const [guiaAberto, setGuiaAberto] = useState(false);
   const [fotoCapturada, setFotoCapturada] = useState<string | null>(null);
@@ -983,9 +1026,9 @@ export function RegistroPontoPage() {
 
   /* ── Relógio live ── */
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1_000);
+    const t = setInterval(() => setNow(horaServidor()), 1_000);
     return () => clearInterval(t);
-  }, []);
+  }, [horaServidor]);
 
   useEffect(() => {
     Promise.all([
@@ -1301,7 +1344,7 @@ export function RegistroPontoPage() {
       });
       if (!resultado) return;
 
-      const agora = new Date();
+      const agora = resultado.dataHoraServidor ? new Date(resultado.dataHoraServidor) : new Date();
       const novoReg: RegistroDia = {
         tipo,
         hora: fmtShort(agora),
@@ -1360,6 +1403,7 @@ export function RegistroPontoPage() {
       setFotoCapturada(null);
       setPendingTipo(null);
       setConfirmado(resultado);
+      void recarregarComprovantes();
       setAcoesPermitidasApi(null);
       const tk = token();
       if (tk) {
@@ -2181,6 +2225,13 @@ export function RegistroPontoPage() {
           >
             Registros de Hoje ({marcosFeitos}/{totalMarcos})
           </p>
+          {comprovanteAberto && (
+            <ComprovanteModal
+              nsr={comprovanteAberto.nsr}
+              rotulo={`${comprovanteAberto.rotulo} ${comprovanteAberto.hora}`}
+              onClose={() => setComprovanteAberto(null)}
+            />
+          )}
           {previsoes.length > 0 && (
             <p
               style={{
@@ -2282,6 +2333,29 @@ export function RegistroPontoPage() {
                     <span style={{ marginLeft: 8, fontSize: 10, color: "var(--ink-400)" }}>
                       {r.modo === "MOBILE" ? "📱" : "🖥"}
                     </span>
+                    {(() => {
+                      const comp = acharComprovante(comprovantes, { tipo: r.tipo, hora: r.hora });
+                      return comp ? (
+                        <button
+                          type="button"
+                          onClick={() => setComprovanteAberto(comp)}
+                          style={{
+                            marginLeft: 10,
+                            padding: "1px 8px",
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            fontFamily: "var(--font-body)",
+                            color: "var(--burgundy-600)",
+                            background: "#fff",
+                            border: "1px solid rgba(122,30,38,0.22)",
+                            borderRadius: 999,
+                            cursor: "pointer"
+                          }}
+                        >
+                          Comprovante
+                        </button>
+                      ) : null;
+                    })()}
                   </p>
                   {(ajusteAutomatico || turnoObs) && (
                     <p

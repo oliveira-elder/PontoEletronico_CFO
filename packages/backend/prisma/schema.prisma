@@ -430,8 +430,6 @@ model ConfiguracaoSistema {
   telefone                           String?
   emailInstitucional                 String?
   // REP / PTRP — Portaria MTP 671/2021 (AFD e AEJ)
-  repTipo                            String            @default("REP_A")
-  repActProcesso                     String?
   repInpiRegistro                    String?
   repCnoCaepf                        String?
   repLocalPrestacao                  String?
@@ -1432,10 +1430,56 @@ model MarcacaoRep {
   hash             String
   /// Reconstituída na carga inicial (meses anteriores ao livro).
   reconstituida    Boolean   @default(false)
+  /// Fuso horário da marcação e da gravação (Anexo IX, item 6.5), ex.: "-0300".
+  fusoMarcacao     String    @default("-0300")
+  fusoGravacao     String    @default("-0300")
   createdAt        DateTime  @default(now())
 
   @@index([funcionarioId, dataHoraMarcacao])
   @@index([dataHoraMarcacao])
+}
+
+/// Início de operação de cada tipo de REP (REP-A / REP-P) — SOMENTE INCLUSÃO. A virada para REP-P é irreversível.
+model VigenciaRep {
+  id             String   @id @default(cuid())
+  tipo           String
+  inicio         DateTime
+  registroInpiId String?
+  numeroRegistro String?
+  criadoPorId    String?
+  criadoPorNome  String?
+  createdAt      DateTime @default(now())
+
+  @@index([tipo, inicio])
+}
+
+/// Registro do programa no INPI (art. 91) — checklist das etapas e certificado, com histórico por versão.
+model RegistroProgramaInpi {
+  id                 String   @id @default(cuid())
+  versao             String
+  /// Etapas: { chave: { feito: boolean, data?: string, responsavel?: string, obs?: string } }
+  etapas             Json     @default("{}")
+  hashCodigoFonte    String?
+  protocoloNumero    String?
+  certificadoNumero  String?
+  certificadoData    String?
+  certificadoPdfNome String?
+  certificadoPdfSha  String?
+  certificadoPdf     Bytes?
+  status             String   @default("EM_ANDAMENTO")
+  criadoPorNome      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+/// Impressão digital (SHA-256) de cada PDF de comprovante emitido — verifica se um arquivo é o original.
+model ComprovanteEmitido {
+  id        String   @id @default(cuid())
+  nsr       Int
+  sha256    String   @unique
+  emitidoEm DateTime @default(now())
+
+  @@index([nsr])
 }
 
 /// Eventos do REP (AFD tipos 2, 4, 5 e 6) — SOMENTE INCLUSÃO.
@@ -1478,37 +1522,7 @@ model ExtracaoArquivoFiscal {
   assinado       Boolean
   nsrMaximo      Int?
   registros      Int
-  acordoId       String?
   geradoPorId    String?
   geradoPorNome  String?
   createdAt      DateTime @default(now())
-}
-
-/// ACT/CCT que autoriza o REP-A (Portaria MTP 671/2021, art. 77) — histórico, nunca excluído.
-model AcordoColetivoRep {
-  id                     String    @id @default(cuid())
-  tipo                   String    @default("ACT")
-  numeroProcesso         String
-  numeroRegistroMediador String?
-  ano                    Int
-  vigenciaInicio         String
-  vigenciaFim            String
-  dataRegistro           String?
-  entidadeSindical       String?
-  clausula               String?
-  observacoes            String?
-  renovacaoDeId          String?
-  status                 String    @default("ATIVO")
-  canceladoEm            DateTime?
-  motivoCancelamento     String?
-  migrado                Boolean   @default(false)
-  pdfNome                String?
-  pdfSha256              String?
-  pdfDados               Bytes?
-  criadoPorId            String?
-  criadoPorNome          String?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-
-  @@index([vigenciaInicio, vigenciaFim])
 }

@@ -325,6 +325,20 @@ export class AssinaturaService {
     return (this.chaveSeloCache = nova);
   }
 
+  /** Selo HMAC de um QR (registro + página + total) — usado também pelos comprovantes de ponto. */
+  async seloDocumento(registro: string, pagina: number, total: number): Promise<string> {
+    return this.seloPagina(await this.chaveSeloDocumentos(), registro, pagina, total);
+  }
+
+  async seloDocumentoValido(
+    registro: string,
+    pagina: number,
+    total: number,
+    selo: string | undefined
+  ): Promise<boolean> {
+    return (selo ?? "").toUpperCase() === (await this.seloDocumento(registro, pagina, total));
+  }
+
   /** Nº de registro: muda sempre que o conteúdo (impressão digital dos dados) muda. */
   private numeroRegistro(mes: number, ano: number, fingerprint: string): string {
     return `ESP-${ano}${String(mes).padStart(2, "0")}-${fingerprint.slice(0, 12).toUpperCase()}`;

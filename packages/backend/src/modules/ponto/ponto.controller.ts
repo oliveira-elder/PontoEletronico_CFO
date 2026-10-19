@@ -35,6 +35,12 @@ export class PontoController {
     return this.pontoService.getMeuPerfil(req.user.sub);
   }
 
+  /** Hora do servidor (sincronizada com a Hora Legal Brasileira): base do relógio exibido ao marcar. */
+  @Get("hora")
+  hora() {
+    return { agora: new Date().toISOString(), epochMs: Date.now() };
+  }
+
   @Get("status")
   getStatus(@Req() req: { user: { sub: string } }) {
     return this.pontoService.getStatusAtual(req.user.sub);

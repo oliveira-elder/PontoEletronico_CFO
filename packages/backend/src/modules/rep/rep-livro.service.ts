@@ -8,9 +8,10 @@ import {
 import { Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
 import { PrismaService } from "../../prisma/prisma.service";
-import { campoN, dataHoraDH } from "../../utils/afd-campos";
+import { campoN, dataHoraDH, fusoHorario } from "../../utils/afd-campos";
 import { detectarInstancia, type InstanciaDetectada } from "../../utils/instancia-rep";
 import { parseObservacoes } from "../../utils/registro-observacoes";
+import { RepPService } from "./rep-p.service";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -35,9 +36,22 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
   /** Motivo do bloqueio de novas marcações (NSR abaixo do exportado / 2ª instância ativa). */
   private bloqueio: string | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private ultimaConferenciaNtp = 0;
   private ultimoTique = { relogio: Date.now(), monotonico: process.hrtime.bigint() };
 
-  constructor(private readonly prisma: PrismaService) {}
+  /** Resultado da última verificação da cadeia de hash (diária e na subida). */
+  private ultimaVerificacao: {
+    em: Date;
+    ok: boolean;
+    marcacoes: number;
+    primeiraQuebraNsr?: number;
+    detalhe?: string;
+  } | null = null;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly repP: RepPService
+  ) {}
 
   async onModuleInit() {
     try {
@@ -49,11 +63,14 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
       });
       await this.registrarInstancia();
       await this.conferirNsrExportado();
+      void this.repP.verificarNtp().catch(() => undefined);
       this.timer = setInterval(() => void this.tique(), 60_000);
       this.timer.unref?.();
       /* Carga inicial do livro com os meses anteriores (uma única vez). */
       void this.cargaInicial()
         .then(() => this.sincronizarEmpresa())
+        .then(() => this.verificarCadeia())
+        .then(() => undefined)
         .catch((e) =>
           this.logger.error(`Carga inicial do livro REP falhou: ${(e as Error).message}`)
         );
@@ -84,8 +101,67 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
         ? { id: this.instancia.id, codigo: this.instancia.codigo, origem: this.instancia.origem }
         : null,
       instancias,
-      ultimaExtracao
+      ultimaExtracao,
+      verificacaoCadeia: this.ultimaVerificacao
     };
+  }
+
+  /* ─── Integridade da cadeia de hash ─── */
+
+  /**
+   * Refaz o hash de cada marcação (campos do AFD tipo 7 + hash anterior) e confere o encadeamento por
+   * cadeia única de marcações. Roda na subida e uma vez por dia; uma quebra bloqueia novas marcações até a TI analisar.
+   */
+  async verificarCadeia(): Promise<NonNullable<RepLivroService["ultimaVerificacao"]>> {
+    let total = 0;
+    let quebra: { nsr: number; detalhe: string } | null = null;
+    let anterior: string | null = null as string | null;
+    let cursor = 0;
+    for (;;) {
+      const lote = await this.prisma.marcacaoRep.findMany({
+        where: { nsr: { gt: cursor } },
+        orderBy: { nsr: "asc" },
+        take: 2000
+      });
+      if (!lote.length) break;
+      for (const m of lote) {
+        total++;
+        cursor = m.nsr;
+        const base =
+          campoN(m.nsr, 9) +
+          "7" +
+          dataHoraDH(m.dataHoraMarcacao) +
+          campoN(m.cpf, 12) +
+          dataHoraDH(m.dataHoraGravacao) +
+          m.coletor +
+          (m.offline ? "1" : "0") +
+          (anterior ?? "");
+        const esperado = createHash("sha256").update(base, "latin1").digest("hex");
+        if (!quebra && (m.hash !== esperado || (m.hashAnterior ?? null) !== anterior)) {
+          quebra = {
+            nsr: m.nsr,
+            detalhe:
+              m.hash !== esperado
+                ? "o hash gravado não confere com os campos da marcação"
+                : "o encadeamento com a marcação anterior está quebrado"
+          };
+        }
+        anterior = m.hash;
+      }
+    }
+    this.ultimaVerificacao = {
+      em: new Date(),
+      ok: !quebra,
+      marcacoes: total,
+      ...(quebra ? { primeiraQuebraNsr: quebra.nsr, detalhe: quebra.detalhe } : {})
+    };
+    if (quebra) {
+      this.bloqueio = `integridade do livro: NSR ${quebra.nsr} — ${quebra.detalhe}.`;
+      this.logger.error(`Cadeia de hash do REP quebrada: ${this.bloqueio}`);
+    } else {
+      this.logger.log(`Cadeia de hash do REP íntegra (${total} marcações).`);
+    }
+    return this.ultimaVerificacao;
   }
 
   /* ─── NSR ─── */
@@ -101,9 +177,10 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
   }
 
   private assertPodeGravar() {
-    if (this.bloqueio) {
+    const motivo = this.bloqueio ?? this.repP.relogioForaDoLimite();
+    if (motivo) {
       throw new ServiceUnavailableException(
-        `Registro de ponto temporariamente indisponível: ${this.bloqueio} Procure a TI.`
+        `Registro de ponto temporariamente indisponível: ${motivo} Procure a TI.`
       );
     }
   }
@@ -112,7 +189,7 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Grava a marcação ORIGINAL no livro (mesma transação da batida). Hash SHA-256 encadeado
-   * sobre os campos do registro tipo 7 do AFD (usado no REP-P; no REP-A é selo interno).
+   * sobre os campos do registro tipo 7 do AFD.
    */
   async registrarMarcacao(
     tx: Tx,
@@ -130,11 +207,12 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
   ) {
     if (!m.reconstituida) this.assertPodeGravar();
     const nsr = await this.reservarNsr(tx);
+    const gravacao = m.dataHoraGravacao ?? new Date();
+    /* Cadeia única de hash (AFD tipo 7): o anterior é a última marcação gravada. */
     const anterior = await tx.marcacaoRep.findFirst({
       orderBy: { nsr: "desc" },
       select: { hash: true }
     });
-    const gravacao = m.dataHoraGravacao ?? new Date();
     const coletor = coletorDaOrigem(m.origem);
     const base =
       campoN(nsr, 9) +
@@ -154,6 +232,8 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
         tipoPonto: m.tipoPonto,
         dataHoraMarcacao: m.dataHoraMarcacao,
         dataHoraGravacao: gravacao,
+        fusoMarcacao: fusoHorario(m.dataHoraMarcacao),
+        fusoGravacao: fusoHorario(gravacao),
         coletor,
         offline: !!m.offline,
         registroPontoId: m.registroPontoId,
@@ -281,7 +361,7 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Grava o tipo 2 quando os dados da instituição mudaram desde o último. */
-  async sincronizarEmpresa() {
+  async sincronizarEmpresa(responsavelCpf?: string | null) {
     const c = await this.prisma.configuracaoSistema.findUnique({ where: { id: "singleton" } });
     if (!c) return;
     const atual = {
@@ -303,7 +383,7 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
       d.cnoCaepf !== atual.cnoCaepf ||
       d.razaoSocial !== atual.razaoSocial ||
       d.localPrestacao !== atual.localPrestacao;
-    if (mudou) await this.eventoEmpresa();
+    if (mudou) await this.eventoEmpresa(responsavelCpf);
   }
 
   /* ─── Imutabilidade ─── */
@@ -314,6 +394,20 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
       BEGIN
         RAISE EXCEPTION 'Livro do REP é somente inclusão (Portaria MTP 671/2021, art. 74, IV).';
       END; $$ LANGUAGE plpgsql;`);
+    await this.prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION rep_somente_inclusao_truncate() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'Livro do REP não pode ser esvaziado (Anexo IX, item 7).';
+      END; $$ LANGUAGE plpgsql;`);
+    for (const tabela of ["MarcacaoRep", "EventoRep"]) {
+      await this.prisma.$executeRawUnsafe(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_${tabela}_sem_truncate') THEN
+            CREATE TRIGGER "trg_${tabela}_sem_truncate" BEFORE TRUNCATE ON "${tabela}"
+              FOR EACH STATEMENT EXECUTE FUNCTION rep_somente_inclusao_truncate();
+          END IF;
+        END $$;`);
+    }
     for (const tabela of ["MarcacaoRep", "EventoRep"]) {
       await this.prisma.$executeRawUnsafe(`
         DO $$ BEGIN
@@ -330,6 +424,10 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
   private async registrarInstancia() {
     const det = await detectarInstancia();
     const agora = new Date();
+    /* Último sinal de vida de qualquer instância, antes desta subida (base do evento 08). */
+    const ultimoSinal =
+      (await this.prisma.instanciaRep.findFirst({ orderBy: { ultimaVez: "desc" } }))?.ultimaVez ??
+      null;
     const existente = await this.prisma.instanciaRep.findUnique({ where: { codigo: det.codigo } });
     /* Outra instância ativa com batimento recente → esta fica em espera (evita NSR duplicado). */
     const outraAtiva = await this.prisma.instanciaRep.findFirst({
@@ -364,14 +462,48 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
         });
     this.instancia = { ...det, id: inst.id };
     if (!existente) this.logger.warn(`Nova instância do REP registrada: ${det.codigo}`);
-    /* REP-P: evento de disponibilidade do serviço a cada início. */
-    const cfg = await this.prisma.configuracaoSistema.findUnique({
-      where: { id: "singleton" },
-      select: { repTipo: true }
-    });
-    if (cfg?.repTipo === "REP_P" && !outraAtiva) {
-      await this.registrarEvento(6, { evento: "07", instancia: det.codigo });
+    /* REP-P: eventos sensíveis (AFD tipo 6) a cada início do serviço. */
+    if (!outraAtiva) {
+      await this.eventosDeDisponibilidade(ultimoSinal, agora, det.codigo);
     }
+  }
+
+  /** Identificador da inicialização do host (muda quando a VM/máquina reinicia). */
+  private async bootId(): Promise<string | null> {
+    try {
+      const { readFile } = await import("fs/promises");
+      return (await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * AFD tipo 6 no REP-P: 08 (indisponibilidade, quando o serviço ficou parado), 02 (retorno de energia,
+   * quando a máquina reiniciou) e 07 (disponibilidade), nesta ordem.
+   */
+  private async eventosDeDisponibilidade(ultimoSinal: Date | null, agora: Date, instancia: string) {
+    const recentes = await this.prisma.eventoRep.findMany({
+      where: { tipo: 6 },
+      orderBy: { nsr: "desc" },
+      take: 30
+    });
+    const ult07 = recentes.find((e) => (e.dados as Record<string, unknown>).evento === "07");
+    const bootAnterior = ((ult07?.dados ?? {}) as Record<string, unknown>).bootId as
+      | string
+      | undefined;
+    const boot = await this.bootId();
+    if (ultimoSinal && agora.getTime() - ultimoSinal.getTime() > 3 * 60_000 && ult07) {
+      await this.registrarEvento(6, {
+        evento: "08",
+        desde: ultimoSinal.toISOString(),
+        motivo: "serviço indisponível até esta inicialização"
+      });
+    }
+    if (boot && bootAnterior && boot !== bootAnterior) {
+      await this.registrarEvento(6, { evento: "02", bootId: boot, motivo: "reinício da máquina" });
+    }
+    await this.registrarEvento(6, { evento: "07", instancia, bootId: boot });
   }
 
   /** Backup restaurado não pode "voltar" o NSR para baixo do que já foi entregue. */
@@ -397,7 +529,12 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
       const salto = decorridoRel - decorridoMono;
       if (Math.abs(salto) > 60_000) {
         const antes = new Date(this.ultimoTique.relogio + decorridoMono);
+        const cfg = await this.prisma.configuracaoSistema.findUnique({
+          where: { id: "singleton" },
+          select: { repResponsavelCpf: true }
+        });
         await this.registrarEvento(4, {
+          responsavelCpf: (cfg?.repResponsavelCpf ?? "").replace(/\D/g, ""),
           antes: antes.toISOString(),
           depois: new Date(agoraRel).toISOString(),
           saltoSegundos: Math.round(salto / 1000)
@@ -409,6 +546,12 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
       if (hora === 7 && new Date().getUTCMinutes() < 1) {
         await this.sincronizarEmpresa();
         await this.sincronizarEmpregados();
+        void this.verificarCadeia();
+      }
+      /* Relógio: confere com o NTP.br (Hora Legal Brasileira) a cada 5 minutos. */
+      if (agoraRel - this.ultimaConferenciaNtp > 5 * 60_000) {
+        this.ultimaConferenciaNtp = agoraRel;
+        void this.repP.verificarNtp().catch(() => undefined);
       }
       if (this.instancia && !this.bloqueio) {
         await this.prisma.instanciaRep.update({

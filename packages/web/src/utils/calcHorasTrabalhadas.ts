@@ -122,6 +122,8 @@ export function calcHorasTrabalhadasMinutos(
   let entradaMin: number | null = null;
   let emAlmocoDesde: number | null = null;
   let pausaDesde: number | null = null;
+  /* Retorno mínimo do almoço curto (início + mínimo): pausa/reinício antes dele não antecipa o expediente. */
+  let retornoMinimo: number | null = null;
   let minutosAlmocoRegistrados = 0;
   let ultrapassouJanelaAlmoco = false;
   let houveEntrada = false;
@@ -134,6 +136,7 @@ export function calcHorasTrabalhadasMinutos(
     const ts = r.minuto;
     if (r.tipo === "ENTRADA") {
       houveEntrada = true;
+      retornoMinimo = null;
       /* Snap simétrico só na ENTRADA (início de jornada), não em REINICIAR. */
       entradaMin = snapDentroTolerancia(ts, opts.horaEntrada, opts.toleranciaEntradaMin);
       emAlmocoDesde = null;
@@ -141,13 +144,14 @@ export function calcHorasTrabalhadasMinutos(
       marcarJanela(ts);
     } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
       houveEntrada = true;
-      entradaMin = ts;
+      entradaMin = retornoMinimo !== null ? Math.max(ts, retornoMinimo) : ts;
+      retornoMinimo = null;
       emAlmocoDesde = null;
       pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "INICIO_INTERVALO") {
       if (entradaMin !== null) {
-        total += ts - entradaMin;
+        total += Math.max(0, ts - entradaMin);
         entradaMin = null;
         emAlmocoDesde = ts;
       } else {
@@ -157,7 +161,9 @@ export function calcHorasTrabalhadasMinutos(
       pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "INTERROMPER_EXPEDIENTE" && entradaMin !== null) {
-      total += ts - entradaMin;
+      /* Pausa dentro do almoço mínimo (retorno ainda não alcançado): não há trabalho a somar. */
+      if (entradaMin > ts) retornoMinimo = entradaMin;
+      total += Math.max(0, ts - entradaMin);
       entradaMin = null;
       pausaDesde = ts;
       marcarJanela(ts);

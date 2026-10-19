@@ -4,7 +4,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { RepLivroService } from "../rep/rep-livro.service";
 import { SeloIcpService } from "../selo-icp/selo-icp.service";
 import { AssinaturaService } from "../assinatura/assinatura.service";
-import { AcordosRepService } from "./acordos-rep.service";
+import { RepPService, versaoDoSistema } from "../rep/rep-p.service";
 import { arquivoTexto, dataD } from "../../utils/afd-campos";
 import { parseObservacoes } from "../../utils/registro-observacoes";
 import {
@@ -13,8 +13,7 @@ import {
   type AusenciaAej,
   type EmpresaRep,
   type HorarioAej,
-  type MarcacaoAej,
-  type TipoRep
+  type MarcacaoAej
 } from "./arquivos-fiscais.builders";
 
 export interface FiltroExtracao {
@@ -25,6 +24,20 @@ export interface FiltroExtracao {
   gerenciaId?: string;
   funcionarioIds?: string[];
   assinar?: boolean;
+}
+
+interface ArquivoGerado {
+  nome: string;
+  conteudo: Buffer;
+  registros: number;
+  nsrMaximo: number | null;
+  periodo: { inicio: string; fim: string };
+  resumo: string[];
+}
+
+interface RepAej {
+  id: number;
+  nrRep: string;
 }
 
 const ENTRADAS = new Set(["ENTRADA", "FIM_INTERVALO", "REINICIAR_EXPEDIENTE"]);
@@ -51,7 +64,7 @@ export class ArquivosFiscaisService {
     private readonly repLivro: RepLivroService,
     private readonly selo: SeloIcpService,
     private readonly assinatura: AssinaturaService,
-    private readonly acordos: AcordosRepService
+    private readonly repP: RepPService
   ) {}
 
   private validarPeriodo(f: FiltroExtracao) {
@@ -70,46 +83,28 @@ export class ArquivosFiscaisService {
     };
   }
 
-  private async empresa(dataRef?: string): Promise<{
-    acordo: Awaited<ReturnType<AcordosRepService["vigentePara"]>>;
-    tipoRep: TipoRep;
+  private async empresa(): Promise<{
     empresa: EmpresaRep;
     ptrp: Parameters<typeof montarAej>[0]["ptrp"];
-    cfg: Record<string, unknown>;
+    inpiInformado: boolean;
   }> {
     const c = await this.prisma.configuracaoSistema.findUnique({ where: { id: "singleton" } });
     if (!c) throw new BadRequestException("Configuração da instituição não encontrada.");
-    const tipoRep: TipoRep = c.repTipo === "REP_P" ? "REP_P" : "REP_A";
     const cnpj = (c.cnpj ?? "").replace(/\D/g, "");
-    /* REP-A: nº do processo do ACT vigente na data final do período (art. 77 §2º, sem ultratividade);
-       reserva: campo antigo; por fim 9×17 (leiaute). */
-    const acordo =
-      tipoRep === "REP_A"
-        ? await this.acordos.vigentePara(
-            dataRef ??
-              new Intl.DateTimeFormat("sv-SE", { timeZone: "America/Sao_Paulo" }).format(new Date())
-          )
-        : null;
-    const nrRep =
-      tipoRep === "REP_P"
-        ? (c.repInpiRegistro ?? "").replace(/\D/g, "")
-        : (acordo?.numeroProcesso ?? "") ||
-          (c.repActProcesso ?? "").replace(/\D/g, "") ||
-          "99999999999999999";
+    /* REP-P: nº de registro do programa no INPI (sem ele, o leiaute leva zeros e o arquivo não é apto). */
+    const inpi = (c.repInpiRegistro ?? "").replace(/\D/g, "");
     return {
-      acordo,
-      tipoRep,
-      cfg: c as unknown as Record<string, unknown>,
+      inpiInformado: !!inpi,
       empresa: {
         cnpj,
         cnoCaepf: (c.repCnoCaepf ?? "").replace(/\D/g, ""),
         razaoSocial: c.nome,
-        nrRep,
+        nrRep: inpi.padStart(17, "0"),
         cnpjDesenvolvedor: (c.ptrpDesenvolvedorCnpj ?? "").replace(/\D/g, "") || cnpj
       },
       ptrp: {
         nome: c.ptrpNome,
-        versao: c.ptrpVersao,
+        versao: versaoDoSistema(),
         cnpj: (c.ptrpDesenvolvedorCnpj ?? "").replace(/\D/g, "") || cnpj,
         razao: c.ptrpDesenvolvedorRazao ?? c.nome,
         email: c.ptrpDesenvolvedorEmail ?? c.emailInstitucional ?? ""
@@ -141,7 +136,8 @@ export class ArquivosFiscaisService {
   /** Pendências antes de gerar: bloqueios e avisos. */
   async preValidacao(f: FiltroExtracao) {
     this.validarPeriodo(f);
-    const { tipoRep, empresa, cfg, acordo } = await this.empresa(f.fim);
+    const { inpiInformado } = await this.empresa();
+    const estado = await this.repP.estado();
     const funcs = await this.funcionariosDoEscopo(f);
     const { ini, fim } = this.intervalo(f);
     const situacao = await this.repLivro.situacao();
@@ -181,41 +177,22 @@ export class ArquivosFiscaisService {
       );
     }
     if (situacao.bloqueio) bloqueios.push(`Livro do REP: ${situacao.bloqueio}`);
-    if (tipoRep === "REP_P" && !empresa.nrRep) {
-      bloqueios.push("REP-P sem o número de registro no INPI (Configurações → Sistema).");
+    if (!inpiInformado) {
+      avisos.push(
+        "Nº de registro do programa no INPI não informado (Configurações → Institucional → REP-P): o cabeçalho do AFD e o registro 02 do AEJ saem com zeros, sem validade para a fiscalização."
+      );
     }
-    if (tipoRep === "REP_A") {
-      const cob = await this.acordos.cobertura(f.inicio, f.fim);
-      const legado = String(cfg.repActProcesso ?? "").replace(/\D/g, "");
-      if (!cob.acordos.length && !legado) {
-        avisos.push(
-          "Nenhum ACT/CCT vigente cadastrado para o período (Configurações → Institucional): o cabeçalho usa 99999999999999999 e o REP-A fica sem autorização documentada (art. 77)."
-        );
-      } else if (cob.acordos.length) {
-        if (cob.diasSemAcordo > 0) {
-          avisos.push(
-            `${cob.diasSemAcordo} dia(s) do período estão fora da vigência de qualquer ACT/CCT cadastrado (a partir de ${(cob.primeiroDiaSemAcordo ?? "").split("-").reverse().join("/")}): sem ultratividade, o REP-A não tem autorização nesses dias (art. 77 §2º).`
-          );
-        }
-        if (cob.acordos.length > 1) {
-          avisos.push(
-            `O período cruza ${cob.acordos.length} acordos; o cabeçalho usa o vigente em ${f.fim.split("-").reverse().join("/")} (${acordo?.numeroProcesso ?? "—"}). Gere um arquivo por acordo se o fiscal exigir.`
-          );
-        }
-        if (acordo) {
-          const faltam = Math.round((Date.parse(acordo.vigenciaFim) - Date.now()) / 86_400_000);
-          if (faltam >= 0 && faltam <= 60) {
-            avisos.push(
-              `O ACT vigente vence em ${faltam} dia(s) (${acordo.vigenciaFim.split("-").reverse().join("/")}): registre a renovação.`
-            );
-          }
-        }
-      }
+    if (estado.situacao === "HOMOLOGACAO" || estado.situacao === "PRONTO") {
+      avisos.push(
+        "O REP-P ainda não iniciou a operação (homologação): os arquivos servem para teste e conferência, não para a fiscalização."
+      );
     }
     const st = this.selo.status();
-    if (!st.caminhoCertificado) {
+    if (!st.caminhoCertificado || !st.validadeAte) {
       avisos.push(
-        "Certificado ICP-Brasil não instalado: os arquivos saem SEM o .p7s — não aptos à fiscalização (art. 88)."
+        st.caminhoCertificado
+          ? "Certificado ICP-Brasil não encontrado ou ilegível (confira o arquivo e a senha em deploy/icp): os arquivos saem SEM o .p7s — não aptos à fiscalização (art. 88)."
+          : "Certificado ICP-Brasil não instalado: os arquivos saem SEM o .p7s — não aptos à fiscalização (art. 88)."
       );
     } else if (st.validadeAte && new Date(st.validadeAte) < new Date()) {
       bloqueios.push("Certificado ICP-Brasil vencido.");
@@ -231,21 +208,13 @@ export class ArquivosFiscaisService {
       );
     }
     return {
-      tipoRep,
+      tipoRep: "REP_P" as const,
       bloqueios,
       avisos,
       funcionarios: funcs.length,
-      certificado: !!st.caminhoCertificado,
+      certificado: !!st.caminhoCertificado && !!st.validadeAte,
       nsrAtual: situacao.nsrAtual,
-      acordo: acordo
-        ? {
-            numeroProcesso: acordo.numeroProcesso,
-            tipo: acordo.tipo,
-            ano: acordo.ano,
-            vigenciaInicio: acordo.vigenciaInicio,
-            vigenciaFim: acordo.vigenciaFim
-          }
-        : null
+      emOperacao: estado.situacao === "OPERACAO"
     };
   }
 
@@ -257,12 +226,11 @@ export class ArquivosFiscaisService {
     await this.repLivro.sincronizarEmpregados();
     const pre = await this.preValidacao(f);
     if (pre.bloqueios.length) throw new BadRequestException(pre.bloqueios.join(" "));
-    const { tipoRep, empresa, acordo } = await this.empresa(f.fim);
-    const { ini, fim } = this.intervalo(f);
     const oficial = f.escopo === "todos";
     const funcs = oficial ? [] : await this.funcionariosDoEscopo(f);
     const ids = new Set(funcs.map((x) => x.id));
-
+    const { empresa } = await this.empresa();
+    const { ini, fim } = this.intervalo(f);
     const [eventos, marcacoes] = await Promise.all([
       this.prisma.eventoRep.findMany({
         where: { dataHora: { gte: ini, lte: fim } },
@@ -280,13 +248,11 @@ export class ArquivosFiscaisService {
       if (oficial || e.tipo !== 5) return true;
       return ids.has(String((e.dados as Record<string, unknown>).funcionarioId ?? ""));
     });
-    const geradoEm = new Date();
     const afd = montarAfd({
-      tipoRep,
       empresa,
       inicio: f.inicio,
       fim: f.fim,
-      geradoEm,
+      geradoEm: new Date(),
       eventos: eventosFiltrados.map((e) => ({
         nsr: e.nsr,
         tipo: e.tipo,
@@ -295,26 +261,31 @@ export class ArquivosFiscaisService {
       })),
       marcacoes
     });
-    const base =
-      tipoRep === "REP_P" ? `AFD${empresa.nrRep}${empresa.cnpj}REP_P` : `AFD${empresa.cnpj}REP_A`;
-    const nome = `${oficial ? "" : "EXTRATO_"}${base}`;
+    /* Nome oficial do REP-P: "AFD" + nº do INPI (17 dígitos) + CNPJ + "REP_P". */
+    const nrInpi = empresa.nrRep.padStart(17, "0");
     return this.empacotar({
       tipo: "AFD",
       oficial,
       f,
-      nome,
-      conteudo: arquivoTexto(afd.linhas),
-      registros: afd.linhas.length,
-      nsrMaximo: oficial ? afd.nsrMaximo : null,
-      resumo: [
-        `Tipo de REP: ${tipoRep === "REP_A" ? "REP-A (autorizado por acordo coletivo)" : "REP-P"}`,
-        `Registros: tipo 2 = ${afd.contagem[2]}, tipo 3 = ${afd.contagem[3]}, tipo 4 = ${afd.contagem[4]}, tipo 5 = ${afd.contagem[5]}, tipo 6 = ${afd.contagem[6]}, tipo 7 = ${afd.contagem[7]}`,
-        oficial
-          ? "AFD OFICIAL do REP (todos os funcionários)."
-          : "EXTRATO do AFD (parte dos funcionários) — NÃO SUBSTITUI o AFD do REP.",
-        ...this.linhaAcordo(tipoRep, acordo)
+      arquivos: [
+        {
+          nome: `${oficial ? "" : "EXTRATO_"}AFD${nrInpi}${empresa.cnpj}REP_P`,
+          conteudo: arquivoTexto(afd.linhas),
+          registros: afd.linhas.length,
+          nsrMaximo: oficial ? afd.nsrMaximo : null,
+          periodo: { inicio: f.inicio, fim: f.fim },
+          resumo: [
+            "REP-P (programa registrado no INPI)",
+            `Registros: tipo 2 = ${afd.contagem[2]}, tipo 4 = ${afd.contagem[4]}, tipo 5 = ${afd.contagem[5]}, tipo 6 = ${afd.contagem[6]}, tipo 7 = ${afd.contagem[7]}`,
+            oficial
+              ? "AFD OFICIAL do REP (todos os funcionários)."
+              : "EXTRATO do AFD (parte dos funcionários) — NÃO SUBSTITUI o AFD do REP.",
+            `Nº de registro no INPI: ${nrInpi}.`,
+            "Hash dos registros tipo 7: SHA-256 de NSR, tipo, data/hora da marcação, CPF, data/hora da gravação, coletor, on/off-line (campos como gravados no arquivo) e o hash do tipo 7 anterior."
+          ]
+        }
       ],
-      acordoId: acordo?.id ?? null,
+      nomeZip: `${oficial ? "" : "EXTRATO_"}AFD${nrInpi}${empresa.cnpj}REP_P`,
       autor
     });
   }
@@ -325,7 +296,8 @@ export class ArquivosFiscaisService {
     this.validarPeriodo(f);
     const pre = await this.preValidacao(f);
     if (pre.bloqueios.length) throw new BadRequestException(pre.bloqueios.join(" "));
-    const { tipoRep, empresa, ptrp, acordo } = await this.empresa(f.fim);
+    const { empresa, ptrp } = await this.empresa();
+    const reps: RepAej[] = [{ id: 1, nrRep: empresa.nrRep }];
     const { ini, fim } = this.intervalo(f);
     const funcs = (await this.funcionariosDoEscopo(f)).filter(
       (x) => (x.cpf ?? "").replace(/\D/g, "") && (x.ativo || f.escopo !== "todos")
@@ -507,6 +479,8 @@ export class ArquivosFiscaisService {
           tpMarc: l.tpMarc,
           seq: Math.max(1, seq),
           fonte: l.fonte,
+          /* Marcação incluída manualmente não tem REP associado (idRepAej vazio). */
+          idRep: l.fonte === "I" ? undefined : reps[0].id,
           motivo: l.fonte === "I" || l.tpMarc === "D" ? l.motivo : undefined
         };
         if (l.tpMarc === "E" && seq === 1 && primeiraEntrada) {
@@ -517,13 +491,12 @@ export class ArquivosFiscaisService {
       }
     }
 
-    const geradoEm = new Date();
     const aej = montarAej({
-      tipoRep,
+      reps,
       empresa,
       inicio: f.inicio,
       fim: f.fim,
-      geradoEm,
+      geradoEm: new Date(),
       vinculos,
       horarios: [...horarios.values()],
       marcacoes,
@@ -535,135 +508,22 @@ export class ArquivosFiscaisService {
       tipo: "AEJ",
       oficial: true,
       f,
-      nome,
-      conteudo: arquivoTexto(aej.linhas),
-      registros: aej.linhas.length,
-      nsrMaximo: null,
-      resumo: [
-        `Vínculos: ${vinculos.length}; marcações (05): ${aej.contagem["05"] ?? 0}; ausências/banco (07): ${aej.contagem["07"] ?? 0}`,
-        ...this.linhaAcordo(tipoRep, acordo)
+      arquivos: [
+        {
+          nome,
+          conteudo: arquivoTexto(aej.linhas),
+          registros: aej.linhas.length,
+          nsrMaximo: null,
+          periodo: { inicio: f.inicio, fim: f.fim },
+          resumo: [
+            `Vínculos: ${vinculos.length}; marcações (05): ${aej.contagem["05"] ?? 0}; ausências/banco (07): ${aej.contagem["07"] ?? 0}`,
+            `REP-P: registro no INPI nº ${empresa.nrRep.padStart(17, "0")} (registro 02).`
+          ]
+        }
       ],
-      acordoId: acordo?.id ?? null,
+      nomeZip: nome,
       autor
     });
-  }
-
-  /* ─── Atestado Técnico e Termo de Responsabilidade (art. 89) — modelo para assinatura ─── */
-
-  async atestadoTecnico(): Promise<Buffer> {
-    const { tipoRep, empresa, ptrp, acordo } = await this.empresa();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const PdfPrinter = require("pdfmake/src/printer");
-    const printer = new PdfPrinter({
-      Helvetica: {
-        normal: "Helvetica",
-        bold: "Helvetica-Bold",
-        italics: "Helvetica-Oblique",
-        bolditalics: "Helvetica-BoldOblique"
-      }
-    });
-    const cnpjFmt = (c: string) =>
-      c.length === 14 ? c.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5") : c;
-    const tipoTxt =
-      tipoRep === "REP_A"
-        ? "Registrador Eletrônico de Ponto Alternativo (REP-A), autorizado por acordo coletivo de trabalho"
-        : "Registrador Eletrônico de Ponto via Programa (REP-P)";
-    const p = (t: string) => ({ text: t, margin: [0, 0, 0, 8], alignment: "justify" });
-    const doc = {
-      pageSize: "A4",
-      pageMargins: [60, 60, 60, 60],
-      defaultStyle: { font: "Helvetica", fontSize: 11, lineHeight: 1.3 },
-      content: [
-        {
-          text: "ATESTADO TÉCNICO E TERMO DE RESPONSABILIDADE",
-          bold: true,
-          fontSize: 14,
-          alignment: "center"
-        },
-        {
-          text: "Portaria MTP nº 671/2021, art. 89",
-          alignment: "center",
-          margin: [0, 2, 0, 18],
-          color: "#555"
-        },
-        p(
-          `${ptrp.razao}, inscrito(a) no CNPJ ${cnpjFmt(ptrp.cnpj)}, na qualidade de desenvolvedor(a) do ` +
-            `programa "${ptrp.nome}", versão ${ptrp.versao}, utilizado como ${tipoTxt} e como Programa de ` +
-            `Tratamento de Registro de Ponto (PTRP), ATESTA que o referido sistema atende às ` +
-            `determinações da Seção do controle de jornada da Portaria MTP nº 671/2021 (arts. 72 a 96), em especial:`
-        ),
-        {
-          ul: [
-            "registra fielmente as marcações efetuadas, sem restrição de horário, sem marcação automática, sem exigência de autorização prévia para sobrejornada e sem dispositivo que permita alterar os dados registrados (art. 74);",
-            "mantém as marcações originais em livro somente-inclusão, identificadas pelo Número Sequencial de Registro (NSR);",
-            "gera o Arquivo Fonte de Dados (AFD) e o Arquivo Eletrônico de Jornada (AEJ) nos leiautes publicados no portal gov.br, assinados em CAdES (.p7s destacado) com certificado ICP-Brasil (arts. 81, 83, 86 e 88);",
-            "gera o relatório Espelho de Ponto Eletrônico com as informações do art. 84;",
-            "permite a identificação do empregador e do empregado e a extração eletrônica, no local ou remota, do registro fiel das marcações (art. 77, §1º)."
-          ],
-          margin: [12, 0, 0, 12]
-        },
-        p(
-          `Empregador usuário: ${empresa.razaoSocial}, CNPJ ${cnpjFmt(empresa.cnpj)}.` +
-            (tipoRep === "REP_A"
-              ? ` Acordo coletivo autorizador: processo nº ${empresa.nrRep}${acordo ? ` (${acordo.tipo} ${acordo.ano}, vigência ${acordo.vigenciaInicio.split("-").reverse().join("/")} a ${acordo.vigenciaFim.split("-").reverse().join("/")})` : ""}.`
-              : ` Registro do programa no INPI: nº ${empresa.nrRep}.`)
-        ),
-        p(
-          "Os signatários declaram, sob as penas da lei, a veracidade das informações acima e assumem a responsabilidade técnica e legal pelo atendimento às normas citadas."
-        ),
-        {
-          text: `Brasília/DF, ${new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`,
-          margin: [0, 10, 0, 50]
-        },
-        {
-          columns: [
-            {
-              stack: [
-                "_______________________________",
-                { text: "Responsável técnico", bold: true },
-                "Nome / CPF"
-              ],
-              alignment: "center"
-            },
-            {
-              stack: [
-                "_______________________________",
-                { text: "Responsável legal", bold: true },
-                "Nome / CPF"
-              ],
-              alignment: "center"
-            }
-          ]
-        },
-        {
-          text: "Este documento deve ser assinado eletronicamente com assinatura qualificada (certificado ICP-Brasil de pessoa física — e-CPF), em PAdES (art. 89, §§ 2º e 3º), e mantido para apresentação à Inspeção do Trabalho.",
-          fontSize: 9,
-          color: "#555",
-          margin: [0, 40, 0, 0]
-        }
-      ]
-    };
-    const pdf = printer.createPdfKitDocument(doc);
-    return new Promise<Buffer>((resolve, reject) => {
-      const partes: Buffer[] = [];
-      pdf.on("data", (c: Buffer) => partes.push(c));
-      pdf.on("end", () => resolve(Buffer.concat(partes)));
-      pdf.on("error", reject);
-      pdf.end();
-    });
-  }
-
-  private linhaAcordo(
-    tipoRep: TipoRep,
-    a: Awaited<ReturnType<AcordosRepService["vigentePara"]>>
-  ): string[] {
-    if (tipoRep !== "REP_A") return [];
-    if (!a)
-      return ["ACT/CCT: nenhum acordo vigente cadastrado (nº do processo 99999999999999999)."];
-    const br = (d: string) => d.split("-").reverse().join("/");
-    return [
-      `${a.tipo} autorizador do REP-A: processo nº ${a.numeroProcesso} (${a.ano}), vigência ${br(a.vigenciaInicio)} a ${br(a.vigenciaFim)}.`
-    ];
   }
 
   /* ─── ZIP: .txt + .p7s (CAdES destacado) + LEIA-ME ─── */
@@ -672,69 +532,84 @@ export class ArquivosFiscaisService {
     tipo: "AFD" | "AEJ";
     oficial: boolean;
     f: FiltroExtracao;
-    nome: string;
-    conteudo: Buffer;
-    registros: number;
-    nsrMaximo: number | null;
-    resumo: string[];
-    acordoId?: string | null;
+    arquivos: ArquivoGerado[];
+    nomeZip: string;
     autor: { id?: string | null; nome?: string | null };
   }) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const JSZip = require("jszip") as typeof import("jszip");
     const zip = new JSZip();
-    zip.file(`${o.nome}.txt`, o.conteudo);
-    let assinado = false;
-    let titular: string | null = null;
-    if (o.f.assinar !== false) {
-      try {
-        const r = this.selo.assinarCades(o.conteudo);
-        if (r) {
-          zip.file(`${o.nome}.p7s`, r.p7s);
-          assinado = true;
-          titular = r.titular;
+    const leiame: string[] = [
+      `${o.tipo === "AFD" ? "Arquivo Fonte de Dados (AFD)" : "Arquivo Eletrônico de Jornada (AEJ)"} — Portaria MTP nº 671/2021`,
+      `Período: ${o.f.inicio.split("-").reverse().join("/")} a ${o.f.fim.split("-").reverse().join("/")}`,
+      `Gerado em: ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} por ${o.autor.nome ?? "—"}`
+    ];
+    let todosAssinados = true;
+    const registrosExtracao: Array<{
+      a: ArquivoGerado;
+      sha: string;
+      assinado: boolean;
+    }> = [];
+    for (const a of o.arquivos) {
+      zip.file(`${a.nome}.txt`, a.conteudo);
+      let assinado = false;
+      let titular: string | null = null;
+      if (o.f.assinar !== false) {
+        try {
+          const r = this.selo.assinarCades(a.conteudo);
+          if (r) {
+            zip.file(`${a.nome}.p7s`, r.p7s);
+            assinado = true;
+            titular = r.titular;
+          }
+        } catch (e) {
+          this.logger.error(`Assinatura CAdES falhou: ${(e as Error).message}`);
         }
-      } catch (e) {
-        this.logger.error(`Assinatura CAdES falhou: ${(e as Error).message}`);
       }
+      if (!assinado) todosAssinados = false;
+      const sha = createHash("sha256").update(a.conteudo).digest("hex");
+      registrosExtracao.push({ a, sha, assinado });
+      leiame.push(
+        "",
+        `── ${a.nome}.txt ──`,
+        ...(o.arquivos.length > 1
+          ? [
+              `Período do arquivo: ${a.periodo.inicio.split("-").reverse().join("/")} a ${a.periodo.fim.split("-").reverse().join("/")}`
+            ]
+          : []),
+        ...a.resumo,
+        `Linhas: ${a.registros} · Codificação ISO-8859-1 · fim de linha CR+LF`,
+        `SHA-256 do ${a.nome}.txt: ${sha}`,
+        assinado
+          ? `Assinatura: ${a.nome}.p7s (CAdES destacado, política AD-RB v2.3 da ICP-Brasil${titular ? ` — ${titular}` : ""}).`
+          : "Assinatura: NÃO ASSINADO — certificado ICP-Brasil não instalado (arquivo não apto à fiscalização).",
+        a.nsrMaximo ? `Maior NSR do arquivo: ${a.nsrMaximo}` : ""
+      );
     }
-    const sha = createHash("sha256").update(o.conteudo).digest("hex");
     zip.file(
       "LEIA-ME.txt",
-      [
-        `${o.tipo === "AFD" ? "Arquivo Fonte de Dados (AFD)" : "Arquivo Eletrônico de Jornada (AEJ)"} — Portaria MTP nº 671/2021`,
-        `Período: ${o.f.inicio.split("-").reverse().join("/")} a ${o.f.fim.split("-").reverse().join("/")}`,
-        `Gerado em: ${new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })} por ${o.autor.nome ?? "—"}`,
-        ...o.resumo,
-        `Linhas: ${o.registros} · Codificação ISO-8859-1 · fim de linha CR+LF`,
-        `SHA-256 do ${o.nome}.txt: ${sha}`,
-        assinado
-          ? `Assinatura: ${o.nome}.p7s (CAdES destacado, política AD-RB v2.3 da ICP-Brasil${titular ? ` — ${titular}` : ""}).`
-          : "Assinatura: NÃO ASSINADO — certificado ICP-Brasil não instalado (arquivo não apto à fiscalização).",
-        o.nsrMaximo ? `Maior NSR do arquivo: ${o.nsrMaximo}` : ""
-      ]
-        .filter(Boolean)
-        .join("\r\n")
+      leiame.filter((l, i, arr) => l !== "" || arr[i - 1] !== "").join("\r\n")
     );
     const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-    await this.prisma.extracaoArquivoFiscal.create({
-      data: {
-        tipo: o.tipo,
-        oficial: o.oficial,
-        escopo: o.f.escopo,
-        funcionarioIds: (o.f.funcionarioIds ?? []) as unknown as object,
-        periodoInicio: o.f.inicio,
-        periodoFim: o.f.fim,
-        nomeArquivo: `${o.nome}.txt`,
-        sha256: sha,
-        assinado,
-        nsrMaximo: o.nsrMaximo,
-        registros: o.registros,
-        acordoId: o.acordoId ?? null,
-        geradoPorId: o.autor.id ?? null,
-        geradoPorNome: o.autor.nome ?? null
-      }
-    });
-    return { buffer, nomeZip: `${o.nome}.zip`, assinado };
+    for (const { a, sha, assinado } of registrosExtracao) {
+      await this.prisma.extracaoArquivoFiscal.create({
+        data: {
+          tipo: o.tipo,
+          oficial: o.oficial,
+          escopo: o.f.escopo,
+          funcionarioIds: (o.f.funcionarioIds ?? []) as unknown as object,
+          periodoInicio: a.periodo.inicio,
+          periodoFim: a.periodo.fim,
+          nomeArquivo: `${a.nome}.txt`,
+          sha256: sha,
+          assinado,
+          nsrMaximo: a.nsrMaximo,
+          registros: a.registros,
+          geradoPorId: o.autor.id ?? null,
+          geradoPorNome: o.autor.nome ?? null
+        }
+      });
+    }
+    return { buffer, nomeZip: `${o.nomeZip}.zip`, assinado: todosAssinados };
   }
 }

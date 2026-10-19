@@ -316,9 +316,11 @@ export class SeloIcpService {
       const signer = new d.signer!.P12Signer(readFileSync(this.caminho), {
         passphrase: this.senha()
       });
-      const sign =
-        d.signpdf!.default?.sign ??
-        (d.signpdf as unknown as { sign: (b: Buffer, s: unknown) => Buffer }).sign;
+      /* O método usa `this` (lastSignature): chamar sempre a partir da instância. */
+      const instancia = (d.signpdf!.default ?? d.signpdf) as unknown as {
+        sign: (b: Buffer, s: unknown) => Buffer | Promise<Buffer>;
+      };
+      const sign = (b: Buffer, sg: unknown) => instancia.sign(b, sg);
       const assinado = await Promise.resolve(sign(comPlaceholder, signer));
       this.logger.log(`PDF selado com e-CNPJ A1 (${st.titular ?? "titular não lido"})`);
       return { pdf: Buffer.from(assinado), selado: true, serial: st.titular ?? undefined };

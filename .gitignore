@@ -13,6 +13,9 @@ deploy/nginx/certs/*.crt
 deploy/nginx/certs/*.key
 !deploy/nginx/certs/.gitkeep
 deploy/dns/generated
+deploy/icp/*
+!deploy/icp/.gitkeep
+!deploy/icp/LEIA-ME.md
 .DS_Store
 *.log
 .eslintcache
@@ -31,3 +34,6 @@ packages/mobile/.expo-shared
 
 # Arquivos do OCR copiados de node_modules (scripts/copiar-ocr.mjs)
 packages/web/public/ocr/
+
+# Saída do scripts/inpi-hash.sh
+inpi-registro/

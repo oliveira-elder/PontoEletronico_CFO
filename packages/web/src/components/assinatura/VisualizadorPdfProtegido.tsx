@@ -13,14 +13,21 @@ import { useAuth } from "../../auth/AuthContext";
 export function VisualizadorPdfProtegido({
   caminho,
   titulo,
-  onClose
+  onClose,
+  larguraMax = 860,
+  acoes
 }: {
   caminho: string;
   titulo: string;
   onClose: () => void;
+  /** Largura máxima da página na tela (documentos pequenos, como o comprovante, usam menos). */
+  larguraMax?: number;
+  /** Botões extras no cabeçalho (ex.: baixar o PDF). */
+  acoes?: React.ReactNode;
 }) {
   const { user } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
+  const areaRef = useRef<HTMLDivElement>(null);
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(true);
   const [oculto, setOculto] = useState(false);
@@ -80,29 +87,66 @@ export function VisualizadorPdfProtegido({
     };
   }, [caminho]);
 
-  /* Ao perder o foco (ferramenta de recorte, troca de janela) ou na tecla PrintScreen, borra. */
+  /* Desfoque NO COMANDO de captura (não depois): o navegador não vê o print, então o desfoque é
+     aplicado direto no DOM assim que a tecla é pressionada, antes de o sistema tirar a imagem.
+     Cobre PrintScreen, Win+Shift+S (recorte), Cmd+Shift+3/4/5 (Mac) e a tecla Win/Cmd isolada. */
   useEffect(() => {
-    const borrar = () => setOculto(true);
-    const voltar = () => setOculto(false);
-    const tecla = (e: KeyboardEvent) => {
-      if (e.key === "PrintScreen") {
-        setOculto(true);
-        void navigator.clipboard?.writeText("").catch(() => {});
-        window.setTimeout(() => setOculto(false), 1500);
+    let travadoAte = 0;
+    const aplicar = (ligado: boolean) => {
+      const el = areaRef.current;
+      if (el) el.style.filter = ligado ? "blur(18px)" : "";
+      setOculto(ligado);
+    };
+    const borrar = (ms = 0) => {
+      aplicar(true);
+      if (ms) travadoAte = Math.max(travadoAte, Date.now() + ms);
+    };
+    const voltar = () => {
+      if (Date.now() < travadoAte || !document.hasFocus()) return;
+      aplicar(false);
+    };
+    const comandoDeCaptura = (e: KeyboardEvent) =>
+      e.key === "PrintScreen" ||
+      e.key === "Snapshot" ||
+      e.key === "Meta" ||
+      e.key === "OS" ||
+      ((e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        ["s", "3", "4", "5"].includes(e.key.toLowerCase()));
+    const teclaBaixo = (e: KeyboardEvent) => {
+      if (comandoDeCaptura(e)) {
+        borrar(2500);
+        if (e.key === "PrintScreen") void navigator.clipboard?.writeText("").catch(() => {});
       }
       if ((e.ctrlKey || e.metaKey) && ["p", "s", "c"].includes(e.key.toLowerCase())) {
         e.preventDefault();
       }
     };
-    window.addEventListener("blur", borrar);
-    window.addEventListener("focus", voltar);
-    window.addEventListener("keyup", tecla);
-    window.addEventListener("keydown", tecla);
+    const teclaCima = (e: KeyboardEvent) => {
+      if (e.key === "PrintScreen") {
+        void navigator.clipboard?.writeText("").catch(() => {});
+        borrar(2500);
+        window.setTimeout(voltar, 2600);
+      } else if (e.key === "Meta" || e.key === "OS") {
+        window.setTimeout(voltar, 2600);
+      }
+    };
+    /* Perdeu o foco (ferramenta de recorte, troca de janela): borra; ao voltar o ponteiro, volta. */
+    const aoPerderFoco = () => borrar();
+    const aoVoltarFoco = () => voltar();
+    window.addEventListener("blur", aoPerderFoco);
+    window.addEventListener("focus", aoVoltarFoco);
+    window.addEventListener("keydown", teclaBaixo, true);
+    window.addEventListener("keyup", teclaCima, true);
+    window.addEventListener("pointermove", voltar);
+    window.addEventListener("pointerdown", voltar);
     return () => {
-      window.removeEventListener("blur", borrar);
-      window.removeEventListener("focus", voltar);
-      window.removeEventListener("keyup", tecla);
-      window.removeEventListener("keydown", tecla);
+      window.removeEventListener("blur", aoPerderFoco);
+      window.removeEventListener("focus", aoVoltarFoco);
+      window.removeEventListener("keydown", teclaBaixo, true);
+      window.removeEventListener("keyup", teclaCima, true);
+      window.removeEventListener("pointermove", voltar);
+      window.removeEventListener("pointerdown", voltar);
     };
   }, []);
 
@@ -136,17 +180,18 @@ export function VisualizadorPdfProtegido({
         <span style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
           Visualização protegida · marca d'água com o seu nome
         </span>
+        {acoes}
         <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
           Fechar
         </button>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
         <div
+          ref={areaRef}
           style={{
-            maxWidth: 860,
+            maxWidth: larguraMax,
             margin: "0 auto",
-            filter: oculto ? "blur(18px)" : undefined,
-            transition: "filter 0.1s"
+            filter: oculto ? "blur(18px)" : undefined
           }}
         >
           {carregando && <p style={{ color: "#fff", textAlign: "center" }}>Carregando…</p>}

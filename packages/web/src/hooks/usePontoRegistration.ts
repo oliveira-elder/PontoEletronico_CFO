@@ -60,6 +60,10 @@ export interface RegistroConfirmado {
   distanciaMetros?: number;
   fotoDataUrl?: string;
   modo: ModoRegistro;
+  /** NSR gravado no livro do REP: abre o Comprovante de Registro de Ponto (art. 80, II). */
+  nsr?: number | null;
+  /** Data e hora gravadas pelo servidor (Hora Legal Brasileira), usadas na confirmação. */
+  dataHoraServidor?: string;
 }
 
 const TIPO_LABEL: Record<TipoRegistro, string> = {
@@ -70,10 +74,6 @@ const TIPO_LABEL: Record<TipoRegistro, string> = {
   INTERROMPER_EXPEDIENTE: "Interromper Expediente",
   REINICIAR_EXPEDIENTE: "Reiniciar Expediente"
 };
-
-function pad(n: number) {
-  return String(n).padStart(2, "0");
-}
 
 function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6_371_000;
@@ -289,11 +289,13 @@ export function usePontoRegistration() {
       /* ── 3. Chamada à API ── */
       const bearerToken = token();
       let apiId: string | null = null;
+      let nsr: number | null = null;
+      let horaServidor: Date | null = null;
 
       if (bearerToken) {
         try {
           const modoFinal = params.modo ?? modo;
-          const res = await api.post<{ id: string }>(
+          const res = await api.post<{ id: string; nsr?: number | null; dataHora?: string }>(
             "/ponto/registros",
             {
               tipo: params.tipo,
@@ -308,6 +310,8 @@ export function usePontoRegistration() {
             bearerToken
           );
           apiId = res?.id ?? null;
+          nsr = res?.nsr ?? null;
+          if (res?.dataHora) horaServidor = new Date(res.dataHora);
         } catch (err: unknown) {
           // 401 em dev (sem realm Keycloak): silencia e usa mock
           if (!String((err as Error)?.message).includes("401")) throw err;
@@ -318,10 +322,19 @@ export function usePontoRegistration() {
       }
 
       /* ── 4. Monta confirmação ── */
-      const hora = `${pad(agora.getHours())}:${pad(agora.getMinutes())}`;
-      const horaCompl = `${hora}:${pad(agora.getSeconds())}`;
+      /* Hora gravada pelo servidor (Hora Legal Brasileira), no fuso de Brasília. */
+      const marcada = horaServidor ?? agora;
+      const horaCompl = marcada.toLocaleTimeString("pt-BR", {
+        timeZone: "America/Sao_Paulo",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23"
+      });
+      const hora = horaCompl.slice(0, 5);
       const dataCompl =
-        agora.toLocaleDateString("pt-BR", {
+        marcada.toLocaleDateString("pt-BR", {
+          timeZone: "America/Sao_Paulo",
           weekday: "long",
           day: "2-digit",
           month: "long",
@@ -332,6 +345,8 @@ export function usePontoRegistration() {
 
       return {
         id: apiId ?? crypto.randomUUID(),
+        nsr,
+        dataHoraServidor: horaServidor?.toISOString(),
         tipo: params.tipo,
         tipoLabel: TIPO_LABEL[params.tipo],
         hora,

@@ -108,7 +108,12 @@ export class ConfigController {
         await exigirRecursoRh(this.prisma, req.user, [...ADMIN_CONFIG_ROLES], fn);
       }
     }
-    return this.configService.updateSistema(body);
+    /* CPF de quem alterou os dados da instituição (AFD tipo 2, Anexo IX item 6.1). */
+    const resp = await this.prisma.funcionario.findFirst({
+      where: { user: { externalId: req.user.sub } },
+      select: { cpf: true }
+    });
+    return this.configService.updateSistema(body, resp?.cpf ?? null);
   }
 
   /* ─── Provedores ─── */

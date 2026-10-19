@@ -61,18 +61,6 @@ export class ArquivosFiscaisController {
   }
 
   @RecursoRh("auditoria.funcionarios.arquivos-fiscais")
-  @Get("atestado-tecnico")
-  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
-  async atestado(@Res() res: Response) {
-    const pdf = await this.service.atestadoTecnico();
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": 'attachment; filename="Atestado-Tecnico-Termo-Responsabilidade.pdf"'
-    });
-    res.send(pdf);
-  }
-
-  @RecursoRh("auditoria.funcionarios.arquivos-fiscais")
   @Post("afd")
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   async afd(

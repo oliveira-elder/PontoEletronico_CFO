@@ -265,6 +265,11 @@ export const ABAS_RH: AbaRh[] = [
         "configuracoes.institucional.salvar",
         "Salvar dados da instituição",
         "Dados, endereço, localização e identidade visual."
+      ),
+      f(
+        "configuracoes.institucional.rep-p",
+        "Configurar o REP-P e o registro no INPI",
+        "Identificação do REP-P, checklist do registro no INPI, certificado e início da operação como REP-P."
       )
     ]
   },
