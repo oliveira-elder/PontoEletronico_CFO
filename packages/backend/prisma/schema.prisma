@@ -496,6 +496,8 @@ model ConfiguracaoSistema {
   bancoHorasDomingoPct            Int       @default(200) // 200% = 1h→2h (hora em dobro)
   bancoHorasFeriadoPct            Int       @default(200) // 200% = 1h→2h (hora em dobro)
   /// Antecedência (dias) para alertar o fim do contrato de Estagiário/Jovem Aprendiz.
+  /// Acordo coletivo que reduz a jornada (exibido no Espelho: "8h00/dia – ACT 2026-2028: 7h00/dia").
+  jornadaAcordoColetivo           String?   @default("ACT 2026-2028")
   contratoAvisoAntecedenciaDias   Int       @default(90)
   // Hora extra — limite (em minutos) acima da jornada que dispara solicitação automática
   horaExtraLimiteAuto             Int       @default(120)

@@ -392,8 +392,9 @@ function buildFuncionarioCard(input: QuadroPdfInput): unknown {
     ? `${fmtBr(cicloBancoHoras.inicio)} a ${fmtBr(cicloBancoHoras.fim)}`
     : `01/${String(mes).padStart(2, "0")}/${ano} a ${new Date(ano, mes, 0).getDate()}/${String(mes).padStart(2, "0")}/${ano}`;
   const emitido = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-  const lotacao = funcionario.gerencia
-    ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})${funcionario.section ? ` — ${funcionario.section}` : ""}`
+  /* Setor: nome e sigla da gerência (sem o identificador técnico da seção). */
+  const setor = funcionario.gerencia
+    ? `${funcionario.gerencia.nome} (${funcionario.gerencia.sigla})`
     : (funcionario.section ?? "—");
   const jornada =
     espelho?.jornadaContratual ??
@@ -421,7 +422,7 @@ function buildFuncionarioCard(input: QuadroPdfInput): unknown {
           "Data de admissão",
           fmtDataBr(espelho?.dataAdmissao)
         ],
-        ["Lotação", lotacao]
+        ["Setor", setor]
       ]),
       blocoIdentificacao("Período e jornada", [
         ["Período do relatório", periodoStr, "Data de emissão", emitido],
@@ -910,7 +911,7 @@ function buildPaginaDeclaracao(input: QuadroPdfInput, rascunho: boolean): unknow
       ? []
       : [
           evidencia(
-            "Gestor da área",
+            "Chefe da área",
             assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",
             assinatura.assinadoGestorEm,
             assinatura.assinadoGestorIp,
@@ -1242,7 +1243,7 @@ function buildAssinaturaRodape(
     assinatura.assinadoFuncionarioUserAgent
   );
   const colGestor = coluna(
-    "GESTOR DA ÁREA",
+    "CHEFE DA ÁREA",
     "#374151",
     "#F8FAFC",
     assinatura.assinadoGestorNome ?? funcionario.gerencia?.nome ?? "—",

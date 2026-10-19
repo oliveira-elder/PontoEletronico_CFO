@@ -120,6 +120,7 @@ interface SistemaApi {
   bancoHorasDomingoPct: number;
   bancoHorasFeriadoPct: number;
   contratoAvisoAntecedenciaDias?: number;
+  jornadaAcordoColetivo?: string | null;
 }
 
 interface Config {
@@ -467,6 +468,8 @@ interface ConfigPeriodos {
   bancoHorasFeriadoPct: number;
   // Aviso de fim de contrato (Estagiário/Jovem Aprendiz), em dias de antecedência
   contratoAvisoAntecedenciaDias: number;
+  // Acordo coletivo que reduz a jornada (Espelho de Ponto)
+  jornadaAcordoColetivo: string;
 }
 
 /** 360 → "6 h"; 390 → "6 h 30 min". */
@@ -1819,7 +1822,8 @@ export function ConfiguracoesPage() {
             bancoHorasSabadoPct: sis.bancoHorasSabadoPct ?? 100,
             bancoHorasDomingoPct: sis.bancoHorasDomingoPct ?? 200,
             bancoHorasFeriadoPct: sis.bancoHorasFeriadoPct ?? 200,
-            contratoAvisoAntecedenciaDias: sis.contratoAvisoAntecedenciaDias ?? 90
+            contratoAvisoAntecedenciaDias: sis.contratoAvisoAntecedenciaDias ?? 90,
+            jornadaAcordoColetivo: sis.jornadaAcordoColetivo ?? ""
           });
         }
         setProvedores(provs ?? []);
@@ -6886,6 +6890,69 @@ export function ConfiguracoesPage() {
                   Salvar Multiplicadores
                 </button>
               </div>
+            </Secao>
+
+            {/* ── Acordo coletivo da jornada (Espelho de Ponto) ── */}
+            <Secao titulo="Acordo coletivo da jornada" icon={<AlertCircleIcon size={18} />}>
+              <p
+                style={{ fontSize: 13, color: "var(--ink-500)", marginBottom: 16, lineHeight: 1.6 }}
+              >
+                Quando o acordo coletivo reduz a jornada do contrato, o Espelho de Ponto mostra as
+                duas (ex.: "8h00/dia – ACT 2026-2028: 7h00/dia"). Informe a identificação do acordo.
+              </p>
+              {periodos && (
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+                  <div>
+                    <label
+                      htmlFor="jornadaAcordoColetivo"
+                      style={{
+                        display: "block",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: "var(--ink-700)",
+                        marginBottom: 4
+                      }}
+                    >
+                      Identificação do acordo
+                    </label>
+                    <input
+                      id="jornadaAcordoColetivo"
+                      value={periodos.jornadaAcordoColetivo}
+                      maxLength={40}
+                      placeholder="ACT 2026-2028"
+                      onChange={(e) =>
+                        setPeriodos((p) =>
+                          p ? { ...p, jornadaAcordoColetivo: e.target.value } : p
+                        )
+                      }
+                      style={{
+                        width: 220,
+                        padding: "8px 10px",
+                        border: "1px solid rgba(122,30,38,0.14)",
+                        borderRadius: "var(--radius-md)",
+                        fontSize: 14
+                      }}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={async () => {
+                      if (!periodos) return;
+                      if (!exigirFuncao("configuracoes.periodos.aviso-contrato")) return;
+                      try {
+                        await api.put("/ponto/config/sistema", {
+                          jornadaAcordoColetivo: periodos.jornadaAcordoColetivo.trim() || null
+                        });
+                        alert("Acordo coletivo da jornada salvo com sucesso.");
+                      } catch (e) {
+                        alert("Erro ao salvar: " + (e as Error).message);
+                      }
+                    }}
+                  >
+                    Salvar acordo
+                  </button>
+                </div>
+              )}
             </Secao>
 
             {/* ── Contratos de Estágio / Jovem Aprendiz ── */}

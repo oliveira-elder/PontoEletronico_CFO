@@ -8,8 +8,15 @@
 set -euo pipefail
 
 REF="${1:-HEAD}"
-RAIZ="$(git rev-parse --show-toplevel)"
+# Raiz do projeto a partir do local do script (não depende do git).
+RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$RAIZ"
+
+# Quando quem executa não é o dono da pasta (ex.: root), o git recusa o repositório
+# ("dubious ownership"). Libera só para esta execução, sem alterar configuração global.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=safe.directory
+export GIT_CONFIG_VALUE_0="$RAIZ"
 
 if ! git rev-parse --verify "$REF" >/dev/null 2>&1; then
   echo "Referência git inválida: $REF" >&2

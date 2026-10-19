@@ -286,7 +286,7 @@ const PDF_FONTS = getPdfFonts();
  * Versão do layout da folha em PDF. Aumente a cada mudança visual: as folhas concluídas e AINDA
  * NÃO seladas são regeradas no próximo download; as seladas com ICP-Brasil nunca mudam.
  */
-const VERSAO_LAYOUT_PDF = 10;
+const VERSAO_LAYOUT_PDF = 11;
 
 @Injectable()
 export class AssinaturaService {
@@ -2354,8 +2354,8 @@ export class AssinaturaService {
 
   /** Dados do empregador e da jornada contratual exibidos no Espelho de Ponto. */
   private async montarEspelhoExtras(
-    funcionario: { dataAdmissao: Date | null },
-    jornada: { atualMin: number; horaEntrada?: string; horaSaida?: string }
+    funcionario: { dataAdmissao: Date | null; categoria?: string | null },
+    jornada: { atualMin: number; anteriorMin?: number; horaEntrada?: string; horaSaida?: string }
   ): Promise<EspelhoExtrasPdf> {
     const cfg = await this.prisma.configuracaoSistema.findUnique({
       where: { id: "singleton" },
@@ -2364,16 +2364,26 @@ export class AssinaturaService {
         cnpj: true,
         bancoHorasSabadoPct: true,
         bancoHorasDomingoPct: true,
-        bancoHorasFeriadoPct: true
+        bancoHorasFeriadoPct: true,
+        jornadaAcordoColetivo: true
       }
     });
     const h = (min: number) => `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
-    const semanal = jornada.atualMin * 5;
+    /* Jornada do contrato e, quando um acordo coletivo a reduz, a jornada praticada:
+       "8h00/dia – ACT 2026-2028: 7h00/dia". */
+    /* Estagiário e Jovem Aprendiz têm jornada própria do contrato (não do acordo coletivo). */
+    const semAcordo = ["ESTAGIARIO", "MENOR_APRENDIZ"].includes(funcionario.categoria ?? "");
+    const contratoMin = semAcordo ? jornada.atualMin : (jornada.anteriorMin ?? jornada.atualMin);
+    const acordo = cfg?.jornadaAcordoColetivo?.trim() || "Jornada praticada";
+    const jornadaContratual =
+      contratoMin !== jornada.atualMin
+        ? `${h(contratoMin)}/dia – ${acordo}: ${h(jornada.atualMin)}/dia`
+        : `${h(jornada.atualMin)}/dia`;
     return {
       razaoSocial: (cfg?.nome ?? "Conselho Federal de Odontologia").toUpperCase(),
       cnpj: cfg?.cnpj ?? null,
       dataAdmissao: funcionario.dataAdmissao,
-      jornadaContratual: `${h(jornada.atualMin)}/dia – ${h(semanal)} semanais`,
+      jornadaContratual,
       horarioContratual:
         jornada.horaEntrada && jornada.horaSaida
           ? `${jornada.horaEntrada} às ${jornada.horaSaida}`

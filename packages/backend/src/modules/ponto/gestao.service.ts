@@ -1,3 +1,4 @@
+import { categoriaSemToleranciaIndividual } from "../../utils/tolerancia-fechamento";
 import { RepLivroService } from "../rep/rep-livro.service";
 import { mensagemCpfObrigatorio } from "../../utils/cpf";
 import { PontoService } from "./ponto.service";
@@ -1786,6 +1787,16 @@ export class GestaoService {
 
   /** `null`/vazio remove a tolerância individual (volta a valer a global). */
   async setToleranciaFechamento(id: string, valor: unknown) {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id },
+      select: { categoria: true }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    if (categoriaSemToleranciaIndividual(func.categoria)) {
+      throw new BadRequestException(
+        "Estagiário, Jovem Aprendiz e Comissionado não têm tolerância individual de fechamento do banco de horas: vale a tolerância geral."
+      );
+    }
     let dias: number | null;
     try {
       dias = inteiroConfig(valor, "Tolerância individual (dias)");

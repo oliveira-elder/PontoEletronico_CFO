@@ -2726,7 +2726,8 @@ export function FuncionarioFormPage() {
           </div>
         </div>
 
-        {id && isRhOuAdmin && (
+        {/* Estagiário, Jovem Aprendiz e Comissionado não têm tolerância individual (vale a geral). */}
+        {id && isRhOuAdmin && !catEstagiario && !catJovemAprendiz && !catComissionado && (
           <ToleranciaFechamentoFuncionario
             funcionarioId={id}
             somenteLeitura={!podeFuncao("gestao.funcionarios.banco-horas")}
@@ -2736,7 +2737,13 @@ export function FuncionarioFormPage() {
         {(catEstagiario || catJovemAprendiz) && (
           <div style={{ marginTop: 16 }}>
             <FieldLabel>
-              Dados do Contrato de {catEstagiario ? "Estágio" : "Jovem Aprendiz"}
+              {catEstagiario ? (
+                "Dados do Contrato de Estágio"
+              ) : (
+                <strong style={{ fontWeight: 800, color: "var(--ink-900)" }}>
+                  Dados do Contrato
+                </strong>
+              )}
             </FieldLabel>
             <div
               style={{
@@ -2773,7 +2780,7 @@ export function FuncionarioFormPage() {
                 </>
               )}
               <div>
-                <FieldLabel>Data de Início {catEstagiario ? "do Curso" : "da Jornada"}</FieldLabel>
+                <FieldLabel>Data de Início{catEstagiario ? " do Curso" : ""}</FieldLabel>
                 <input
                   type="date"
                   value={form.contratoInicio}
@@ -2782,9 +2789,7 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div>
-                <FieldLabel>
-                  Data de Término {catEstagiario ? "do Curso *" : "da Jornada"}
-                </FieldLabel>
+                <FieldLabel>Data de Término{catEstagiario ? " do Curso *" : ""}</FieldLabel>
                 <input
                   type="date"
                   value={form.contratoTermino}
@@ -2793,7 +2798,7 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div>
-                <FieldLabel>Carga Horária da Jornada</FieldLabel>
+                <FieldLabel>Carga Horária{catEstagiario ? " da Jornada" : ""}</FieldLabel>
                 <input
                   type="text"
                   value={form.cargaHoraria}
@@ -2803,7 +2808,7 @@ export function FuncionarioFormPage() {
                 />
               </div>
               <div style={{ gridColumn: !isMobile && catEstagiario ? "span 2" : undefined }}>
-                <FieldLabel>Dias da Semana da Jornada</FieldLabel>
+                <FieldLabel>Dias da Semana{catEstagiario ? " da Jornada" : ""}</FieldLabel>
                 <DiasSemanaCheckboxes
                   value={form.diasSemana}
                   onChange={(v) => setForm((f) => ({ ...f, diasSemana: v }))}
