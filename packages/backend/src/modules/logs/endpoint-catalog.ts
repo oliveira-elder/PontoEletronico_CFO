@@ -143,6 +143,14 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/ponto/verificar/documento/:sha256",
+    titulo: "Verificação pública de qualquer documento assinado",
+    descricao:
+      "Confere, pela impressão digital do arquivo, qualquer documento emitido e assinado pelo sistema, sem login.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
     pathPattern: "/ponto/verificar/arquivo/:sha256",
     titulo: "Verificação pública pelo arquivo",
     descricao:
@@ -234,6 +242,84 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     descricao:
       "Hora do servidor (Hora Legal Brasileira), usada no relógio exibido ao registrar ponto.",
     categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/termos-uso/vigente",
+    titulo: "Termos de Uso vigentes",
+    descricao: "Versão vigente dos Termos de Uso e a situação do aceite do usuário.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "POST",
+    pathPattern: "/termos-uso/:id/aceitar",
+    titulo: "Aceite dos Termos de Uso",
+    descricao: "Registra o aceite dos Termos de Uso pelo usuário (nome, matrícula, data, IP).",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/termos-uso/meus-aceites",
+    titulo: "Meus aceites dos Termos de Uso",
+    descricao: "Histórico dos aceites dos Termos de Uso do próprio usuário.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/termos-uso",
+    titulo: "Versões dos Termos de Uso",
+    descricao: "Histórico de versões dos Termos de Uso.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/termos-uso/:id",
+    titulo: "Versão dos Termos de Uso",
+    descricao: "Texto de uma versão dos Termos de Uso e da anterior, para comparação.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/termos-uso",
+    titulo: "Novo Termo de Uso",
+    descricao: "Cria uma nova versão dos Termos de Uso em rascunho.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/termos-uso/:id/editar",
+    titulo: "Editar Termos de Uso",
+    descricao:
+      "Cria uma nova versão em rascunho a partir de uma versão existente (a original é mantida).",
+    categoria: "Configurações"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/config/termos-uso/:id",
+    titulo: "Salvar rascunho dos Termos de Uso",
+    descricao: "Atualiza o texto de uma versão em rascunho.",
+    categoria: "Configurações"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/config/termos-uso/:id/publicar",
+    titulo: "Publicar Termos de Uso",
+    descricao: "Publica a versão; todos os usuários precisam aceitar novamente.",
+    categoria: "Configurações"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/config/termos-uso/:id",
+    titulo: "Excluir rascunho dos Termos de Uso",
+    descricao: "Exclui uma versão em rascunho.",
+    categoria: "Configurações"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/config/termos-uso/:id/aceites",
+    titulo: "Aceites dos Termos de Uso",
+    descricao: "Lista quem aceitou e quem está pendente em uma versão.",
+    categoria: "Configurações"
   },
   {
     method: "GET",

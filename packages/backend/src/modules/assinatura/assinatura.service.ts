@@ -4,7 +4,8 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
-  InternalServerErrorException
+  InternalServerErrorException,
+  OnModuleInit
 } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { Prisma } from "@prisma/client";
@@ -34,6 +35,11 @@ import { SeloIcpService } from "../selo-icp/selo-icp.service";
 import { createHash, createHmac, randomBytes } from "crypto";
 import { extrairLinhasPdf, normalizarTexto, tokensNumericos } from "../../utils/pdf-texto";
 import { aplicarAnotacoesVerificacao } from "../../utils/pdf-anotacoes";
+import {
+  mascararNome,
+  registrarDocumentoEmitido,
+  sha256DocumentoUpload
+} from "../../utils/documentos-emitidos";
 import { existsSync } from "fs";
 import { mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { join } from "path";
@@ -289,8 +295,197 @@ const PDF_FONTS = getPdfFonts();
 const VERSAO_LAYOUT_PDF = 11;
 
 @Injectable()
-export class AssinaturaService {
+export class AssinaturaService implements OnModuleInit {
   private readonly logger = new Logger(AssinaturaService.name);
+
+  /** Registra a impressão digital dos documentos assinados já existentes (uma vez, idempotente). */
+  onModuleInit() {
+    void this.registrarDocumentosExistentes().catch((e) =>
+      this.logger.warn(
+        `Registro dos documentos assinados existentes falhou: ${(e as Error).message}`
+      )
+    );
+  }
+
+  private async registrarDocumentosExistentes() {
+    const sols = await this.prisma.solicitacao.findMany({
+      where: { tipo: { in: ["ATESTADO", "FERIAS"] } },
+      select: {
+        id: true,
+        tipo: true,
+        metadados: true,
+        funcionario: { select: { user: { select: { name: true } } } }
+      }
+    });
+    let n = 0;
+    for (const s of sols) {
+      const meta = (s.metadados ?? {}) as Record<string, unknown>;
+      const nome = mascararNome(s.funcionario.user?.name ?? "");
+      if (s.tipo === "ATESTADO") {
+        const ciencia = meta.cienciaGestor as Record<string, unknown> | undefined;
+        if (ciencia && typeof meta.documentoUrl === "string") {
+          const sha = await registrarDocumentoEmitido(this.prisma, {
+            tipo: "CIENCIA_ATESTADO",
+            referenciaId: s.id,
+            url: meta.documentoUrl,
+            titulo: "Atestado médico com ciência do chefe",
+            detalhes: {
+              funcionario: nome,
+              assinadoPor: ciencia.gestorNome ?? null,
+              assinadoEm: ciencia.em ?? null
+            }
+          });
+          if (sha) n++;
+        }
+        continue;
+      }
+      const docs = [
+        ...(Array.isArray(meta.documentosFerias) ? meta.documentosFerias : []),
+        ...Object.values(
+          (meta.rodadasFerias ?? {}) as Record<string, { documentos?: unknown[] }>
+        ).flatMap((r) => r?.documentos ?? [])
+      ] as Array<{
+        urlAssinado?: string;
+        rotulo?: string;
+        assinatura?: { em?: string; codigo?: string };
+      }>;
+      for (const d of docs) {
+        if (!d?.urlAssinado) continue;
+        const sha = await registrarDocumentoEmitido(this.prisma, {
+          tipo: "FERIAS_ASSINADO",
+          referenciaId: s.id,
+          url: d.urlAssinado,
+          titulo: `Documento de férias assinado${d.rotulo ? ` — ${d.rotulo}` : ""}`,
+          detalhes: {
+            funcionario: nome,
+            assinadoEm: d.assinatura?.em ?? null,
+            codigo: d.assinatura?.codigo ?? null
+          }
+        });
+        if (sha) n++;
+      }
+    }
+    if (n) this.logger.log(`Documentos assinados registrados para validação: ${n}.`);
+  }
+
+  /**
+   * Validação por ARQUIVO de qualquer documento emitido pelo sistema (impressão digital SHA-256):
+   * Espelho de Ponto, Comprovante de Registro de Ponto, AFD/AEJ e os registrados em DocumentoEmitido.
+   */
+  async verificarQualquerArquivo(sha256Raw: string) {
+    const sha256 = (sha256Raw ?? "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(sha256)) {
+      throw new BadRequestException("Arquivo inválido para conferência.");
+    }
+    const espelho = await this.verificarArquivoPublico(sha256);
+    if (espelho.encontrado) return { tipo: "ESPELHO" as const, ...espelho };
+    const comp = await this.prisma.comprovanteEmitido.findUnique({ where: { sha256 } });
+    if (comp) return { tipo: "COMPROVANTE" as const, encontrado: true, nsr: comp.nsr };
+    const br = (d: string) => d.split("-").reverse().join("/");
+    const ext = await this.prisma.extracaoArquivoFiscal.findFirst({ where: { sha256 } });
+    if (ext) {
+      return {
+        tipo: ext.tipo as "AFD" | "AEJ",
+        encontrado: true,
+        titulo:
+          ext.tipo === "AFD"
+            ? `Arquivo Fonte de Dados (AFD)${ext.oficial ? "" : " — extrato"}`
+            : "Arquivo Eletrônico de Jornada (AEJ)",
+        detalhes: {
+          arquivo: ext.nomeArquivo,
+          periodo: `${br(ext.periodoInicio)} a ${br(ext.periodoFim)}`,
+          geradoEm: ext.createdAt.toISOString(),
+          assinadoP7s: ext.assinado
+        }
+      };
+    }
+    const doc = await this.prisma.documentoEmitido.findUnique({ where: { sha256 } });
+    if (doc) {
+      return {
+        tipo: doc.tipo,
+        encontrado: true,
+        titulo: doc.titulo,
+        detalhes: doc.detalhes as Record<string, unknown>,
+        emitidoEm: doc.emitidoEm.toISOString()
+      };
+    }
+    return { encontrado: false, arquivoNaoReconhecido: true };
+  }
+
+  /** Código de assinatura de ciência de atestado ou de documento de férias (não é folha mensal). */
+  private async verificarCodigoOutrosDocumentos(codigo: string, sha256Arquivo?: string) {
+    const mat = (m: string | null) => {
+      const v = m ?? "";
+      return v.length > 2 ? `${"*".repeat(v.length - 2)}${v.slice(-2)}` : "**";
+    };
+    const conferir = async (url: string | null | undefined) => {
+      const sha = url ? await sha256DocumentoUpload(url) : null;
+      return {
+        sha256: sha,
+        conferido: sha256Arquivo && sha ? sha256Arquivo.toLowerCase() === sha : null,
+        versaoAnterior: null
+      };
+    };
+    const achados = await this.buscarPorCodigoAssinatura(codigo);
+    const ciencia = achados.encontrados.find((x) => x.tipo === "CIENCIA_ATESTADO");
+    if (ciencia) {
+      return {
+        encontrado: true,
+        documento: "Atestado médico com ciência do chefe",
+        competencia: null,
+        funcionario: mascararNome(ciencia.funcionarioNome),
+        matricula: mat(ciencia.matricula),
+        situacao: ciencia.status ?? null,
+        assinaturas: { funcionarioEm: null, gestorEm: ciencia.assinadoEm },
+        arquivo: await conferir(ciencia.documentoUrl),
+        seloIcpBrasil: { aplicado: false, em: null },
+        registro: null
+      };
+    }
+    const ferias = await this.prisma.solicitacao.findMany({
+      where: { tipo: "FERIAS" },
+      select: {
+        status: true,
+        metadados: true,
+        funcionario: { select: { matricula: true, user: { select: { name: true } } } }
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+    for (const s of ferias) {
+      const meta = (s.metadados ?? {}) as Record<string, unknown>;
+      const docs = [
+        ...(Array.isArray(meta.documentosFerias) ? meta.documentosFerias : []),
+        ...Object.values(
+          (meta.rodadasFerias ?? {}) as Record<string, { documentos?: unknown[] }>
+        ).flatMap((r) => r?.documentos ?? [])
+      ] as Array<{
+        urlAssinado?: string;
+        rotulo?: string;
+        assinatura?: { em?: string; codigo?: string };
+      }>;
+      const d = docs.find(
+        (x) =>
+          x?.assinatura?.codigo &&
+          codigoAssinaturaCoincide(normalizeCodigoAssinatura(x.assinatura.codigo), codigo)
+      );
+      if (d) {
+        return {
+          encontrado: true,
+          documento: `Documento de férias assinado${d.rotulo ? ` — ${d.rotulo}` : ""}`,
+          competencia: null,
+          funcionario: mascararNome(s.funcionario.user?.name ?? ""),
+          matricula: mat(s.funcionario.matricula),
+          situacao: s.status,
+          assinaturas: { funcionarioEm: d.assinatura?.em ?? null, gestorEm: null },
+          arquivo: await conferir(d.urlAssinado),
+          seloIcpBrasil: { aplicado: false, em: null },
+          registro: null
+        };
+      }
+    }
+    return { encontrado: false };
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -544,7 +739,7 @@ export class AssinaturaService {
           status?: string;
         }
       | undefined;
-    if (!item) return { encontrado: false };
+    if (!item) return this.verificarCodigoOutrosDocumentos(codigo, sha256Arquivo);
 
     const reg = await this.prisma.assinaturaQuadro.findUnique({
       where: { id: item.id },
@@ -2695,13 +2890,29 @@ export class AssinaturaService {
     if (!PdfPrinter) throw new InternalServerErrorException("pdfmake não disponível");
     const printer = new PdfPrinter(PDF_FONTS);
     const pdfDoc = printer.createPdfKitDocument(docDefinition);
-    return new Promise<Buffer>((resolve, reject) => {
+    const pdf = await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
       pdfDoc.on("data", (c: Buffer) => chunks.push(c));
       pdfDoc.on("end", () => resolve(Buffer.concat(chunks)));
       pdfDoc.on("error", reject);
       pdfDoc.end();
     });
+    /* Ciclo assinado: registra a impressão digital para a validação por upload. */
+    if (assinaturaCiclo) {
+      const br = (d: string) => d.split("-").reverse().join("/");
+      await registrarDocumentoEmitido(this.prisma, {
+        tipo: "CICLO_BANCO_HORAS",
+        referenciaId: assinaturaCiclo.id,
+        buffer: pdf,
+        titulo: `Relatório do ciclo de banco de horas (${br(inicioIso)} a ${br(fimIso)})`,
+        detalhes: {
+          funcionario: mascararNome(funcionario.user.name),
+          periodo: `${br(inicioIso)} a ${br(fimIso)}`,
+          assinadoEm: assinaturaCiclo.assinadoEm.toISOString()
+        }
+      });
+    }
+    return pdf;
   }
 
   async gerarPdfQuadro(assinaturaId: string): Promise<Buffer> {

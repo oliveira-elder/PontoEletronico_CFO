@@ -1403,6 +1403,8 @@ export function RegistroPontoPage() {
       setFotoCapturada(null);
       setPendingTipo(null);
       setConfirmado(resultado);
+      /* Termos de Uso pendentes: o aviso de aceite volta logo após a batida. */
+      window.dispatchEvent(new CustomEvent("ponto-registrado"));
       void recarregarComprovantes();
       setAcoesPermitidasApi(null);
       const tk = token();

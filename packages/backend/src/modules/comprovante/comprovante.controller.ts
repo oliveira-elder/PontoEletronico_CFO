@@ -31,9 +31,13 @@ export class ComprovanteController {
     @Req() req: AuthRequest,
     @Query("horas") horas?: string,
     @Query("mes") mes?: string,
-    @Query("ano") ano?: string
+    @Query("ano") ano?: string,
+    @Query("inicio") inicio?: string,
+    @Query("fim") fim?: string
   ) {
     return this.service.listar(req.user.sub, {
+      inicio,
+      fim,
       horas: horas ? Number(horas) : undefined,
       mes: mes ? Number(mes) : undefined,
       ano: ano ? Number(ano) : undefined

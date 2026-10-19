@@ -1,3 +1,4 @@
+import { mascararNome, registrarDocumentoEmitido } from "../../utils/documentos-emitidos";
 import {
   Injectable,
   BadRequestException,
@@ -1866,6 +1867,24 @@ export class AuditoriaService {
         }
       });
 
+      const funcNome =
+        (
+          await this.prisma.funcionario.findUnique({
+            where: { id: solicitacao.funcionarioId },
+            select: { user: { select: { name: true } } }
+          })
+        )?.user?.name ?? "";
+      void registrarDocumentoEmitido(this.prisma, {
+        tipo: "CIENCIA_ATESTADO",
+        referenciaId: solicitacao.id,
+        url: documentoAssinadoUrl,
+        titulo: "Atestado médico com ciência do chefe",
+        detalhes: {
+          funcionario: mascararNome(funcNome),
+          assinadoPor: gestorNome,
+          assinadoEm: agora.toISOString()
+        }
+      });
       metadadosUpdate = {
         ...meta,
         documentoOriginalUrl: meta.documentoOriginalUrl ?? documentoUrl,

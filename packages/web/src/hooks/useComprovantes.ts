@@ -15,12 +15,14 @@ export interface ComprovanteItem {
 }
 
 /** Comprovantes de Registro de Ponto do trabalhador (Portaria MTP 671/2021, arts. 79 e 80). */
-export function useComprovantes(opts: { horas?: number; mes?: number; ano?: number } = {}) {
+export function useComprovantes(
+  opts: { horas?: number; mes?: number; ano?: number; inicio?: string; fim?: string } = {}
+) {
   const { token } = useAuth();
   const [itens, setItens] = useState<ComprovanteItem[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
-  const { horas, mes, ano } = opts;
+  const { horas, mes, ano, inicio, fim } = opts;
 
   const recarregar = useCallback(async () => {
     const tk = token();
@@ -29,7 +31,10 @@ export function useComprovantes(opts: { horas?: number; mes?: number; ano?: numb
       return;
     }
     const qs = new URLSearchParams();
-    if (mes && ano) {
+    if (inicio || fim) {
+      if (inicio) qs.set("inicio", inicio);
+      if (fim) qs.set("fim", fim);
+    } else if (mes && ano) {
       qs.set("mes", String(mes));
       qs.set("ano", String(ano));
     } else qs.set("horas", String(horas ?? 48));
@@ -41,7 +46,7 @@ export function useComprovantes(opts: { horas?: number; mes?: number; ano?: numb
     } finally {
       setCarregando(false);
     }
-  }, [token, horas, mes, ano]);
+  }, [token, horas, mes, ano, inicio, fim]);
 
   useEffect(() => {
     void recarregar();

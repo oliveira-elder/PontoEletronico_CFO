@@ -2,6 +2,7 @@ import { ModalArquivosFiscais } from "../../components/arquivos-fiscais/ModalArq
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { SaudeOcupacionalPage } from "./SaudeOcupacionalPage";
 import { FolhasAssinadasLista } from "../../components/assinatura/FolhasAssinadasLista";
+import { VerificadorDocumento } from "../VerificarDocumentoPage";
 import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
 import { Link } from "react-router-dom";
@@ -9709,6 +9710,26 @@ function TabValidacoes({ token }: { token: string }) {
 
   return (
     <div>
+      {/* Validação por upload — o mesmo verificador da página pública /verificar */}
+      <details
+        style={{
+          marginBottom: 14,
+          padding: "12px 14px",
+          background: "#fff",
+          border: "1px solid rgba(122,30,38,0.12)",
+          borderRadius: "var(--radius-md)"
+        }}
+      >
+        <summary
+          style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: "var(--burgundy-600)" }}
+        >
+          Validar documento por arquivo (PDF ou foto) — Espelho de Ponto ou comprovante
+        </summary>
+        <div style={{ marginTop: 12 }}>
+          <VerificadorDocumento embutido />
+        </div>
+      </details>
+
       {/* Busca por código da assinatura digital */}
       <div
         style={{

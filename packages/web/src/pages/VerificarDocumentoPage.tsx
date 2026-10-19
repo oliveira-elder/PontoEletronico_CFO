@@ -137,6 +137,46 @@ async function getMarcacao(hash: string, qs = ""): Promise<MarcacaoVerificada> {
   return (await r.json()) as MarcacaoVerificada;
 }
 
+interface DocumentoGenerico {
+  encontrado: boolean;
+  tipo?: string;
+  titulo?: string;
+  detalhes?: Record<string, unknown>;
+  emitidoEm?: string;
+}
+
+/** Qualquer documento assinado pelo sistema, pela impressão digital do arquivo. */
+async function getDocumentoQualquer(
+  sha: string
+): Promise<(DocumentoGenerico & Verificacao) | { encontrado: false }> {
+  const r = await fetch(`/api/ponto/verificar/documento/${sha}`);
+  if (!r.ok) {
+    const j = (await r.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(j?.message ?? "Não foi possível consultar agora. Tente novamente.");
+  }
+  return (await r.json()) as DocumentoGenerico & Verificacao;
+}
+
+const ROTULOS_DETALHE: Record<string, string> = {
+  funcionario: "Funcionário",
+  assinadoPor: "Assinado por",
+  assinadoEm: "Assinado em",
+  periodo: "Período",
+  codigo: "Código de assinatura",
+  arquivo: "Arquivo",
+  geradoEm: "Gerado em",
+  assinadoP7s: "Assinatura digital (.p7s)"
+};
+
+function valorDetalhe(k: string, v: unknown): string {
+  if (v == null || v === "") return "—";
+  if (typeof v === "boolean") return v ? "Sim" : "Não";
+  if ((k.endsWith("Em") || k === "emitidoEm") && typeof v === "string" && !isNaN(Date.parse(v))) {
+    return new Date(v).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  }
+  return String(v);
+}
+
 async function getArquivoMarcacao(sha: string): Promise<MarcacaoVerificada> {
   const r = await fetch(`/api/ponto/verificar-marcacao/arquivo/${sha}`);
   if (!r.ok) return { encontrado: false };
@@ -149,6 +189,14 @@ async function getArquivoMarcacao(sha: string): Promise<MarcacaoVerificada> {
  * arquivo não sai do computador) ou informar o código impresso na declaração.
  */
 export function VerificarDocumentoPage() {
+  return <VerificadorDocumento />;
+}
+
+/**
+ * Verificador de documentos (Espelho de Ponto e Comprovante de Registro de Ponto): usado na página
+ * pública /verificar e, embutido, na Auditoria → Validações.
+ */
+export function VerificadorDocumento({ embutido = false }: { embutido?: boolean }) {
   const params = useParams();
   const [busca] = useSearchParams();
   const [conteudo, setConteudo] = useState<Conteudo | null>(null);
@@ -157,6 +205,7 @@ export function VerificarDocumentoPage() {
   const [dados, setDados] = useState<Verificacao | null>(null);
   const [marcacao, setMarcacao] = useState<MarcacaoVerificada | null>(null);
   const [conteudoMarc, setConteudoMarc] = useState<ConteudoMarcacao | null>(null);
+  const [generico, setGenerico] = useState<DocumentoGenerico | null>(null);
   const [arquivo, setArquivo] = useState<{ nome: string; sha: string } | null>(null);
   const [erro, setErro] = useState("");
   const [carregando, setCarregando] = useState(false);
@@ -169,6 +218,7 @@ export function VerificarDocumentoPage() {
     setCarregando(true);
     setErro("");
     setMarcacao(null);
+    setGenerico(null);
     try {
       if (/^[0-9a-fA-F]{64}$/.test(c)) {
         setDados(null);
@@ -206,14 +256,13 @@ export function VerificarDocumentoPage() {
 
   async function conferirArquivo(file: File) {
     const ehImagem = file.type.startsWith("image/");
-    if (!ehImagem && file.type && file.type !== "application/pdf") {
-      setErro("Envie o PDF do documento ou uma foto/escaneamento da página.");
-      return;
-    }
+    const ehPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
     setCarregando(true);
     setErro("");
     setConteudo(null);
     setConteudoMarc(null);
+    setGenerico(null);
+    setMarcacao(null);
     const modoComprovante = /^[0-9a-fA-F]{64}$/.test(codigoLimpo);
     try {
       if (ehImagem) {
@@ -258,39 +307,58 @@ export function VerificarDocumentoPage() {
         }
         return;
       }
-      /* Com código informado, confere aquele documento; sem código, localiza pelo arquivo. */
-      const r =
-        codigoLimpo.length >= 16
-          ? await getJson(`/api/ponto/verificar/${encodeURIComponent(codigoLimpo)}?sha256=${sha}`)
-          : await getJson(`/api/ponto/verificar/arquivo/${sha}`);
-      if (!r.encontrado && !codigoLimpo) {
-        /* Não é folha de ponto: pode ser um comprovante de registro de ponto. */
-        const a = await getArquivoMarcacao(sha);
-        if (a.encontrado) {
-          setDados(null);
-          setMarcacao({ ...a, arquivoOriginal: true });
-          return;
+      /* Com código informado, confere aquele documento (Espelho, ciência de atestado, férias…). */
+      if (codigoLimpo.length >= 16) {
+        const r = await getJson(
+          `/api/ponto/verificar/${encodeURIComponent(codigoLimpo)}?sha256=${sha}`
+        );
+        setDados(r);
+        if (
+          ehPdf &&
+          r.encontrado &&
+          r.arquivo?.conferido !== true &&
+          !r.arquivo?.versaoAnterior &&
+          (r.documento ?? "").startsWith("Espelho")
+        ) {
+          setEtapa("Lendo o texto do PDF e comparando com o original…");
+          setConteudo(
+            await postConteudo({
+              codigo: codigoLimpo,
+              linhas: await extrairLinhasPdf(file),
+              origem: "pdf"
+            })
+          );
         }
-        const linhasCrp = await extrairLinhasPdf(file);
-        if (REGISTRO_CRP.test(linhasCrp.join(" "))) {
-          setDados(null);
-          setConteudoMarc(await postConteudoMarcacao({ linhas: linhasCrp, origem: "pdf" }));
-          return;
-        }
+        return;
       }
-      setDados(r);
-      if (r.codigo && !codigoLimpo) setCodigo(r.codigo);
-      /* Não é o arquivo emitido: lê o texto e compara o CONTEÚDO com o original. */
-      if (r.arquivo?.conferido !== true && !r.arquivo?.versaoAnterior) {
+      /* Sem código: localiza QUALQUER documento assinado pelo sistema pela impressão digital. */
+      const u = await getDocumentoQualquer(sha);
+      if (u.encontrado) {
+        const doc = u as DocumentoGenerico & Verificacao;
+        if (doc.tipo === "ESPELHO") {
+          setDados(doc);
+          if (doc.codigo) setCodigo(doc.codigo);
+        } else if (doc.tipo === "COMPROVANTE") {
+          setMarcacao({ ...(await getArquivoMarcacao(sha)), arquivoOriginal: true });
+        } else {
+          setGenerico(doc);
+        }
+        return;
+      }
+      /* Não é um arquivo emitido: lê o texto do PDF e compara o CONTEÚDO com o original. */
+      if (ehPdf) {
         setEtapa("Lendo o texto do PDF e comparando com o original…");
         const linhas = await extrairLinhasPdf(file);
-        const c = await postConteudo({
-          codigo: r.codigo ?? (codigoLimpo || undefined),
-          linhas,
-          origem: "pdf"
-        });
-        setConteudo(c);
+        if (REGISTRO_CRP.test(linhas.join(" "))) {
+          setConteudoMarc(await postConteudoMarcacao({ linhas, origem: "pdf" }));
+          return;
+        }
+        if (/ESP-\d{6}-[0-9A-F]{12}/i.test(linhas.join(" "))) {
+          setConteudo(await postConteudo({ linhas, origem: "pdf" }));
+          return;
+        }
       }
+      setGenerico({ encontrado: false });
     } catch (e) {
       setDados(null);
       setErro((e as Error).message);
@@ -326,28 +394,43 @@ export function VerificarDocumentoPage() {
 
   return (
     <div
-      style={{
-        minHeight: "100vh",
-        background: "var(--cream-50, #faf7f5)",
-        display: "flex",
-        justifyContent: "center",
-        padding: 16
-      }}
+      style={
+        embutido
+          ? undefined
+          : {
+              minHeight: "100vh",
+              background: "var(--cream-50, #faf7f5)",
+              display: "flex",
+              justifyContent: "center",
+              padding: 16
+            }
+      }
     >
-      <div style={cartao}>
-        <h1
-          style={{ fontFamily: "var(--font-display)", fontSize: 21, color: "#6B0F1A", margin: 0 }}
+      <div style={embutido ? { width: "100%" } : cartao}>
+        {!embutido && (
+          <h1
+            style={{ fontFamily: "var(--font-display)", fontSize: 21, color: "#6B0F1A", margin: 0 }}
+          >
+            Verificação de documento
+          </h1>
+        )}
+        <p
+          style={{
+            fontSize: 12.5,
+            color: "var(--ink-500)",
+            margin: embutido ? "0 0 14px" : "4px 0 16px"
+          }}
         >
-          Verificação de documento
-        </h1>
-        <p style={{ fontSize: 12.5, color: "var(--ink-500)", margin: "4px 0 16px" }}>
-          Sistema de Ponto Eletrônico — CFO. Confirme a autenticidade e a integridade de um Espelho
-          de Ponto assinado.
+          {embutido
+            ? "Mesma conferência da página pública /verificar: envie o PDF (ou a foto) ou informe o código."
+            : "Sistema de Ponto Eletrônico — CFO."}{" "}
+          Confirme a autenticidade e a integridade de um Espelho de Ponto assinado ou de um
+          Comprovante de Registro de Ponto.
         </p>
 
         {/* 1. Enviar o PDF */}
         <p style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-700)", margin: "0 0 6px" }}>
-          1. Envie o PDF que você recebeu
+          1. Envie o documento que você recebeu
         </p>
         <div
           role="button"
@@ -376,7 +459,7 @@ export function VerificarDocumentoPage() {
         >
           <div style={{ fontSize: 26 }}>📄</div>
           <p style={{ margin: "6px 0 2px", fontSize: 13.5, fontWeight: 700, color: "#6B0F1A" }}>
-            Arraste o PDF (ou a foto da página) aqui ou clique para escolher
+            Arraste o arquivo (PDF, foto da página ou AFD/AEJ .txt) aqui ou clique para escolher
           </p>
           <p style={{ margin: 0, fontSize: 11.5, color: "var(--ink-500)" }}>
             O arquivo não sai do seu computador: o navegador calcula a impressão digital e lê o
@@ -390,7 +473,7 @@ export function VerificarDocumentoPage() {
           <input
             ref={inputRef}
             type="file"
-            accept="application/pdf,image/*"
+            accept="application/pdf,image/*,.txt,text/plain"
             style={{ display: "none" }}
             onChange={(e) => {
               const f = e.target.files?.[0];
@@ -441,6 +524,48 @@ export function VerificarDocumentoPage() {
         {erro && <p style={{ color: "var(--red)", fontSize: 13, marginTop: 14 }}>⚠️ {erro}</p>}
 
         {/* Comprovante de Registro de Ponto (art. 79): confere pelo hash da marcação */}
+        {/* Outros documentos assinados pelo sistema (pela impressão digital do arquivo) */}
+        {generico && (
+          <div
+            role="status"
+            style={{
+              marginTop: 14,
+              padding: 14,
+              borderRadius: 10,
+              fontSize: 13,
+              lineHeight: 1.6,
+              background: generico.encontrado ? "#F0FDF4" : "#FEF2F2",
+              border: `1px solid ${generico.encontrado ? "#BBF7D0" : "#FECACA"}`,
+              color: generico.encontrado ? "#166534" : "#991B1B"
+            }}
+          >
+            {generico.encontrado ? (
+              <>
+                <strong>✓ Documento original emitido pelo sistema.</strong> {generico.titulo}
+                <div style={{ marginTop: 6, color: "var(--ink-900)" }}>
+                  {Object.entries(generico.detalhes ?? {}).map(([k, v]) => (
+                    <div key={k}>
+                      {ROTULOS_DETALHE[k] ?? k}: <strong>{valorDetalhe(k, v)}</strong>
+                    </div>
+                  ))}
+                  {generico.emitidoEm && (
+                    <div>
+                      Registrado em:{" "}
+                      <strong>{valorDetalhe("emitidoEm", generico.emitidoEm)}</strong>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <strong>✕ Arquivo não reconhecido.</strong> Ele não corresponde a nenhum documento
+                assinado pelo sistema: pode ter sido alterado, convertido ou não ter sido emitido
+                aqui. Se tiver o código de verificação, informe-o acima e envie de novo.
+              </>
+            )}
+          </div>
+        )}
+
         {/* Conferência do conteúdo do comprovante (texto do PDF ou OCR da foto) */}
         {conteudoMarc && (
           <div

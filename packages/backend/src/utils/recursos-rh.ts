@@ -377,6 +377,18 @@ export const ABAS_RH: AbaRh[] = [
     ]
   },
   {
+    chave: "configuracoes.termos",
+    pagina: "configuracoes",
+    rotulo: "Termos de uso",
+    funcoes: [
+      f(
+        "configuracoes.termos.gerenciar",
+        "Gerenciar os Termos de Uso",
+        "Criar, editar (nova versão) e publicar os Termos de Uso e consultar os aceites."
+      )
+    ]
+  },
+  {
     chave: "configuracoes.notificacoes",
     pagina: "configuracoes",
     rotulo: "Notificações",

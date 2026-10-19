@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { MapPinIcon, MailIcon, PhoneIcon, BellIcon } from "../icons";
+import { MapPinIcon, MailIcon, PhoneIcon, BellIcon, ShieldCheckIcon } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useInstituicaoBranding } from "../../hooks/useInstituicaoBranding";
@@ -361,26 +361,26 @@ function SinoBell() {
             return !v;
           });
         }}
-        style={{ position: "relative", overflow: "visible" }}
+        style={{ position: "relative", overflow: "visible", width: 44, height: 44 }}
       >
-        <BellIcon size={18} />
+        <BellIcon size={22} />
         {naoLidas > 0 && (
           <span
             aria-hidden
             style={{
               position: "absolute",
-              top: 6,
-              right: 6,
-              minWidth: 18,
-              height: 18,
-              padding: "0 4px",
+              top: 0,
+              right: -2,
+              minWidth: 22,
+              height: 20,
+              padding: "0 5px",
               background: "var(--burgundy-600)",
               color: "#fff",
-              borderRadius: 9,
+              borderRadius: 10,
               border: "2px solid #fff",
-              fontSize: 10,
+              fontSize: 10.5,
               fontWeight: 700,
-              lineHeight: "14px",
+              lineHeight: "16px",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -766,8 +766,8 @@ export function Topbar() {
         {/* Sino de notificações */}
         <SinoBell />
 
-        {/* Avatar + info do usuário autenticado */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {/* Avatar + info do usuário autenticado (botões ao lado com a mesma altura do cartão) */}
+        <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
           <div
             style={{
               display: "flex",
@@ -801,6 +801,29 @@ export function Topbar() {
             </div>
           </div>
 
+          {/* Termos de Uso vigentes e o comprovante do aceite */}
+          <Link
+            to="/ponto/termos-uso"
+            title="Termos de uso"
+            aria-label="Termos de uso"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 48,
+              flexShrink: 0,
+              boxSizing: "border-box",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid rgba(122,30,38,0.14)",
+              color: "var(--burgundy-600)",
+              fontSize: 11,
+              fontWeight: 700,
+              textDecoration: "none"
+            }}
+          >
+            <ShieldCheckIcon size={16} />
+          </Link>
+
           {/* Botão de logout */}
           <button
             onClick={logout}
@@ -810,8 +833,9 @@ export function Topbar() {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: 36,
-              height: 36,
+              width: 48,
+              flexShrink: 0,
+              boxSizing: "border-box",
               borderRadius: "var(--radius-md)",
               border: "1px solid rgba(122,30,38,0.14)",
               background: "transparent",

@@ -1,3 +1,4 @@
+import { mascararNome, registrarDocumentoEmitido } from "../../utils/documentos-emitidos";
 import { RepLivroService } from "../rep/rep-livro.service";
 import {
   Injectable,
@@ -4352,6 +4353,17 @@ export class PontoService implements OnModuleInit {
       userAgent: origem.userAgent,
       codigo: codigoCienciaGestorExibido(nome, assinadoEm, origem.ipReal, origem.userAgent)
     };
+    void registrarDocumentoEmitido(this.prisma, {
+      tipo: "FERIAS_ASSINADO",
+      referenciaId: id,
+      url: urlAssinado,
+      titulo: `Documento de férias assinado${doc.rotulo ? ` — ${doc.rotulo}` : ""}`,
+      detalhes: {
+        funcionario: mascararNome(nome),
+        assinadoEm: assinadoEm.toISOString(),
+        codigo: assinatura.codigo
+      }
+    });
     const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
     const todosAssinados = novos.every((d) => !!d.urlAssinado);
     const aviso = novos.find((d) => d.tipo === "AVISO");
@@ -4490,6 +4502,17 @@ export class PontoService implements OnModuleInit {
       userAgent: origem.userAgent,
       codigo: codigoCienciaGestorExibido(nome, assinadoEm, origem.ipReal, origem.userAgent)
     };
+    void registrarDocumentoEmitido(this.prisma, {
+      tipo: "FERIAS_ASSINADO",
+      referenciaId: id,
+      url: urlAssinado,
+      titulo: `Documento de férias assinado${doc.rotulo ? ` — ${doc.rotulo}` : ""}`,
+      detalhes: {
+        funcionario: mascararNome(nome),
+        assinadoEm: assinadoEm.toISOString(),
+        codigo: assinatura.codigo
+      }
+    });
     const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
     const concluida = novos.every((d) => !!d.urlAssinado);
     const novaRodada: RodadaFeriasMeta = {

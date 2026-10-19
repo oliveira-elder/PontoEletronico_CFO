@@ -6,16 +6,46 @@ import { FileTextIcon } from "../../components/icons";
 import { api } from "../../hooks/useApi";
 import { useAuth } from "../../auth/AuthContext";
 
-type Janela = "48h" | "mes";
+type Janela = "48h" | "mes" | "periodo";
+
+const hojeIso = () =>
+  new Intl.DateTimeFormat("sv-SE", { timeZone: "America/Sao_Paulo" }).format(new Date());
+
+const CAMPO_DATA: React.CSSProperties = {
+  padding: "5px 8px",
+  border: "1px solid rgba(122,30,38,0.2)",
+  borderRadius: 8,
+  fontSize: 12.5
+};
 
 /** Meus comprovantes: acesso a cada comprovante e extração das últimas 48 horas (art. 80, II e III). */
 export function MeusComprovantesPage() {
   const { token } = useAuth();
   const hoje = new Date();
   const [janela, setJanela] = useState<Janela>("48h");
+  /* Período livre: datas digitadas e as aplicadas na pesquisa (botão Pesquisar). */
+  const [dataIni, setDataIni] = useState(hojeIso());
+  const [dataFim, setDataFim] = useState(hojeIso());
+  const [periodo, setPeriodo] = useState<{ inicio: string; fim: string } | null>(null);
+  const [erroPeriodo, setErroPeriodo] = useState("");
   const { itens, carregando, erro } = useComprovantes(
-    janela === "48h" ? { horas: 48 } : { mes: hoje.getMonth() + 1, ano: hoje.getFullYear() }
+    janela === "48h"
+      ? { horas: 48 }
+      : janela === "periodo" && periodo
+        ? periodo
+        : { mes: hoje.getMonth() + 1, ano: hoje.getFullYear() }
   );
+
+  function pesquisarPeriodo() {
+    setErroPeriodo("");
+    if (!dataIni || !dataFim) return setErroPeriodo("Informe a data inicial e a final.");
+    if (dataIni > dataFim) return setErroPeriodo("A data inicial deve ser anterior à final.");
+    if ((Date.parse(dataFim) - Date.parse(dataIni)) / 86_400_000 > 366) {
+      return setErroPeriodo("O período máximo é de 1 ano.");
+    }
+    setPeriodo({ inicio: dataIni, fim: dataFim });
+    setJanela("periodo");
+  }
   const [aberto, setAberto] = useState<ComprovanteItem | null>(null);
   const [baixando, setBaixando] = useState(false);
   const [msg, setMsg] = useState("");
@@ -77,6 +107,35 @@ export function MeusComprovantesPage() {
             {j === "48h" ? "Últimas 48 horas" : "Este mês"}
           </button>
         ))}
+        <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 12, color: "var(--ink-600)" }}>
+            De{" "}
+            <input
+              type="date"
+              value={dataIni}
+              max={hojeIso()}
+              onChange={(e) => setDataIni(e.target.value)}
+              style={CAMPO_DATA}
+            />
+          </label>
+          <label style={{ fontSize: 12, color: "var(--ink-600)" }}>
+            até{" "}
+            <input
+              type="date"
+              value={dataFim}
+              max={hojeIso()}
+              onChange={(e) => setDataFim(e.target.value)}
+              style={CAMPO_DATA}
+            />
+          </label>
+          <button
+            type="button"
+            className={`btn btn-sm ${janela === "periodo" ? "btn-primary" : "btn-ghost"}`}
+            onClick={pesquisarPeriodo}
+          >
+            Pesquisar
+          </button>
+        </span>
         <span style={{ flex: 1 }} />
         <button
           type="button"
@@ -87,6 +146,9 @@ export function MeusComprovantesPage() {
           {baixando ? "Gerando…" : "⬇ Baixar as últimas 48 horas (ZIP)"}
         </button>
       </div>
+      {erroPeriodo && (
+        <p style={{ fontSize: 13, marginBottom: 10, color: "#991B1B" }}>⚠ {erroPeriodo}</p>
+      )}
       {msg && <p style={{ fontSize: 13, marginBottom: 10 }}>{msg}</p>}
 
       {carregando && <p style={{ fontSize: 13, color: "var(--ink-500)" }}>Carregando…</p>}

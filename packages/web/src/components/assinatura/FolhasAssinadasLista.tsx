@@ -31,6 +31,22 @@ const fmtDataHora = (iso: string | null) =>
       })
     : "—";
 
+const ROTULO: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 3,
+  fontSize: 11.5,
+  fontWeight: 600,
+  color: "var(--ink-600)"
+};
+const CAMPO: React.CSSProperties = {
+  padding: "6px 8px",
+  border: "1px solid rgba(122,30,38,0.2)",
+  borderRadius: 8,
+  fontSize: 13,
+  background: "#fff"
+};
+
 const fmtHM = (min: number) =>
   `${min < 0 ? "-" : "+"}${Math.floor(Math.abs(min) / 60)}h${String(Math.abs(min) % 60).padStart(2, "0")}`;
 
@@ -56,6 +72,11 @@ export function FolhasAssinadasLista({
   const [erro, setErro] = useState<string | null>(null);
   const [baixando, setBaixando] = useState<string | null>(null);
   const [visualizando, setVisualizando] = useState<Folha | null>(null);
+  /* Filtros (no navegador): ano, intervalo de meses e situação. */
+  const [filtroAno, setFiltroAno] = useState("");
+  const [mesDe, setMesDe] = useState("");
+  const [mesAte, setMesAte] = useState("");
+  const [situacao, setSituacao] = useState<"TODAS" | "ASSINADAS" | "PENDENTES">("TODAS");
 
   const carregar = useCallback(() => {
     api
@@ -86,8 +107,20 @@ export function FolhasAssinadasLista({
   if (erro) return <p style={{ color: "var(--red)", fontSize: 13 }}>⚠ {erro}</p>;
   if (!dados) return <p style={{ color: "var(--ink-500)", fontSize: 13 }}>Carregando…</p>;
 
+  const chave = (f: Folha) => `${f.ano}-${String(f.mes).padStart(2, "0")}`;
+  const passa = (f: Folha) =>
+    (!filtroAno || String(f.ano) === filtroAno) &&
+    (!mesDe || chave(f) >= mesDe) &&
+    (!mesAte || chave(f) <= mesAte);
+  const assinadas = situacao === "PENDENTES" ? [] : dados.assinadas.filter(passa);
+  const emAndamento = situacao === "ASSINADAS" ? [] : dados.emAndamento.filter(passa);
+  const anos = [...new Set([...dados.assinadas, ...dados.emAndamento].map((f) => f.ano))].sort(
+    (a, b) => b - a
+  );
+  const filtrando = !!(filtroAno || mesDe || mesAte || situacao !== "TODAS");
+
   const porAno = new Map<number, Folha[]>();
-  for (const f of dados.assinadas) porAno.set(f.ano, [...(porAno.get(f.ano) ?? []), f]);
+  for (const f of assinadas) porAno.set(f.ano, [...(porAno.get(f.ano) ?? []), f]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -114,9 +147,84 @@ export function FolhasAssinadasLista({
         autenticidade. Pode ser baixada e impressa como o papel assinado.
       </div>
 
-      {dados.assinadas.length === 0 ? (
+      {/* Filtros */}
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "flex-end",
+          padding: "10px 12px",
+          background: "var(--cream-50)",
+          border: "1px solid rgba(122,30,38,0.08)",
+          borderRadius: "var(--radius-md)"
+        }}
+      >
+        <label style={ROTULO}>
+          Ano
+          <select value={filtroAno} onChange={(e) => setFiltroAno(e.target.value)} style={CAMPO}>
+            <option value="">Todos</option>
+            {anos.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={ROTULO}>
+          De (mês)
+          <input
+            type="month"
+            value={mesDe}
+            onChange={(e) => setMesDe(e.target.value)}
+            style={CAMPO}
+          />
+        </label>
+        <label style={ROTULO}>
+          Até (mês)
+          <input
+            type="month"
+            value={mesAte}
+            onChange={(e) => setMesAte(e.target.value)}
+            style={CAMPO}
+          />
+        </label>
+        <label style={ROTULO}>
+          Situação
+          <select
+            value={situacao}
+            onChange={(e) => setSituacao(e.target.value as typeof situacao)}
+            style={CAMPO}
+          >
+            <option value="TODAS">Todas</option>
+            <option value="ASSINADAS">Totalmente assinadas</option>
+            <option value="PENDENTES">Falta assinar</option>
+          </select>
+        </label>
+        {filtrando && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setFiltroAno("");
+              setMesDe("");
+              setMesAte("");
+              setSituacao("TODAS");
+            }}
+          >
+            Limpar filtros
+          </button>
+        )}
+        {mesDe && mesAte && mesDe > mesAte && (
+          <span style={{ fontSize: 12, color: "#991B1B" }}>O mês inicial é depois do final.</span>
+        )}
+      </div>
+
+      {situacao === "PENDENTES" ? null : assinadas.length === 0 ? (
         <p style={{ fontSize: 13, color: "var(--ink-500)", margin: 0 }}>
-          Ainda não há folhas totalmente assinadas.
+          {filtrando
+            ? "Nenhuma folha totalmente assinada com esses filtros."
+            : "Ainda não há folhas totalmente assinadas."}
         </p>
       ) : (
         [...porAno.entries()].map(([ano, folhas]) => (
@@ -182,7 +290,12 @@ export function FolhasAssinadasLista({
         ))
       )}
 
-      {dados.emAndamento.length > 0 && (
+      {situacao === "PENDENTES" && emAndamento.length === 0 && (
+        <p style={{ fontSize: 13, color: "var(--ink-500)", margin: 0 }}>
+          Nenhuma folha pendente de assinatura com esses filtros.
+        </p>
+      )}
+      {emAndamento.length > 0 && (
         <div>
           <p
             style={{
@@ -196,7 +309,7 @@ export function FolhasAssinadasLista({
             AINDA FALTA ASSINAR
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {dados.emAndamento.map((f) => (
+            {emAndamento.map((f) => (
               <div
                 key={f.id}
                 style={{

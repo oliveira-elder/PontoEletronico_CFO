@@ -1474,6 +1474,64 @@ model RegistroProgramaInpi {
   updatedAt          DateTime @updatedAt
 }
 
+/// Termos de Uso do sistema — uma linha por versão; publicar não apaga nem altera as anteriores.
+model TermoUso {
+  id               String           @id @default(cuid())
+  versao           Int              @unique
+  titulo           String
+  conteudo         String
+  resumoAlteracoes String?
+  /// RASCUNHO | PUBLICADO | SUBSTITUIDO (só uma versão PUBLICADO por vez)
+  status           String           @default("RASCUNHO")
+  versaoAnteriorId String?
+  sha256           String?
+  criadoPorNome    String?
+  publicadoPorNome String?
+  publicadoEm      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  aceites          AceiteTermoUso[]
+
+  @@index([status])
+}
+
+/// Aceite dos Termos de Uso — SOMENTE INCLUSÃO (gatilho no banco). Um aceite por usuário e versão.
+model AceiteTermoUso {
+  id            String   @id @default(cuid())
+  termoId       String
+  termo         TermoUso @relation(fields: [termoId], references: [id], onDelete: Restrict)
+  userId        String
+  funcionarioId String?
+  nome          String
+  matricula     String?
+  aceitoEm      DateTime @default(now())
+  ip            String
+  ipGateway     String?
+  userAgent     String?
+  /// SHA-256 do texto aceito (prova de qual conteúdo foi aceito).
+  sha256Termo   String
+  /// Código do aceite (SHA-256 dos dados do aceite, agrupado).
+  codigo        String
+
+  @@unique([termoId, userId])
+  @@index([userId])
+}
+
+/// Registro de documentos assinados pelo sistema (ciclo de banco de horas, ciência de atestado,
+/// documentos de férias assinados…) pela impressão digital do arquivo: valida qualquer upload.
+model DocumentoEmitido {
+  id           String   @id @default(cuid())
+  tipo         String
+  referenciaId String
+  sha256       String   @unique
+  titulo       String
+  /// Dados mínimos exibidos na verificação pública (sem dados pessoais completos).
+  detalhes     Json     @default("{}")
+  emitidoEm    DateTime @default(now())
+
+  @@index([tipo, referenciaId])
+}
+
 /// Impressão digital (SHA-256) de cada PDF de comprovante emitido — verifica se um arquivo é o original.
 model ComprovanteEmitido {
   id        String   @id @default(cuid())

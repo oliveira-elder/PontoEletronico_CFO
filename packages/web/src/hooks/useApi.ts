@@ -76,6 +76,10 @@ async function req<T>(
     await forceRefreshAccessToken();
     return req<T>(method, path, body, undefined, { ...flags, authRetried: true });
   }
+  if (res.status === 428) {
+    /* Termos de Uso pendentes: reabre o aceite obrigatório (o registro de ponto segue liberado). */
+    window.dispatchEvent(new CustomEvent("termos-pendentes"));
+  }
   if (!res.ok) {
     let message = `Não foi possível concluir a operação (erro ${res.status}).`;
     if (res.status === 403) {

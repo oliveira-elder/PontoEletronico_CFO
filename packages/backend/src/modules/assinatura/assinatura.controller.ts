@@ -27,6 +27,7 @@ import { RolesGuard } from "../auth/roles.guard";
 import { PermissaoRhGuard } from "../auth/permissao-rh.guard";
 import { RecursoRh } from "../auth/recurso-rh.decorator";
 import { AssinaturaService, SignatureMeta } from "./assinatura.service";
+import { metaRequisicao, type RequisicaoComIp } from "../../utils/ip-requisicao";
 
 interface AuthRequest {
   user: {
@@ -42,36 +43,9 @@ interface AuthRequest {
   socket?: { remoteAddress?: string };
 }
 
-/** Normaliza um IP, removendo prefixo IPv4-mapeado (::ffff:) e espaços */
-function normalizeIp(ip: string | undefined | null): string | null {
-  if (!ip) return null;
-  return ip.trim().replace(/^::ffff:/i, "") || null;
-}
-
-/**
- * Extrai metadados de autenticidade da requisição de assinatura.
- * O X-Forwarded-For é uma cadeia `clientePC, proxy1, ..., gatewayBorda`.
- * O primeiro item é o PC real; o último (ou o peer do socket) é a gateway de borda.
- */
+/** Metadados de autenticidade da requisição de assinatura (IP real, gateway e navegador). */
 function getSignatureMeta(req: AuthRequest): SignatureMeta {
-  const xff =
-    (req.headers["x-forwarded-for"] as string | undefined)
-      ?.split(",")
-      .map((p) => normalizeIp(p))
-      .filter((p): p is string => !!p) ?? [];
-
-  const peer = normalizeIp(req.socket?.remoteAddress ?? req.connection?.remoteAddress);
-
-  const ipReal = xff[0] ?? peer ?? "desconhecido";
-  // Gateway de borda: último elemento do XFF se houver cadeia; senão o peer do socket.
-  const ipGateway = xff.length > 1 ? xff[xff.length - 1] : peer;
-
-  return {
-    ipReal,
-    ipGateway:
-      ipGateway && ipGateway !== ipReal ? ipGateway : peer && peer !== ipReal ? peer : ipGateway,
-    userAgent: (req.headers["user-agent"] as string | undefined)?.slice(0, 256) ?? null
-  };
+  return metaRequisicao(req as unknown as RequisicaoComIp);
 }
 
 /* ─── Rotas do Funcionário: /ponto/assinaturas ─── */
@@ -386,6 +360,18 @@ export class VerificacaoPublicaController {
     const ip = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim() ?? req.ip ?? "?";
     this.limitar(ip);
     return this.assinaturaService.compararConteudoPublico(body ?? {});
+  }
+
+  /** Qualquer documento assinado pelo sistema, pela impressão digital do arquivo enviado. */
+  @Get("documento/:sha256")
+  verificarQualquer(
+    @Param("sha256") sha256: string,
+    @Req() req: { ip?: string; headers: Record<string, string | string[] | undefined> }
+  ) {
+    const xff = req.headers["x-forwarded-for"];
+    const ip = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim() ?? req.ip ?? "?";
+    this.limitar(ip);
+    return this.assinaturaService.verificarQualquerArquivo(sha256);
   }
 
   /** Conferência pelo arquivo: o navegador calcula o SHA-256 do PDF e envia só o hash. */

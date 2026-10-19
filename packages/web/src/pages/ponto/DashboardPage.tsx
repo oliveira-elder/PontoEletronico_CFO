@@ -12,7 +12,8 @@ import {
   PauseIcon,
   PlayIcon,
   FileTextIcon,
-  BarChart2Icon
+  BarChart2Icon,
+  ShieldCheckIcon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useHoraServidor } from "../../hooks/useHoraServidor";
@@ -1076,6 +1077,15 @@ export function DashboardPage() {
             <ClockIcon size={15} /> Bater Ponto
           </Link>
         </div>
+        <Link
+          to="/verificar"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-ghost btn-sm"
+          style={{ alignSelf: "flex-start", gap: 6 }}
+        >
+          <ShieldCheckIcon size={14} /> Validar documento
+        </Link>
 
         <div
           style={{
@@ -1584,6 +1594,16 @@ export function DashboardPage() {
               />
               {ESTADO_LABEL[estado]}
             </span>
+            {/* Validação pública de documentos (Espelho de Ponto e comprovantes): página /verificar. */}
+            <Link
+              to="/verificar"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-ghost btn-sm"
+              title="Conferir a autenticidade de um Espelho de Ponto ou de um comprovante"
+            >
+              <ShieldCheckIcon size={15} /> Validar documento
+            </Link>
             <Link to="/ponto/registrar" className="btn btn-primary btn-sm">
               <ClockIcon size={15} /> Bater Ponto
             </Link>

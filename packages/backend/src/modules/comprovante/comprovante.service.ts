@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException
+} from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { RepPService } from "../rep/rep-p.service";
 import { SeloIcpService } from "../selo-icp/selo-icp.service";
@@ -108,11 +114,25 @@ export class ComprovanteService {
   }
 
   /** Lista as marcações do trabalhador (padrão: últimas 48 horas, mínimo do art. 80, III). */
-  async listar(sub: string, opts: { horas?: number; mes?: number; ano?: number } = {}) {
+  async listar(
+    sub: string,
+    opts: { horas?: number; mes?: number; ano?: number; inicio?: string; fim?: string } = {}
+  ) {
     const f = await this.funcionarioDoUsuario(sub);
     let desde: Date;
     let ate: Date | undefined;
-    if (opts.mes && opts.ano) {
+    const dataOk = (d?: string) => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d);
+    if (dataOk(opts.inicio) || dataOk(opts.fim)) {
+      /* Período livre (data inicial e/ou final, em Brasília), até 1 ano. */
+      const ini = dataOk(opts.inicio) ? opts.inicio! : opts.fim!;
+      const fimD = dataOk(opts.fim) ? opts.fim! : opts.inicio!;
+      if (ini > fimD) throw new BadRequestException("A data inicial deve ser anterior à final.");
+      if ((Date.parse(fimD) - Date.parse(ini)) / 86_400_000 > 366) {
+        throw new BadRequestException("O período máximo é de 1 ano.");
+      }
+      desde = new Date(`${ini}T00:00:00-03:00`);
+      ate = new Date(new Date(`${fimD}T00:00:00-03:00`).getTime() + 86_400_000);
+    } else if (opts.mes && opts.ano) {
       desde = new Date(`${opts.ano}-${String(opts.mes).padStart(2, "0")}-01T00:00:00-03:00`);
       ate = new Date(desde);
       ate.setUTCMonth(ate.getUTCMonth() + 1);

@@ -30,7 +30,6 @@ const mainNav: NavItem[] = [
   { path: "/ponto", label: "Início", icon: <HomeIcon size={18} /> },
   { path: "/ponto/registrar", label: "Registrar Ponto", icon: <ClockIcon size={18} /> },
   { path: "/ponto/historico", label: "Histórico", icon: <CalendarIcon size={18} /> },
-  { path: "/ponto/comprovantes", label: "Comprovantes", icon: <FileTextIcon size={18} /> },
   { path: "/ponto/folhas-assinadas", label: "Folhas assinadas", icon: <FileTextIcon size={18} /> },
   { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> }
 ];

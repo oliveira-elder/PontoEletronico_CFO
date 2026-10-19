@@ -1,4 +1,5 @@
 import { ConfigRepP } from "../../components/arquivos-fiscais/ConfigRepP";
+import { ConfigTermosUso } from "../../components/termos/ConfigTermosUso";
 import React, { useState, useEffect, useCallback } from "react";
 import { ToleranciaFechamentoGlobal } from "../../components/banco/ToleranciaFechamento";
 import { GruposCidConfig } from "../../components/atestado/GruposCidConfig";
@@ -333,7 +334,8 @@ type Tab =
   | "periodos"
   | "solicitacoes"
   | "feriados"
-  | "notificacoes";
+  | "notificacoes"
+  | "termos";
 
 interface ConfigSolicitacoes {
   atestadoDiasLimiteSimples: number;
@@ -2401,7 +2403,8 @@ export function ConfiguracoesPage() {
     { key: "areas", label: "Áreas Especiais" },
     { key: "solicitacoes", label: "Solicitações" },
     { key: "feriados", label: "Feriados" },
-    { key: "notificacoes", label: "Notificações" }
+    { key: "notificacoes", label: "Notificações" },
+    { key: "termos", label: "Termos de uso" }
   ];
   /* Perfil do RH: cada aba corresponde a uma aba do catálogo (recursosRh). */
   const RECURSO_TAB: Record<Tab, string> = {
@@ -2412,7 +2415,8 @@ export function ConfiguracoesPage() {
     areas: "configuracoes.areas",
     solicitacoes: "configuracoes.solicitacoes",
     feriados: "configuracoes.feriados",
-    notificacoes: "configuracoes.notificacoes"
+    notificacoes: "configuracoes.notificacoes",
+    termos: "configuracoes.termos"
   };
   const TABS_PERMITIDAS = TABS.filter((t) => podeRh(RECURSO_TAB[t.key]));
   const funcoesDaTab = ABAS_RH.find((a) => a.chave === RECURSO_TAB[tab])?.funcoes ?? [];
@@ -8133,6 +8137,11 @@ export function ConfiguracoesPage() {
 
         {/* ═══════ TAB: NOTIFICAÇÕES ═══════ */}
         {tab === "notificacoes" && <TabNotificacoes isSuperAdmin={user?.isSuperAdmin ?? false} />}
+        {tab === "termos" && (
+          <Secao titulo="Termos de uso" icon={<AlertCircleIcon size={18} />}>
+            <ConfigTermosUso />
+          </Secao>
+        )}
 
         {/* Modal de mapa */}
         {mapaModal && (

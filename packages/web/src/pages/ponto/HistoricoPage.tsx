@@ -21,7 +21,8 @@ import {
   AlertCircleIcon,
   CheckIcon,
   ChevronDownIcon,
-  CoffeeIcon
+  CoffeeIcon,
+  FileTextIcon
 } from "../../components/icons";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useAuth } from "../../auth/AuthContext";
@@ -2001,6 +2002,11 @@ export function HistoricoPage() {
                 {isMobile ? "Banco" : "Banco de Horas"}
               </Link>
             )}
+            {/* Comprovantes de Registro de Ponto (art. 79): cada marcação do dia a dia. */}
+            <Link to="/ponto/comprovantes" className="btn btn-ghost btn-sm" style={{ gap: 6 }}>
+              <FileTextIcon size={14} />
+              Comprovantes
+            </Link>
             <button
               className="btn btn-ghost btn-sm"
               style={{ gap: 6 }}

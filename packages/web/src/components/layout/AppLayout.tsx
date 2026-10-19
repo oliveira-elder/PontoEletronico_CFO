@@ -5,6 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { BottomNav } from "./BottomNav";
 import { PageSpinner } from "../PageSpinner";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { AceiteTermosModal } from "../termos/AceiteTermosModal";
 
 export function AppLayout() {
   const isMobile = useIsMobile(768);
@@ -45,6 +46,8 @@ export function AppLayout() {
       </div>
 
       {isMobile && <BottomNav />}
+      {/* Termos de Uso: aceite obrigatório até aceitar (o registro de ponto segue liberado). */}
+      <AceiteTermosModal />
     </div>
   );
 }
