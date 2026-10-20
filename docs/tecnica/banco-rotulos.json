@@ -1,0 +1,15 @@
+{
+  "Funcionario:User": "é o login de",
+  "Funcionario:Gerencia": "lotado em",
+  "Funcionario:JornadaPeriodo": "segue a jornada",
+  "RegistroPonto:Funcionario": "marcado por",
+  "PeriodoPonto:Funcionario": "período de",
+  "AssinaturaQuadro:PeriodoPonto": "assina o período",
+  "Solicitacao:Funcionario": "pedida por",
+  "Afastamento:Funcionario": "afasta",
+  "AceiteTermoUso:TermoUso": "aceita a versão",
+  "RequisicaoRhDestinatario:RequisicaoRh": "destinada de",
+  "Membership:User": "vincula",
+  "Membership:Role": "com papel",
+  "Membership:Area": "na área"
+}

@@ -374,6 +374,12 @@ export const PauseIcon = mkIcon(
 
 export const PlayIcon = mkIcon(<polygon points="5 3 19 12 5 21 5 3" />);
 
+export const BookOpenIcon = mkIcon(
+  <>
+    <path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2z" />
+    <path d="M22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z" />
+  </>
+);
 export const FileTextIcon = mkIcon(
   <>
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />

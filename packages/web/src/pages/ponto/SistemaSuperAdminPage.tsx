@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
-import { CrownIcon, PlayIcon, AlertCircleIcon, CheckCircleIcon } from "../../components/icons";
+import {
+  CrownIcon,
+  PlayIcon,
+  AlertCircleIcon,
+  CheckCircleIcon,
+  SsoIcon
+} from "../../components/icons";
+import { GestaoUsuariosPage } from "./GestaoUsuariosPage";
 
 /* ── Types ── */
 
@@ -76,7 +83,10 @@ function mesAtualYYYYMM() {
 
 export function SistemaSuperAdminPage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<"sa" | "start">("sa");
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState<"sa" | "start" | "usuarios">(
+    params.get("aba") === "usuarios" ? "usuarios" : params.get("aba") === "start" ? "start" : "sa"
+  );
   const [erro, setErro] = useState("");
   const [ok, setOk] = useState("");
   const [loading, setLoading] = useState(true);
@@ -196,7 +206,8 @@ export function SistemaSuperAdminPage() {
         Configuração de Sistema
       </h1>
       <p style={{ color: "var(--ink-500)", fontSize: 14, marginBottom: 20 }}>
-        Super Administradores e Start de produção — acesso exclusivo de Super Admin.
+        Super Administradores, usuários e grupos, e Start de produção — acesso exclusivo de Super
+        Admin.
       </p>
 
       <div
@@ -210,6 +221,7 @@ export function SistemaSuperAdminPage() {
         {(
           [
             { id: "sa" as const, label: "Super Administradores", icon: <CrownIcon size={16} /> },
+            { id: "usuarios" as const, label: "Usuários / Grupos", icon: <SsoIcon size={16} /> },
             { id: "start" as const, label: "Start do Sistema", icon: <PlayIcon size={16} /> }
           ] as const
         ).map((t) => (
@@ -278,7 +290,9 @@ export function SistemaSuperAdminPage() {
         </div>
       )}
 
-      {loading ? (
+      {tab === "usuarios" ? (
+        <GestaoUsuariosPage embutido />
+      ) : loading ? (
         <p style={{ color: "var(--ink-400)" }}>Carregando…</p>
       ) : tab === "sa" ? (
         <section>

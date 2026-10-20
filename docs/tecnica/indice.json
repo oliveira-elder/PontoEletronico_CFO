@@ -1,0 +1,337 @@
+[
+  {
+    "id": "visao-geral",
+    "grupo": "1. Visão geral",
+    "titulo": "Objetivo e escopo",
+    "arquivo": "visao-geral/visao-geral.md"
+  },
+  {
+    "id": "perfis",
+    "grupo": "1. Visão geral",
+    "titulo": "Perfis de usuário",
+    "arquivo": "visao-geral/perfis.md"
+  },
+  {
+    "id": "glossario",
+    "grupo": "1. Visão geral",
+    "titulo": "Glossário",
+    "arquivo": "visao-geral/glossario.md"
+  },
+  {
+    "id": "arq-contexto",
+    "grupo": "2. Arquitetura",
+    "titulo": "Contexto do sistema",
+    "arquivo": "arquitetura/contexto.md"
+  },
+  {
+    "id": "arq-conteineres",
+    "grupo": "2. Arquitetura",
+    "titulo": "Contêineres",
+    "arquivo": "arquitetura/conteineres.md"
+  },
+  {
+    "id": "arq-backend",
+    "grupo": "2. Arquitetura",
+    "titulo": "Componentes do backend",
+    "arquivo": "arquitetura/backend.md"
+  },
+  {
+    "id": "arq-frontend",
+    "grupo": "2. Arquitetura",
+    "titulo": "Componentes do front-end",
+    "arquivo": "arquitetura/frontend.md"
+  },
+  {
+    "id": "arq-implantacao",
+    "grupo": "2. Arquitetura",
+    "titulo": "Implantação e rede",
+    "arquivo": "arquitetura/implantacao.md"
+  },
+  {
+    "id": "arq-integracoes",
+    "grupo": "2. Arquitetura",
+    "titulo": "Integrações externas",
+    "arquivo": "arquitetura/integracoes.md"
+  },
+  {
+    "id": "stack",
+    "grupo": "3. Stack tecnológica",
+    "titulo": "Stack e versões",
+    "arquivo": "stack/stack.md",
+    "gerada": "stack"
+  },
+  {
+    "id": "stack-decisoes",
+    "grupo": "3. Stack tecnológica",
+    "titulo": "Decisões de arquitetura",
+    "arquivo": "stack/decisoes.md"
+  },
+  {
+    "id": "banco-visao",
+    "grupo": "4. Banco de dados",
+    "titulo": "Visão geral do banco",
+    "arquivo": "banco/visao.md"
+  },
+  {
+    "id": "banco-der",
+    "grupo": "4. Banco de dados",
+    "titulo": "Diagramas (DER)",
+    "gerada": "banco",
+    "vista": "der"
+  },
+  {
+    "id": "banco-dicionario",
+    "grupo": "4. Banco de dados",
+    "titulo": "Dicionário de dados",
+    "gerada": "banco",
+    "vista": "dicionario"
+  },
+  {
+    "id": "apis-convencoes",
+    "grupo": "5. APIs",
+    "titulo": "Convenções da API",
+    "arquivo": "apis/convencoes.md"
+  },
+  {
+    "id": "apis",
+    "grupo": "5. APIs",
+    "titulo": "Catálogo de endpoints",
+    "gerada": "api"
+  },
+  {
+    "id": "fluxo-login",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Login (SSO) e sessão",
+    "arquivo": "fluxos/login.md"
+  },
+  {
+    "id": "fluxo-ponto",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Registro de ponto e NSR",
+    "arquivo": "fluxos/registro-ponto.md"
+  },
+  {
+    "id": "fluxo-correcao",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Correção de ponto",
+    "arquivo": "fluxos/correcao.md"
+  },
+  {
+    "id": "fluxo-abono",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Abono e hora extra",
+    "arquivo": "fluxos/abono-hora-extra.md"
+  },
+  {
+    "id": "fluxo-atestado",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Atestado e licenças",
+    "arquivo": "fluxos/atestado-licencas.md"
+  },
+  {
+    "id": "fluxo-ferias",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Férias",
+    "arquivo": "fluxos/ferias.md"
+  },
+  {
+    "id": "fluxo-banco-horas",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Banco de horas e ciclos",
+    "arquivo": "fluxos/banco-horas.md"
+  },
+  {
+    "id": "fluxo-categorias",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Estagiários, jovem aprendiz e chefias",
+    "arquivo": "fluxos/categorias.md"
+  },
+  {
+    "id": "fluxo-espelho",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Assinatura do Espelho de Ponto",
+    "arquivo": "fluxos/espelho.md"
+  },
+  {
+    "id": "fluxo-fechamento",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Fechamento mensal",
+    "arquivo": "fluxos/fechamento.md"
+  },
+  {
+    "id": "fluxo-afd-aej",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "AFD, AEJ e Atestado Técnico",
+    "arquivo": "fluxos/afd-aej.md"
+  },
+  {
+    "id": "fluxo-rep-p",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Virada para o REP-P e INPI",
+    "arquivo": "fluxos/rep-p.md"
+  },
+  {
+    "id": "fluxo-verificacao",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Verificação de documentos",
+    "arquivo": "fluxos/verificacao.md"
+  },
+  {
+    "id": "fluxo-termos",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Termos de Uso",
+    "arquivo": "fluxos/termos.md"
+  },
+  {
+    "id": "fluxo-notificacoes",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Notificações",
+    "arquivo": "fluxos/notificacoes.md"
+  },
+  {
+    "id": "fluxo-requisicoes",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Requisições do RH e saúde ocupacional",
+    "arquivo": "fluxos/requisicoes.md"
+  },
+  {
+    "id": "fluxo-usuarios",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Usuários, perfis do RH e Super Admin",
+    "arquivo": "fluxos/usuarios-perfis.md"
+  },
+  {
+    "id": "fluxo-backup",
+    "grupo": "6. Fluxos operacionais",
+    "titulo": "Backup e restauração",
+    "arquivo": "fluxos/backup.md"
+  },
+  {
+    "id": "regras-jornada",
+    "grupo": "7. Regras de negócio",
+    "titulo": "Jornada, intervalos e tolerâncias",
+    "arquivo": "regras/jornada.md"
+  },
+  {
+    "id": "regras-banco",
+    "grupo": "7. Regras de negócio",
+    "titulo": "Banco de horas: cálculo",
+    "arquivo": "regras/banco-horas.md"
+  },
+  {
+    "id": "regras-categorias",
+    "grupo": "7. Regras de negócio",
+    "titulo": "Categorias funcionais",
+    "arquivo": "regras/categorias.md"
+  },
+  {
+    "id": "seg-autenticacao",
+    "grupo": "8. Segurança",
+    "titulo": "Autenticação",
+    "arquivo": "seguranca/autenticacao.md"
+  },
+  {
+    "id": "seg-autorizacao",
+    "grupo": "8. Segurança",
+    "titulo": "Autorização",
+    "arquivo": "seguranca/autorizacao.md"
+  },
+  {
+    "id": "seg-lgpd",
+    "grupo": "8. Segurança",
+    "titulo": "Proteção de dados e LGPD",
+    "arquivo": "seguranca/lgpd.md"
+  },
+  {
+    "id": "seg-integridade",
+    "grupo": "8. Segurança",
+    "titulo": "Integridade e assinaturas",
+    "arquivo": "seguranca/integridade.md"
+  },
+  {
+    "id": "seg-documentos",
+    "grupo": "8. Segurança",
+    "titulo": "Proteção de documentos",
+    "arquivo": "seguranca/documentos.md"
+  },
+  {
+    "id": "seg-auditoria",
+    "grupo": "8. Segurança",
+    "titulo": "Auditoria e rastreabilidade",
+    "arquivo": "seguranca/auditoria.md"
+  },
+  {
+    "id": "seg-ameacas",
+    "grupo": "8. Segurança",
+    "titulo": "Modelo de ameaças",
+    "arquivo": "seguranca/ameacas.md"
+  },
+  {
+    "id": "seg-conformidade",
+    "grupo": "8. Segurança",
+    "titulo": "Conformidade legal",
+    "arquivo": "seguranca/conformidade.md"
+  },
+  {
+    "id": "front-mapa",
+    "grupo": "9. Front-end",
+    "titulo": "Mapa de rotas e telas",
+    "arquivo": "frontend/mapa.md"
+  },
+  {
+    "id": "front-padroes",
+    "grupo": "9. Front-end",
+    "titulo": "Padrões do front-end",
+    "arquivo": "frontend/padroes.md"
+  },
+  {
+    "id": "op-deploy",
+    "grupo": "10. Operação",
+    "titulo": "Implantação e atualização",
+    "arquivo": "operacao/deploy.md"
+  },
+  {
+    "id": "op-ambiente",
+    "grupo": "10. Operação",
+    "titulo": "Variáveis de ambiente",
+    "arquivo": "operacao/ambiente.md",
+    "gerada": "ambiente"
+  },
+  {
+    "id": "op-jobs",
+    "grupo": "10. Operação",
+    "titulo": "Rotinas agendadas",
+    "arquivo": "operacao/jobs.md",
+    "gerada": "jobs"
+  },
+  {
+    "id": "op-runbook",
+    "grupo": "10. Operação",
+    "titulo": "Runbook e solução de problemas",
+    "arquivo": "operacao/runbook.md"
+  },
+  {
+    "id": "qualidade",
+    "grupo": "11. Qualidade e convenções",
+    "titulo": "Convenções e como contribuir",
+    "arquivo": "qualidade/convencoes.md"
+  },
+  {
+    "id": "anexo-ix",
+    "grupo": "12. Anexos",
+    "titulo": "Anexo IX — matriz de conformidade",
+    "arquivo": "anexos/anexo-ix.md"
+  },
+  {
+    "id": "adrs",
+    "grupo": "12. Anexos",
+    "titulo": "Registro de decisões (ADRs)",
+    "arquivo": "anexos/adrs.md"
+  },
+  {
+    "id": "cobertura",
+    "grupo": "12. Anexos",
+    "titulo": "Cobertura da documentação",
+    "gerada": "cobertura"
+  }
+]

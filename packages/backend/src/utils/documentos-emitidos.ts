@@ -29,6 +29,16 @@ export async function sha256DocumentoUpload(url: string): Promise<string | null>
   return sha256Buffer(await readFile(p));
 }
 
+/** O PDF salvo em /uploads/documentos/… traz assinatura digital PAdES (selo ICP-Brasil)? */
+export async function pdfTemSeloIcp(url: string | null | undefined): Promise<boolean> {
+  if (!url) return false;
+  const p = caminhoDocumentoUpload(url);
+  if (!existsSync(p)) return false;
+  const b = await readFile(p);
+  const txt = b.toString("latin1");
+  return txt.includes("/ByteRange") && txt.includes("/Type /Sig");
+}
+
 /** Registra (idempotente pela impressão digital) um documento assinado emitido pelo sistema. */
 export async function registrarDocumentoEmitido(
   db: Db,

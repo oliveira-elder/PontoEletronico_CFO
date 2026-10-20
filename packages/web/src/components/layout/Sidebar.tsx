@@ -10,12 +10,12 @@ import {
   LogOutIcon,
   ShieldCheckIcon,
   CheckCircleIcon,
-  SsoIcon,
   ClipboardListIcon,
   TerminalIcon,
   CrownIcon,
   ActivityIcon,
-  FileTextIcon
+  FileTextIcon,
+  BookOpenIcon
 } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { paginaRhLiberada, type PaginaRh } from "../../utils/recursosRh";
@@ -31,7 +31,8 @@ const mainNav: NavItem[] = [
   { path: "/ponto/registrar", label: "Registrar Ponto", icon: <ClockIcon size={18} /> },
   { path: "/ponto/historico", label: "Histórico", icon: <CalendarIcon size={18} /> },
   { path: "/ponto/folhas-assinadas", label: "Folhas assinadas", icon: <FileTextIcon size={18} /> },
-  { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> }
+  { path: "/ponto/solicitacoes", label: "Solicitações", icon: <InboxIcon size={18} /> },
+  { path: "/ponto/manual", label: "Manual do usuário", icon: <BookOpenIcon size={18} /> }
 ];
 
 /* Aprovações: exibidas para gestores (GESTOR_APROVACAO, isManager) */
@@ -62,7 +63,6 @@ const adminBottomNav: NavItem[] = [
 
 /* Sistema: apenas super admin */
 const superAdminNav: NavItem[] = [
-  { path: "/ponto/usuarios", label: "Usuários / Grupos", icon: <SsoIcon size={18} /> },
   { path: "/ponto/sistema", label: "Start / Super Admin", icon: <CrownIcon size={18} /> },
   { path: "/ponto/logs", label: "Logs", icon: <TerminalIcon size={18} /> }
 ];

@@ -7,6 +7,7 @@ import {
   ZapIcon,
   ServerIcon,
   DatabaseIcon,
+  FileTextIcon,
   KeyIcon
 } from "../../components/icons";
 
@@ -25,6 +26,9 @@ const LogsIngestaoTab = lazy(() =>
 const LogsBackupTab = lazy(() =>
   import("./logs/LogsBackupTab").then((m) => ({ default: m.LogsBackupTab }))
 );
+const LogsDocumentacaoTab = lazy(() =>
+  import("./logs/LogsDocumentacaoTab").then((m) => ({ default: m.LogsDocumentacaoTab }))
+);
 const LogsApiServidoraTab = lazy(() =>
   import("./logs/LogsApiServidoraTab").then((m) => ({ default: m.LogsApiServidoraTab }))
 );
@@ -35,7 +39,8 @@ const TABS = [
   { id: "desempenho", label: "Desempenho", icon: <ZapIcon size={15} /> },
   { id: "ingestao", label: "API de Ingestão", icon: <ServerIcon size={15} /> },
   { id: "backup", label: "API de Backup", icon: <DatabaseIcon size={15} /> },
-  { id: "servidora", label: "API Servidora", icon: <KeyIcon size={15} /> }
+  { id: "servidora", label: "API Servidora", icon: <KeyIcon size={15} /> },
+  { id: "documentacao", label: "Documentação", icon: <FileTextIcon size={15} /> }
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -127,6 +132,7 @@ export function LogsPage() {
         {tab === "ingestao" && <LogsIngestaoTab />}
         {tab === "backup" && <LogsBackupTab />}
         {tab === "servidora" && <LogsApiServidoraTab />}
+        {tab === "documentacao" && <LogsDocumentacaoTab onVoltar={() => setTab("dashboard")} />}
       </Suspense>
     </div>
   );

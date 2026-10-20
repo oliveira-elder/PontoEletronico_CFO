@@ -1,4 +1,7 @@
-import { Body, Controller, Get, Param, Patch, Post } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { RolesGuard } from "../auth/roles.guard";
+import { Roles } from "../auth/roles.decorator";
 
 type ContentStatus = "DRAFT" | "APPROVED" | "PUBLISHED";
 
@@ -19,12 +22,14 @@ interface Banner {
 }
 
 @Controller("content")
+@UseGuards(AuthGuard("jwt"), RolesGuard)
 export class ContentController {
   private contents: PublicContent[] = [];
   private banners: Banner[] = [];
   private nextId = 1;
 
   @Post("items")
+  @Roles("ponto-admin", "PONTO_ADMIN")
   create(@Body() payload: Omit<PublicContent, "id" | "status">) {
     const item: PublicContent = {
       id: String(this.nextId++),
@@ -36,6 +41,7 @@ export class ContentController {
   }
 
   @Patch("items/:id/status")
+  @Roles("ponto-admin", "PONTO_ADMIN")
   changeStatus(@Param("id") id: string, @Body() body: { status: ContentStatus }) {
     const item = this.contents.find((entry) => entry.id === id);
     if (!item) return { error: "not_found" };
@@ -52,6 +58,7 @@ export class ContentController {
   }
 
   @Post("banners")
+  @Roles("ponto-admin", "PONTO_ADMIN")
   createBanner(@Body() payload: Omit<Banner, "id">) {
     const banner: Banner = { id: String(this.nextId++), ...payload };
     this.banners.push(banner);

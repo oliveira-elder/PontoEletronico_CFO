@@ -423,7 +423,7 @@ function ModalEmailReal({
 }
 
 /* ─── Página principal ─── */
-export function GestaoUsuariosPage() {
+export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } = {}) {
   const { user } = useAuth();
   const [grupos, setGrupos] = useState<GrupoKC[]>([]);
   const [usuarios, setUsuarios] = useState<UsuarioKC[]>([]);
@@ -515,9 +515,9 @@ export function GestaoUsuariosPage() {
   const gruposFlat = grupos.flatMap((g) => [g, ...(g.subGrupos ?? [])]);
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto" }}>
-      {/* Cabeçalho */}
-      <div style={{ marginBottom: 24 }}>
+    <div style={embutido ? undefined : { maxWidth: 900, margin: "0 auto" }}>
+      {/* Cabeçalho (na aba de Start / Super Admin o título da página já está no topo) */}
+      <div style={{ marginBottom: 24, display: embutido ? "none" : undefined }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
           Sistema
         </p>

@@ -3,6 +3,7 @@ import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { hojeBrasiliaISO, somarDiasCivil } from "../../utils/horario-brasilia";
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -746,7 +747,7 @@ function SolicitacaoCard({
    PÁGINA PRINCIPAL
 ══════════════════════════════════════════ */
 
-type EtapaAprovacao = "gestor" | "rh" | "assinaturas" | "correcoes_rh";
+type EtapaAprovacao = "gestor" | "rh" | "assinaturas" | "correcoes_rh" | "ferias";
 
 /* ── Tipos de Assinatura ── */
 type StatusAssinatura = "PENDENTE_FUNCIONARIO" | "PENDENTE_GESTOR" | "CONCLUIDA" | "DISPENSADA";
@@ -790,7 +791,29 @@ function fmtBH(min: number): string {
   return `${sign}${Math.floor(abs / 60)}h${String(abs % 60).padStart(2, "0")}min`;
 }
 
-const ETAPAS_VALIDAS: EtapaAprovacao[] = ["gestor", "rh", "assinaturas", "correcoes_rh"];
+const ETAPAS_VALIDAS: EtapaAprovacao[] = ["gestor", "rh", "assinaturas", "correcoes_rh", "ferias"];
+
+/** Filtros da visão "Férias": todas as solicitações de férias, por situação. */
+type FiltroFerias =
+  | "TODAS"
+  | "PENDENTE"
+  | "AGUARDANDO_RH"
+  | "DOCUMENTOS"
+  | "APROVADA"
+  | "REJEITADA";
+const FILTROS_FERIAS: { v: FiltroFerias; l: string; status: string }[] = [
+  {
+    v: "TODAS",
+    l: "Todas",
+    status:
+      "PENDENTE,AGUARDANDO_RH,AGUARDANDO_DOCUMENTO_FUNCIONARIO,AGUARDANDO_GESTOR_RH,APROVADA,REJEITADA,REJEITADA_GESTOR,REJEITADA_RH,CANCELADA"
+  },
+  { v: "PENDENTE", l: "Aguardando Chefe", status: "PENDENTE" },
+  { v: "AGUARDANDO_RH", l: "Aguardando RH", status: "AGUARDANDO_RH" },
+  { v: "DOCUMENTOS", l: "Aguardando documentos", status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO" },
+  { v: "APROVADA", l: "Aprovadas", status: "APROVADA" },
+  { v: "REJEITADA", l: "Rejeitadas", status: "REJEITADA,REJEITADA_GESTOR,REJEITADA_RH" }
+];
 
 function etapaInicialFromUrl(
   searchParams: URLSearchParams,
@@ -839,6 +862,10 @@ export function AprovacaoGestorPage() {
   );
   const [busca, setBusca] = useState("");
   const [tipo, setTipo] = useState("");
+  const [filtroFerias, setFiltroFerias] = useState<FiltroFerias>("TODAS");
+  /* Período em que a solicitação foi feita (AAAA-MM-DD). */
+  const [feriasDe, setFeriasDe] = useState("");
+  const [feriasAte, setFeriasAte] = useState("");
   const [page, setPage] = useState(1);
 
   const [solicitacoes, setSolicitacoes] = useState<Solicitacao[]>([]);
@@ -948,7 +975,19 @@ export function AprovacaoGestorPage() {
       });
       if (tipo) params.set("tipo", tipo);
 
-      if (etapa === "gestor") {
+      if (etapa === "ferias") {
+        /* Todas as solicitações de férias visíveis ao usuário (RH vê todas; chefe, as da equipe). */
+        params.set("tipo", "FERIAS");
+        if (feriasDe) params.set("dataInicio", feriasDe);
+        if (feriasAte) params.set("dataFim", feriasAte);
+        params.set("status", FILTROS_FERIAS.find((f) => f.v === filtroFerias)?.status ?? "");
+        const rota = isRH ? "/auditoria/solicitacoes" : "/auditoria/gestao/solicitacoes";
+        const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
+          `${rota}?${params}`
+        );
+        setSolicitacoes(data.solicitacoes ?? []);
+        setTotal(data.total ?? 0);
+      } else if (etapa === "gestor") {
         const status =
           aba === "pendentes"
             ? "PENDENTE"
@@ -996,7 +1035,7 @@ export function AprovacaoGestorPage() {
     } finally {
       setLoading(false);
     }
-  }, [aba, page, tipo, etapa, filtroCard]);
+  }, [aba, page, tipo, etapa, filtroCard, filtroFerias, feriasDe, feriasAte, isRH]);
 
   useEffect(() => {
     const fromUrl = searchParams.get("etapa");
@@ -1011,6 +1050,9 @@ export function AprovacaoGestorPage() {
     setEtapa(nova);
     setAba("pendentes");
     setFiltroCard("pendentes");
+    setFiltroFerias("TODAS");
+    setFeriasDe("");
+    setFeriasAte("");
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -1028,7 +1070,7 @@ export function AprovacaoGestorPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [aba, tipo, etapa, filtroCard]);
+  }, [aba, tipo, etapa, filtroCard, filtroFerias, feriasDe, feriasAte]);
 
   useEffect(() => {
     void carregar();
@@ -1296,9 +1338,11 @@ export function AprovacaoGestorPage() {
             ? "Etapa do chefe de área — aprovação inicial da equipe."
             : etapa === "rh"
               ? "Etapa do RH — aprovação final de todas as solicitações."
-              : etapa === "correcoes_rh"
-                ? "Correções de ponto criadas pelo RH — aprovação exclusiva do Gerente de RH."
-                : "Assine os quadros mensais de ponto da sua equipe."}
+              : etapa === "ferias"
+                ? "Todas as solicitações de férias, em qualquer situação. Filtre por situação ou busque pelo servidor."
+                : etapa === "correcoes_rh"
+                  ? "Correções de ponto criadas pelo RH — aprovação exclusiva do Gerente de RH."
+                  : "Assine os quadros mensais de ponto da sua equipe."}
         </p>
       </div>
 
@@ -1312,6 +1356,7 @@ export function AprovacaoGestorPage() {
             ...(mostrarEtapaRH
               ? [{ id: "rh" as const, label: "RH", count: statsRH.pendentes }]
               : []),
+            { id: "ferias" as const, label: "🌴 Férias", count: 0 },
             ...(mostrarEtapaGestor
               ? [{ id: "assinaturas" as const, label: "Assinaturas de Quadro", count: 0 }]
               : []),
@@ -1750,7 +1795,7 @@ export function AprovacaoGestorPage() {
       )}
 
       {/* ── Stat Cards ── */}
-      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
+      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && etapa !== "ferias" && (
         <div
           style={{
             display: "grid",
@@ -1910,7 +1955,7 @@ export function AprovacaoGestorPage() {
       <StartSistemaAprovacaoCard />
 
       {/* ── Abas ── */}
-      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
+      {etapa !== "assinaturas" && etapa !== "correcoes_rh" && etapa !== "ferias" && (
         <div
           style={{
             display: "flex",
@@ -1950,6 +1995,120 @@ export function AprovacaoGestorPage() {
       )}
 
       {etapa === "rh" && <PainelRodadasFeriasRh onMensagem={setFeedbackMsg} />}
+
+      {/* ── Filtros por situação — visão Férias ── */}
+      {etapa === "ferias" && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+          {FILTROS_FERIAS.map(({ v, l }) => {
+            const ativo = filtroFerias === v;
+            return (
+              <button
+                key={v}
+                onClick={() => setFiltroFerias(v)}
+                style={{
+                  padding: "5px 12px",
+                  borderRadius: "var(--radius-full)",
+                  fontSize: 12,
+                  fontWeight: ativo ? 700 : 500,
+                  border: ativo ? "1.5px solid #2f7d4f" : "1px solid rgba(47,125,79,0.30)",
+                  background: ativo ? "#2f7d4f" : "rgba(47,125,79,0.06)",
+                  color: ativo ? "#fff" : "#2f7d4f"
+                }}
+              >
+                {l}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {etapa === "ferias" && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginBottom: 14,
+            flexWrap: "wrap",
+            alignItems: "center"
+          }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-700)" }}>
+            Solicitadas em:
+          </span>
+          {(() => {
+            const hoje = hojeBrasiliaISO();
+            const ultimoMes = feriasDe === somarDiasCivil(hoje, -30) && feriasAte === hoje;
+            return (
+              <button
+                onClick={() => {
+                  setFeriasDe(somarDiasCivil(hoje, -30));
+                  setFeriasAte(hoje);
+                }}
+                style={{
+                  padding: "5px 12px",
+                  borderRadius: "var(--radius-full)",
+                  fontSize: 12,
+                  fontWeight: ultimoMes ? 700 : 500,
+                  border: ultimoMes
+                    ? "1.5px solid var(--burgundy-600)"
+                    : "1px solid rgba(122,30,38,0.18)",
+                  background: ultimoMes ? "var(--burgundy-600)" : "#fff",
+                  color: ultimoMes ? "#fff" : "var(--ink-700)"
+                }}
+              >
+                Último mês
+              </button>
+            );
+          })()}
+          <label style={{ fontSize: 12, color: "var(--ink-600)" }}>
+            De{" "}
+            <input
+              type="date"
+              value={feriasDe}
+              max={feriasAte || undefined}
+              onChange={(e) => setFeriasDe(e.target.value)}
+              style={{
+                padding: "5px 8px",
+                border: "1px solid rgba(0,0,0,0.12)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 12.5
+              }}
+            />
+          </label>
+          <label style={{ fontSize: 12, color: "var(--ink-600)" }}>
+            até{" "}
+            <input
+              type="date"
+              value={feriasAte}
+              min={feriasDe || undefined}
+              onChange={(e) => setFeriasAte(e.target.value)}
+              style={{
+                padding: "5px 8px",
+                border: "1px solid rgba(0,0,0,0.12)",
+                borderRadius: "var(--radius-md)",
+                fontSize: 12.5
+              }}
+            />
+          </label>
+          {(feriasDe || feriasAte) && (
+            <button
+              onClick={() => {
+                setFeriasDe("");
+                setFeriasAte("");
+              }}
+              style={{
+                padding: "5px 12px",
+                borderRadius: "var(--radius-full)",
+                border: "1px solid rgba(0,0,0,0.15)",
+                background: "#fff",
+                fontSize: 12
+              }}
+            >
+              Limpar datas
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Filtros e Lista ── */}
       {etapa !== "assinaturas" && etapa !== "correcoes_rh" && (
@@ -1991,24 +2150,26 @@ export function AprovacaoGestorPage() {
                 }}
               />
             </div>
-            <select
-              value={tipo}
-              onChange={(e) => setTipo(e.target.value)}
-              style={{
-                padding: "8px 12px",
-                border: "1px solid rgba(0,0,0,0.12)",
-                borderRadius: "var(--radius-md)",
-                fontSize: 13,
-                background: "#fff"
-              }}
-            >
-              <option value="">Todos os tipos</option>
-              {Object.entries(TIPO_LABEL).map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
+            {etapa !== "ferias" && (
+              <select
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value)}
+                style={{
+                  padding: "8px 12px",
+                  border: "1px solid rgba(0,0,0,0.12)",
+                  borderRadius: "var(--radius-md)",
+                  fontSize: 13,
+                  background: "#fff"
+                }}
+              >
+                <option value="">Todos os tipos</option>
+                {Object.entries(TIPO_LABEL).map(([v, l]) => (
+                  <option key={v} value={v}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               onClick={() => {
                 void carregar();
@@ -2057,7 +2218,14 @@ export function AprovacaoGestorPage() {
                 border: "1px solid rgba(122,30,38,0.08)"
               }}
             >
-              {aba === "pendentes" ? (
+              {etapa === "ferias" ? (
+                <>
+                  <UsersIcon size={36} style={{ color: "var(--ink-400)", marginBottom: 12 }} />
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
+                    Nenhuma solicitação de férias neste filtro.
+                  </p>
+                </>
+              ) : aba === "pendentes" ? (
                 <>
                   <CheckCircleIcon size={36} style={{ color: "#16a34a", marginBottom: 12 }} />
                   <p style={{ margin: 0, fontWeight: 700, fontSize: 15, color: "var(--ink-700)" }}>
@@ -2089,8 +2257,33 @@ export function AprovacaoGestorPage() {
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {solicitacoesFiltradas.map((s) => (
                 <React.Fragment key={s.id}>
-                  {aba === "pendentes" && ehMinha(s) && <AvisoPropriaSolicitacao />}
-                  {etapa === "rh" ? (
+                  {(aba === "pendentes" || etapa === "ferias") &&
+                    ehMinha(s) &&
+                    (s.status === "PENDENTE" || s.status === "AGUARDANDO_RH") && (
+                      <AvisoPropriaSolicitacao />
+                    )}
+                  {etapa === "ferias" ? (
+                    s.status === "PENDENTE" ? (
+                      <SolicitacaoCard
+                        s={s}
+                        mostrarAcoes={isGestorArea && !ehMinha(s)}
+                        onDecidir={abrirModal}
+                      />
+                    ) : (
+                      <SolicitacaoCardRH
+                        s={s}
+                        mostrarAcoes={
+                          isRH &&
+                          !ehMinha(s) &&
+                          (s.status === "AGUARDANDO_RH" ||
+                            s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO")
+                        }
+                        onDecidir={abrirModalRH}
+                        onEnviarGuia={abrirModalGuia}
+                        onEnviarFolhaFerias={abrirModalFolha}
+                      />
+                    )
+                  ) : etapa === "rh" ? (
                     <SolicitacaoCardRH
                       s={s}
                       mostrarAcoes={aba === "pendentes" && !ehMinha(s)}

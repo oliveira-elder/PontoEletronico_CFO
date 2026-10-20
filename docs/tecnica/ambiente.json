@@ -1,0 +1,202 @@
+{
+  "NODE_ENV": {
+    "funcao": "Modo de execução (development/production).",
+    "obrigatoria": true
+  },
+  "PORT": {
+    "funcao": "Porta HTTP da API.",
+    "obrigatoria": false
+  },
+  "APP_BASE_URL": {
+    "funcao": "URL pública base do sistema (links em e-mails e QR de verificação).",
+    "obrigatoria": true
+  },
+  "PUBLIC_API_BASE_URL": {
+    "funcao": "URL pública da API usada em links gerados.",
+    "obrigatoria": false
+  },
+  "VITE_APP_BASE_URL": {
+    "funcao": "URL base do front-end embutida no build.",
+    "obrigatoria": false
+  },
+  "JWT_SECRET": {
+    "funcao": "Segredo de assinatura de tokens internos.",
+    "obrigatoria": true
+  },
+  "KEYCLOAK_ISSUER": {
+    "funcao": "Emissor (issuer) esperado dos tokens do Keycloak.",
+    "obrigatoria": true
+  },
+  "KEYCLOAK_AUDIENCE": {
+    "funcao": "Audiência esperada dos tokens.",
+    "obrigatoria": false
+  },
+  "KEYCLOAK_VALIDATE_ISSUER": {
+    "funcao": "Liga a validação do emissor do token.",
+    "obrigatoria": false
+  },
+  "KEYCLOAK_VALIDATE_AUDIENCE": {
+    "funcao": "Liga a validação da audiência do token.",
+    "obrigatoria": false
+  },
+  "KEYCLOAK_JWKS_TLS_INSECURE": {
+    "funcao": "Aceita certificado não confiável ao baixar as chaves públicas (somente desenvolvimento).",
+    "obrigatoria": false
+  },
+  "SUPER_ADMIN_USERNAMES": {
+    "funcao": "Usuários que iniciam como Super Admin.",
+    "obrigatoria": false
+  },
+  "DOC_SEAL_SECRET": {
+    "funcao": "Segredo do selo HMAC dos QR Codes e códigos de verificação de documentos.",
+    "obrigatoria": true
+  },
+  "ICP_A1_PFX_PATH": {
+    "funcao": "Local do certificado A1 ICP-Brasil usado no selo dos documentos.",
+    "obrigatoria": false
+  },
+  "ICP_A1_PFX_PASSPHRASE": {
+    "funcao": "Senha do certificado A1 (alternativa ao arquivo de senha).",
+    "obrigatoria": false
+  },
+  "ICP_A1_PFX_PASSPHRASE_FILE": {
+    "funcao": "Arquivo com a senha do certificado A1.",
+    "obrigatoria": false
+  },
+  "REP_INSTANCIA_ID": {
+    "funcao": "Identificação da instância do REP-P.",
+    "obrigatoria": false
+  },
+  "NTP_SERVER": {
+    "funcao": "Servidor NTP para conferir o relógio.",
+    "obrigatoria": false
+  },
+  "UPLOAD_DIR": {
+    "funcao": "Diretório de arquivos enviados (públicos).",
+    "obrigatoria": false
+  },
+  "UPLOAD_PRIVATE_DIR": {
+    "funcao": "Diretório de arquivos enviados privados (documentos pessoais).",
+    "obrigatoria": false
+  },
+  "INSTANCE_DIR": {
+    "funcao": "Diretório de dados da instância.",
+    "obrigatoria": false
+  },
+  "BACKUP_STORAGE_PATH": {
+    "funcao": "Diretório onde ficam os backups.",
+    "obrigatoria": false
+  },
+  "BACKUP_AGENT_SHARED_KEY": {
+    "funcao": "Chave compartilhada com o agente de backup externo.",
+    "obrigatoria": false
+  },
+  "BACKUP_ARTIFACT_BASENAME": {
+    "funcao": "Prefixo do nome dos arquivos de backup.",
+    "obrigatoria": false
+  },
+  "BACKUP_MAX_UPLOAD_MB": {
+    "funcao": "Tamanho máximo de upload de backup (MB).",
+    "obrigatoria": false
+  },
+  "BACKUP_PG_DUMP_FORMAT": {
+    "funcao": "Formato do pg_dump.",
+    "obrigatoria": false
+  },
+  "GLPI_BASE_URL": {
+    "funcao": "Endereço do GLPI (SSO/chamados).",
+    "obrigatoria": false
+  },
+  "GLPI_API_URL": {
+    "funcao": "Endereço da API do GLPI.",
+    "obrigatoria": false
+  },
+  "SECTIONS_INTEGRATION_URL": {
+    "funcao": "Endereço da integração com a API de seções/servidores.",
+    "obrigatoria": false
+  },
+  "SECTIONS_INTEGRATION_TOKEN": {
+    "funcao": "Credencial da integração de seções.",
+    "obrigatoria": false
+  },
+  "FERIADO_SYNC_WEBHOOK_URLS": {
+    "funcao": "Destinos notificados após sincronizar feriados.",
+    "obrigatoria": false
+  },
+  "FERIADO_SYNC_WEBHOOK_KEY": {
+    "funcao": "Chave dos webhooks de feriados.",
+    "obrigatoria": false
+  },
+  "INGEST_SHARED_KEY": {
+    "funcao": "Chave da API de ingestão de eventos.",
+    "obrigatoria": false
+  },
+  "API_PUBLICA_SYSTEM_KEY": {
+    "funcao": "Chave de sistema da API pública.",
+    "obrigatoria": false
+  },
+  "MONITOR_AUDIT_INGEST_ENABLED": {
+    "funcao": "Liga o envio da auditoria ao monitor.",
+    "obrigatoria": false
+  },
+  "MONITOR_ENVIRONMENT": {
+    "funcao": "Nome do ambiente reportado ao monitor.",
+    "obrigatoria": false
+  },
+  "MONITOR_INGEST_PUSH_URL": {
+    "funcao": "Destino do envio ao monitor.",
+    "obrigatoria": false
+  },
+  "MONITOR_SERVICE_NAME": {
+    "funcao": "Nome do serviço reportado ao monitor.",
+    "obrigatoria": false
+  },
+  "REAL_EMAIL_DOMAIN": {
+    "funcao": "Domínio de e-mail real dos funcionários.",
+    "obrigatoria": false
+  },
+  "KEYCLOAK_JWKS_FILE": {
+    "funcao": "Arquivo local com as chaves públicas do Keycloak (JWKS) usado para validar tokens.",
+    "obrigatoria": false
+  },
+  "KEYCLOAK_JWKS_URI": {
+    "funcao": "Endereço remoto das chaves públicas do Keycloak, usado quando o arquivo local não tem a chave.",
+    "obrigatoria": false
+  },
+  "VITE_ENABLE_DEV_LOGIN": {
+    "funcao": "Habilita o login de desenvolvimento no front-end (nunca em produção).",
+    "obrigatoria": false
+  },
+  "VITE_KEYCLOAK_CLIENT_ID": {
+    "funcao": "Cliente do Keycloak usado pelo front-end.",
+    "obrigatoria": true
+  },
+  "VITE_KEYCLOAK_REALM": {
+    "funcao": "Realm do Keycloak usado pelo front-end.",
+    "obrigatoria": true
+  },
+  "VITE_KEYCLOAK_URL": {
+    "funcao": "Endereço do Keycloak usado pelo front-end.",
+    "obrigatoria": true
+  },
+  "VITE_REAL_EMAIL_DOMAIN": {
+    "funcao": "Domínio de e-mail real exibido/usado no front-end.",
+    "obrigatoria": false
+  },
+  "VITE_SUPER_ADMIN_USERNAMES": {
+    "funcao": "Usuários tratados como Super Admin na interface (a decisão real é do backend).",
+    "obrigatoria": false
+  },
+  "ALLOW_DEV_TOKENS": {
+    "funcao": "Aceita tokens HS256 de desenvolvimento (login dev). Só vale fora de produção e com JWT_SECRET próprio.",
+    "obrigatoria": false
+  },
+  "UPLOADS_SIGN_SECRET": {
+    "funcao": "Segredo da assinatura dos links de /uploads (se ausente, usa DOC_SEAL_SECRET).",
+    "obrigatoria": false
+  },
+  "AUDIT_LOG_RETENTION_DAYS": {
+    "funcao": "Dias de retenção da trilha de auditoria (mínimo 365). Sem a variável, nada é apagado.",
+    "obrigatoria": false
+  }
+}

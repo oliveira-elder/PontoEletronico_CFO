@@ -2398,6 +2398,20 @@ export class PontoService implements OnModuleInit {
   }
 
   /**
+   * Origem dos ciclos do banco: o 1º acesso ao sistema ou, se houver batida anterior a ele, o dia da
+   * 1ª batida (as horas registradas contam; só a FALTA continua começando no 1º acesso).
+   */
+  private async origemCiclosBanco(funcionarioId: string, inicioLogin: string): Promise<string> {
+    const primeira = await this.prisma.registroPonto.findFirst({
+      where: { funcionarioId, apenasInformativo: false },
+      orderBy: { dataHora: "asc" },
+      select: { dataHora: true }
+    });
+    const dia = primeira ? dataBrasiliaISO(primeira.dataHora) : null;
+    return dia && dia < inicioLogin ? dia : inicioLogin;
+  }
+
+  /**
    * Banco de horas (mesma conta da página Banco de Horas) para um intervalo de datas, cruzando
    * os ciclos que o cobrem. Usado pela folha mensal/assinatura e pela Auditoria.
    * `saldoAntesMinutos`: acumulado do ciclo até a véspera de `inicioIso` (0 se o ciclo começa no
@@ -2415,7 +2429,7 @@ export class PontoService implements OnModuleInit {
     const tolerancia = await toleranciaFechamentoDias(this.prisma, funcionarioId);
     const ciclos = listarCiclosBancoHoras(
       marcos,
-      inicioLogin,
+      await this.origemCiclosBanco(funcionarioId, inicioLogin),
       hojeIso,
       dataInicioProducao,
       tolerancia
@@ -2503,7 +2517,7 @@ export class PontoService implements OnModuleInit {
 
     const ciclos = listarCiclosBancoHoras(
       marcos,
-      inicioLogin,
+      await this.origemCiclosBanco(funcionarioId, inicioLogin),
       hojeIso,
       dataInicioProducao,
       tolerancia
@@ -2514,11 +2528,26 @@ export class PontoService implements OnModuleInit {
         : (ciclos.find((c) => c.atual) ?? null);
 
     /* Sem marco: inicia do primeiro login no sistema (alinhado ao Histórico). */
-    let cicloInicioEfetivo: string = cicloAlvo?.inicio ?? cicloInicio ?? inicioLogin;
-    if (cicloInicioEfetivo < inicioLogin) {
-      cicloInicioEfetivo = inicioLogin;
-    }
+    const inicioBaseCiclo: string | null = cicloAlvo?.inicio ?? cicloInicio ?? null;
+    let cicloInicioEfetivo: string = inicioBaseCiclo ?? inicioLogin;
     const cicloFimEfetivo = cicloAlvo?.fim ?? hojeIso;
+    if (cicloInicioEfetivo < inicioLogin || !inicioBaseCiclo) {
+      /* Antes do 1º acesso não há falta, mas batidas existentes entram no cálculo (horas e saldo):
+         o ciclo começa na 1ª batida anterior ao 1º acesso, se houver; senão, no 1º acesso. */
+      const primeiraBatida = await this.prisma.registroPonto.findFirst({
+        where: {
+          funcionarioId,
+          apenasInformativo: false,
+          dataHora: {
+            ...(inicioBaseCiclo ? { gte: intervaloDiaBrasilia(inicioBaseCiclo).inicio } : {}),
+            lt: intervaloDiaBrasilia(inicioLogin).inicio
+          }
+        },
+        orderBy: { dataHora: "asc" },
+        select: { dataHora: true }
+      });
+      cicloInicioEfetivo = primeiraBatida ? dataBrasiliaISO(primeiraBatida.dataHora) : inicioLogin;
+    }
     /* Não antecipa o ciclo para pontoObrigatorioDesde: períodos intercalados
        (concursado → assessor → concursado) precisam iterar o meio e zerar só nele. */
 
@@ -5152,7 +5181,7 @@ export class PontoService implements OnModuleInit {
     });
 
     let periodosAtualizados = 0;
-    let assinaturasAtualizadas = 0;
+    const assinaturasAtualizadas = 0;
     const erros: Array<{ funcionarioId: string; mes?: number; ano?: number; erro: string }> = [];
 
     for (const func of funcs) {
@@ -5175,7 +5204,20 @@ export class PontoService implements OnModuleInit {
           meses.add(`${p.ano}-${String(p.mes).padStart(2, "0")}`);
         }
 
+        /* Folhas concluídas/dispensadas são documentos assinados: o resumo gravado fica como está. */
+        const congelados = new Set(
+          (
+            await this.prisma.periodoPonto.findMany({
+              where: {
+                funcionarioId: func.id,
+                assinatura: { is: { status: { in: ["CONCLUIDA", "DISPENSADA"] } } }
+              },
+              select: { mes: true, ano: true }
+            })
+          ).map((p) => `${p.ano}-${String(p.mes).padStart(2, "0")}`)
+        );
         for (const ym of [...meses].sort()) {
+          if (congelados.has(ym)) continue;
           const [anoStr, mesStr] = ym.split("-");
           const ano = Number(anoStr);
           const mes = Number(mesStr);
@@ -5212,29 +5254,8 @@ export class PontoService implements OnModuleInit {
           }
         }
 
-        try {
-          const bh = await this.calcularBancoHorasAdmin(func.id);
-          const saldo = bh.saldoAtualMinutos ?? 0;
-          const pendentes = await this.prisma.assinaturaQuadro.findMany({
-            where: {
-              status: "PENDENTE_FUNCIONARIO",
-              periodo: { funcionarioId: func.id }
-            },
-            select: { id: true }
-          });
-          for (const a of pendentes) {
-            await this.prisma.assinaturaQuadro.update({
-              where: { id: a.id },
-              data: { bancoHorasSaldoTotalMinutos: saldo }
-            });
-            assinaturasAtualizadas++;
-          }
-        } catch (err) {
-          erros.push({
-            funcionarioId: func.id,
-            erro: `BH: ${err instanceof Error ? err.message : String(err)}`
-          });
-        }
+        /* O saldo gravado em cada assinatura pendente é por MÊS (acumulado no fim daquele mês):
+           é atualizado por AssinaturaService.recalcularResumosFolhas, não pelo saldo atual. */
       } catch (err) {
         erros.push({
           funcionarioId: func.id,

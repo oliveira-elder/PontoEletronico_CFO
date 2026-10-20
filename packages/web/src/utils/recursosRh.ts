@@ -501,7 +501,10 @@ export const CAMPOS_SISTEMA_POR_FUNCAO: Record<string, string[]> = {
     "intervaloCurtoAcimaDeMin",
     "intervaloCurtoMinMin"
   ],
-  "configuracoes.periodos.aviso-contrato": ["contratoAvisoAntecedenciaDias"]
+  "configuracoes.periodos.aviso-contrato": [
+    "contratoAvisoAntecedenciaDias",
+    "jornadaAcordoColetivo"
+  ]
 };
 
 /** A página tem ao menos uma aba/área liberada (usado no menu e no acesso direto). */

@@ -700,7 +700,17 @@ export function montarRelatorioQuadro(
     } else if (entrada) {
       /* Só a entrada, em dia passado: registro iniciado e não concluído. O saldo continua
          descontando a jornada (como a falta), mas o status é Inconsistente. */
-      horasMin = 0;
+      horasMin =
+        dayRegs.length > 1
+          ? /* Há outras batidas (ex.: pausa/retorno sem saída): conta o trabalho comprovado, como o Banco. */
+            calcHorasMinutosDia(
+              dayRegs,
+              undefined,
+              jornada,
+              forcarSemIntervaloDia,
+              ajustesAlmocoDia
+            )
+          : 0;
       statusInterno = "INCONSISTENTE";
       saldoComoFalta = true;
     } else {

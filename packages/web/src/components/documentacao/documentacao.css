@@ -1,0 +1,228 @@
+.doc-md {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: #212529;
+  overflow-wrap: anywhere;
+}
+.doc-md h1 {
+  font-size: 22px;
+  margin: 22px 0 10px;
+}
+.doc-md h2 {
+  font-size: 18.5px;
+  margin: 24px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e9ecef;
+  scroll-margin-top: 12px;
+}
+.doc-md h3 {
+  font-size: 16px;
+  margin: 18px 0 6px;
+  scroll-margin-top: 12px;
+}
+.doc-md h4 {
+  font-size: 14.5px;
+  margin: 14px 0 4px;
+}
+.doc-md p {
+  margin: 8px 0;
+}
+.doc-md ul,
+.doc-md ol {
+  padding-left: 22px;
+  margin: 6px 0;
+}
+.doc-md li {
+  margin: 3px 0;
+}
+.doc-md code {
+  background: #f1f3f5;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12.8px;
+}
+.doc-md pre {
+  background: #212529;
+  color: #f8f9fa;
+  padding: 12px 14px;
+  border-radius: 8px;
+  overflow: auto;
+  font-size: 12.8px;
+}
+.doc-md pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+.doc-md blockquote {
+  margin: 10px 0;
+  padding: 6px 14px;
+  border-left: 4px solid #0d6efd;
+  background: #f1f6ff;
+  color: #343a40;
+}
+.doc-md a {
+  color: #0d6efd;
+}
+.doc-tabela {
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.doc-tabela table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.doc-tabela th {
+  background: #f1f3f5;
+  text-align: left;
+  font-weight: 600;
+}
+.doc-tabela th,
+.doc-tabela td {
+  border: 1px solid #dee2e6;
+  padding: 6px 9px;
+  vertical-align: top;
+}
+.doc-mermaid svg {
+  max-width: none;
+}
+
+.doc-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.doc-indice {
+  position: static;
+}
+.doc-indice-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #343a40;
+}
+.doc-indice-item:hover {
+  background: #f1f3f5;
+}
+.doc-indice-item.ativo {
+  background: #e7f0ff;
+  color: #0b5ed7;
+  font-weight: 600;
+}
+.doc-indice-toggle {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .doc-layout {
+    grid-template-columns: 230px minmax(0, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .doc-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .doc-indice {
+    position: static;
+  }
+  .doc-indice.recolhido {
+    display: none;
+  }
+  .doc-indice-toggle {
+    display: inline-block;
+  }
+}
+
+/* Impressão / PDF: só o documento completo (#doc-print-root) */
+#doc-print-root {
+  display: none;
+}
+@media print {
+  body.doc-imprimindo #root {
+    display: none !important;
+  }
+  body.doc-imprimindo #doc-print-root {
+    display: block !important;
+  }
+  body.doc-imprimindo {
+    background: #fff !important;
+  }
+  .doc-nao-imprimir {
+    display: none !important;
+  }
+  #doc-print-root {
+    font-family: Inter, system-ui, sans-serif;
+    color: #000;
+  }
+  #doc-print-root .doc-capa {
+    min-height: 240mm;
+    page-break-after: always;
+  }
+  #doc-print-root .doc-secao-impressa {
+    break-before: page;
+  }
+  #doc-print-root .doc-grupo-impresso {
+    break-before: page;
+  }
+  #doc-print-root .doc-mermaid {
+    break-inside: avoid;
+    border: none;
+    margin: 8px 0;
+  }
+  #doc-print-root .doc-mermaid-area {
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0;
+  }
+  #doc-print-root .doc-mermaid-area > div {
+    width: 100% !important;
+    transform: none !important;
+  }
+  #doc-print-root .doc-mermaid svg {
+    max-width: 100% !important;
+    max-height: 235mm;
+    height: auto !important;
+  }
+  #doc-print-root .doc-tabela {
+    overflow: visible;
+  }
+  #doc-print-root tr {
+    break-inside: avoid;
+  }
+  #doc-print-root thead {
+    display: table-header-group;
+  }
+  #doc-print-root .doc-md pre {
+    background: #fff;
+    color: #000;
+    border: 1px solid #999;
+    white-space: pre-wrap;
+  }
+  #doc-print-root .doc-rodape-impressao {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    font-size: 10px;
+    color: #555;
+    border-top: 1px solid #bbb;
+    padding-top: 3px;
+    display: flex;
+    justify-content: space-between;
+  }
+  @page {
+    size: A4;
+    margin: 16mm 14mm 18mm 14mm;
+  }
+}

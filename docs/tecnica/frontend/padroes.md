@@ -1,0 +1,8 @@
+- **Estrutura**: `pages/` (telas), `components/` (blocos reutilizáveis por domínio: assinatura, comprovante, termos, arquivos fiscais…), `hooks/`, `utils/` (regras e formatação), `auth/` (Keycloak e token).
+- **Dados**: `useApi` encapsula `fetch`, token, renovação e erros. Respostas de erro trazem `message` pronta para exibir.
+- **Carregamento**: páginas pesadas com `lazy` + `Suspense`; bibliotecas grandes (Mermaid, pdfjs, tesseract) carregadas **sob demanda**.
+- **Visual**: tema institucional, botões com altura padronizada, ícones SVG próprios, topo com atalhos, rodapé institucional; responsivo para celular.
+- **Datas e horas**: sempre Brasília; relógio ancorado na hora do servidor.
+- **Segurança no cliente**: token em memória; sem dados sensíveis em `localStorage`; documentos em visualizador protegido (marca d'água com o usuário e desfoque quando a janela perde o foco).
+- **Regras espelhadas**: quando o front calcula (prévias), o arquivo correspondente tem a nota "espelhado do backend — manter iguais" (jornada, ciclo completo, férias, recursos do RH).
+- **Acessibilidade**: menu de acessibilidade, contraste, foco visível e rótulos em ícones.

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
-import { Link } from "react-router-dom";
-import { MapPinIcon, MailIcon, PhoneIcon, BellIcon, ShieldCheckIcon } from "../icons";
+import { Link, useLocation } from "react-router-dom";
+import { MapPinIcon, MailIcon, PhoneIcon, BellIcon, ShieldCheckIcon, BookOpenIcon } from "../icons";
 import { useAuth } from "../../auth/AuthContext";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useInstituicaoBranding } from "../../hooks/useInstituicaoBranding";
@@ -568,6 +568,7 @@ function SinoBell() {
 export function Topbar() {
   const { user, logout } = useAuth();
   const isMobile = useIsMobile(768);
+  const location = useLocation();
   const { branding } = useInstituicaoBranding();
   const cidadeUf = formatCidadeUf(branding);
   const emailInstitucional = branding.emailInstitucional?.trim();
@@ -800,6 +801,27 @@ export function Topbar() {
               </p>
             </div>
           </div>
+
+          {/* Ajuda: abre o capítulo do Manual correspondente à tela atual */}
+          <Link
+            to={`/ponto/manual?ajuda=${encodeURIComponent(location.pathname)}`}
+            title="Ajuda — Manual do usuário"
+            aria-label="Ajuda — Manual do usuário"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 48,
+              flexShrink: 0,
+              boxSizing: "border-box",
+              borderRadius: "var(--radius-md)",
+              border: "1px solid rgba(122,30,38,0.14)",
+              color: "var(--burgundy-600)",
+              textDecoration: "none"
+            }}
+          >
+            <BookOpenIcon size={16} />
+          </Link>
 
           {/* Termos de Uso vigentes e o comprovante do aceite */}
           <Link

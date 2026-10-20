@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { UploadsAssinadosInterceptor } from "./interceptors/uploads-assinados.interceptor";
 import { APP_INTERCEPTOR, APP_FILTER } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
 import { ScheduleModule } from "@nestjs/schedule";
@@ -7,6 +8,7 @@ import { RepModule } from "./modules/rep/rep.module";
 import { ArquivosFiscaisModule } from "./modules/arquivos-fiscais/arquivos-fiscais.module";
 import { ComprovanteModule } from "./modules/comprovante/comprovante.module";
 import { TermosUsoModule } from "./modules/termos-uso/termos-uso.module";
+import { DocumentacaoModule } from "./modules/documentacao/documentacao.module";
 import { AuditLogInterceptor } from "./interceptors/audit-log.interceptor";
 import { AuditLogWriterService } from "./common/audit-log-writer.service";
 import { AuthFailureLogFilter } from "./interceptors/auth-failure-log.filter";
@@ -38,6 +40,7 @@ import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
     ArquivosFiscaisModule,
     ComprovanteModule,
     TermosUsoModule,
+    DocumentacaoModule,
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
     PrismaModule,
@@ -66,6 +69,7 @@ import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
   providers: [
     AuditLogWriterService,
     { provide: APP_INTERCEPTOR, useClass: AuditLogInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: UploadsAssinadosInterceptor },
     { provide: APP_FILTER, useClass: AuthFailureLogFilter }
   ]
 })

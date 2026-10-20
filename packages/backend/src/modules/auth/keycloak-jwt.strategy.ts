@@ -39,6 +39,17 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
       issuer ? `${issuer.replace(/\/$/, "")}/protocol/openid-connect/certs` : ""
     );
 
+    const hs256Permitido =
+      configService.get<string>("ALLOW_DEV_TOKENS") === "true" &&
+      configService.get<string>("NODE_ENV") !== "production" &&
+      jwtSecret !== "dev-secret";
+    if (hs256Permitido) {
+      Logger.warn(
+        "Tokens HS256 de desenvolvimento habilitados (ALLOW_DEV_TOKENS).",
+        KeycloakJwtStrategy.name
+      );
+    }
+
     const localKeys = loadLocalJwksPem(jwksFile);
     if (localKeys.size > 0) {
       Logger.log(`JWKS local: ${localKeys.size} chave(s) em ${jwksFile}`, KeycloakJwtStrategy.name);
@@ -68,6 +79,10 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
     ) => {
       const header = decodeJwtHeader(rawJwtToken);
       if (header.alg === "HS256") {
+        /* HS256 só para desenvolvimento: exige liberação explícita, fora de produção e segredo próprio. */
+        if (!hs256Permitido) {
+          return done(new Error("Tokens HS256 não são aceitos neste ambiente."));
+        }
         return done(null, jwtSecret);
       }
       if (header.kid && localKeys.has(header.kid)) {
@@ -81,7 +96,7 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
           done(err, key);
         });
       }
-      return done(null, jwtSecret);
+      return done(new Error("Não há chave para validar o token."));
     };
 
     const validateAudience = configService.get<string>("KEYCLOAK_VALIDATE_AUDIENCE") === "true";
@@ -89,7 +104,11 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromExtractors([
         ExtractJwt.fromAuthHeaderAsBearerToken(),
-        ExtractJwt.fromUrlQueryParameter("access_token")
+        /* Token na URL só para o fluxo SSE (EventSource não envia cabeçalhos). */
+        (req: { path?: string; query?: Record<string, unknown> }) =>
+          req.path?.endsWith("/logs/stream") && typeof req.query?.access_token === "string"
+            ? req.query.access_token
+            : null
       ]),
       ignoreExpiration: false,
       issuer: validateIssuer && issuer ? issuer.replace(/\/$/, "") : undefined,

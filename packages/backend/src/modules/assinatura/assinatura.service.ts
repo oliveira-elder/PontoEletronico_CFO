@@ -38,7 +38,8 @@ import { aplicarAnotacoesVerificacao } from "../../utils/pdf-anotacoes";
 import {
   mascararNome,
   registrarDocumentoEmitido,
-  sha256DocumentoUpload
+  sha256DocumentoUpload,
+  pdfTemSeloIcp
 } from "../../utils/documentos-emitidos";
 import { existsSync } from "fs";
 import { mkdir, readFile, unlink, writeFile } from "fs/promises";
@@ -438,7 +439,7 @@ export class AssinaturaService implements OnModuleInit {
         situacao: ciencia.status ?? null,
         assinaturas: { funcionarioEm: null, gestorEm: ciencia.assinadoEm },
         arquivo: await conferir(ciencia.documentoUrl),
-        seloIcpBrasil: { aplicado: false, em: null },
+        seloIcpBrasil: { aplicado: await pdfTemSeloIcp(ciencia.documentoUrl), em: null },
         registro: null
       };
     }
@@ -479,7 +480,7 @@ export class AssinaturaService implements OnModuleInit {
           situacao: s.status,
           assinaturas: { funcionarioEm: d.assinatura?.em ?? null, gestorEm: null },
           arquivo: await conferir(d.urlAssinado),
-          seloIcpBrasil: { aplicado: false, em: null },
+          seloIcpBrasil: { aplicado: await pdfTemSeloIcp(d.urlAssinado), em: null },
           registro: null
         };
       }
@@ -1284,6 +1285,39 @@ export class AssinaturaService implements OnModuleInit {
       this.logger.warn(`atualizarResumoFolha(${a.id}): ${String(e)}`);
     }
     return a;
+  }
+
+  /**
+   * Atualiza o resumo gravado (dias, horas e saldo do banco no fim do mês) de todas as folhas ainda
+   * não concluídas, com a regra de cálculo vigente. Folhas concluídas/dispensadas não são alteradas.
+   */
+  async recalcularResumosFolhas() {
+    const pendentes = await this.prisma.assinaturaQuadro.findMany({
+      where: { status: { in: ["PENDENTE_FUNCIONARIO", "PENDENTE_GESTOR"] } },
+      select: {
+        id: true,
+        status: true,
+        bancoHorasSaldoTotalMinutos: true,
+        periodo: {
+          select: {
+            id: true,
+            funcionarioId: true,
+            mes: true,
+            ano: true,
+            diasTrabalhados: true,
+            horasTrabalhadasMinutos: true
+          }
+        }
+      }
+    });
+    let alteradas = 0;
+    for (const a of pendentes) {
+      const antes = `${a.periodo.diasTrabalhados}|${a.periodo.horasTrabalhadasMinutos}|${a.bancoHorasSaldoTotalMinutos}`;
+      const dep = await this.atualizarResumoFolha(a);
+      const depois = `${dep.periodo.diasTrabalhados}|${dep.periodo.horasTrabalhadasMinutos}|${dep.bancoHorasSaldoTotalMinutos}`;
+      if (antes !== depois) alteradas++;
+    }
+    return { folhasConferidas: pendentes.length, folhasAtualizadas: alteradas };
   }
 
   async getAssinaturaFuncionario(keycloakSub: string, mes?: number, ano?: number) {

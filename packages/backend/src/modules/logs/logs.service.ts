@@ -1,4 +1,5 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
+import { Cron } from "@nestjs/schedule";
 import { PrismaService } from "../../prisma/prisma.service";
 import { FilterLogsDto } from "./dto/filter-logs.dto";
 import { Response } from "express";
@@ -8,7 +9,24 @@ import { buildQuerySearchCondition } from "./log-search.util";
 
 @Injectable()
 export class LogsService {
+  private readonly logger = new Logger(LogsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Retenção da trilha de auditoria: só age se AUDIT_LOG_RETENTION_DAYS for definida (mínimo 365 dias),
+   * às 03:30 de Brasília. Sem a variável, nada é apagado.
+   */
+  @Cron("30 3 * * *", { timeZone: "America/Sao_Paulo" })
+  async aplicarRetencao() {
+    const dias = Number(process.env.AUDIT_LOG_RETENTION_DAYS ?? 0);
+    if (!Number.isFinite(dias) || dias < 365) return;
+    const corte = new Date(Date.now() - dias * 86_400_000);
+    const r = await this.prisma.auditLog.deleteMany({ where: { createdAt: { lt: corte } } });
+    this.logger.log(
+      `Retenção do AuditLog: ${r.count} registro(s) anteriores a ${corte.toISOString()} removidos.`
+    );
+  }
 
   private async buildWhere(f: FilterLogsDto) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

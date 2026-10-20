@@ -265,6 +265,14 @@ export class AssinaturaAuditoriaController {
     return this.assinaturaService.statusSeloIcp();
   }
 
+  /* RH — recalcula o resumo gravado das folhas ainda não concluídas (regra de cálculo vigente) */
+  @Post("assinaturas/recalcular-resumos")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  @RecursoRh("auditoria.banco-horas.recalcular")
+  recalcularResumosFolhas() {
+    return this.assinaturaService.recalcularResumosFolhas();
+  }
+
   /* RH — verificar / buscar por código de assinatura digital */
 
   @RecursoRh("auditoria.validacoes")

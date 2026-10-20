@@ -1474,6 +1474,45 @@ model RegistroProgramaInpi {
   updatedAt          DateTime @updatedAt
 }
 
+/// Documentação técnica: autoria do desenvolvimento (uma linha) e tabela de revisões/versões.
+model DocumentacaoAutoria {
+  id                 String   @id @default("singleton")
+  autor              String
+  /// AAAA-MM-DD
+  dataEntrega        String
+  local              String
+  gerenteResponsavel String
+  solicitacao        String
+  versaoAtual        String   @default("1.0.0")
+  atualizadoPorNome  String?
+  updatedAt          DateTime @updatedAt
+}
+
+model DocumentacaoRevisao {
+  id             String    @id @default(cuid())
+  /// Versão da documentação (semver) após esta revisão.
+  versao         String
+  /// MANUAL | AUTOMATICA
+  tipo           String    @default("MANUAL")
+  desenvolvedor  String
+  revisor        String?
+  /// AAAA-MM-DD
+  dataRevisao    String
+  comentario     String
+  local          String?
+  equipe         String?
+  secoesAfetadas String?
+  /// Impressão digital do conteúdo gerado (revisões automáticas).
+  hashConteudo   String?
+  anuladaEm      DateTime?
+  motivoAnulacao String?
+  anuladaPorNome String?
+  criadoPorNome  String?
+  createdAt      DateTime  @default(now())
+
+  @@index([createdAt])
+}
+
 /// Termos de Uso do sistema — uma linha por versão; publicar não apaga nem altera as anteriores.
 model TermoUso {
   id               String           @id @default(cuid())
@@ -1585,4 +1624,15 @@ model ExtracaoArquivoFiscal {
   geradoPorId    String?
   geradoPorNome  String?
   createdAt      DateTime @default(now())
+}
+
+/// Retrato das partes geradas da documentação técnica (rotas, tabelas, dependências, rotinas, seções).
+/// Serve para detectar mudanças e gerar a revisão automática com o resumo da diferença.
+model DocumentacaoSnapshot {
+  id        String   @id @default(cuid())
+  hash      String
+  conteudo  Json
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

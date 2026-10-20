@@ -35,9 +35,6 @@ const ConfiguracoesPage = lazy(() =>
 const PerfisRhPage = lazy(() =>
   import("../pages/ponto/PerfisRhPage").then((m) => ({ default: m.PerfisRhPage }))
 );
-const GestaoUsuariosPage = lazy(() =>
-  import("../pages/ponto/GestaoUsuariosPage").then((m) => ({ default: m.GestaoUsuariosPage }))
-);
 const AuditoriaPage = lazy(() =>
   import("../pages/ponto/AuditoriaPage").then((m) => ({ default: m.AuditoriaPage }))
 );
@@ -74,6 +71,10 @@ const NotificacoesPage = lazy(() =>
 );
 const SistemaSuperAdminPage = lazy(() =>
   import("../pages/ponto/SistemaSuperAdminPage").then((m) => ({ default: m.SistemaSuperAdminPage }))
+);
+
+const ManualUsuarioPage = lazy(() =>
+  import("../pages/ponto/ManualUsuarioPage").then((m) => ({ default: m.ManualUsuarioPage }))
 );
 
 export const router = createBrowserRouter([
@@ -115,7 +116,7 @@ export const router = createBrowserRouter([
       { path: "gestao/novo", element: <FuncionarioFormPage /> },
       { path: "gestao/:id/editar", element: <FuncionarioFormPage /> },
       { path: "gerencias", element: <GerenciasPage /> },
-      { path: "usuarios", element: <GestaoUsuariosPage /> },
+      { path: "usuarios", element: <Navigate to="/ponto/sistema?aba=usuarios" replace /> },
       { path: "perfis-rh", element: <PerfisRhPage /> },
       { path: "sistema", element: <SistemaSuperAdminPage /> },
       { path: "configuracoes", element: <ConfiguracoesPage /> },
@@ -125,7 +126,8 @@ export const router = createBrowserRouter([
       { path: "requisicoes-rh", element: <RequisicaoRhAdminPage /> },
       { path: "minhas-requisicoes", element: <MinhasRequisicoesRhPage /> },
       { path: "logs", element: <LogsPage /> },
-      { path: "notificacoes", element: <NotificacoesPage /> }
+      { path: "notificacoes", element: <NotificacoesPage /> },
+      { path: "manual", element: <ManualUsuarioPage /> }
     ]
   }
 ]);

@@ -37,7 +37,15 @@ export interface CalcHorasOpts {
   toleranciaEntradaMin?: number;
   /** Tolerância simétrica de saída (±N em torno de horaSaida). */
   toleranciaSaidaMin?: number;
+  /**
+   * Coletor opcional dos ajustes AUTOMÁTICOS de almoço feitos só no cálculo (o registro não
+   * muda): almoço curto, excesso na tolerância, retorno presumido e desconto do mínimo.
+   */
+  ajustes?: string[];
 }
+
+const hhmm = (m: number) =>
+  `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
 
 export interface AlmocoCurtoInfo {
   inicioMin: number;
@@ -112,7 +120,6 @@ export function calcHorasTrabalhadasMinutos(
   const almocoMinMin = Math.max(0, opts.almocoMinMin ?? 60);
   const exigirIntervalo = opts.exigirIntervalo !== false;
   const janelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarA ?? "11:30");
-  const fimJanelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarAte ?? "13:00");
   const tolEntrada = Math.max(0, Number(opts.toleranciaEntradaMin) || 0);
   const almocoTolMax = almocoMinMin + tolEntrada;
 
@@ -120,6 +127,8 @@ export function calcHorasTrabalhadasMinutos(
   let entradaMin: number | null = null;
   let emAlmocoDesde: number | null = null;
   let pausaDesde: number | null = null;
+  /* Retorno mínimo do almoço curto (início + mínimo): pausa/reinício antes dele não antecipa o expediente. */
+  let retornoMinimo: number | null = null;
   let minutosAlmocoRegistrados = 0;
   let ultrapassouJanelaAlmoco = false;
   let houveEntrada = false;
@@ -128,10 +137,17 @@ export function calcHorasTrabalhadasMinutos(
     if (ts >= janelaAlmocoMin) ultrapassouJanelaAlmoco = true;
   };
 
-  for (const r of registros) {
+  /* Carga corrida (sem exigir intervalo — estagiário/jovem aprendiz, turnos sem almoço): marcações
+     de início/fim de intervalo não descontam nada; conta o tempo entre entrada e saída. */
+  const registrosCalc = exigirIntervalo
+    ? registros
+    : registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+
+  for (const r of registrosCalc) {
     const ts = r.minuto;
     if (r.tipo === "ENTRADA") {
       houveEntrada = true;
+      retornoMinimo = null;
       /* Snap simétrico só na ENTRADA (início de jornada), não em REINICIAR. */
       entradaMin = snapDentroTolerancia(ts, opts.horaEntrada, opts.toleranciaEntradaMin);
       emAlmocoDesde = null;
@@ -139,13 +155,14 @@ export function calcHorasTrabalhadasMinutos(
       marcarJanela(ts);
     } else if (r.tipo === "REINICIAR_EXPEDIENTE") {
       houveEntrada = true;
-      entradaMin = ts;
+      entradaMin = retornoMinimo !== null ? Math.max(ts, retornoMinimo) : ts;
+      retornoMinimo = null;
       emAlmocoDesde = null;
       pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "INICIO_INTERVALO") {
       if (entradaMin !== null) {
-        total += ts - entradaMin;
+        total += Math.max(0, ts - entradaMin);
         entradaMin = null;
         emAlmocoDesde = ts;
       } else {
@@ -155,7 +172,9 @@ export function calcHorasTrabalhadasMinutos(
       pausaDesde = null;
       marcarJanela(ts);
     } else if (r.tipo === "INTERROMPER_EXPEDIENTE" && entradaMin !== null) {
-      total += ts - entradaMin;
+      /* Pausa dentro do almoço mínimo (retorno ainda não alcançado): não há trabalho a somar. */
+      if (entradaMin > ts) retornoMinimo = entradaMin;
+      total += Math.max(0, ts - entradaMin);
       entradaMin = null;
       pausaDesde = ts;
       marcarJanela(ts);
@@ -164,6 +183,9 @@ export function calcHorasTrabalhadasMinutos(
         const duracaoReg = Math.max(0, ts - emAlmocoDesde);
         if (exigirIntervalo && almocoMinMin > 0 && duracaoReg < almocoMinMin) {
           /* Fim antecipado: mantém horário na tela, mas o cálculo usa início+mínimo. */
+          opts.ajustes?.push(
+            `Almoço ${hhmm(emAlmocoDesde)}–${hhmm(ts)} (${duracaoReg} min): conta ${almocoMinMin} min, retorno às ${hhmm(emAlmocoDesde + almocoMinMin)}`
+          );
           minutosAlmocoRegistrados += almocoMinMin;
           entradaMin = emAlmocoDesde + almocoMinMin;
         } else if (
@@ -173,6 +195,11 @@ export function calcHorasTrabalhadasMinutos(
           duracaoReg <= almocoTolMax
         ) {
           /* Excesso dentro da tolerância de entrada (mesmo N): conta como mínimo. */
+          if (duracaoReg !== almocoMinMin) {
+            opts.ajustes?.push(
+              `Almoço ${hhmm(emAlmocoDesde)}–${hhmm(ts)} (${duracaoReg} min): conta ${almocoMinMin} min (tolerância)`
+            );
+          }
           minutosAlmocoRegistrados += almocoMinMin;
           entradaMin = emAlmocoDesde + almocoMinMin;
         } else {
@@ -189,6 +216,9 @@ export function calcHorasTrabalhadasMinutos(
       marcarJanela(ts);
       if (emAlmocoDesde !== null) {
         const retornoPresumido = emAlmocoDesde + almocoMinMin;
+        opts.ajustes?.push(
+          `Almoço sem retorno (início ${hhmm(emAlmocoDesde)}): retorno presumido às ${hhmm(retornoPresumido)}`
+        );
         minutosAlmocoRegistrados += almocoMinMin;
         if (saidaCalc > retornoPresumido) total += saidaCalc - retornoPresumido;
         emAlmocoDesde = null;
@@ -222,17 +252,22 @@ export function calcHorasTrabalhadasMinutos(
   }
 
   /*
-   * Dedução mínima de almoço quando a jornada chega à janela:
-   * - ciclo fechado/sem intervalo (emAlmocoDesde null): sempre, se deficit;
-   * - almoço aberto: só se o INÍCIO foi DEPOIS do fim da janela (ex.: 15:22),
-   *   ou seja, trabalhou a janela de almoço sem intervalo real.
+   * Dedução mínima de almoço quando a jornada chega à janela, só com o ciclo FECHADO (sem almoço
+   * em aberto): dia incompleto (almoço iniciado e sem retorno/saída) conta só até o início do
+   * almoço, sem desconto extra — fica "Inconsistente" até a correção.
    * Estagiário/menor aprendiz: exigirIntervalo=false — não deduz.
    */
   if (exigirIntervalo && almocoMinMin > 0 && houveEntrada && ultrapassouJanelaAlmoco) {
-    const almocoAbertoTardio = emAlmocoDesde !== null && emAlmocoDesde > fimJanelaAlmocoMin;
-    if (emAlmocoDesde === null || almocoAbertoTardio) {
+    if (emAlmocoDesde === null) {
       const deficit = Math.max(0, almocoMinMin - minutosAlmocoRegistrados);
-      if (deficit > 0) total = Math.max(0, total - deficit);
+      if (deficit > 0) {
+        total = Math.max(0, total - deficit);
+        opts.ajustes?.push(
+          minutosAlmocoRegistrados > 0
+            ? `Intervalo de almoço abaixo do mínimo: ${deficit} min descontados`
+            : `Sem intervalo de almoço registrado: ${deficit} min descontados`
+        );
+      }
     }
   }
 

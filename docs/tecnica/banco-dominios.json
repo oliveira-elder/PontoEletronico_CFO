@@ -1,0 +1,143 @@
+{
+  "dominios": [
+    {
+      "id": "identidade",
+      "titulo": "Identidade, perfis e áreas",
+      "descricao": "Usuários vindos do Keycloak, papéis, áreas da intranet e permissões de Super Admin.",
+      "modelos": [
+        "User",
+        "Role",
+        "Area",
+        "Membership",
+        "SuperAdminConcessao",
+        "SistemaStartSolicitacao",
+        "ApiToken",
+        "GrupoSistema"
+      ]
+    },
+    {
+      "id": "pessoas",
+      "titulo": "Pessoas e organização",
+      "descricao": "Cadastro do funcionário, gerências, dependentes, formação, históricos de lotação/categoria/cessão e permissões do RH.",
+      "modelos": [
+        "Funcionario",
+        "Gerencia",
+        "GerenteSubstituicao",
+        "Dependente",
+        "FormacaoAcademica",
+        "Capacitacao",
+        "EnderecoResidencial",
+        "RequerimentoCadastro",
+        "RequerimentoEndereco",
+        "PermissaoRh",
+        "FuncionarioLotacaoHistorico",
+        "FuncionarioCessaoHistorico",
+        "FuncionarioCategoriaHistorico",
+        "FuncionarioModalidadeHistorico"
+      ]
+    },
+    {
+      "id": "ponto",
+      "titulo": "Registro de ponto e REP-P",
+      "descricao": "Marcações, NSR, livro de marcações imutável, vigência do REP-P e registro no INPI.",
+      "modelos": [
+        "RegistroPonto",
+        "PeriodoPonto",
+        "JornadaTrabalho",
+        "JornadaPeriodo",
+        "ContadorNsr",
+        "MarcacaoRep",
+        "VigenciaRep",
+        "EventoRep",
+        "InstanciaRep",
+        "RegistroProgramaInpi",
+        "ExtracaoArquivoFiscal",
+        "FechamentoSituacao"
+      ]
+    },
+    {
+      "id": "solicitacoes",
+      "titulo": "Solicitações, afastamentos e saúde",
+      "descricao": "Abonos, correções, atestados, licenças, exames ocupacionais e documentos enviados ao RH.",
+      "modelos": [
+        "Solicitacao",
+        "Afastamento",
+        "TipoLicenca",
+        "CidGrupo",
+        "ExameOcupacional",
+        "DocumentoRhEnvio",
+        "ConfiguracaoSolicitacoes",
+        "FeriadoConfig"
+      ]
+    },
+    {
+      "id": "banco-horas",
+      "titulo": "Banco de horas e assinaturas",
+      "descricao": "Ciclos de banco de horas, liberações para abono e assinatura do Espelho de Ponto.",
+      "modelos": [
+        "BancoHorasMarco",
+        "BancoHorasLiberacao",
+        "AssinaturaCicloBancoHoras",
+        "AssinaturaQuadro",
+        "PeriodoPonto",
+        "Funcionario"
+      ]
+    },
+    {
+      "id": "documentos",
+      "titulo": "Documentos emitidos e termos de uso",
+      "descricao": "Comprovantes, verificação de documentos, termos de uso e aceites.",
+      "modelos": ["DocumentoEmitido", "ComprovanteEmitido", "TermoUso", "AceiteTermoUso"]
+    },
+    {
+      "id": "comunicacao",
+      "titulo": "Comunicação e requisições",
+      "descricao": "Notificações, requisições do RH, e-mail, banners, conteúdo público e chat.",
+      "modelos": [
+        "Notificacao",
+        "RequisicaoRh",
+        "RequisicaoRhDestinatario",
+        "ConfiguracaoEmail",
+        "ConfiguracaoNotificacao",
+        "Banner",
+        "PublicContent",
+        "ChatIntent",
+        "ChatRule",
+        "ChatSession",
+        "ChatMessage",
+        "GlpiTicketLink",
+        "MeetingRoom",
+        "MeetingParticipant",
+        "MeetingAudit"
+      ]
+    },
+    {
+      "id": "configuracao",
+      "titulo": "Configurações e integrações",
+      "descricao": "Parâmetros globais, módulos por área, toggles, rede, sincronizações e backups.",
+      "modelos": [
+        "ConfiguracaoSistema",
+        "Module",
+        "ModuleAreaConfig",
+        "FeatureToggle",
+        "ProvedorInternet",
+        "SubredeConfigurada",
+        "AreaViagem",
+        "SyncLog",
+        "BackupJob"
+      ]
+    },
+    {
+      "id": "auditoria",
+      "titulo": "Auditoria, logs e documentação",
+      "descricao": "Trilha de auditoria, eventos de ingestão e a própria documentação técnica.",
+      "modelos": [
+        "AuditLog",
+        "IngestEvent",
+        "DocumentacaoAutoria",
+        "DocumentacaoRevisao",
+        "DocumentacaoSnapshot"
+      ]
+    }
+  ]
+}

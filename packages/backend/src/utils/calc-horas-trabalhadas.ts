@@ -120,7 +120,6 @@ export function calcHorasTrabalhadasMinutos(
   const almocoMinMin = Math.max(0, opts.almocoMinMin ?? 60);
   const exigirIntervalo = opts.exigirIntervalo !== false;
   const janelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarA ?? "11:30");
-  const fimJanelaAlmocoMin = horaParaMinutos(opts.almocoPodeIniciarAte ?? "13:00");
   const tolEntrada = Math.max(0, Number(opts.toleranciaEntradaMin) || 0);
   const almocoTolMax = almocoMinMin + tolEntrada;
 
@@ -138,7 +137,13 @@ export function calcHorasTrabalhadasMinutos(
     if (ts >= janelaAlmocoMin) ultrapassouJanelaAlmoco = true;
   };
 
-  for (const r of registros) {
+  /* Carga corrida (sem exigir intervalo — estagiário/jovem aprendiz, turnos sem almoço): marcações
+     de início/fim de intervalo não descontam nada; conta o tempo entre entrada e saída. */
+  const registrosCalc = exigirIntervalo
+    ? registros
+    : registros.filter((r) => r.tipo !== "INICIO_INTERVALO" && r.tipo !== "FIM_INTERVALO");
+
+  for (const r of registrosCalc) {
     const ts = r.minuto;
     if (r.tipo === "ENTRADA") {
       houveEntrada = true;
@@ -247,15 +252,13 @@ export function calcHorasTrabalhadasMinutos(
   }
 
   /*
-   * Dedução mínima de almoço quando a jornada chega à janela:
-   * - ciclo fechado/sem intervalo (emAlmocoDesde null): sempre, se deficit;
-   * - almoço aberto: só se o INÍCIO foi DEPOIS do fim da janela (ex.: 15:22),
-   *   ou seja, trabalhou a janela de almoço sem intervalo real.
+   * Dedução mínima de almoço quando a jornada chega à janela, só com o ciclo FECHADO (sem almoço
+   * em aberto): dia incompleto (almoço iniciado e sem retorno/saída) conta só até o início do
+   * almoço, sem desconto extra — fica "Inconsistente" até a correção.
    * Estagiário/menor aprendiz: exigirIntervalo=false — não deduz.
    */
   if (exigirIntervalo && almocoMinMin > 0 && houveEntrada && ultrapassouJanelaAlmoco) {
-    const almocoAbertoTardio = emAlmocoDesde !== null && emAlmocoDesde > fimJanelaAlmocoMin;
-    if (emAlmocoDesde === null || almocoAbertoTardio) {
+    if (emAlmocoDesde === null) {
       const deficit = Math.max(0, almocoMinMin - minutosAlmocoRegistrados);
       if (deficit > 0) {
         total = Math.max(0, total - deficit);

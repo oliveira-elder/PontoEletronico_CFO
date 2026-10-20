@@ -323,6 +323,195 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/auditoria/assinaturas/previa-mes",
+    titulo: "Prévia das assinaturas do mês",
+    descricao:
+      "Mostra, antes do fechamento, quem já assinou o Espelho de Ponto do mês e quem está pendente.",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/funcionarios/:id/atestado-do-dia",
+    titulo: "Atestado do dia (auditoria)",
+    descricao:
+      "Retorna o atestado/afastamento que cobre o dia consultado para o funcionário, usado no Espelho.",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/selo-icp/status",
+    titulo: "Status do selo ICP",
+    descricao:
+      "Informa se o certificado ICP-Brasil do selo dos documentos está instalado e válido (sem expor o certificado).",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/atestado-do-dia",
+    titulo: "Atestado do dia",
+    descricao: "Retorna o atestado/afastamento do funcionário autenticado no dia consultado.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/dashboard",
+    titulo: "Painel de gestão do RH",
+    descricao: "Indicadores de gestão do RH (quadro de pessoal, pendências, vencimentos).",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/funcionarios/:id/cessoes",
+    titulo: "Cessões do funcionário",
+    descricao: "Lista o histórico de cessões do funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/gestao/funcionarios/:id/cessoes",
+    titulo: "Registrar cessão",
+    descricao: "Cria uma cessão (período e órgão) no histórico do funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/gestao/funcionarios/:id/cessoes/:cessaoId",
+    titulo: "Excluir cessão",
+    descricao: "Remove uma cessão do histórico do funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/gestao/funcionarios/:id/cessoes/:cessaoId",
+    titulo: "Editar cessão",
+    descricao: "Altera período ou órgão de uma cessão do funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico",
+    titulo: "Histórico de lotação",
+    descricao: "Lista as lotações (gerências) do funcionário ao longo do tempo.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico",
+    titulo: "Registrar lotação",
+    descricao: "Cria uma vigência de lotação para o funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico/:vigenciaId",
+    titulo: "Excluir vigência de lotação",
+    descricao: "Remove uma vigência de lotação do histórico.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico/:vigenciaId",
+    titulo: "Editar vigência de lotação",
+    descricao: "Altera datas ou gerência de uma vigência de lotação.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "POST",
+    pathPattern: "/auditoria/assinaturas/recalcular-resumos",
+    titulo: "Recalcular resumos das folhas pendentes",
+    descricao:
+      "Atualiza dias, horas e saldo do banco gravados nas folhas ainda não concluídas, com a regra de cálculo vigente (folhas concluídas não são alteradas).",
+    categoria: "Auditoria"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/indice",
+    titulo: "Índice da documentação técnica",
+    descricao:
+      "Lista as seções da documentação (e confere se o código mudou para gerar a revisão automática).",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/secao/:id",
+    titulo: "Seção da documentação técnica",
+    descricao: "Devolve o texto de uma seção da documentação (somente seções do índice).",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/gerado/:tipo",
+    titulo: "Parte gerada da documentação",
+    descricao:
+      "Devolve APIs, banco de dados, stack, rotinas agendadas ou variáveis de ambiente (só nomes) gerados do código.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/busca",
+    titulo: "Busca na documentação",
+    descricao: "Procura em textos, endpoints, tabelas e campos da documentação.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/cobertura",
+    titulo: "Cobertura da documentação",
+    descricao: "Aponta rotas sem descrição, tabelas sem domínio/descrição e seções sem arquivo.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/exportar.md",
+    titulo: "Exportar documentação (Markdown)",
+    descricao:
+      "Baixa a documentação completa, com autoria e revisões, em um único arquivo Markdown.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/exportar.zip",
+    titulo: "Exportar documentação (ZIP)",
+    descricao: "Baixa a documentação completa e um arquivo Markdown por seção.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/autoria",
+    titulo: "Autoria da documentação técnica",
+    descricao: "Autoria do desenvolvimento e versão atual da documentação técnica (Super Admin).",
+    categoria: "Logs"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/logs/documentacao/autoria",
+    titulo: "Salvar autoria da documentação",
+    descricao: "Altera a autoria do desenvolvimento; a mudança entra na trilha de revisões.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
+    pathPattern: "/logs/documentacao/revisoes",
+    titulo: "Revisões da documentação técnica",
+    descricao: "Lista as revisões e versões da documentação técnica.",
+    categoria: "Logs"
+  },
+  {
+    method: "POST",
+    pathPattern: "/logs/documentacao/revisoes",
+    titulo: "Registrar revisão da documentação",
+    descricao: "Registra uma revisão e sobe a versão da documentação técnica.",
+    categoria: "Logs"
+  },
+  {
+    method: "POST",
+    pathPattern: "/logs/documentacao/revisoes/:id/anular",
+    titulo: "Anular revisão da documentação",
+    descricao: "Anula uma revisão (com motivo); a linha continua na trilha.",
+    categoria: "Logs"
+  },
+  {
+    method: "GET",
     pathPattern: "/ponto/comprovantes",
     titulo: "Meus comprovantes de ponto",
     descricao:

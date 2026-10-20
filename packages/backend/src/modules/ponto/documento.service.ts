@@ -80,6 +80,11 @@ export class DocumentoService {
     const r = await this.seloIcp.selarPdf(Buffer.from(bytes), {
       razaoSocial: "Conselho Federal de Odontologia"
     });
+    if (!r.selado) {
+      this.logger.warn(
+        `Documento gravado SEM selo ICP-Brasil: ${r.motivo ?? "motivo não informado"}`
+      );
+    }
     return r.selado ? r.pdf : bytes;
   }
 

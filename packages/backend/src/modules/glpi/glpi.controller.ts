@@ -1,7 +1,10 @@
-import { Body, Controller, Get, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, Post, Query, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
 import { GlpiService } from "./glpi.service";
 
 @Controller("glpi")
+@UseGuards(AuthGuard("jwt"))
 export class GlpiController {
   constructor(private readonly glpiService: GlpiService) {}
 
