@@ -76,7 +76,6 @@ function RegistrarModal({
 }) {
   const [data, setData] = useState("");
   const [resultado, setResultado] = useState("");
-  const [medico, setMedico] = useState("");
   const [clinica, setClinica] = useState("");
   const [obs, setObs] = useState("");
   const [arq, setArq] = useState<{ base64: string; nome: string } | null>(null);
@@ -92,7 +91,6 @@ function RegistrarModal({
       await api.post(`/ponto/saude-ocupacional/funcionarios/${funcionarioId}/exames`, {
         dataRealizacao: data,
         resultado,
-        medico: medico || undefined,
         clinica: clinica || undefined,
         observacao: obs || undefined,
         arquivoBase64: arq?.base64,
@@ -119,8 +117,9 @@ function RegistrarModal({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 12
+            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+            gap: 12,
+            alignItems: "end"
           }}
         >
           <div>
@@ -145,16 +144,10 @@ function RegistrarModal({
             </select>
           </div>
           <div>
-            <label style={lbl}>Médico</label>
-            <input style={input} value={medico} onChange={(e) => setMedico(e.target.value)} />
-          </div>
-          <div>
             <label style={lbl}>Clínica</label>
             <input style={input} value={clinica} onChange={(e) => setClinica(e.target.value)} />
           </div>
-        </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: 1, minWidth: 240 }}>
+          <div style={{ gridColumn: "span 2" }}>
             <label style={lbl}>Observação</label>
             <input style={input} value={obs} onChange={(e) => setObs(e.target.value)} />
           </div>
@@ -231,8 +224,7 @@ function ConferirModal({
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <p style={{ margin: 0, fontSize: 13 }}>
-          Enviado em {fmtDataBr(exame.createdAt)} · médico: {exame.medico || "—"} · clínica:{" "}
-          {exame.clinica || "—"}
+          Enviado em {fmtDataBr(exame.createdAt)} · clínica: {exame.clinica || "—"}
           {exame.observacao ? ` · obs.: ${exame.observacao}` : ""}
         </p>
         {exame.temArquivo && (
