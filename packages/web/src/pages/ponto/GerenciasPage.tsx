@@ -254,7 +254,7 @@ export function GerenciasPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* ── Navegação de volta ── */}
       <Link
         to="/ponto/gestao"

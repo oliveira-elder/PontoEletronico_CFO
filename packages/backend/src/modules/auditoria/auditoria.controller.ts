@@ -242,7 +242,7 @@ export class AuditoriaController {
   @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
   alterarCidAtestado(
     @Param("id") id: string,
-    @Body() body: { cidGrupoId?: string; justificativa?: string },
+    @Body() body: { cidCodigo?: string; cidGrupoId?: string; justificativa?: string },
     @Request() req: AuthRequest
   ) {
     return this.auditoriaService.alterarCidAtestado(id, body, req.user.sub);

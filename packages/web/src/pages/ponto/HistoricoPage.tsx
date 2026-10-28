@@ -1889,6 +1889,9 @@ export function HistoricoPage() {
           {jornadaInfo.periodoNome
             ? `${jornadaInfo.periodoNome} · ${fmtJornadaDia(jornadaInfo.atualMin)}`
             : `Período ${fmtJornadaDia(jornadaInfo.atualMin)}`}
+          {jornadaInfo.horaEntrada && jornadaInfo.horaSaida
+            ? ` · ${jornadaInfo.horaEntrada}–${jornadaInfo.horaSaida}`
+            : ""}
         </span>
       )}
       <span className="badge badge-green" style={BADGE_HISTORICO_STYLE}>
@@ -1945,7 +1948,7 @@ export function HistoricoPage() {
   );
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {modalObs && (
         <ModalObservacoes
           dia={modalObs.dia}

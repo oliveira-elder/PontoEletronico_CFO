@@ -1307,7 +1307,7 @@ export function AprovacaoGestorPage() {
   const mostrarEtapaRH = isRH;
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 0 40px" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto", padding: "0 0 40px" }}>
       {/* ── Header ── */}
       <div style={{ marginBottom: 28 }}>
         <p

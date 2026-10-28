@@ -33,7 +33,7 @@ export function TermosUsoPage() {
   }, []);
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <p className="eyebrow" style={{ marginBottom: 6 }}>
         Ponto Eletrônico
       </p>

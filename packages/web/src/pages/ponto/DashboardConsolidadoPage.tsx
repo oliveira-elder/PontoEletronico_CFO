@@ -7,10 +7,12 @@ import {
   GraduationCapIcon,
   BellIcon,
   ClockIcon,
+  ActivityIcon,
   CalendarIcon,
   InboxIcon,
   RefreshCwIcon
 } from "../../components/icons";
+import { PainelDemandasTab } from "./dashboard/PainelDemandasTab";
 import { VisaoGeralTab } from "./dashboard/VisaoGeralTab";
 import { PerfilDiversidadeTab } from "./dashboard/PerfilDiversidadeTab";
 import { AlertasEventosTab } from "./dashboard/AlertasEventosTab";
@@ -21,6 +23,7 @@ import type { GestaoDashboardStats, AuditoriaDashboardData } from "./dashboard/t
 import { SemAcessoRh } from "../../components/SemAcessoRh";
 
 type Categoria =
+  | "painel"
   | "visao-geral"
   | "perfil-diversidade"
   | "alertas-eventos"
@@ -32,8 +35,14 @@ const CATEGORIAS: {
   id: Categoria;
   label: string;
   icon: React.ReactNode;
-  fonte: "gestao" | "auditoria";
+  fonte: "gestao" | "auditoria" | "tempo-real";
 }[] = [
+  {
+    id: "painel",
+    label: "Painel de Demandas",
+    icon: <ActivityIcon size={14} />,
+    fonte: "tempo-real"
+  },
   {
     id: "visao-geral",
     label: "Visão Geral do Quadro",
@@ -142,7 +151,7 @@ export function DashboardConsolidadoPage() {
     hasRole("ponto-admin") ||
     hasRole("PONTO_ADMIN");
 
-  const [categoria, setCategoria] = useState<Categoria>("visao-geral");
+  const [categoria, setCategoria] = useState<Categoria>("painel");
   /* Perfil do RH: só as abas liberadas aparecem; os dados só são buscados se usados. */
   const categoriasPermitidas = CATEGORIAS.filter((c) => podeRh(`dashboard.${c.id}`));
   const usaGestao = categoriasPermitidas.some((c) =>
@@ -162,9 +171,10 @@ export function DashboardConsolidadoPage() {
   const [gestaoLoading, setGestaoLoading] = useState(true);
 
   const hoje = new Date();
-  const seteAtras = new Date(hoje);
-  seteAtras.setDate(seteAtras.getDate() - 6);
-  const [dataInicio, setDataInicio] = useState(isoBrasilia(seteAtras));
+  /* Período padrão: último mês (mesmo dia do mês anterior até hoje). */
+  const umMesAtras = new Date(hoje);
+  umMesAtras.setMonth(umMesAtras.getMonth() - 1);
+  const [dataInicio, setDataInicio] = useState(isoBrasilia(umMesAtras));
   const [dataFim, setDataFim] = useState(isoBrasilia(hoje));
   const [auditoriaData, setAuditoriaData] = useState<AuditoriaDashboardData | null>(null);
   const [auditoriaErro, setAuditoriaErro] = useState<string | null>(null);
@@ -237,7 +247,9 @@ export function DashboardConsolidadoPage() {
   const categoriaAtual = CATEGORIAS.find((c) => c.id === categoria)!;
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", minWidth: 0, width: "100%" }}>
+    <div
+      style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto", minWidth: 0, width: "100%" }}
+    >
       <div style={{ marginBottom: 24 }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
           RH / Indicadores
@@ -296,7 +308,9 @@ export function DashboardConsolidadoPage() {
         ))}
       </div>
 
-      {categoriaAtual.fonte === "gestao" ? (
+      {categoriaAtual.fonte === "tempo-real" ? (
+        <PainelDemandasTab token={tk} />
+      ) : categoriaAtual.fonte === "gestao" ? (
         <>
           <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "-8px 0 16px" }}>
             Foto do momento atual — não é filtrado por período.

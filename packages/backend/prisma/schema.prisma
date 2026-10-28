@@ -357,6 +357,7 @@ enum TipoFlexibilidade {
 enum NivelCargo {
   MEDIO
   SUPERIOR
+  TECNICO
 }
 
 enum CategoriaFuncional {
@@ -1136,7 +1137,7 @@ model ExameOcupacional {
   dataRealizacao           DateTime    @db.Date
   /// AGUARDANDO_CONFERENCIA | CONFIRMADO | DEVOLVIDO
   situacao                 String      @default("AGUARDANDO_CONFERENCIA")
-  /// APTO | APTO_COM_RESTRICAO | INAPTO (preenchido na confirmação)
+  /// APTO | INAPTO; registros antigos podem ter APTO_COM_RESTRICAO (preenchido na confirmação)
   resultado                String?
   medico                   String?
   clinica                  String?

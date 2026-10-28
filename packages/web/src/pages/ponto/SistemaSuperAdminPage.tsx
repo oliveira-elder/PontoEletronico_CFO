@@ -193,7 +193,7 @@ export function SistemaSuperAdminPage() {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <h1
         style={{
           fontFamily: "var(--font-display)",

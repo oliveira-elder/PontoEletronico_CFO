@@ -1,3 +1,4 @@
+import { CID_ORIENTACAO, normalizarCid } from "../../utils/cid";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   PlusIcon,
@@ -932,20 +933,11 @@ function FormAtestado({
   const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
   const [documentoMime, setDocumentoMime] = useState<string>("image/jpeg");
   const [nomeArquivo, setNomeArquivo] = useState("");
-  /* Grupo do CID (dado de saúde: visível só ao RH). */
-  const [cidGrupos, setCidGrupos] = useState<
-    Array<{ id: string; codigo: string; descricao: string }>
-  >([]);
-  const [cidGrupoId, setCidGrupoId] = useState("");
+  /* CID (dado de saúde: visível só ao RH): só a categoria, 1 letra + 2 números. */
+  const [cidTexto, setCidTexto] = useState("");
   const cidModo = config?.atestadoCidModo ?? "OBRIGATORIO";
-
-  useEffect(() => {
-    if (cidModo === "DESATIVADO") return;
-    api
-      .get<Array<{ id: string; codigo: string; descricao: string }>>("/ponto/config/cid-grupos")
-      .then((l) => setCidGrupos(l ?? []))
-      .catch(() => setCidGrupos([]));
-  }, [cidModo]);
+  const cidCategoria = normalizarCid(cidTexto);
+  const cidInvalido = cidTexto.trim() !== "" && !cidCategoria;
 
   const isMobile = useIsMobile(768);
   const dias = diffDias(dataInicio, dataFim);
@@ -973,7 +965,7 @@ function FormAtestado({
     reader.readAsDataURL(file);
   };
 
-  const cidFaltando = cidModo === "OBRIGATORIO" && !cidGrupoId;
+  const cidFaltando = (cidModo === "OBRIGATORIO" && !cidCategoria) || cidInvalido;
 
   const handleSubmit = () => {
     if (!dataInicio || !descricao || cidFaltando) return;
@@ -989,7 +981,7 @@ function FormAtestado({
         diasDuracao: dias,
         requerHomologacao: dias > limite && dias < limiteInss,
         requerInss: dias >= limiteInss,
-        ...(cidGrupoId && cidModo !== "DESATIVADO" ? { cidGrupoId } : {}),
+        ...(cidCategoria && cidModo !== "DESATIVADO" ? { cidCodigo: cidCategoria } : {}),
         documentoBase64: documentoBase64 || undefined,
         documentoMime
       }
@@ -1229,23 +1221,36 @@ function FormAtestado({
       {cidModo !== "DESATIVADO" && (
         <div>
           <label style={labelBase} htmlFor="atestado-cid">
-            Grupo do CID{" "}
-            {cidModo === "OBRIGATORIO" && <span style={{ color: "var(--red)" }}>*</span>}
+            CID {cidModo === "OBRIGATORIO" && <span style={{ color: "var(--red)" }}>*</span>}
           </label>
-          <select
+          <input
             id="atestado-cid"
-            style={input}
-            value={cidGrupoId}
-            onChange={(e) => setCidGrupoId(e.target.value)}
+            style={{ ...input, textTransform: "uppercase", maxWidth: 220 }}
+            value={cidTexto}
+            maxLength={8}
+            placeholder="Ex.: Z13"
+            autoComplete="off"
+            onChange={(e) => setCidTexto(e.target.value)}
+            onBlur={() => cidCategoria && setCidTexto(cidCategoria)}
+          />
+          <p
+            style={{
+              fontSize: 11,
+              color: cidInvalido ? "var(--red)" : "var(--ink-500)",
+              margin: "4px 0 0"
+            }}
           >
-            <option value="">Selecione o grupo do CID do atestado</option>
-            {cidGrupos.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.codigo} — {g.descricao}
-              </option>
-            ))}
-          </select>
-          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "4px 0 0" }}>
+            {cidInvalido
+              ? "CID inválido. Use 1 letra seguida de 2 números, como Z13."
+              : cidCategoria &&
+                  cidTexto
+                    .trim()
+                    .toUpperCase()
+                    .replace(/[\s.-]/g, "") !== cidCategoria
+                ? `Será registrado como ${cidCategoria} (a categoria é a mesma).`
+                : CID_ORIENTACAO}
+          </p>
+          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
             Informação de saúde protegida (LGPD): fica visível apenas para o RH.
           </p>
         </div>
@@ -5043,7 +5048,7 @@ export function SolicitacoesPage() {
   ];
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {modalAberto && (
         <NovaModal
           onClose={() => setModalAberto(false)}

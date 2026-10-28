@@ -1,3 +1,4 @@
+import { CID_ORIENTACAO, normalizarCid } from "../../utils/cid";
 import { ModalArquivosFiscais } from "../../components/arquivos-fiscais/ModalArquivosFiscais";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { SaudeOcupacionalPage } from "./SaudeOcupacionalPage";
@@ -3436,27 +3437,19 @@ function AlterarCidRh({
     hasRole("PONTO_ADMIN") ||
     hasRole("RH_AUDITORIA");
   const [aberto, setAberto] = useState(false);
-  const [grupos, setGrupos] = useState<Array<{ id: string; codigo: string; descricao: string }>>(
-    []
-  );
-  const [grupoId, setGrupoId] = useState("");
+  const [cidTexto, setCidTexto] = useState("");
   const [just, setJust] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
   const atual = meta?.cidGrupo as { codigo?: string; descricao?: string } | undefined;
+  const cidAtual = typeof meta?.cidCodigo === "string" ? meta.cidCodigo : atual?.codigo;
+  const cidCategoria = normalizarCid(cidTexto);
 
   if (!papelRh || !podeAuditoria("auditoria.solicitacoes.alterar-cid")) return null;
 
-  async function abrir() {
+  function abrir() {
     setAberto(true);
-    if (!grupos.length) {
-      try {
-        setGrupos(await api.get("/ponto/config/cid-grupos"));
-      } catch {
-        setGrupos([]);
-      }
-    }
   }
 
   async function salvar() {
@@ -3464,11 +3457,10 @@ function AlterarCidRh({
     setErro(null);
     try {
       await api.patch(`/auditoria/rh/solicitacoes/${solicitacaoId}/cid`, {
-        cidGrupoId: grupoId,
+        cidCodigo: cidCategoria,
         justificativa: just.trim()
       });
-      const g = grupos.find((x) => x.id === grupoId);
-      setMsg(`CID atualizado${g ? ` para ${g.codigo}` : ""}. Recarregue a lista para ver.`);
+      setMsg(`CID atualizado para ${cidCategoria}. Recarregue a lista para ver.`);
       setAberto(false);
     } catch (e) {
       setErro((e as Error).message || "Não foi possível salvar.");
@@ -3481,20 +3473,20 @@ function AlterarCidRh({
     <div style={{ marginTop: 6, fontSize: 12 }}>
       {msg && <span style={{ color: "var(--green)" }}>✓ {msg}</span>}
       {!aberto && !msg && (
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void abrir()}>
-          🩺 {atual?.codigo ? "Alterar CID" : "Informar CID"}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={abrir}>
+          🩺 {cidAtual ? "Alterar CID" : "Informar CID"}
         </button>
       )}
       {aberto && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <select value={grupoId} onChange={(e) => setGrupoId(e.target.value)}>
-            <option value="">Grupo do CID…</option>
-            {grupos.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.codigo} — {g.descricao}
-              </option>
-            ))}
-          </select>
+          <input
+            placeholder="CID (ex.: Z13)"
+            title={CID_ORIENTACAO}
+            value={cidTexto}
+            maxLength={8}
+            onChange={(e) => setCidTexto(e.target.value)}
+            style={{ width: 110, textTransform: "uppercase" }}
+          />
           <input
             placeholder="Justificativa (mín. 10 caracteres)"
             value={just}
@@ -3503,7 +3495,7 @@ function AlterarCidRh({
           />
           <button
             className="btn btn-primary btn-sm"
-            disabled={salvando || !grupoId || just.trim().length < 10}
+            disabled={salvando || !cidCategoria || just.trim().length < 10}
             onClick={() => void salvar()}
           >
             Salvar
@@ -3995,6 +3987,7 @@ type StatusDia =
 interface JornadaHistorico {
   anteriorMin: number;
   atualMin: number;
+  periodoNome?: string | null;
   horaEntrada?: string;
   horaSaida?: string;
   almocoMinMin?: number;
@@ -6408,6 +6401,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
   const [mes, setMes] = useState(hoje.getMonth() + 1);
   const [ano, setAno] = useState(hoje.getFullYear());
   const [dias, setDias] = useState<DiaHist[]>([]);
+  const [jornadaInfo, setJornadaInfo] = useState<JornadaHistorico | null>(null);
   /* Saldo por dia do banco de horas do mês (mesma conta da página do funcionário). */
   const [bancoMesDias, setBancoMesDias] = useState<Record<string, number>>({});
   const [rawPorDia, setRawPorDia] = useState<Record<string, ApiRegHist[]>>({});
@@ -6489,6 +6483,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       ]);
       const regs = regsRaw?.registros ?? [];
       const jornada = regsRaw?.jornada ?? JORNADA_PADRAO_AUD;
+      setJornadaInfo(jornada);
       const periodosSemObrigacao = regsRaw?.periodosSemObrigacao ?? [];
       const exigirIntervalo = !categoriaSemIntervaloAlmoco(regsRaw?.categoria);
       const afasts = (afastsRaw as { afastamentos: ApiAfast[] })?.afastamentos ?? [];
@@ -6774,6 +6769,20 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           <RefreshCwIcon size={13} />
         </button>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {jornadaInfo && (
+            <span
+              className="badge badge-gray"
+              title="Jornada configurada para o funcionário (período de jornada)"
+            >
+              {jornadaInfo.periodoNome ? `${jornadaInfo.periodoNome} · ` : "Jornada "}
+              {Math.floor(jornadaInfo.atualMin / 60)}h
+              {jornadaInfo.atualMin % 60 ? String(jornadaInfo.atualMin % 60).padStart(2, "0") : ""}
+              /dia
+              {jornadaInfo.horaEntrada && jornadaInfo.horaSaida
+                ? ` · ${jornadaInfo.horaEntrada}–${jornadaInfo.horaSaida}`
+                : ""}
+            </span>
+          )}
           <span className="badge badge-green">{totalOK} dias OK</span>
           {totalInconsistentes > 0 && (
             <span
@@ -10329,7 +10338,9 @@ export function AuditoriaPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", minWidth: 0, width: "100%" }}>
+    <div
+      style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto", minWidth: 0, width: "100%" }}
+    >
       {/* Cabeçalho */}
       <div style={{ marginBottom: 24, position: "relative" }}>
         {podeAuditoria("auditoria.funcionarios.arquivos-fiscais") && (

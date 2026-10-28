@@ -12,12 +12,17 @@ export function EmployeeListModal({
   title,
   subtitle,
   items,
-  onClose
+  onClose,
+  rodape,
+  vazio = "Nenhum funcionário encontrado."
 }: {
   title: string;
   subtitle?: string;
   items: EmployeeListItem[];
   onClose: () => void;
+  /** Conteúdo fixo no fim do modal (ex.: botão "Abrir tela"). */
+  rodape?: React.ReactNode;
+  vazio?: string;
 }) {
   return (
     <Modal eyebrow="Dashboard" title={title} subtitle={subtitle} onClose={onClose}>
@@ -25,12 +30,12 @@ export function EmployeeListModal({
         <p
           style={{ fontSize: 13, color: "var(--ink-400)", textAlign: "center", padding: "24px 0" }}
         >
-          Nenhum funcionário encontrado.
+          {vazio}
         </p>
       ) : (
         <div>
           <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "0 0 10px" }}>
-            {items.length} funcionário{items.length === 1 ? "" : "s"}
+            {items.length} registro{items.length === 1 ? "" : "s"}
           </p>
           {items.map((it, i) => (
             <div
@@ -52,6 +57,9 @@ export function EmployeeListModal({
             </div>
           ))}
         </div>
+      )}
+      {rodape && (
+        <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>{rodape}</div>
       )}
     </Modal>
   );

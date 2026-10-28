@@ -5,7 +5,7 @@ import { computeQuadroSignatoryHash, groupCodigoAssinatura } from "../../utils/a
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
 
 const CATEGORIA_LABEL: Record<string, string> = {
-  CONCURSADO: "Empregado",
+  CONCURSADO: "Efetivo",
   ESTAGIARIO: "Estagiário",
   MENOR_APRENDIZ: "Jovem Aprendiz",
   ASSESSOR: "Comissionado"

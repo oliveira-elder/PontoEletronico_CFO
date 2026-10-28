@@ -6,6 +6,7 @@ import { hojeBrasiliaISO } from "../../utils/horario-brasilia";
 import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import {
   RESULTADO_LABEL,
+  RESULTADO_OPCOES,
   SITUACAO_LABEL,
   fmtDataBr,
   lerArquivoBase64,
@@ -42,8 +43,10 @@ interface Painel {
 
 const input: React.CSSProperties = {
   width: "100%",
-  padding: "8px 10px",
+  height: 38,
+  padding: "0 10px",
   border: "1px solid rgba(122,30,38,0.18)",
+  background: "#fff",
   borderRadius: "var(--radius-md)",
   fontSize: 13,
   boxSizing: "border-box"
@@ -52,7 +55,8 @@ const lbl: React.CSSProperties = {
   fontSize: 12,
   fontWeight: 600,
   display: "block",
-  marginBottom: 3
+  marginBottom: 5,
+  color: "var(--ink-700)"
 };
 const soNumero = (v: string) => v.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
 
@@ -113,13 +117,13 @@ function RegistrarModal({
       maxWidth={900}
       maxHeight="92vh"
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-            gap: 12,
-            alignItems: "end"
+            gap: "14px 16px",
+            alignItems: "start"
           }}
         >
           <div>
@@ -136,7 +140,7 @@ function RegistrarModal({
             <label style={lbl}>Resultado *</label>
             <select style={input} value={resultado} onChange={(e) => setResultado(e.target.value)}>
               <option value="">Selecione…</option>
-              {Object.entries(RESULTADO_LABEL).map(([v, l]) => (
+              {Object.entries(RESULTADO_OPCOES).map(([v, l]) => (
                 <option key={v} value={v}>
                   {l}
                 </option>
@@ -153,18 +157,53 @@ function RegistrarModal({
           </div>
           <div>
             <label style={lbl}>ASO (PDF/imagem)</label>
-            <input
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png"
-              onChange={async (e) => {
-                const f = e.target.files?.[0];
-                if (f) setArq({ base64: await lerArquivoBase64(f), nome: f.name });
+            <label
+              className="btn btn-secondary btn-sm"
+              style={{
+                ...input,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                overflow: "hidden",
+                whiteSpace: "nowrap"
               }}
-            />
+              title={arq?.nome ?? "Anexar o ASO"}
+            >
+              <span style={{ fontWeight: 600, flexShrink: 0 }}>
+                {arq ? "Trocar arquivo" : "Escolher arquivo"}
+              </span>
+              <span
+                style={{
+                  color: "var(--ink-500)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis"
+                }}
+              >
+                {arq?.nome ?? "Nenhum arquivo"}
+              </span>
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png"
+                style={{ display: "none" }}
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (f) setArq({ base64: await lerArquivoBase64(f), nome: f.name });
+                }}
+              />
+            </label>
           </div>
         </div>
         {erro && <p style={{ margin: 0, color: "var(--red)", fontSize: 12.5 }}>⚠ {erro}</p>}
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            justifyContent: "flex-end",
+            paddingTop: 14,
+            borderTop: "1px solid rgba(122,30,38,0.10)"
+          }}
+        >
           <button className="btn btn-secondary btn-sm" onClick={onClose} disabled={salvando}>
             Cancelar
           </button>
@@ -255,7 +294,7 @@ function ConferirModal({
             <label style={lbl}>Resultado do ASO *</label>
             <select style={input} value={resultado} onChange={(e) => setResultado(e.target.value)}>
               <option value="">Selecione…</option>
-              {Object.entries(RESULTADO_LABEL).map(([v, l]) => (
+              {Object.entries(RESULTADO_OPCOES).map(([v, l]) => (
                 <option key={v} value={v}>
                   {l}
                 </option>
@@ -268,7 +307,7 @@ function ConferirModal({
             <label style={lbl}>Motivo da devolução *</label>
             <textarea
               rows={2}
-              style={{ ...input, resize: "vertical" }}
+              style={{ ...input, height: "auto", padding: "8px 10px", resize: "vertical" }}
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
               placeholder="Ex.: ASO ilegível; envie a página com a assinatura do médico."
@@ -750,6 +789,7 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
         "Categoria",
         "Último exame",
         "Vencimento",
+        "Dias para vencer",
         "Resultado",
         "Situação"
       ],
@@ -760,6 +800,7 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
         i.categoria,
         fmtDataBr(i.ultimoExame),
         fmtDataBr(i.proximoVencimento),
+        i.diasParaVencer ?? "",
         i.resultado ? RESULTADO_LABEL[i.resultado] : "",
         SITUACAO_LABEL[i.situacao].label
       ])
@@ -813,7 +854,7 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
   );
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {!embutida && (
         <>
           <p className="eyebrow" style={{ marginBottom: 6 }}>
@@ -893,7 +934,7 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
       </div>
 
       <div className="card-flat" style={{ padding: 0, overflowX: "auto" }}>
-        <table className="table" style={{ width: "100%", fontSize: 13 }}>
+        <table className="table-cfo table-cfo-destaque" style={{ width: "100%", fontSize: 13 }}>
           <thead>
             <tr>
               <th style={{ width: 32 }}>
@@ -912,6 +953,7 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
               <th>Gerência</th>
               <th>Último exame</th>
               <th>Vencimento</th>
+              <th style={{ textAlign: "center" }}>Dias p/ vencer</th>
               <th>Resultado</th>
               <th>Situação</th>
               <th />
@@ -943,29 +985,47 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
                   <td>{i.gerencia ?? "—"}</td>
                   <td>{fmtDataBr(i.ultimoExame)}</td>
                   <td>{fmtDataBr(i.proximoVencimento)}</td>
+                  <td style={{ textAlign: "center", fontWeight: 700 }}>
+                    {i.diasParaVencer === null ? (
+                      <span style={{ color: "var(--ink-500)", fontWeight: 400 }}>—</span>
+                    ) : (
+                      <span style={{ color: s.cor }} title={s.label}>
+                        {i.diasParaVencer}
+                      </span>
+                    )}
+                  </td>
                   <td>{i.resultado ? RESULTADO_LABEL[i.resultado] : "—"}</td>
                   <td>
-                    <span
+                    <div
                       style={{
-                        padding: "2px 9px",
-                        borderRadius: 999,
-                        background: s.bg,
-                        color: s.cor,
-                        fontWeight: 700,
-                        fontSize: 11.5
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        whiteSpace: "nowrap"
                       }}
                     >
-                      {s.label}
-                    </span>
-                    {i.aguardandoConferencia && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ marginLeft: 6, color: "#1a4f7a" }}
-                        onClick={() => void abrirConferencia(i)}
+                      <span
+                        style={{
+                          padding: "2px 9px",
+                          borderRadius: 999,
+                          background: s.bg,
+                          color: s.cor,
+                          fontWeight: 700,
+                          fontSize: 11.5
+                        }}
                       >
-                        ⏳ Conferir
-                      </button>
-                    )}
+                        {s.label}
+                      </span>
+                      {i.aguardandoConferencia && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ color: "#1a4f7a" }}
+                          onClick={() => void abrirConferencia(i)}
+                        >
+                          ⏳ Conferir
+                        </button>
+                      )}
+                    </div>
                   </td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     {podeRegistrar && (

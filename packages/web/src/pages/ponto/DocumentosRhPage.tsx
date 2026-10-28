@@ -47,7 +47,7 @@ export function DocumentosRhPage() {
   }, [carregar]);
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <div
         style={{
           display: "flex",

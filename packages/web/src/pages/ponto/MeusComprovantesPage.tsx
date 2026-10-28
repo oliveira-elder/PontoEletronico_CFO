@@ -70,7 +70,7 @@ export function MeusComprovantesPage() {
   for (const it of itens) porDia.set(it.data, [...(porDia.get(it.data) ?? []), it]);
 
   return (
-    <div style={{ maxWidth: 760, margin: "0 auto", width: "100%" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto", width: "100%" }}>
       <p className="eyebrow" style={{ marginBottom: 6 }}>
         Registro de ponto
       </p>

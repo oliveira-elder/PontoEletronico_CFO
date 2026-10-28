@@ -9,7 +9,7 @@ import {
 
 export type Categoria = "ESTAGIARIO" | "MENOR_APRENDIZ" | "CONCURSADO" | "ASSESSOR";
 
-/** "Estágio" (ESTAGIARIO/MENOR_APRENDIZ) tem "Supervisor"; "Empregado"/"Comissionado" têm "Chefe". */
+/** "Estágio" (ESTAGIARIO/MENOR_APRENDIZ) tem "Supervisor"; "Efetivo"/"Comissionado" têm "Chefe". */
 export function isCategoriaEstagio(categoria: Categoria | string | null | undefined): boolean {
   return categoria === "ESTAGIARIO" || categoria === "MENOR_APRENDIZ";
 }
@@ -146,7 +146,7 @@ export interface Funcionario {
   // ── Jornada / características (RH) ──
   atividade?: Atividade | null;
   isFiscal?: boolean;
-  nivelCargo?: "MEDIO" | "SUPERIOR" | null;
+  nivelCargo?: "MEDIO" | "SUPERIOR" | "TECNICO" | null;
   valeTransporte?: boolean;
   registroPontoObrigatorio?: boolean | null;
 
@@ -169,7 +169,7 @@ export interface Funcionario {
 
   observacoes?: string | null;
 
-  // ── Cessão de Empregado ──
+  // ── Cessão de Efetivo ──
   cedido?: boolean;
   cessaoInicio?: string | null;
   cessaoFim?: string | null;
@@ -205,7 +205,7 @@ export interface Funcionario {
   } | null;
 }
 
-/** Chefe (Empregado/Comissionado): somente leitura, responsável oficial da Lotação —
+/** Chefe (Efetivo/Comissionado): somente leitura, responsável oficial da Lotação —
  *  não é mais uma seleção manual (ver planejamento "Campo Chefe"). */
 export function chefeDaLotacao(f: Pick<Funcionario, "gerencia">): string {
   return f.gerencia?.responsavel?.trim() || "—";
@@ -377,7 +377,7 @@ export const CAT: Record<
     icon: UsersIcon
   },
   CONCURSADO: {
-    label: "Empregado",
+    label: "Efetivo",
     cor: "var(--green)",
     bg: "rgba(47,125,79,0.08)",
     icon: ShieldCheckIcon
@@ -423,7 +423,7 @@ export const FORM_VAZIO = {
   // Jornada / características
   atividade: "" as Atividade | "",
   isFiscal: false,
-  nivelCargo: "" as "" | "MEDIO" | "SUPERIOR",
+  nivelCargo: "" as "" | "MEDIO" | "SUPERIOR" | "TECNICO",
   valeTransporte: false,
   registroPontoObrigatorio: null as boolean | null,
 
@@ -447,7 +447,7 @@ export const FORM_VAZIO = {
 
   observacoes: "",
 
-  // Cessão de Empregado
+  // Cessão de Efetivo
   cedido: false,
   cessaoInicio: "",
   cessaoFim: "",

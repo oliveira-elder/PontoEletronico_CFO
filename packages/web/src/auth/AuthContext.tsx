@@ -86,7 +86,7 @@ interface AuthContextType {
   initialized: boolean;
   authenticated: boolean;
   contaDesativada: boolean;
-  /** Empregado cedido a outro órgão (cessão cobrindo hoje): acesso suspenso. */
+  /** Efetivo cedido a outro órgão (cessão cobrindo hoje): acesso suspenso. */
   contaCedida: boolean;
   semMatricula: boolean;
   user: AuthUser | null;

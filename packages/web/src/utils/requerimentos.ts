@@ -34,21 +34,21 @@ export const REQUERIMENTO_INFO: Record<
     tituloFuncionario: "Informar Dependentes",
     icone: "👨‍👧",
     originais: "a certidão de nascimento e o CPF dos dependentes",
-    publico: "Empregados e Comissionados ativos"
+    publico: "Efetivos e Comissionados ativos"
   },
   FORMACAO_ACADEMICA: {
     rotulo: "Formação Acadêmica",
     tituloFuncionario: "Informar Formação Acadêmica",
     icone: "🎓",
     originais: "o diploma ou certificado de conclusão",
-    publico: "Empregados e Comissionados ativos"
+    publico: "Efetivos e Comissionados ativos"
   },
   CAPACITACOES: {
     rotulo: "Cursos/Capacitações",
     tituloFuncionario: "Informar Cursos/Capacitações",
     icone: "📚",
     originais: "os certificados dos cursos",
-    publico: "Empregados e Comissionados ativos"
+    publico: "Efetivos e Comissionados ativos"
   }
 };
 

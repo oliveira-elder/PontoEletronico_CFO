@@ -95,5 +95,5 @@ export function cpfValido(cpf: string): boolean {
 
 export const TIPOS_REQUERIMENTO_CADASTRO = Object.values(TipoRequerimentoCadastro);
 
-/** Categorias que têm Dependentes/Capacitação no cadastro (Empregado e Comissionado). */
+/** Categorias que têm Dependentes/Capacitação no cadastro (Efetivo e Comissionado). */
 export const CATEGORIAS_REQUERIMENTO_CADASTRO = ["CONCURSADO", "ASSESSOR"] as const;

@@ -1218,6 +1218,14 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/ponto/gestao/dashboard/painel",
+    titulo: "Painel de demandas do RH",
+    descricao:
+      "RH consulta as contagens e listas das demandas em aberto (aprovações, folhas, exames, requisições, contratos e cadastro).",
+    categoria: "Dashboard"
+  },
+  {
+    method: "GET",
     pathPattern: "/ponto/saude-ocupacional/painel",
     titulo: "Painel de exames ocupacionais",
     descricao: "RH consulta a situação do exame periódico de todos os funcionários.",
@@ -1534,7 +1542,7 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     method: "GET",
     pathPattern: "/ponto/gestao/requerimento-cadastro/:tipo/alvos",
     titulo: "Contar destinatários do requerimento de cadastro",
-    descricao: "Quantidade de Empregados e Comissionados ativos que receberiam o pedido.",
+    descricao: "Quantidade de Efetivos e Comissionados ativos que receberiam o pedido.",
     categoria: "Gestão de Funcionários"
   },
   {
@@ -1542,7 +1550,7 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     pathPattern: "/ponto/gestao/requerimento-cadastro/:tipo/todos",
     titulo: "Solicitar dado cadastral a todos",
     descricao:
-      "Envia o pedido de dependentes, formação acadêmica ou cursos a todos os Empregados e Comissionados ativos.",
+      "Envia o pedido de dependentes, formação acadêmica ou cursos a todos os Efetivos e Comissionados ativos.",
     categoria: "Gestão de Funcionários"
   },
   {

@@ -515,7 +515,7 @@ export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } 
   const gruposFlat = grupos.flatMap((g) => [g, ...(g.subGrupos ?? [])]);
 
   return (
-    <div style={embutido ? undefined : { maxWidth: 900, margin: "0 auto" }}>
+    <div style={embutido ? undefined : { maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* Cabeçalho (na aba de Start / Super Admin o título da página já está no topo) */}
       <div style={{ marginBottom: 24, display: embutido ? "none" : undefined }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>

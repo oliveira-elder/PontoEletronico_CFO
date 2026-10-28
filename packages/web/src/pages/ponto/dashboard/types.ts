@@ -8,6 +8,13 @@ export interface DetalheFuncionario {
   matricula: string | null;
   categoria: string;
   lotacao: string | null;
+  cargo: string | null;
+  nivelCargo: string | null;
+  chefe: boolean;
+  /** YYYY-MM-DD */
+  dataAdmissao: string | null;
+  contratoTermino: string | null;
+  situacaoHoje: "TRABALHANDO" | "FERIAS" | "AFASTADO";
   genero: string | null;
   raca: string | null;
   escolaridades: string[];
@@ -21,6 +28,7 @@ export interface GestaoDashboardStats {
   totais: { total: number; ativos: number; inativos: number; chefes: number };
   porCategoria: ChaveTotal[];
   porLotacao: { nome: string; total: number }[];
+  porCargo: { nome: string; total: number }[];
   porModalidade: { presencial: number; homeOffice: number; hibrido: number };
   porGenero: ChaveTotal[];
   porRaca: ChaveTotal[];
@@ -163,7 +171,7 @@ export const LABEL_STATUS_ASSINATURA: Record<string, string> = {
 export const LABEL_CATEGORIA_FUNC: Record<string, string> = {
   ESTAGIARIO: "Estagiário",
   MENOR_APRENDIZ: "Jovem Aprendiz",
-  CONCURSADO: "Empregado",
+  CONCURSADO: "Efetivo",
   ASSESSOR: "Comissionado"
 };
 

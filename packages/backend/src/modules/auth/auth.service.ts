@@ -228,7 +228,7 @@ export class AuthService {
       throw new ForbiddenException("CONTA_DESATIVADA");
     }
 
-    // Empregado cedido a outro órgão (período de cessão cobrindo hoje): sem acesso.
+    // Efetivo cedido a outro órgão (período de cessão cobrindo hoje): sem acesso.
     if (funcionario && !ctx.isSuperAdmin && (await cedidoHoje(this.prisma, funcionario.id))) {
       throw new ForbiddenException("CONTA_CEDIDA");
     }

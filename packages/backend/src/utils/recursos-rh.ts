@@ -36,6 +36,12 @@ const f = (chave: string, rotulo: string, descricao: string): FuncaoRh => ({
 export const ABAS_RH: AbaRh[] = [
   /* ── Dashboard (só leitura) ── */
   {
+    chave: "dashboard.painel",
+    pagina: "dashboard",
+    rotulo: "Painel de Demandas",
+    funcoes: []
+  },
+  {
     chave: "dashboard.visao-geral",
     pagina: "dashboard",
     rotulo: "Visão Geral do Quadro",

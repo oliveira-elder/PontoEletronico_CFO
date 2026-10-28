@@ -6,7 +6,7 @@ import { FolhasAssinadasLista } from "../../components/assinatura/FolhasAssinada
 /** Folhas de ponto assinadas do próprio funcionário (todas as categorias). */
 export function FolhasAssinadasPage() {
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <p className="eyebrow" style={{ marginBottom: 6 }}>
         Ponto Eletrônico
       </p>

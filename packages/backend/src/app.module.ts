@@ -25,6 +25,7 @@ import { AuditoriaModule } from "./modules/auditoria/auditoria.module";
 import { ExtensionsModule } from "./modules/extensions/extensions.module";
 import { RequisicaoRhModule } from "./modules/requisicao-rh/requisicao-rh.module";
 import { SaudeOcupacionalModule } from "./modules/saude-ocupacional/saude-ocupacional.module";
+import { PainelDemandasModule } from "./modules/painel-demandas/painel-demandas.module";
 import { LogsModule } from "./modules/logs/logs.module";
 import { IngestModule } from "./modules/ingest/ingest.module";
 import { BackupModule } from "./modules/backup/backup.module";
@@ -58,6 +59,7 @@ import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
     ExtensionsModule,
     RequisicaoRhModule,
     SaudeOcupacionalModule,
+    PainelDemandasModule,
     IngestModule,
     BackupModule,
     ApiServidoraModule,

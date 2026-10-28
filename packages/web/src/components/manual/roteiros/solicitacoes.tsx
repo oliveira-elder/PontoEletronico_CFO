@@ -1,14 +1,6 @@
 import React from "react";
 import { PlusIcon, RefreshCwIcon } from "../../icons";
-import {
-  BotaoAnexo,
-  Cabecalho,
-  Campo,
-  Janela,
-  rotuloEstilo,
-  Selecao,
-  SucessoJanela
-} from "../telas/pecas";
+import { BotaoAnexo, Cabecalho, Campo, Janela, rotuloEstilo, SucessoJanela } from "../telas/pecas";
 import { Shell } from "../telas/Shell";
 import type { Estado, Roteiro } from "../tipos";
 
@@ -461,18 +453,12 @@ function FormAtestado({ e }: { e: Estado }) {
         </div>
       </div>
       <div>
-        <Selecao
-          id="at-cid"
-          e={e}
-          rotulo="Grupo do CID"
-          vazio="Selecione o grupo do CID do atestado"
-          opcoes={[
-            "A00-B99 — Doenças infecciosas e parasitárias",
-            "J00-J99 — Doenças do aparelho respiratório",
-            "M00-M99 — Doenças do sistema osteomuscular e tecido conjuntivo"
-          ]}
-        />
+        <Campo id="at-cid" e={e} rotulo="CID" obrigatorio placeholder="Ex.: Z13" />
         <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "4px 0 0" }}>
+          Informe 1 letra seguida de 2 números (ex.: Z13). Se o documento trouxer 3 números (Z136 ou
+          Z13.6), informe só Z13: é a mesma categoria.
+        </p>
+        <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
           Informação de saúde protegida (LGPD): fica visível apenas para o RH.
         </p>
       </div>
@@ -554,10 +540,11 @@ export const enviarAtestado: Roteiro = {
       legenda: "Anexe a foto nítida ou o PDF do atestado (“Upload”)."
     },
     {
-      acao: "selecionar",
+      acao: "digitar",
       alvo: "at-cid",
-      valor: "J00-J99 — Doenças do aparelho respiratório",
-      legenda: "Escolha o grupo do CID. É uma informação de saúde protegida: só o RH vê."
+      valor: "J11",
+      legenda:
+        "Digite o CID do atestado: 1 letra e 2 números (ex.: J11). Se vier com 3 números (J110 ou J11.0), use só J11. É uma informação de saúde protegida: só o RH vê."
     },
     {
       acao: "digitar",

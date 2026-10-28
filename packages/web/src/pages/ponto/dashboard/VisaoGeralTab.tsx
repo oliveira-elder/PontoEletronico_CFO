@@ -1,7 +1,5 @@
 import React, { useState } from "react";
 import {
-  BarChart,
-  Bar,
   AreaChart,
   Area,
   XAxis,
@@ -15,6 +13,7 @@ import { DashboardPanel } from "../../../components/dashboard/DashboardPanel";
 import { StatCard } from "../../../components/dashboard/StatCard";
 import { StatGroup, StatDivider } from "../../../components/dashboard/StatGroup";
 import { MiniDonut } from "../../../components/dashboard/MiniDonut";
+import { FuncionariosDetalheModal } from "../../../components/dashboard/FuncionariosDetalheModal";
 import {
   EmployeeListModal,
   type EmployeeListItem
@@ -27,61 +26,119 @@ import {
   type GestaoDashboardStats,
   type DetalheFuncionario
 } from "./types";
-import type { ChartDatum, RechartsClickEntry } from "../../../components/dashboard/chartTypes";
+import type { ChartDatum } from "../../../components/dashboard/chartTypes";
 
 function paraItens(funcs: DetalheFuncionario[]): EmployeeListItem[] {
   return funcs.map((f) => ({ nome: f.nome, matricula: f.matricula, extra: f.lotacao }));
 }
 
-function HorizontalBarChart({
-  data,
-  color = PALETTE[0],
-  onItemClick
+/** Headcount de TODOS os cargos ou lotações (busca, sem rolagem, em colunas); o item abre os funcionários. */
+function HeadcountPanel({
+  stats,
+  onAbrir
 }: {
-  data: ChartDatum[];
-  color?: string;
-  onItemClick?: (item: ChartDatum) => void;
+  stats: GestaoDashboardStats;
+  onAbrir: (dim: "cargo" | "lotacao", nome: string) => void;
 }) {
-  if (!data.length) {
-    return (
-      <div
-        style={{
-          height: 180,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--ink-400)",
-          fontSize: 12.5
-        }}
-      >
-        Sem dados suficientes.
-      </div>
-    );
-  }
+  const [dim, setDim] = useState<"cargo" | "lotacao">("cargo");
+  const [busca, setBusca] = useState("");
+  const base = dim === "cargo" ? stats.porCargo : stats.porLotacao;
+  const dados = base
+    .filter((i) => i.nome.toLowerCase().includes(busca.trim().toLowerCase()))
+    .map((i) => ({ name: i.nome, value: i.total }));
+  const maximo = Math.max(1, ...base.map((i) => i.total));
+  const totalAtivos = Math.max(1, stats.totais.ativos);
   return (
-    <ResponsiveContainer width="100%" height={Math.max(180, data.length * 34)}>
-      <BarChart data={data} layout="vertical" margin={{ left: 12, right: 20 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" horizontal={false} />
-        <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
-        <YAxis type="category" dataKey="name" tick={{ fontSize: 11.5 }} width={150} interval={0} />
-        <Tooltip />
-        <Bar
-          dataKey="value"
-          fill={color}
-          radius={[0, 4, 4, 0]}
-          barSize={16}
-          onClick={
-            onItemClick
-              ? (entry: unknown) => {
-                  const e = entry as RechartsClickEntry<ChartDatum>;
-                  onItemClick(e.payload ?? e);
-                }
-              : undefined
-          }
-          style={onItemClick ? { cursor: "pointer" } : undefined}
+    <DashboardPanel title={`Headcount por ${dim === "cargo" ? "Cargo" : "Lotação"} (todos)`}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        {(["cargo", "lotacao"] as const).map((d) => (
+          <button
+            key={d}
+            className={dim === d ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
+            onClick={() => setDim(d)}
+          >
+            {d === "cargo" ? "Cargo" : "Lotação"}
+          </button>
+        ))}
+        <input
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+          placeholder={`Buscar ${dim === "cargo" ? "cargo" : "lotação"}`}
+          style={{
+            flex: 1,
+            minWidth: 120,
+            height: 30,
+            padding: "0 10px",
+            border: "1px solid rgba(122,30,38,0.18)",
+            borderRadius: "var(--radius-md)",
+            fontSize: 12.5
+          }}
         />
-      </BarChart>
-    </ResponsiveContainer>
+      </div>
+      <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "0 0 6px" }}>
+        {base.length} {dim === "cargo" ? "cargos" : "lotações"} · clique em um item para ver as
+        pessoas
+      </p>
+      {dados.length === 0 ? (
+        <p style={{ fontSize: 12.5, color: "var(--ink-400)", textAlign: "center", padding: 24 }}>
+          Nada encontrado.
+        </p>
+      ) : (
+        <div style={{ columnWidth: 300, columnGap: 28 }}>
+          {dados.map((d) => (
+            <button
+              key={d.name}
+              onClick={() => onAbrir(dim, d.name)}
+              title={`${d.name}: ${d.value} (${((d.value / totalAtivos) * 100).toFixed(1).replace(".", ",")}%)`}
+              className="headcount-linha"
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                background: "transparent",
+                border: "none",
+                padding: "6px 8px",
+                borderRadius: "var(--radius-md)",
+                cursor: "pointer",
+                breakInside: "avoid"
+              }}
+            >
+              <span
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  fontSize: 12.5,
+                  color: "var(--ink-800)"
+                }}
+              >
+                <span>{d.name}</span>
+                <strong style={{ flexShrink: 0 }}>{d.value}</strong>
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  height: 7,
+                  marginTop: 4,
+                  borderRadius: 4,
+                  background: "rgba(122,30,38,0.08)"
+                }}
+              >
+                <span
+                  style={{
+                    display: "block",
+                    height: "100%",
+                    width: `${Math.max(2, (d.value / maximo) * 100)}%`,
+                    borderRadius: 4,
+                    background: PALETTE[0]
+                  }}
+                />
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </DashboardPanel>
   );
 }
 
@@ -90,6 +147,12 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
     title: string;
     subtitle?: string;
     itens: EmployeeListItem[];
+  } | null>(null);
+
+  const [detalhe, setDetalhe] = useState<{
+    title: string;
+    subtitle: string;
+    funcs: DetalheFuncionario[];
   } | null>(null);
 
   const semChefe = stats.chefesPorLotacao.filter((g) => !g.temChefe);
@@ -103,11 +166,14 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
     });
   }
 
-  function abrirPorLotacao(item: ChartDatum) {
-    setModal({
-      title: item.name,
-      subtitle: "Headcount por Lotação",
-      itens: paraItens(stats.detalheFuncionarios.filter((f) => f.lotacao === item.name))
+  function abrirHeadcount(dim: "cargo" | "lotacao", nome: string) {
+    const semCargo = "Sem cargo informado";
+    setDetalhe({
+      title: nome,
+      subtitle: `Headcount por ${dim === "cargo" ? "Cargo" : "Lotação"}`,
+      funcs: stats.detalheFuncionarios.filter((f) =>
+        dim === "cargo" ? (f.cargo ?? semCargo) === nome : f.lotacao === nome
+      )
     });
   }
 
@@ -196,14 +262,19 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
             onItemClick={abrirPorCategoria}
           />
         </DashboardPanel>
-        <DashboardPanel title="Headcount por Lotação (top 10)">
-          <HorizontalBarChart
-            data={stats.porLotacao.map((l) => ({ name: l.nome, value: l.total }))}
-            color={PALETTE[0]}
-            onItemClick={abrirPorLotacao}
+        <DashboardPanel title="Modalidade de Trabalho">
+          <MiniDonut
+            data={[
+              { name: "Presencial", value: stats.porModalidade.presencial, key: "presencial" },
+              { name: "Home Office", value: stats.porModalidade.homeOffice, key: "homeOffice" },
+              { name: "Híbrido", value: stats.porModalidade.hibrido, key: "hibrido" }
+            ]}
+            onItemClick={abrirPorModalidade}
           />
         </DashboardPanel>
       </div>
+
+      <HeadcountPanel stats={stats} onAbrir={abrirHeadcount} />
 
       <DashboardPanel title="Admissões × Desligamentos — últimos 12 meses">
         {stats.admissoesDesligamentos.every((m) => !m.admissoes && !m.desligamentos) ? (
@@ -253,17 +324,7 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
         )}
       </DashboardPanel>
 
-      <div className="dashboard-grid-3">
-        <DashboardPanel title="Modalidade de Trabalho">
-          <MiniDonut
-            data={[
-              { name: "Presencial", value: stats.porModalidade.presencial, key: "presencial" },
-              { name: "Home Office", value: stats.porModalidade.homeOffice, key: "homeOffice" },
-              { name: "Híbrido", value: stats.porModalidade.hibrido, key: "hibrido" }
-            ]}
-            onItemClick={abrirPorModalidade}
-          />
-        </DashboardPanel>
+      <div className="dashboard-grid-2">
         <DashboardPanel title="Registro de Ponto">
           <MiniDonut
             data={[
@@ -328,6 +389,14 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
         )}
       </DashboardPanel>
 
+      {detalhe && (
+        <FuncionariosDetalheModal
+          title={detalhe.title}
+          subtitle={detalhe.subtitle}
+          funcs={detalhe.funcs}
+          onClose={() => setDetalhe(null)}
+        />
+      )}
       {modal && (
         <EmployeeListModal
           title={modal.title}

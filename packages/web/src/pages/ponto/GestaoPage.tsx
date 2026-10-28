@@ -361,7 +361,7 @@ function GestaoListaTab() {
             />
             <Stat
               valor={ativosPorCategoria("CONCURSADO")}
-              label="Empregados"
+              label="Efetivos"
               cor="var(--green)"
               selecionado={cardAtivosSelecionado("CONCURSADO")}
               onClick={() => selecionarCardAtivos("CONCURSADO")}
@@ -1179,7 +1179,7 @@ export function GestaoPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* ── Cabeçalho ── */}
       <div
         style={{

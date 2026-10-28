@@ -1677,22 +1677,25 @@ export function AbonoDetalheBlock({ meta }: { meta: Record<string, unknown> | nu
     | { nome?: string; resumo?: string; comProrrogacao?: boolean }
     | undefined;
   /* Atestado: grupo do CID (o servidor só envia ao RH e ao próprio funcionário). */
-  const blocoCid = cid?.codigo ? (
-    <p
-      title="Informação de saúde (LGPD): visível apenas ao RH e ao próprio funcionário"
-      style={{
-        margin: "8px 0 0",
-        fontSize: 12.5,
-        color: "var(--ink-800)",
-        padding: "6px 10px",
-        background: "rgba(122,30,38,0.04)",
-        border: "1px solid rgba(122,30,38,0.12)",
-        borderRadius: "var(--radius-md)"
-      }}
-    >
-      🩺 <strong>CID:</strong> {cid.codigo} — {cid.descricao}
-    </p>
-  ) : null;
+  const cidCodigo = typeof meta?.cidCodigo === "string" ? meta.cidCodigo : undefined;
+  const blocoCid =
+    cid?.codigo || cidCodigo ? (
+      <p
+        title="Informação de saúde (LGPD): visível apenas ao RH e ao próprio funcionário"
+        style={{
+          margin: "8px 0 0",
+          fontSize: 12.5,
+          color: "var(--ink-800)",
+          padding: "6px 10px",
+          background: "rgba(122,30,38,0.04)",
+          border: "1px solid rgba(122,30,38,0.12)",
+          borderRadius: "var(--radius-md)"
+        }}
+      >
+        🩺 <strong>CID:</strong> {cidCodigo ?? cid?.codigo}
+        {cid?.codigo && cid.descricao ? ` — ${cid.descricao}` : ""}
+      </p>
+    ) : null;
   const criada = meta?.criadaPorRh as
     | { nome?: string; em?: string; dispensas?: string[]; justificativa?: string }
     | undefined;

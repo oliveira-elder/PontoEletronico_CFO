@@ -337,6 +337,7 @@ select.input {
 }
 .table-cfo tr:last-child td { border-bottom: none; }
 .table-cfo tbody tr:hover td { background: var(--cream-50); }
+.table-cfo-destaque tbody tr:hover td { background: rgba(122, 30, 38, 0.06); }
 
 /* Histórico de frequência (auditoria): cabe na largura do card, sem scroll-x */
 .table-cfo-freq {
@@ -540,6 +541,7 @@ select.input {
 /* ─── Grids do Dashboard consolidado (colapsam em telas pequenas) ─── */
 .dashboard-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .dashboard-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.headcount-linha:hover { background: rgba(122, 30, 38, 0.06) !important; }
 .dashboard-grid-4 {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

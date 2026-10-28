@@ -4,6 +4,9 @@
    Manual de Identidade Visual 2014 · edição digital
 ═══════════════════════════════════════════════ */
 :root {
+  /* Largura máxima do conteúdo de todas as páginas (1200 px: confortável de ler e sem encostar no botão de acessibilidade). */
+  --largura-pagina: 1200px;
+
   /* ─── Burgundy ─── */
   --burgundy-500: #9a2832;
   --burgundy-600: #7a1e26;

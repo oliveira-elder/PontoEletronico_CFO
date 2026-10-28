@@ -193,7 +193,7 @@ export function PerfisRhPage() {
   };
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <div style={{ marginBottom: 18 }}>
         <Link
           to="/ponto/gestao"

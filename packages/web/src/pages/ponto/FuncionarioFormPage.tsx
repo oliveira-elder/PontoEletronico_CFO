@@ -235,10 +235,65 @@ function hojeLocalIso() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function colunasLotacao(comCargo: boolean) {
-  return comCargo
+function colunasLotacao(comCargo: boolean, comEmpregado = false) {
+  const base = comCargo
     ? "minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1.2fr) 140px 140px 76px"
     : "minmax(0,1.6fr) minmax(0,1.3fr) 140px 140px 76px";
+  return comEmpregado ? `minmax(0,1.4fr) 130px ${base}` : base;
+}
+
+/** Cargo e nível do efetivo: valem para o funcionário (não por período de lotação) e
+ *  aparecem na mesma linha da lotação vigente. */
+type CamposEmpregado = {
+  cargo: string;
+  nivel: "" | "MEDIO" | "SUPERIOR" | "TECNICO";
+  onCargo: (v: string) => void;
+  onNivel: (v: "" | "MEDIO" | "SUPERIOR" | "TECNICO") => void;
+};
+
+function CelulasEmpregado({ efetivo, rotulos }: { efetivo?: CamposEmpregado; rotulos?: boolean }) {
+  if (!efetivo) {
+    return (
+      <>
+        <span style={{ color: "var(--ink-500)" }}>—</span>
+        <span style={{ color: "var(--ink-500)" }}>—</span>
+      </>
+    );
+  }
+  return (
+    <>
+      <div>
+        {rotulos && <FieldLabel>Cargo</FieldLabel>}
+        <input
+          type="text"
+          value={cargoParaCampo(efetivo.cargo)}
+          placeholder={CARGO_A_DEFINIR}
+          onChange={(e) => efetivo.onCargo(e.target.value)}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        {rotulos && <FieldLabel>Nível do cargo</FieldLabel>}
+        <SelectWrap>
+          <select
+            value={efetivo.nivel}
+            onChange={(e) =>
+              efetivo.onNivel(e.target.value as "" | "MEDIO" | "SUPERIOR" | "TECNICO")
+            }
+            style={{
+              ...selectStyleBase,
+              color: efetivo.nivel ? "var(--ink-900)" : "var(--ink-500)"
+            }}
+          >
+            <option value="">Selecione…</option>
+            <option value="MEDIO">Médio</option>
+            <option value="TECNICO">Técnico</option>
+            <option value="SUPERIOR">Superior</option>
+          </select>
+        </SelectWrap>
+      </div>
+    </>
+  );
 }
 
 function BotaoAcao({
@@ -292,7 +347,9 @@ function LinhaLotacaoCampos({
   funcionarios,
   isMobile,
   comRotulos,
-  acoes
+  acoes,
+  colunaEmpregado,
+  efetivo
 }: {
   valor: LinhaLotacaoValor;
   onChange: (v: LinhaLotacaoValor) => void;
@@ -305,6 +362,9 @@ function LinhaLotacaoCampos({
   /** Mostra o rótulo acima de cada campo (sem a linha de cabeçalho da lista). */
   comRotulos?: boolean;
   acoes?: React.ReactNode;
+  /** Reserva as colunas Cargo/Nível do efetivo (preenchidas só se `efetivo` vier). */
+  colunaEmpregado?: boolean;
+  efetivo?: CamposEmpregado;
 }) {
   const subsecoes = subsecoesDaGerencia(funcionarios, valor.gerenciaId);
   const set = (p: Partial<LinhaLotacaoValor>) => onChange({ ...valor, ...p });
@@ -316,13 +376,14 @@ function LinhaLotacaoCampos({
         gridTemplateColumns: isMobile
           ? "1fr"
           : acoes
-            ? colunasLotacao(comCargo)
-            : colunasLotacao(comCargo).replace(/ 76px$/, ""),
+            ? colunasLotacao(comCargo, colunaEmpregado)
+            : colunasLotacao(comCargo, colunaEmpregado).replace(/ 76px$/, ""),
         gap: isMobile ? 10 : 8,
         alignItems: "end",
         padding: "8px 0"
       }}
     >
+      {colunaEmpregado && <CelulasEmpregado efetivo={efetivo} rotulos={isMobile || comRotulos} />}
       {comCargo && (
         <div>
           {rotulo("Cargo")}
@@ -421,7 +482,8 @@ function LotacaoLinhas({
   funcionarios,
   isMobile,
   onSincronizado,
-  somenteLeitura = false
+  somenteLeitura = false,
+  efetivo
 }: {
   funcionarioId: string;
   comCargo: boolean;
@@ -431,6 +493,8 @@ function LotacaoLinhas({
   onSincronizado: (f: Funcionario) => void;
   /** Perfil do RH sem a função "Lotação": só consulta. */
   somenteLeitura?: boolean;
+  /** Cargo e nível do efetivo, na mesma linha da lotação vigente. */
+  efetivo?: CamposEmpregado;
 }) {
   const [linhas, setLinhas] = useState<VigenciaLotacaoUI[] | null>(null);
   const [editando, setEditando] = useState<string | null>(null); // id | "nova"
@@ -455,6 +519,11 @@ function LotacaoLinhas({
   const hoje = hojeLocalIso();
   const lista = linhas ?? [];
   const ultima = lista[lista.length - 1];
+  const colunaEmpregado = !!efetivo;
+  const vigenteId = (
+    lista.find((l) => l.vigenciaDesde <= hoje && (!l.vigenciaAte || l.vigenciaAte >= hoje)) ??
+    ultima
+  )?.id;
 
   function iniciarEdicao(l: VigenciaLotacaoUI) {
     setErro("");
@@ -551,12 +620,14 @@ function LotacaoLinhas({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: colunasLotacao(comCargo),
+            gridTemplateColumns: colunasLotacao(comCargo, colunaEmpregado),
             gap: 8,
             paddingBottom: 6,
             borderBottom: "1px solid rgba(122,30,38,0.10)"
           }}
         >
+          {colunaEmpregado && cabecalho("Cargo")}
+          {colunaEmpregado && cabecalho("Nível do cargo")}
           {comCargo && cabecalho("Cargo")}
           {cabecalho("Departamento")}
           {cabecalho("Coordenação")}
@@ -579,6 +650,8 @@ function LotacaoLinhas({
                 comCargo={comCargo}
                 fimEditavel={l.id === ultima?.id}
                 fimCalculado={l.vigenciaAte}
+                colunaEmpregado={colunaEmpregado}
+                efetivo={l.id === vigenteId ? efetivo : undefined}
                 gerencias={gerencias}
                 funcionarios={funcionarios}
                 isMobile={isMobile}
@@ -593,7 +666,9 @@ function LotacaoLinhas({
               key={l.id}
               style={{
                 display: "grid",
-                gridTemplateColumns: isMobile ? "1fr auto" : colunasLotacao(comCargo),
+                gridTemplateColumns: isMobile
+                  ? "1fr auto"
+                  : colunasLotacao(comCargo, colunaEmpregado),
                 gap: 8,
                 alignItems: "center",
                 padding: "10px 0",
@@ -616,6 +691,9 @@ function LotacaoLinhas({
                 </div>
               ) : (
                 <>
+                  {colunaEmpregado && (
+                    <CelulasEmpregado efetivo={l.id === vigenteId ? efetivo : undefined} />
+                  )}
                   {comCargo && <span>{l.cargo || "—"}</span>}
                   <span>
                     {departamento}
@@ -658,6 +736,7 @@ function LotacaoLinhas({
           onChange={setRascunho}
           comCargo={comCargo}
           fimEditavel
+          colunaEmpregado={colunaEmpregado}
           gerencias={gerencias}
           funcionarios={funcionarios}
           isMobile={isMobile}
@@ -796,7 +875,7 @@ function resumirCessoes(l: CessaoUI[]): ResumoCessoes {
 }
 
 /**
- * Histórico de cessões do Empregado, no mesmo padrão da lotação: cada linha tem
+ * Histórico de cessões do Efetivo, no mesmo padrão da lotação: cada linha tem
  * editar (✎) e remover (−), "+" acrescenta um período; cada ação grava na hora.
  * Com a cessão desmarcada, o histórico continua visível apenas para consulta.
  */
@@ -1324,8 +1403,8 @@ export function FuncionarioFormPage() {
   const cpfInvalido = cpfPreenchido && cpfCompleto && !cpfValido;
   /* CPF é obrigatório para todas as categorias: vazio, incompleto ou inválido bloqueia. */
   const cpfBloqueio = !cpfValido;
-  /* Cessão marcada (só Empregado): datas e órgãos passam a ser obrigatórios. */
-  /* Cessão marcada (só Empregado): no cadastro novo os campos do 1º período são
+  /* Cessão marcada (só Efetivo): datas e órgãos passam a ser obrigatórios. */
+  /* Cessão marcada (só Efetivo): no cadastro novo os campos do 1º período são
      obrigatórios; no existente, é preciso ter ao menos um período no histórico. */
   const cessaoAtiva = form.categoria === "CONCURSADO" && form.cedido;
   const cessaoPendencias: string[] = !cessaoAtiva
@@ -1338,7 +1417,7 @@ export function FuncionarioFormPage() {
           orgaoDestino: form.cessaoOrgaoDestino
         })
       : resumoCessoes?.total === 0
-        ? ["ao menos um período de Cessão do Empregado"]
+        ? ["ao menos um período de Cessão do Efetivo"]
         : [];
   const podeSalvar =
     !!form.nome.trim() &&
@@ -1352,10 +1431,18 @@ export function FuncionarioFormPage() {
   const ehChefeDeCoordenacao = form.isManager && !!form.subsecao && /coordena/i.test(form.subsecao);
 
   /* Categorias — cada seção do formulário varia por categoria (ver planejamento
-     de reorganização). "catComChefe" (Empregado/Comissionado) tem Chefe/Situação
+     de reorganização). "catComChefe" (Efetivo/Comissionado) tem Chefe/Situação
      no Cargo e Lotação; "catEstagio" (Estagiário/Jovem Aprendiz) usa a estrutura
      de Supervisor em vez de Chefe. */
   const catEmpregado = form.categoria === "CONCURSADO";
+  const empregadoCampos: CamposEmpregado | undefined = catEmpregado
+    ? {
+        cargo: form.cargo,
+        nivel: form.nivelCargo,
+        onCargo: (v) => setForm((f) => ({ ...f, cargo: v })),
+        onNivel: (v) => setForm((f) => ({ ...f, nivelCargo: v }))
+      }
+    : undefined;
   const catComissionado = form.categoria === "ASSESSOR";
   const catEstagiario = form.categoria === "ESTAGIARIO";
   const catJovemAprendiz = form.categoria === "MENOR_APRENDIZ";
@@ -1664,7 +1751,7 @@ export function FuncionarioFormPage() {
   };
 
   /* "Situação" (ativo/inativo) é usada em duas seções (Geral e Cargo e Lotação
-     para Empregado/Comissionado) — extraído para não duplicar o JSX. */
+     para Efetivo/Comissionado) — extraído para não duplicar o JSX. */
   function renderSituacaoToggle() {
     return (
       <div>
@@ -1735,7 +1822,14 @@ export function FuncionarioFormPage() {
 
   if (carregando) {
     return (
-      <div style={{ maxWidth: 1100, margin: "0 auto", color: "var(--ink-500)", padding: "40px 0" }}>
+      <div
+        style={{
+          maxWidth: "var(--largura-pagina)",
+          margin: "0 auto",
+          color: "var(--ink-500)",
+          padding: "40px 0"
+        }}
+      >
         Carregando funcionário…
       </div>
     );
@@ -1743,7 +1837,7 @@ export function FuncionarioFormPage() {
 
   if (naoEncontrado) {
     return (
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
         <Link
           to="/ponto/gestao"
           style={{
@@ -1780,7 +1874,7 @@ export function FuncionarioFormPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <Link
         to="/ponto/gestao"
         style={{
@@ -2073,7 +2167,7 @@ export function FuncionarioFormPage() {
                 onChange={(e) => setForm((f) => ({ ...f, cedido: e.target.checked }))}
                 style={{ width: 16, height: 16, accentColor: "var(--burgundy-600)" }}
               />
-              Cessão do Empregado
+              Cessão do Efetivo
             </label>
             {isNovo || !id ? (
               form.cedido && (
@@ -2510,42 +2604,7 @@ export function FuncionarioFormPage() {
 
         {/* ══════════════════ CARGO E LOTAÇÃO ══════════════════ */}
         <SectionTitle>Cargo e Lotação</SectionTitle>
-        {catEmpregado && (
-          <div
-            style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
-          >
-            <div>
-              <FieldLabel>Cargo</FieldLabel>
-              <input
-                type="text"
-                value={cargoParaCampo(form.cargo)}
-                placeholder={CARGO_A_DEFINIR}
-                onChange={(e) => setForm((f) => ({ ...f, cargo: e.target.value }))}
-                style={fieldStyle}
-              />
-            </div>
-            <div>
-              <FieldLabel>Nível do cargo</FieldLabel>
-              <SelectWrap>
-                <select
-                  value={form.nivelCargo}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      nivelCargo: e.target.value as "" | "MEDIO" | "SUPERIOR"
-                    }))
-                  }
-                  style={selectStyle}
-                >
-                  <option value="">Selecione…</option>
-                  <option value="MEDIO">Médio</option>
-                  <option value="SUPERIOR">Superior</option>
-                </select>
-              </SelectWrap>
-            </div>
-          </div>
-        )}
-
+        {/* Cargo e nível do efetivo ficam na mesma linha da lotação. */}
         {isNovo || !id ? (
           /* Cadastro novo: uma única linha ligada ao formulário; o histórico nasce ao salvar. */
           <LinhaLotacaoCampos
@@ -2567,6 +2626,8 @@ export function FuncionarioFormPage() {
               }))
             }
             comCargo={catComissionado}
+            colunaEmpregado={catEmpregado}
+            efetivo={empregadoCampos}
             fimEditavel
             comRotulos
             gerencias={gerencias}
@@ -2577,6 +2638,7 @@ export function FuncionarioFormPage() {
           <LotacaoLinhas
             funcionarioId={id}
             somenteLeitura={!podeLotacao}
+            efetivo={empregadoCampos}
             comCargo={catComissionado}
             gerencias={gerencias}
             funcionarios={funcionarios}

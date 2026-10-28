@@ -1350,7 +1350,7 @@ export function RequisicaoRhAdminPage() {
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* Header */}
       <div
         style={{

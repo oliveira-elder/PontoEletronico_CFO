@@ -1,3 +1,5 @@
+import { grupoDoCid, normalizarCid } from "../../utils/cid";
+import { listarCidGrupos } from "../../utils/licenca-db";
 import { mascararNome, registrarDocumentoEmitido } from "../../utils/documentos-emitidos";
 import {
   Injectable,
@@ -249,7 +251,7 @@ export class AuditoriaService {
         ? filtros.dataInicio
         : (() => {
             const d = new Date(`${dataFim}T12:00:00-03:00`);
-            d.setDate(d.getDate() - 6);
+            d.setMonth(d.getMonth() - 1);
             return dataCivilISO(d);
           })();
     const inicio = dataInicio <= dataFim ? dataInicio : dataFim;
@@ -3814,7 +3816,7 @@ export class AuditoriaService {
   /** RH completa/corrige o grupo do CID de um atestado já enviado. */
   async alterarCidAtestado(
     solicitacaoId: string,
-    body: { cidGrupoId?: string; justificativa?: string },
+    body: { cidCodigo?: string; cidGrupoId?: string; justificativa?: string },
     keycloakSub: string
   ) {
     const sol = await this.prisma.solicitacao.findUnique({ where: { id: solicitacaoId } });
@@ -3823,10 +3825,18 @@ export class AuditoriaService {
     if (justificativa.length < 10) {
       throw new BadRequestException("Informe a justificativa (mínimo de 10 caracteres).");
     }
-    const grupo = body.cidGrupoId
-      ? await this.prisma.cidGrupo.findUnique({ where: { id: body.cidGrupoId } })
-      : null;
-    if (!grupo) throw new BadRequestException("Grupo do CID inválido.");
+    const categoria = body.cidCodigo ? normalizarCid(body.cidCodigo) : null;
+    if (body.cidCodigo && !categoria) {
+      throw new BadRequestException(
+        "CID inválido. Informe 1 letra seguida de 2 números (ex.: Z13)."
+      );
+    }
+    const grupo = categoria
+      ? grupoDoCid(categoria, await listarCidGrupos(this.prisma, true))
+      : body.cidGrupoId
+        ? await this.prisma.cidGrupo.findUnique({ where: { id: body.cidGrupoId } })
+        : null;
+    if (!categoria && !grupo) throw new BadRequestException("Informe o CID (ex.: Z13).");
     const rh = await this.prisma.user.findFirst({
       where: { externalId: keycloakSub },
       select: { name: true }
@@ -3838,7 +3848,10 @@ export class AuditoriaService {
         metadados: JSON.parse(
           JSON.stringify({
             ...meta,
-            cidGrupo: { id: grupo.id, codigo: grupo.codigo, descricao: grupo.descricao },
+            ...(categoria ? { cidCodigo: categoria } : {}),
+            cidGrupo: grupo
+              ? { id: grupo.id, codigo: grupo.codigo, descricao: grupo.descricao }
+              : undefined,
             cidAlteradoPor: {
               nome: rh?.name ?? keycloakSub,
               em: new Date().toISOString(),

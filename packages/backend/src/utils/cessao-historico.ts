@@ -130,7 +130,7 @@ export async function periodosCessao(
 }
 
 /**
- * Dia coberto por cessão: o empregado está cedido a outro órgão, então o sistema fica
+ * Dia coberto por cessão: o efetivo está cedido a outro órgão, então o sistema fica
  * inoperante para ele — sem acesso, sem registro de ponto e sem saldo (nem falta nem
  * crédito) no banco de horas.
  */

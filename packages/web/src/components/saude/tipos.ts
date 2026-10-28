@@ -44,3 +44,9 @@ export const lerArquivoBase64 = (file: File) =>
     r.onerror = () => reject(new Error("Não foi possível ler o arquivo."));
     r.readAsDataURL(file);
   });
+
+/** Resultados selecionáveis no ASO; "Apto com restrição" fica só para registros antigos. */
+export const RESULTADO_OPCOES: Record<string, string> = {
+  APTO: RESULTADO_LABEL.APTO,
+  INAPTO: RESULTADO_LABEL.INAPTO
+};

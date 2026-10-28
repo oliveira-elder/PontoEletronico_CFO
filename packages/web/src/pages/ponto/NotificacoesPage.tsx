@@ -221,7 +221,7 @@ export function NotificacoesPage() {
   const naoLidas = notifs.filter((n) => !n.lida).length;
 
   return (
-    <div style={{ maxWidth: 680, margin: "0 auto", padding: "0 0 48px" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto", padding: "0 0 48px" }}>
       {/* Cabeçalho */}
       <div
         style={{

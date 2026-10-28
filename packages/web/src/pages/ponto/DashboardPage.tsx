@@ -66,6 +66,72 @@ function mesAnteriorInfo(ref = new Date()) {
   return { yyyyMM, nome: nome.charAt(0).toUpperCase() + nome.slice(1) };
 }
 
+/* Banco de horas do cartão do Início: acumulado dos meses anteriores, prévia do mês atual e
+   saldo do mês anterior. Mesmo conteúdo no desktop e no celular (muda só tamanho/cor). */
+function BancoHorasColunas({
+  acumulado,
+  previa,
+  previaAte,
+  mesAtualNome,
+  saldoMesAnterior,
+  mesAnteriorNome,
+  fonte,
+  legenda,
+  corPositivo
+}: {
+  acumulado: number | null | undefined;
+  previa: number | null;
+  previaAte: string | null;
+  mesAtualNome: string;
+  saldoMesAnterior: number | null;
+  mesAnteriorNome: string;
+  fonte: number;
+  legenda: number;
+  corPositivo: string;
+}) {
+  const cor = (v: number | null | undefined) =>
+    v == null ? "var(--ink-500)" : v >= 0 ? corPositivo : "var(--red)";
+  const numero = (v: number | null | undefined): React.CSSProperties => ({
+    fontFamily: "var(--font-display)",
+    fontSize: fonte,
+    color: cor(v),
+    lineHeight: 1
+  });
+  const sub: React.CSSProperties = { fontSize: legenda, color: "var(--ink-500)", marginTop: 4 };
+  const [, mm, dd] = previaAte ? previaAte.split("-") : [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "stretch", gap: 12, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={numero(acumulado)}>{acumulado == null ? "—" : toHM(acumulado)}</p>
+          <p style={sub}>acumulado de todos os meses anteriores</p>
+        </div>
+        <div style={{ width: 1, background: "rgba(122,30,38,0.10)", flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={numero(previa)}>{previa == null ? "—" : toHM(previa)}</p>
+          <p style={sub}>
+            prévia de {mesAtualNome}
+            {previaAte ? ` · até ${dd}/${mm}` : ""}
+          </p>
+        </div>
+      </div>
+      <p
+        style={{
+          fontSize: legenda,
+          color: "var(--ink-500)",
+          borderTop: "1px solid rgba(122,30,38,0.08)",
+          paddingTop: 8
+        }}
+      >
+        {mesAnteriorNome}:{" "}
+        <strong style={{ color: cor(saldoMesAnterior), fontWeight: 600 }}>
+          {saldoMesAnterior == null ? "fora do ciclo" : toHM(saldoMesAnterior)}
+        </strong>
+      </p>
+    </div>
+  );
+}
+
 /* ─── Types ─── */
 interface ApiStatus {
   estado: "FORA" | "TRABALHANDO" | "INTERVALO" | "PAUSADO";
@@ -691,8 +757,10 @@ function RequisicoesRhSection({ token }: { token: string }) {
           {recentes.map((item) => {
             const ss = statusStyle(item.status);
             return (
-              <div
+              <Link
                 key={item.id}
+                to={`/ponto/minhas-requisicoes?abrir=${item.id}`}
+                title="Abrir requisição"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -704,7 +772,10 @@ function RequisicoesRhSection({ token }: { token: string }) {
                   border:
                     item.status === "PENDENTE"
                       ? "1px solid rgba(122,30,38,0.14)"
-                      : "1px solid rgba(122,30,38,0.08)"
+                      : "1px solid rgba(122,30,38,0.08)",
+                  textDecoration: "none",
+                  color: "inherit",
+                  cursor: "pointer"
                 }}
               >
                 <span
@@ -753,7 +824,7 @@ function RequisicoesRhSection({ token }: { token: string }) {
                 >
                   {ss.label}
                 </span>
-              </div>
+              </Link>
             );
           })}
         </div>
@@ -977,6 +1048,26 @@ export function DashboardPage() {
     diasMesAnterior && diasMesAnterior.length > 0
       ? diasMesAnterior.reduce((s, d) => s + d.saldoDiaMinutos, 0)
       : null;
+
+  /* Prévia do mês atual: dias já fechados (até ontem; hoje só com a jornada encerrada).
+     O "acumulado" é o saldo do ciclo sem nenhum dia do mês atual (= até o mês anterior). */
+  const hojeIsoBanco = hojeBrasiliaISO();
+  const mesAtualYm = hojeIsoBanco.slice(0, 7);
+  const hojeFechado = estado === "FORA" && !!status?.registrosHoje?.some((r) => r.tipo === "SAIDA");
+  const diasMesAtualBanco = bancoHoras?.dias?.filter((d) => d.data?.slice(0, 7) === mesAtualYm);
+  const diasPrevia = (diasMesAtualBanco ?? []).filter(
+    (d) => d.data < hojeIsoBanco || (d.data === hojeIsoBanco && hojeFechado)
+  );
+  const previaMes = bancoHoras ? diasPrevia.reduce((t, d) => t + d.saldoDiaMinutos, 0) : null;
+  const previaAte = diasPrevia.length > 0 ? diasPrevia[diasPrevia.length - 1].data : null;
+  const acumuladoAnterior =
+    saldoBanco == null
+      ? null
+      : saldoBanco - (diasMesAtualBanco ?? []).reduce((t, d) => t + d.saldoDiaMinutos, 0);
+  const mesAtualNome = new Date(`${hojeIsoBanco}T12:00:00`).toLocaleDateString("pt-BR", {
+    month: "long"
+  });
+  const mesAtualRotulo = mesAtualNome.charAt(0).toUpperCase() + mesAtualNome.slice(1);
 
   const { diasTrabalhados: diasTrabQuinzena, diasUteis: diasUteisQuinzena } =
     progressoQuinzena(quinzena);
@@ -1207,47 +1298,17 @@ export function DashboardPage() {
               >
                 Banco de Horas
               </p>
-              <div style={{ display: "flex", alignItems: "stretch", gap: 12, minWidth: 0 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p
-                    style={{
-                      fontFamily: "var(--font-display)",
-                      fontSize: 22,
-                      color:
-                        saldoBanco == null
-                          ? "var(--ink-900)"
-                          : saldoBanco >= 0
-                            ? "var(--green)"
-                            : "var(--red)",
-                      lineHeight: 1
-                    }}
-                  >
-                    {saldoBanco == null ? "—" : toHM(saldoBanco)}
-                  </p>
-                  <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>acumulado</p>
-                </div>
-                <div style={{ width: 1, background: "rgba(122,30,38,0.10)", flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p
-                    style={{
-                      fontFamily: "var(--font-display)",
-                      fontSize: 22,
-                      color:
-                        saldoMesAnterior == null
-                          ? "var(--ink-500)"
-                          : saldoMesAnterior >= 0
-                            ? "var(--ink-900)"
-                            : "var(--red)",
-                      lineHeight: 1
-                    }}
-                  >
-                    {saldoMesAnterior == null ? "—" : toHM(saldoMesAnterior)}
-                  </p>
-                  <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 3 }}>
-                    {saldoMesAnterior == null ? `${mesAnt.nome} · fora do ciclo` : mesAnt.nome}
-                  </p>
-                </div>
-              </div>
+              <BancoHorasColunas
+                acumulado={acumuladoAnterior}
+                previa={previaMes}
+                previaAte={previaAte}
+                mesAtualNome={mesAtualRotulo}
+                saldoMesAnterior={saldoMesAnterior}
+                mesAnteriorNome={mesAnt.nome}
+                fonte={22}
+                legenda={11}
+                corPositivo="var(--green)"
+              />
             </Link>
           )}
         </div>
@@ -1551,7 +1612,14 @@ export function DashboardPage() {
 
   /* ════════════ DESKTOP ════════════ */
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+    <div
+      style={{
+        maxWidth: "var(--largura-pagina)",
+        margin: "0 auto",
+        width: "100%",
+        boxSizing: "border-box"
+      }}
+    >
       <div style={{ marginBottom: 28 }}>
         <p className="eyebrow" style={{ marginBottom: 6 }}>
           Painel Principal
@@ -1791,53 +1859,17 @@ export function DashboardPage() {
                 <BarChart2Icon size={18} />
               </span>
             </div>
-            <div style={{ display: "flex", alignItems: "stretch", gap: 16, minWidth: 0 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p
-                  style={{
-                    fontFamily: "var(--font-display)",
-                    fontSize: 26,
-                    color:
-                      saldoBanco == null
-                        ? "var(--ink-900)"
-                        : saldoBanco >= 0
-                          ? "var(--ink-900)"
-                          : "var(--red)",
-                    lineHeight: 1
-                  }}
-                >
-                  {saldoBanco == null ? "—" : toHM(saldoBanco)}
-                </p>
-                <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>acumulado</p>
-              </div>
-              <div
-                style={{
-                  width: 1,
-                  background: "rgba(122,30,38,0.10)",
-                  flexShrink: 0
-                }}
-              />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p
-                  style={{
-                    fontFamily: "var(--font-display)",
-                    fontSize: 26,
-                    color:
-                      saldoMesAnterior == null
-                        ? "var(--ink-500)"
-                        : saldoMesAnterior >= 0
-                          ? "var(--ink-900)"
-                          : "var(--red)",
-                    lineHeight: 1
-                  }}
-                >
-                  {saldoMesAnterior == null ? "—" : toHM(saldoMesAnterior)}
-                </p>
-                <p style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 4 }}>
-                  {saldoMesAnterior == null ? `${mesAnt.nome} · fora do ciclo` : mesAnt.nome}
-                </p>
-              </div>
-            </div>
+            <BancoHorasColunas
+              acumulado={acumuladoAnterior}
+              previa={previaMes}
+              previaAte={previaAte}
+              mesAtualNome={mesAtualRotulo}
+              saldoMesAnterior={saldoMesAnterior}
+              mesAnteriorNome={mesAnt.nome}
+              fonte={26}
+              legenda={12}
+              corPositivo="var(--ink-900)"
+            />
           </Link>
         )}
       </div>

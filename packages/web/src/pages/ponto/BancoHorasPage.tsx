@@ -1222,7 +1222,7 @@ export function BancoHorasPage() {
   const mesesAtual = dados ? mesesDeDias(dados.dias) : [];
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       <div style={{ marginBottom: isMobile ? 16 : 24 }}>
         {!isMobile && (
           <p className="eyebrow" style={{ marginBottom: 6 }}>

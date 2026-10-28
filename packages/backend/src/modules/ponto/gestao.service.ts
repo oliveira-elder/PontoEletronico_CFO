@@ -69,10 +69,10 @@ const ERROS_LOTACAO: Record<string, string> = {
 const ERROS_CESSAO: Record<string, string> = {
   CESSAO_NAO_ENCONTRADA: "Período de cessão não encontrado.",
   CESSAO_INCOMPLETA:
-    "Cessão do Empregado: preencha Data de Início, Órgão de Origem e Órgão de Destino.",
+    "Cessão do Efetivo: preencha Data de Início, Órgão de Origem e Órgão de Destino.",
   CESSAO_FIM_ANTES_DO_INICIO:
-    "Cessão do Empregado: a data de fim deve ser igual ou posterior à data de início.",
-  CESSAO_SOBREPOSTA: "Cessão do Empregado: o período se sobrepõe a outra cessão registrada."
+    "Cessão do Efetivo: a data de fim deve ser igual ou posterior à data de início.",
+  CESSAO_SOBREPOSTA: "Cessão do Efetivo: o período se sobrepõe a outra cessão registrada."
 };
 
 export type LinhaLotacaoBody = {
@@ -97,8 +97,8 @@ export type CamposSimplesFuncionario = Partial<{
   isFiscal: boolean;
   valeTransporte: boolean;
   registroPontoObrigatorio: boolean | null;
-  /** Nível do cargo (só empregado/concursado). */
-  nivelCargo: "MEDIO" | "SUPERIOR" | null;
+  /** Nível do cargo (só efetivo/concursado). */
+  nivelCargo: "MEDIO" | "SUPERIOR" | "TECNICO" | null;
   cargoData: string | null;
   lotacaoInicio: string | null;
   lotacaoTermino: string | null;
@@ -146,7 +146,7 @@ const CAMPOS_DATA_SIMPLES = [
 const CAMPOS_BOOLEAN_SIMPLES = ["isFiscal", "valeTransporte", "cedido"] as const;
 
 /**
- * Cessão marcada (só Empregado/CONCURSADO): início e órgãos são obrigatórios; o fim é
+ * Cessão marcada (só Efetivo/CONCURSADO): início e órgãos são obrigatórios; o fim é
  * opcional (cessão em aberto), mas não pode ser anterior ao início.
  */
 function validarCessao(v: {
@@ -164,11 +164,11 @@ function validarCessao(v: {
     !v.cessaoOrgaoDestino?.trim() && "Órgão de Destino"
   ].filter(Boolean);
   if (faltando.length) {
-    throw new BadRequestException(`Cessão do Empregado: preencha ${faltando.join(", ")}.`);
+    throw new BadRequestException(`Cessão do Efetivo: preencha ${faltando.join(", ")}.`);
   }
   if (v.cessaoFim && v.cessaoFim < v.cessaoInicio!) {
     throw new BadRequestException(
-      "Cessão do Empregado: a data de fim deve ser igual ou posterior à data de início."
+      "Cessão do Efetivo: a data de fim deve ser igual ou posterior à data de início."
     );
   }
 }
@@ -188,8 +188,8 @@ function mapCamposSimples(data: CamposSimplesFuncionario): Record<string, unknow
   if (data.atividade !== undefined) out.atividade = data.atividade || null;
   if (data.nivelCargo !== undefined) {
     const nivel = data.nivelCargo;
-    if (nivel !== null && nivel !== "MEDIO" && nivel !== "SUPERIOR") {
-      throw new BadRequestException("Nível do cargo inválido (use Médio ou Superior).");
+    if (nivel !== null && nivel !== "MEDIO" && nivel !== "SUPERIOR" && nivel !== "TECNICO") {
+      throw new BadRequestException("Nível do cargo inválido (use Médio, Técnico ou Superior).");
     }
     out.nivelCargo = nivel;
   }
@@ -210,6 +210,32 @@ export type SubstituicaoPayload = {
   dataInicio: string | null;
   dataFim: string | null;
 };
+
+/**
+ * Agrupa cargos que só diferem por caixa/espaços e devolve o nome de exibição: a variante
+ * não toda em maiúsculas mais usada (ou, se todas forem, a primeira em formato "Título").
+ */
+function nomesDeCargo(cargos: string[]): (cargo: string) => string | null {
+  const chave = (c: string) => c.trim().replace(/\s+/g, " ").toLowerCase();
+  const variantes = new Map<string, Map<string, number>>();
+  for (const bruto of cargos) {
+    const c = bruto.trim().replace(/\s+/g, " ");
+    if (!c) continue;
+    const m = variantes.get(chave(c)) ?? new Map<string, number>();
+    m.set(c, (m.get(c) ?? 0) + 1);
+    variantes.set(chave(c), m);
+  }
+  const exibicao = new Map<string, string>();
+  for (const [k, m] of variantes) {
+    const ordenadas = [...m.entries()].sort((a, b) => b[1] - a[1]);
+    const mista = ordenadas.find(([n]) => n !== n.toUpperCase());
+    exibicao.set(
+      k,
+      mista ? mista[0] : k.replace(/(^|\s)(\p{L})/gu, (_m, e, l: string) => e + l.toUpperCase())
+    );
+  }
+  return (cargo) => (cargo.trim() ? (exibicao.get(chave(cargo)) ?? null) : null);
+}
 
 @Injectable()
 export class GestaoService {
@@ -388,7 +414,7 @@ export class GestaoService {
           id: true,
           nome: true,
           sigla: true,
-          /* "Chefe" (Empregado/Comissionado) é somente leitura: responsável oficial
+          /* "Chefe" (Efetivo/Comissionado) é somente leitura: responsável oficial
              da Lotação do funcionário — não uma seleção manual. */
           responsavel: true,
           responsavelUserId: true,
@@ -484,7 +510,7 @@ export class GestaoService {
     return tipo as TipoRequerimentoCadastro;
   }
 
-  /** Só Empregado e Comissionado têm Dependentes/Capacitação no cadastro. */
+  /** Só Efetivo e Comissionado têm Dependentes/Capacitação no cadastro. */
   private readonly alvosRequerimentoCadastro = {
     ativo: true,
     categoria: { in: [...CATEGORIAS_REQUERIMENTO_CADASTRO] as CategoriaFuncional[] }
@@ -499,7 +525,7 @@ export class GestaoService {
     if (!func) throw new NotFoundException("Funcionário não encontrado");
     if (!(CATEGORIAS_REQUERIMENTO_CADASTRO as readonly string[]).includes(func.categoria)) {
       throw new BadRequestException(
-        "Este requerimento se aplica somente a Empregado e Comissionado."
+        "Este requerimento se aplica somente a Efetivos e Comissionados."
       );
     }
     return this.prisma.requerimentoCadastro.upsert({
@@ -748,7 +774,7 @@ export class GestaoService {
       });
       if (!periodos) {
         throw new BadRequestException(
-          "Cessão do Empregado: registre ao menos um período de cessão ou desmarque a opção."
+          "Cessão do Efetivo: registre ao menos um período de cessão ou desmarque a opção."
         );
       }
     }
@@ -756,7 +782,7 @@ export class GestaoService {
     if (data.cedido === false && func.cedido) {
       if (await contarCessoesEmAberto(this.prisma, id)) {
         throw new BadRequestException(
-          "Cessão do Empregado: há cessão em aberto. Informe a data de fim antes de desmarcar."
+          "Cessão do Efetivo: há cessão em aberto. Informe a data de fim antes de desmarcar."
         );
       }
     }
@@ -1458,7 +1484,7 @@ export class GestaoService {
     // ── Por categoria ──
     const porCategoria = contagem(ativos, (f) => f.categoria);
 
-    // ── Por lotação (top 10) ──
+    // ── Por lotação (todas) ──
     const porLotacaoMap = new Map<string, { nome: string; total: number }>();
     for (const f of ativos) {
       if (!f.gerenciaId) continue;
@@ -1467,7 +1493,15 @@ export class GestaoService {
       atual.total += 1;
       porLotacaoMap.set(f.gerenciaId, atual);
     }
-    const porLotacao = [...porLotacaoMap.values()].sort((a, b) => b.total - a.total).slice(0, 10);
+    const porLotacao = [...porLotacaoMap.values()].sort(
+      (a, b) => b.total - a.total || a.nome.localeCompare(b.nome)
+    );
+
+    // ── Por cargo (todos; "CONTADOR" e "Contador" contam como o mesmo cargo) ──
+    const cargoNome = nomesDeCargo(ativos.map((f) => f.cargo ?? ""));
+    const porCargo = contagem(ativos, (f) => cargoNome(f.cargo ?? "") ?? "Sem cargo informado")
+      .map((c) => ({ nome: c.chave, total: c.total }))
+      .sort((a, b) => b.total - a.total || a.nome.localeCompare(b.nome));
 
     // ── Modalidade de trabalho ──
     const porModalidade = {
@@ -1613,6 +1647,22 @@ export class GestaoService {
       mediaAnos: v.total ? Math.round((v.somaAnos / v.total) * 10) / 10 : 0
     }));
 
+    // ── Situação hoje (afastado/férias) para o detalhe dos modais ──
+    const afastHoje = await this.prisma.afastamento.findMany({
+      where: {
+        funcionarioId: { in: ativos.map((f) => f.id) },
+        dataInicio: { lte: new Date(`${hoje}T23:59:59.999Z`) },
+        dataFim: { gte: new Date(`${hoje}T00:00:00.000Z`) },
+        horarioInicio: null,
+        apenasInformativo: false
+      },
+      select: { funcionarioId: true, tipo: true }
+    });
+    const situacaoHojePorFunc = new Map<string, string>();
+    for (const a of afastHoje) {
+      situacaoHojePorFunc.set(a.funcionarioId, a.tipo === "FERIAS" ? "FERIAS" : "AFASTADO");
+    }
+
     // ── Detalhe por funcionário (para os modais "quem está nesta barra") ──
     const detalheFuncionarios = ativos.map((f) => ({
       id: f.id,
@@ -1620,6 +1670,12 @@ export class GestaoService {
       matricula: f.matricula,
       categoria: f.categoria,
       lotacao: f.gerencia?.nome ?? null,
+      cargo: cargoNome(f.cargo ?? ""),
+      nivelCargo: f.nivelCargo ?? null,
+      chefe: f.isManager,
+      dataAdmissao: f.dataAdmissao ? dataCivilISO(f.dataAdmissao) : null,
+      contratoTermino: f.contratoTermino ? dataCivilISO(f.contratoTermino) : null,
+      situacaoHoje: situacaoHojePorFunc.get(f.id) ?? "TRABALHANDO",
       genero: f.genero ?? null,
       raca: f.raca ?? null,
       escolaridades: f.formacoesAcademicas
@@ -1635,6 +1691,7 @@ export class GestaoService {
       totais,
       porCategoria,
       porLotacao,
+      porCargo,
       porModalidade,
       porGenero,
       porRaca,
@@ -1721,7 +1778,7 @@ export class GestaoService {
     );
   }
 
-  /* ─── Histórico de cessão (Empregado) ─── */
+  /* ─── Histórico de cessão (Efetivo) ─── */
 
   /**
    * Fechamento por mudança de situação: guarda o saldo do banco na data em que o funcionário
@@ -1823,7 +1880,7 @@ export class GestaoService {
     const func = await this.prisma.funcionario.findUnique({ where: { id: funcionarioId } });
     if (!func) throw new NotFoundException("Funcionário não encontrado");
     if (func.categoria !== "CONCURSADO") {
-      throw new BadRequestException("Cessão se aplica somente à categoria Empregado.");
+      throw new BadRequestException("Cessão se aplica somente à categoria Efetivo.");
     }
     try {
       await this.prisma.$transaction(async (tx) => {

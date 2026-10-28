@@ -7,6 +7,7 @@ import { SaudeOcupacionalService } from "./saude-ocupacional.service";
 @Module({
   imports: [PrismaModule, NotificacaoModule],
   controllers: [SaudeOcupacionalController],
-  providers: [SaudeOcupacionalService]
+  providers: [SaudeOcupacionalService],
+  exports: [SaudeOcupacionalService]
 })
 export class SaudeOcupacionalModule {}

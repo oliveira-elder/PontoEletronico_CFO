@@ -15,7 +15,7 @@ import { dataCivilISO, hojeBrasiliaISO } from "../../utils/horario-brasilia";
 import { situacaoDoExame, vencimentoPeriodico } from "../../utils/exame-ocupacional";
 import { inteiroConfig } from "../../utils/licenca-regras";
 
-const RESULTADOS = ["APTO", "APTO_COM_RESTRICAO", "INAPTO"] as const;
+const RESULTADOS = ["APTO", "INAPTO"] as const;
 const TAMANHO_MAX_BYTES = 8 * 1024 * 1024;
 const MIME_PERMITIDOS: Record<string, string> = {
   "application/pdf": "pdf",
@@ -193,6 +193,8 @@ export class SaudeOcupacionalService {
     const funcs = await this.prisma.funcionario.findMany({
       where: {
         ativo: true,
+        /* Estagiários não participam da saúde ocupacional. */
+        categoria: { not: "ESTAGIARIO" },
         ...(filtros.gerenciaId ? { gerenciaId: filtros.gerenciaId } : {})
       },
       select: {
@@ -669,7 +671,10 @@ export class SaudeOcupacionalService {
       const cfg = await this.getConfig();
       const hoje = hojeBrasiliaISO();
       const confirmados = await this.prisma.exameOcupacional.findMany({
-        where: { situacao: "CONFIRMADO", funcionario: { ativo: true } },
+        where: {
+          situacao: "CONFIRMADO",
+          funcionario: { ativo: true, categoria: { not: "ESTAGIARIO" } }
+        },
         orderBy: [{ dataRealizacao: "desc" }, { createdAt: "desc" }],
         include: { funcionario: { select: { user: { select: { name: true } } } } }
       });

@@ -1,6 +1,6 @@
 /** O grupo do CID é dado de saúde sensível: só o RH (e o próprio funcionário) o enxergam. */
 
-const CHAVES_CID = new Set(["cidGrupo", "cidAlteradoPor"]);
+const CHAVES_CID = new Set(["cidCodigo", "cidGrupo", "cidAlteradoPor"]);
 
 export function removerCid<T>(valor: T): T {
   if (Array.isArray(valor)) return valor.map((v) => removerCid(v)) as unknown as T;

@@ -11,7 +11,8 @@ import {
 } from "@nestjs/common";
 import { TipoPonto, OrigemPonto, Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
-import { listarTiposLicenca } from "../../utils/licenca-db";
+import { listarCidGrupos, listarTiposLicenca } from "../../utils/licenca-db";
+import { grupoDoCid, normalizarCid } from "../../utils/cid";
 import {
   datasUsadasDoTipo,
   resumoRegra,
@@ -1452,7 +1453,7 @@ export class PontoService implements OnModuleInit {
     }
     if (await cedidoHoje(this.prisma, func.id)) {
       throw new ForbiddenException(
-        "Empregado cedido a outro órgão: o registro de ponto fica suspenso durante a cessão."
+        "Efetivo cedido a outro órgão: o registro de ponto fica suspenso durante a cessão."
       );
     }
 
@@ -4012,18 +4013,36 @@ export class PontoService implements OnModuleInit {
     return dias;
   }
 
-  /** Grupo do CID do atestado: valida conforme a configuração e grava o snapshot. */
+  /**
+   * CID do atestado: valida conforme a configuração e grava a categoria (1 letra + 2 números;
+   * "Z136" e "Z13.6" viram "Z13") e o grupo do CID-10 a que ela pertence.
+   */
   private async prepararCidDoAtestado(metadados: Record<string, unknown> | undefined) {
     const meta = { ...(metadados ?? {}) };
+    const cidBruto = typeof meta.cidCodigo === "string" ? meta.cidCodigo.trim() : "";
     const grupoId = typeof meta.cidGrupoId === "string" ? meta.cidGrupoId : null;
+    delete meta.cidCodigo;
     delete meta.cidGrupoId;
     delete meta.cidGrupo;
     const cfg = await this.configSolicitacoesService.getConfig();
     const modo = cfg.atestadoCidModo;
     if (modo === "DESATIVADO") return meta;
+    if (cidBruto) {
+      const categoria = normalizarCid(cidBruto);
+      if (!categoria) {
+        throw new BadRequestException(
+          "CID inválido. Informe 1 letra seguida de 2 números (ex.: Z13)."
+        );
+      }
+      const grupos = await listarCidGrupos(this.prisma, true);
+      const grupo = grupoDoCid(categoria, grupos);
+      meta.cidCodigo = categoria;
+      if (grupo) meta.cidGrupo = { id: grupo.id, codigo: grupo.codigo, descricao: grupo.descricao };
+      return meta;
+    }
     if (!grupoId) {
       if (modo === "OBRIGATORIO") {
-        throw new BadRequestException("Informe o grupo do CID do atestado.");
+        throw new BadRequestException("Informe o CID do atestado (ex.: Z13).");
       }
       return meta;
     }
@@ -4781,7 +4800,7 @@ export class PontoService implements OnModuleInit {
     const totalVencido = Math.min(ciclosVencidos, maxAcumulo) * diasPorCiclo;
     const ciclosVisiveis = Math.min(ciclosVencidos, maxAcumulo);
     /* Ciclo em formação (ainda não vencido): pode ser marcado, mas só usufruído a partir de
-       `liberaEm`. Empregado: só no 1º ano; estagiário: sempre que o ciclo seguinte não passa
+       `liberaEm`. Efetivo: só no 1º ano; estagiário: sempre que o ciclo seguinte não passa
        do contrato (15 dias aos 6 meses). */
     const cicloFormacaoNum = ciclosVencidos + 1;
     const temFormacao = isEstagiario ? ciclosVencidos < maxAcumulo : ciclosVencidos === 0;

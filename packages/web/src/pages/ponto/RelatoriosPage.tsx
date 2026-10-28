@@ -291,7 +291,7 @@ export function RelatoriosPage() {
   }
 
   return (
-    <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* Cabeçalho */}
       <div style={{ marginBottom: isMobile ? 14 : 24 }}>
         {!isMobile && (

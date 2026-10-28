@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { MeuExameCard } from "../../components/saude/MeuExameCard";
 import { FormEnviarExame } from "../../components/saude/FormEnviarExame";
 import type { ExameOcupacional } from "../../components/saude/tipos";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowLeftIcon,
   UploadIcon,
@@ -92,15 +92,19 @@ function MinhaReqCard({
   item,
   token,
   onAtualizar,
-  exameDaRequisicao
+  exameDaRequisicao,
+  abrirInicial
 }: {
   item: MinhaReqItem;
   token: string;
   onAtualizar: () => void;
+  /** Veio de um atalho (ex.: Início): abre já expandida e rola até o card. */
+  abrirInicial?: boolean;
   /** Exame periódico enviado em resposta a esta requisição (tipo Exame Médico). */
   exameDaRequisicao?: ExameOcupacional;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!!abrirInicial);
+  const raiz = useRef<HTMLDivElement>(null);
   const [texto, setTexto] = useState("");
   const [arquivoBase64, setArquivoBase64] = useState("");
   const [arquivoNome, setArquivoNome] = useState("");
@@ -111,17 +115,26 @@ function MinhaReqCard({
   const req = item.requisicao;
   const pz = prazoInfo(req.prazo);
 
-  async function handleExpand() {
-    if (!expanded && item.status === "PENDENTE") {
-      try {
-        await api.patch(`/requisicoes-rh/${item.id}/visualizar`, {}, token);
-        onAtualizar();
-      } catch {
-        /* ignore */
-      }
+  async function marcarVisualizada() {
+    if (item.status !== "PENDENTE") return;
+    try {
+      await api.patch(`/requisicoes-rh/${item.id}/visualizar`, {}, token);
+      onAtualizar();
+    } catch {
+      /* ignore */
     }
+  }
+
+  async function handleExpand() {
+    if (!expanded) await marcarVisualizada();
     setExpanded((v) => !v);
   }
+
+  useEffect(() => {
+    if (!abrirInicial) return;
+    raiz.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    void marcarVisualizada();
+  }, [abrirInicial]);
 
   function handleArquivo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -166,6 +179,7 @@ function MinhaReqCard({
 
   return (
     <div
+      ref={raiz}
       style={{
         background: "#fff",
         border: `1px solid ${item.status === "PENDENTE" ? "rgba(122,30,38,0.14)" : "rgba(122,30,38,0.08)"}`,
@@ -439,6 +453,8 @@ function MinhaReqCard({
 /* ── Página principal ──────────────────────────────────── */
 export function MinhasRequisicoesRhPage() {
   const { token } = useAuth();
+  const [searchParams] = useSearchParams();
+  const abrirId = searchParams.get("abrir");
   const [items, setItems] = useState<MinhaReqItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
@@ -510,7 +526,7 @@ export function MinhasRequisicoesRhPage() {
   const contStatus = (s: StatusDest) => items.filter((i) => i.status === s).length;
 
   return (
-    <div style={{ maxWidth: 820, margin: "0 auto" }}>
+    <div style={{ maxWidth: "var(--largura-pagina)", margin: "0 auto" }}>
       {/* Cabeçalho */}
       <div style={{ marginBottom: 24 }}>
         <Link
@@ -818,6 +834,7 @@ export function MinhasRequisicoesRhPage() {
               item={item}
               token={tk}
               onAtualizar={carregar}
+              abrirInicial={abrirId === item.id}
               exameDaRequisicao={examesPeriodicos.find(
                 (e) => e.requisicaoDestinatarioId === item.id && e.situacao !== "CONFIRMADO"
               )}
