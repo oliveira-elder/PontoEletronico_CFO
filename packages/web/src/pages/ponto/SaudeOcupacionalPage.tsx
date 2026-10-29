@@ -8,6 +8,7 @@ import {
   RESULTADO_LABEL,
   RESULTADO_OPCOES,
   SITUACAO_LABEL,
+  TIPO_EXAME_LABEL,
   fmtDataBr,
   lerArquivoBase64,
   type ExameOcupacional,
@@ -79,6 +80,7 @@ function RegistrarModal({
   onSalvo: () => void;
 }) {
   const [data, setData] = useState("");
+  const [tipo, setTipo] = useState("");
   const [resultado, setResultado] = useState("");
   const [clinica, setClinica] = useState("");
   const [obs, setObs] = useState("");
@@ -88,12 +90,14 @@ function RegistrarModal({
 
   async function salvar() {
     setErro("");
+    if (!tipo) return setErro("Informe o tipo do exame.");
     if (!data) return setErro("Informe a data do exame.");
     if (!resultado) return setErro("Informe o resultado do ASO.");
     setSalvando(true);
     try {
       await api.post(`/ponto/saude-ocupacional/funcionarios/${funcionarioId}/exames`, {
         dataRealizacao: data,
+        tipo,
         resultado,
         clinica: clinica || undefined,
         observacao: obs || undefined,
@@ -111,7 +115,7 @@ function RegistrarModal({
   return (
     <Modal
       eyebrow="Saúde Ocupacional"
-      title="Registrar exame periódico"
+      title="Registrar exame ocupacional"
       subtitle={nome}
       onClose={() => !salvando && onClose()}
       maxWidth={900}
@@ -126,6 +130,17 @@ function RegistrarModal({
             alignItems: "start"
           }}
         >
+          <div>
+            <label style={lbl}>Tipo *</label>
+            <select style={input} value={tipo} onChange={(e) => setTipo(e.target.value)}>
+              <option value="">Selecione…</option>
+              {Object.entries(TIPO_EXAME_LABEL).map(([v, l]) => (
+                <option key={v} value={v}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label style={lbl}>Data do exame *</label>
             <input
@@ -151,7 +166,7 @@ function RegistrarModal({
             <label style={lbl}>Clínica</label>
             <input style={input} value={clinica} onChange={(e) => setClinica(e.target.value)} />
           </div>
-          <div style={{ gridColumn: "span 2" }}>
+          <div>
             <label style={lbl}>Observação</label>
             <input style={input} value={obs} onChange={(e) => setObs(e.target.value)} />
           </div>
@@ -392,7 +407,7 @@ function HistoricoModal({
   useEffect(carregar, [carregar]);
   const sitLabel = (e: ExameOcupacional) =>
     e.situacao === "CONFIRMADO"
-      ? `Confirmado${e.resultado ? ` · ${RESULTADO_LABEL[e.resultado]}` : ""}`
+      ? `Confirmado${e.resultado ? ` · ${RESULTADO_LABEL[e.resultado]}` : ""} · ${TIPO_EXAME_LABEL[e.tipo] ?? "Periódico"}`
       : e.situacao === "AGUARDANDO_CONFERENCIA"
         ? "Aguardando conferência"
         : `Devolvido: ${e.motivoDevolucao ?? ""}`;

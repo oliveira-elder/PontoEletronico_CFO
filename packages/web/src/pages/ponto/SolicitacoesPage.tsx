@@ -1,4 +1,4 @@
-import { CID_ORIENTACAO, normalizarCid } from "../../utils/cid";
+import { CidGrupoCampo, type GrupoCidOpcao } from "../../components/atestado/CidGrupoCampo";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   PlusIcon,
@@ -933,11 +933,20 @@ function FormAtestado({
   const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
   const [documentoMime, setDocumentoMime] = useState<string>("image/jpeg");
   const [nomeArquivo, setNomeArquivo] = useState("");
-  /* CID (dado de saúde: visível só ao RH): só a categoria, 1 letra + 2 números. */
-  const [cidTexto, setCidTexto] = useState("");
+  /* CID (dado de saúde: visível só ao RH): grupo escolhido na lista; se a pessoa digitou o
+     CID (Z13, Z136, Z13.6), a categoria (Z13) também é registrada. */
+  const [cidGrupos, setCidGrupos] = useState<GrupoCidOpcao[]>([]);
+  const [cidGrupoId, setCidGrupoId] = useState("");
+  const [cidCategoria, setCidCategoria] = useState<string | null>(null);
   const cidModo = config?.atestadoCidModo ?? "OBRIGATORIO";
-  const cidCategoria = normalizarCid(cidTexto);
-  const cidInvalido = cidTexto.trim() !== "" && !cidCategoria;
+
+  useEffect(() => {
+    if (cidModo === "DESATIVADO") return;
+    api
+      .get<GrupoCidOpcao[]>("/ponto/config/cid-grupos")
+      .then((g) => setCidGrupos(g ?? []))
+      .catch(() => setCidGrupos([]));
+  }, [cidModo]);
 
   const isMobile = useIsMobile(768);
   const dias = diffDias(dataInicio, dataFim);
@@ -965,7 +974,7 @@ function FormAtestado({
     reader.readAsDataURL(file);
   };
 
-  const cidFaltando = (cidModo === "OBRIGATORIO" && !cidCategoria) || cidInvalido;
+  const cidFaltando = cidModo === "OBRIGATORIO" && !cidGrupoId;
 
   const handleSubmit = () => {
     if (!dataInicio || !descricao || cidFaltando) return;
@@ -981,7 +990,10 @@ function FormAtestado({
         diasDuracao: dias,
         requerHomologacao: dias > limite && dias < limiteInss,
         requerInss: dias >= limiteInss,
-        ...(cidCategoria && cidModo !== "DESATIVADO" ? { cidCodigo: cidCategoria } : {}),
+        ...(cidGrupoId && cidModo !== "DESATIVADO" ? { cidGrupoId } : {}),
+        ...(cidGrupoId && cidCategoria && cidModo !== "DESATIVADO"
+          ? { cidCodigo: cidCategoria }
+          : {}),
         documentoBase64: documentoBase64 || undefined,
         documentoMime
       }
@@ -1004,269 +1016,273 @@ function FormAtestado({
     boxSizing: "border-box"
   };
 
+  const coluna: React.CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    gap: 14,
+    minWidth: 0
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div>
-          <label style={labelBase}>
-            Data Inicial <span style={{ color: "var(--red)" }}>*</span>
-          </label>
-          <input
-            type="date"
-            style={input}
-            value={dataInicio}
-            onChange={(e) => {
-              const novoInicio = e.target.value;
-              setDataInicio(novoInicio);
-              if (dataFim && dataFim !== novoInicio) {
-                setHoraInicio("");
-                setHoraFim("");
-              }
-            }}
-          />
-        </div>
-        <div>
-          <label style={labelBase}>Data Final</label>
-          <input
-            type="date"
-            style={input}
-            value={dataFim}
-            min={dataInicio}
-            onChange={(e) => {
-              const novoFim = e.target.value;
-              setDataFim(novoFim);
-              if (novoFim !== dataInicio) {
-                setHoraInicio("");
-                setHoraFim("");
-              }
-            }}
-          />
-        </div>
-      </div>
-
-      {dias > 0 && (
-        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>
-          Duração:{" "}
-          <strong>
-            {dias} dia{dias !== 1 ? "s" : ""}
-          </strong>
-          {diaUnico ? " — dia inteiro ou período" : " — dias inteiros"}
-        </p>
-      )}
-
-      {/* Atalhos de período (apenas para atestado de 1 dia) */}
-      {diaUnico ? (
-        <div>
-          <label style={labelBase}>Período do atestado (atalhos)</label>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => aplicarAtalho("MATUTINO")}
-            >
-              ☀️ Matutino (08:00–12:00)
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => aplicarAtalho("VESPERTINO")}
-            >
-              🌆 Vespertino (13:00–18:00)
-            </button>
-          </div>
+      {/* Duas colunas no desktop (período à esquerda; documento, CID e descrição à direita). */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: isMobile ? "1fr" : "minmax(0, 1fr) minmax(0, 1fr)",
+          gap: isMobile ? 14 : "14px 28px",
+          alignItems: "start"
+        }}
+      >
+        <div style={coluna}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
-              <label style={labelBase}>Horário inicial</label>
-              <InputHorario
-                style={{ ...input, maxWidth: 140 }}
-                value={horaInicio}
-                onChange={setHoraInicio}
+              <label style={labelBase}>
+                Data Inicial <span style={{ color: "var(--red)" }}>*</span>
+              </label>
+              <input
+                type="date"
+                style={input}
+                value={dataInicio}
+                onChange={(e) => {
+                  const novoInicio = e.target.value;
+                  setDataInicio(novoInicio);
+                  if (dataFim && dataFim !== novoInicio) {
+                    setHoraInicio("");
+                    setHoraFim("");
+                  }
+                }}
               />
             </div>
             <div>
-              <label style={labelBase}>Horário final</label>
-              <InputHorario
-                style={{ ...input, maxWidth: 140 }}
-                value={horaFim}
-                onChange={setHoraFim}
+              <label style={labelBase}>Data Final</label>
+              <input
+                type="date"
+                style={input}
+                value={dataFim}
+                min={dataInicio}
+                onChange={(e) => {
+                  const novoFim = e.target.value;
+                  setDataFim(novoFim);
+                  if (novoFim !== dataInicio) {
+                    setHoraInicio("");
+                    setHoraFim("");
+                  }
+                }}
               />
             </div>
           </div>
-          <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
-            Deixe em branco se o atestado cobrir o dia inteiro.
-          </p>
-        </div>
-      ) : (
-        dias > 1 && (
-          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
-            Atestados com mais de um dia são sempre considerados dia inteiro (sem horário parcial).
-          </p>
-        )
-      )}
 
-      {/* Banner de regras */}
-      {config && dias > 0 && (
-        <div
-          style={{
-            padding: "12px 14px",
-            borderRadius: "var(--radius-md)",
-            border: `1px solid ${dias >= limiteInss ? "rgba(200,57,63,0.35)" : dias > limite ? "rgba(198,127,0,0.35)" : "rgba(37,99,235,0.25)"}`,
-            background:
-              dias >= limiteInss
-                ? "rgba(200,57,63,0.05)"
-                : dias > limite
-                  ? "rgba(198,127,0,0.06)"
-                  : "rgba(37,99,235,0.05)"
-          }}
-        >
-          {dias <= limite && (
-            <>
-              <p style={{ fontWeight: 700, fontSize: 13, color: "#1e40af", margin: "0 0 4px" }}>
-                ℹ️ Atestado padrão (até {limite} dias)
-              </p>
-              <p style={{ fontSize: 12.5, color: "#1e40af", margin: 0 }}>
-                {config.atestadoMensagemOriginais}
-              </p>
-            </>
+          {dias > 0 && (
+            <p style={{ fontSize: 12, color: "var(--ink-500)", margin: 0 }}>
+              Duração:{" "}
+              <strong>
+                {dias} dia{dias !== 1 ? "s" : ""}
+              </strong>
+              {diaUnico ? " — dia inteiro ou período" : " — dias inteiros"}
+            </p>
           )}
-          {dias > limite && dias < limiteInss && (
-            <>
-              <p style={{ fontWeight: 700, fontSize: 13, color: "#92400e", margin: "0 0 4px" }}>
-                ⚠️ Atestado com homologação necessária ({limite + 1}–{limiteInss - 1} dias)
-              </p>
-              <p style={{ fontSize: 12.5, color: "#92400e", margin: "0 0 8px" }}>
-                Após a aprovação do seu chefe, o RH avaliará se este atestado precisa de uma Guia do
-                Médico do Trabalho. Caso seja necessário, o RH enviará a guia específica diretamente
-                nesta solicitação e você poderá acompanhá-la aqui.
-              </p>
-              <p style={{ fontSize: 12.5, color: "#92400e", margin: "6px 0 0" }}>
-                {config.atestadoMensagemOriginais}
-              </p>
-            </>
-          )}
-          {dias >= limiteInss && (
-            <>
-              <p style={{ fontWeight: 700, fontSize: 13, color: "#7a1e26", margin: "0 0 4px" }}>
-                🔴 Afastamento longo (≥ {limiteInss} dias) — INSS necessário
-              </p>
-              <p style={{ fontSize: 12.5, color: "#7a1e26", margin: "0 0 4px" }}>
-                Anexe o documento do INSS para aprovação do RH.
-              </p>
-              <p style={{ fontSize: 12.5, color: "#7a1e26", margin: 0 }}>
-                {config.atestadoMensagemOriginais}
-              </p>
-            </>
-          )}
-        </div>
-      )}
 
-      {/* Upload do documento */}
-      <div>
-        <label style={labelBase}>Documento do atestado (foto ou PDF)</label>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {isMobile && (
-            <CameraScanner
-              onCaptura={(b64) => {
-                setDocumentoBase64(b64);
-                setDocumentoMime("image/jpeg");
-                setNomeArquivo("foto-câmera.jpg");
-              }}
-            />
+          {/* Atalhos de período (apenas para atestado de 1 dia) */}
+          {diaUnico ? (
+            <div>
+              <label style={labelBase}>Período do atestado (atalhos)</label>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => aplicarAtalho("MATUTINO")}
+                >
+                  ☀️ Matutino (08:00–12:00)
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => aplicarAtalho("VESPERTINO")}
+                >
+                  🌆 Vespertino (13:00–18:00)
+                </button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div>
+                  <label style={labelBase}>Horário inicial</label>
+                  <InputHorario
+                    style={{ ...input, maxWidth: 140 }}
+                    value={horaInicio}
+                    onChange={setHoraInicio}
+                  />
+                </div>
+                <div>
+                  <label style={labelBase}>Horário final</label>
+                  <InputHorario
+                    style={{ ...input, maxWidth: 140 }}
+                    value={horaFim}
+                    onChange={setHoraFim}
+                  />
+                </div>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--ink-500)", marginTop: 4 }}>
+                Deixe em branco se o atestado cobrir o dia inteiro.
+              </p>
+            </div>
+          ) : (
+            dias > 1 && (
+              <p style={{ fontSize: 11, color: "var(--ink-500)", margin: 0 }}>
+                Atestados com mais de um dia são sempre considerados dia inteiro (sem horário
+                parcial).
+              </p>
+            )
           )}
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              type="file"
-              id="atestado-arquivo"
-              accept="image/*,application/pdf"
-              style={{ display: "none" }}
-              onChange={handleArquivo}
-            />
-            <label
-              htmlFor="atestado-arquivo"
+
+          {/* Banner de regras */}
+          {config && dias > 0 && (
+            <div
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "7px 14px",
-                border: "1px solid rgba(122,30,38,0.22)",
+                padding: "12px 14px",
                 borderRadius: "var(--radius-md)",
-                cursor: "pointer",
-                fontSize: 12.5,
-                fontWeight: 600,
-                color: "var(--burgundy-600)",
-                background: "#fff"
+                border: `1px solid ${dias >= limiteInss ? "rgba(200,57,63,0.35)" : dias > limite ? "rgba(198,127,0,0.35)" : "rgba(37,99,235,0.25)"}`,
+                background:
+                  dias >= limiteInss
+                    ? "rgba(200,57,63,0.05)"
+                    : dias > limite
+                      ? "rgba(198,127,0,0.06)"
+                      : "rgba(37,99,235,0.05)"
               }}
             >
-              📎 Upload (imagem ou PDF)
-            </label>
-            {nomeArquivo && (
-              <span style={{ fontSize: 12, color: "var(--ink-500)" }}>✓ {nomeArquivo}</span>
-            )}
-          </div>
-          {documentoBase64 && documentoMime.startsWith("image/") && (
-            <img
-              src={documentoBase64}
-              alt="Prévia"
-              style={{
-                maxHeight: 180,
-                objectFit: "contain",
-                borderRadius: "var(--radius-md)",
-                border: "1px solid rgba(0,0,0,0.1)"
-              }}
-            />
+              {dias <= limite && (
+                <>
+                  <p style={{ fontWeight: 700, fontSize: 13, color: "#1e40af", margin: "0 0 4px" }}>
+                    ℹ️ Atestado padrão (até {limite} dias)
+                  </p>
+                  <p style={{ fontSize: 12.5, color: "#1e40af", margin: 0 }}>
+                    {config.atestadoMensagemOriginais}
+                  </p>
+                </>
+              )}
+              {dias > limite && dias < limiteInss && (
+                <>
+                  <p style={{ fontWeight: 700, fontSize: 13, color: "#92400e", margin: "0 0 4px" }}>
+                    ⚠️ Atestado com homologação necessária ({limite + 1}–{limiteInss - 1} dias)
+                  </p>
+                  <p style={{ fontSize: 12.5, color: "#92400e", margin: "0 0 8px" }}>
+                    Após a aprovação do seu chefe, o RH avaliará se este atestado precisa de uma
+                    Guia do Médico do Trabalho. Caso seja necessário, o RH enviará a guia específica
+                    diretamente nesta solicitação e você poderá acompanhá-la aqui.
+                  </p>
+                  <p style={{ fontSize: 12.5, color: "#92400e", margin: "6px 0 0" }}>
+                    {config.atestadoMensagemOriginais}
+                  </p>
+                </>
+              )}
+              {dias >= limiteInss && (
+                <>
+                  <p style={{ fontWeight: 700, fontSize: 13, color: "#7a1e26", margin: "0 0 4px" }}>
+                    🔴 Afastamento longo (≥ {limiteInss} dias) — INSS necessário
+                  </p>
+                  <p style={{ fontSize: 12.5, color: "#7a1e26", margin: "0 0 4px" }}>
+                    Anexe o documento do INSS para aprovação do RH.
+                  </p>
+                  <p style={{ fontSize: 12.5, color: "#7a1e26", margin: 0 }}>
+                    {config.atestadoMensagemOriginais}
+                  </p>
+                </>
+              )}
+            </div>
           )}
         </div>
-      </div>
+        <div style={coluna}>
+          {/* Upload do documento */}
+          <div>
+            <label style={labelBase}>Documento do atestado (foto ou PDF)</label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {isMobile && (
+                <CameraScanner
+                  onCaptura={(b64) => {
+                    setDocumentoBase64(b64);
+                    setDocumentoMime("image/jpeg");
+                    setNomeArquivo("foto-câmera.jpg");
+                  }}
+                />
+              )}
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="file"
+                  id="atestado-arquivo"
+                  accept="image/*,application/pdf"
+                  style={{ display: "none" }}
+                  onChange={handleArquivo}
+                />
+                <label
+                  htmlFor="atestado-arquivo"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "7px 14px",
+                    border: "1px solid rgba(122,30,38,0.22)",
+                    borderRadius: "var(--radius-md)",
+                    cursor: "pointer",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    color: "var(--burgundy-600)",
+                    background: "#fff"
+                  }}
+                >
+                  📎 Upload (imagem ou PDF)
+                </label>
+                {nomeArquivo && (
+                  <span style={{ fontSize: 12, color: "var(--ink-500)" }}>✓ {nomeArquivo}</span>
+                )}
+              </div>
+              {documentoBase64 && documentoMime.startsWith("image/") && (
+                <img
+                  src={documentoBase64}
+                  alt="Prévia"
+                  style={{
+                    maxHeight: 180,
+                    objectFit: "contain",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid rgba(0,0,0,0.1)"
+                  }}
+                />
+              )}
+            </div>
+          </div>
 
-      {cidModo !== "DESATIVADO" && (
-        <div>
-          <label style={labelBase} htmlFor="atestado-cid">
-            CID {cidModo === "OBRIGATORIO" && <span style={{ color: "var(--red)" }}>*</span>}
-          </label>
-          <input
-            id="atestado-cid"
-            style={{ ...input, textTransform: "uppercase", maxWidth: 220 }}
-            value={cidTexto}
-            maxLength={8}
-            placeholder="Ex.: Z13"
-            autoComplete="off"
-            onChange={(e) => setCidTexto(e.target.value)}
-            onBlur={() => cidCategoria && setCidTexto(cidCategoria)}
-          />
-          <p
-            style={{
-              fontSize: 11,
-              color: cidInvalido ? "var(--red)" : "var(--ink-500)",
-              margin: "4px 0 0"
-            }}
-          >
-            {cidInvalido
-              ? "CID inválido. Use 1 letra seguida de 2 números, como Z13."
-              : cidCategoria &&
-                  cidTexto
-                    .trim()
-                    .toUpperCase()
-                    .replace(/[\s.-]/g, "") !== cidCategoria
-                ? `Será registrado como ${cidCategoria} (a categoria é a mesma).`
-                : CID_ORIENTACAO}
-          </p>
-          <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
-            Informação de saúde protegida (LGPD): fica visível apenas para o RH.
-          </p>
+          {cidModo !== "DESATIVADO" && (
+            <div>
+              <label style={labelBase} htmlFor="atestado-cid">
+                CID {cidModo === "OBRIGATORIO" && <span style={{ color: "var(--red)" }}>*</span>}
+              </label>
+              <CidGrupoCampo
+                grupos={cidGrupos}
+                valorId={cidGrupoId}
+                obrigatorio={cidModo === "OBRIGATORIO"}
+                inputStyle={input}
+                onSelecionar={(g, categoria) => {
+                  setCidGrupoId(g?.id ?? "");
+                  setCidCategoria(g ? categoria : null);
+                }}
+              />
+              <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "2px 0 0" }}>
+                Informação de saúde protegida (LGPD): fica visível apenas para o RH.
+              </p>
+            </div>
+          )}
+
+          <div>
+            <label style={labelBase}>
+              Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
+            </label>
+            <textarea
+              style={{ ...input, resize: "vertical" }}
+              rows={3}
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+              placeholder="Descreva o motivo..."
+            />
+          </div>
         </div>
-      )}
-
-      <div>
-        <label style={labelBase}>
-          Descrição / Justificativa <span style={{ color: "var(--red)" }}>*</span>
-        </label>
-        <textarea
-          style={{ ...input, resize: "vertical" }}
-          rows={3}
-          value={descricao}
-          onChange={(e) => setDescricao(e.target.value)}
-          placeholder="Descreva o motivo..."
-        />
       </div>
 
       <button
@@ -4151,7 +4167,7 @@ export function NovaModal({
             background: "#fff",
             borderRadius: "var(--radius-xl)",
             width: "100%",
-            maxWidth: rhFuncionario ? 760 : 560,
+            maxWidth: tipo === "ATESTADO" ? 940 : rhFuncionario ? 760 : 560,
             maxHeight: "calc(100dvh - 32px)",
             boxShadow: "0 24px 64px -16px rgba(10,5,6,0.30)",
             display: "flex",

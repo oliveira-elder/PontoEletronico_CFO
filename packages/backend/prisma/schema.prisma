@@ -1139,6 +1139,8 @@ model ExameOcupacional {
   situacao                 String      @default("AGUARDANDO_CONFERENCIA")
   /// APTO | INAPTO; registros antigos podem ter APTO_COM_RESTRICAO (preenchido na confirmação)
   resultado                String?
+  /// ADMISSIONAL | PERIODICO | RETORNO_AO_TRABALHO
+  tipo                     String      @default("PERIODICO")
   medico                   String?
   clinica                  String?
   proximoVencimento        DateTime?   @db.Date

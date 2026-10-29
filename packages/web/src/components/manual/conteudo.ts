@@ -272,7 +272,7 @@ export const CAPITULOS: Capitulo[] = [
           "Em Solicitações, clique em “+ Nova solicitação” e escolha “Atestado Médico”.",
           "Informe a Data Inicial (e a Data Final, se houver). Para poucas horas, use “Matutino” ou “Vespertino” e ajuste o horário.",
           "Em “Documento do atestado”, use “Upload (imagem ou PDF)”.",
-          "Preencha o “CID” com 1 letra seguida de 2 números (ex.: Z13). Se o documento trouxer 3 números (Z136 ou Z13.6), informe só Z13: é a mesma categoria e o sistema registra como Z13 (informação de saúde protegida: só o RH vê).",
+          "No campo “CID”, busque o grupo digitando o código (1 letra seguida de 2 números, ex.: Z13) ou parte do nome, e escolha na lista. Se o documento trouxer 3 números (Z136 ou Z13.6), digite só Z13: é a mesma categoria e o sistema registra como Z13 (informação de saúde protegida: só o RH vê).",
           "Preencha a “Descrição / Justificativa” e clique em “Enviar Solicitação”.",
           "O RH pode pedir o documento de retorno da consulta (homologação); a solicitação fica como “Aguardando seu documento”."
         ],

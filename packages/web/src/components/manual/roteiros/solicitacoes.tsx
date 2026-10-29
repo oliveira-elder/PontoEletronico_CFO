@@ -453,8 +453,43 @@ function FormAtestado({ e }: { e: Estado }) {
         </div>
       </div>
       <div>
-        <Campo id="at-cid" e={e} rotulo="CID" obrigatorio placeholder="Ex.: Z13" />
-        <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "4px 0 0" }}>
+        <Campo
+          id="at-cid"
+          e={e}
+          rotulo="CID"
+          obrigatorio
+          placeholder="Digite o código (ex.: Z13) ou parte do nome para buscar"
+        />
+        {!!e["at-cid"] && !e.cidEscolhido && (
+          <div
+            style={{
+              marginTop: 6,
+              padding: 4,
+              border: "1px solid rgba(122,30,38,0.14)",
+              borderRadius: "var(--radius-md)",
+              background: "#fff"
+            }}
+          >
+            <div
+              data-alvo="at-cid-opcao"
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "baseline",
+                padding: "7px 10px",
+                borderRadius: 6,
+                fontSize: 13,
+                background: "rgba(122,30,38,0.08)"
+              }}
+            >
+              <strong style={{ fontFamily: "var(--font-mono, monospace)", minWidth: 72 }}>
+                J00-J99
+              </strong>
+              <span>Doenças do aparelho respiratório</span>
+            </div>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: "var(--ink-500)", margin: "6px 0 0" }}>
           Informe 1 letra seguida de 2 números (ex.: Z13). Se o documento trouxer 3 números (Z136 ou
           Z13.6), informe só Z13: é a mesma categoria.
         </p>
@@ -544,7 +579,14 @@ export const enviarAtestado: Roteiro = {
       alvo: "at-cid",
       valor: "J11",
       legenda:
-        "Digite o CID do atestado: 1 letra e 2 números (ex.: J11). Se vier com 3 números (J110 ou J11.0), use só J11. É uma informação de saúde protegida: só o RH vê."
+        "No campo “CID”, busque o grupo digitando o código (1 letra e 2 números, ex.: J11; se vier J110 ou J11.0, use só J11) ou parte do nome (ex.: “respirat”). A lista filtra enquanto você digita."
+    },
+    {
+      acao: "clicar",
+      alvo: "at-cid-opcao",
+      set: { "at-cid": "J00-J99 — Doenças do aparelho respiratório", cidEscolhido: true },
+      legenda:
+        "Clique no grupo na lista (J00-J99). É obrigatório escolher um grupo. É uma informação de saúde protegida: só o RH vê."
     },
     {
       acao: "digitar",

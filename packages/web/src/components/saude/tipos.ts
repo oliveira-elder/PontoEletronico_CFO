@@ -6,6 +6,7 @@ export interface ExameOcupacional {
   dataRealizacao: string;
   situacao: "AGUARDANDO_CONFERENCIA" | "CONFIRMADO" | "DEVOLVIDO";
   resultado: "APTO" | "APTO_COM_RESTRICAO" | "INAPTO" | null;
+  tipo: "ADMISSIONAL" | "PERIODICO" | "RETORNO_AO_TRABALHO";
   medico: string | null;
   clinica: string | null;
   proximoVencimento: string | null;
@@ -25,6 +26,12 @@ export const RESULTADO_LABEL: Record<string, string> = {
   APTO: "Apto",
   APTO_COM_RESTRICAO: "Apto com restrição",
   INAPTO: "Inapto"
+};
+
+export const TIPO_EXAME_LABEL: Record<string, string> = {
+  ADMISSIONAL: "Admissional",
+  PERIODICO: "Periódico",
+  RETORNO_AO_TRABALHO: "Retorno ao trabalho"
 };
 
 export const SITUACAO_LABEL: Record<SituacaoExame, { label: string; cor: string; bg: string }> = {

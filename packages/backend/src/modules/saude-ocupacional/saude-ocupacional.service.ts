@@ -16,6 +16,7 @@ import { situacaoDoExame, vencimentoPeriodico } from "../../utils/exame-ocupacio
 import { inteiroConfig } from "../../utils/licenca-regras";
 
 const RESULTADOS = ["APTO", "INAPTO"] as const;
+const TIPOS_EXAME = ["ADMISSIONAL", "PERIODICO", "RETORNO_AO_TRABALHO"] as const;
 const TAMANHO_MAX_BYTES = 8 * 1024 * 1024;
 const MIME_PERMITIDOS: Record<string, string> = {
   "application/pdf": "pdf",
@@ -130,7 +131,11 @@ export class SaudeOcupacionalService {
 
   /* ─── Utilitários ─── */
 
-  private validarEntrada(body: { dataRealizacao?: string; resultado?: string | null }) {
+  private validarEntrada(body: {
+    dataRealizacao?: string;
+    resultado?: string | null;
+    tipo?: string | null;
+  }) {
     const hoje = hojeBrasiliaISO();
     const data = String(body.dataRealizacao ?? "");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
@@ -139,6 +144,9 @@ export class SaudeOcupacionalService {
     if (data > hoje) throw new BadRequestException("A data do exame não pode ser futura.");
     if (body.resultado && !(RESULTADOS as readonly string[]).includes(body.resultado)) {
       throw new BadRequestException("Resultado inválido.");
+    }
+    if (body.tipo && !(TIPOS_EXAME as readonly string[]).includes(body.tipo)) {
+      throw new BadRequestException("Tipo de exame inválido.");
     }
     return data;
   }
@@ -169,6 +177,7 @@ export class SaudeOcupacionalService {
       dataRealizacao: dataCivilISO(e.dataRealizacao),
       situacao: e.situacao,
       resultado: e.resultado,
+      tipo: e.tipo,
       medico: e.medico,
       clinica: e.clinica,
       proximoVencimento: e.proximoVencimento ? dataCivilISO(e.proximoVencimento) : null,
@@ -278,6 +287,7 @@ export class SaudeOcupacionalService {
     body: {
       dataRealizacao?: string;
       resultado?: string;
+      tipo?: string;
       medico?: string;
       clinica?: string;
       observacao?: string;
@@ -287,6 +297,7 @@ export class SaudeOcupacionalService {
     sub: string
   ) {
     const data = this.validarEntrada(body);
+    if (!body.tipo) throw new BadRequestException("Informe o tipo do exame.");
     if (!body.resultado) throw new BadRequestException("Informe o resultado do exame.");
     if (body.arquivoBase64) this.validarArquivo(body.arquivoBase64);
     await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
@@ -298,6 +309,7 @@ export class SaudeOcupacionalService {
         dataRealizacao: new Date(`${data}T12:00:00Z`),
         situacao: "CONFIRMADO",
         resultado: body.resultado,
+        tipo: body.tipo,
         medico: body.medico?.trim() || null,
         clinica: body.clinica?.trim() || null,
         observacao: body.observacao?.trim() || null,
@@ -329,6 +341,7 @@ export class SaudeOcupacionalService {
     body: {
       dataRealizacao?: string;
       resultado?: string | null;
+      tipo?: string;
       medico?: string | null;
       clinica?: string | null;
       observacao?: string | null;
@@ -340,13 +353,15 @@ export class SaudeOcupacionalService {
     if (!ex) throw new NotFoundException("Exame não encontrado.");
     const data = this.validarEntrada({
       dataRealizacao: body.dataRealizacao ?? dataCivilISO(ex.dataRealizacao),
-      resultado: body.resultado === undefined ? ex.resultado : body.resultado
+      resultado: body.resultado === undefined ? ex.resultado : body.resultado,
+      tipo: body.tipo
     });
     if (body.arquivoBase64) this.validarArquivo(body.arquivoBase64);
     const cfg = await this.getConfig();
     const dados: Record<string, unknown> = {
       dataRealizacao: new Date(`${data}T12:00:00Z`),
       ...(body.resultado !== undefined ? { resultado: body.resultado || null } : {}),
+      ...(body.tipo ? { tipo: body.tipo } : {}),
       ...(body.medico !== undefined ? { medico: body.medico?.trim() || null } : {}),
       ...(body.clinica !== undefined ? { clinica: body.clinica?.trim() || null } : {}),
       ...(body.observacao !== undefined ? { observacao: body.observacao?.trim() || null } : {})
