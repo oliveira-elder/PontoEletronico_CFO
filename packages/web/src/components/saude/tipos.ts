@@ -1,3 +1,5 @@
+import { api } from "../../hooks/useApi";
+
 export type SituacaoExame = "EM_DIA" | "A_VENCER" | "VENCIDO" | "SEM_EXAME";
 
 export interface ExameOcupacional {
@@ -43,6 +45,22 @@ export const SITUACAO_LABEL: Record<SituacaoExame, { label: string; cor: string;
 
 export const fmtDataBr = (iso: string | null | undefined) =>
   iso ? iso.slice(0, 10).split("-").reverse().join("/") : "—";
+
+/** Abre o ASO numa nova aba (PDF/imagem no visualizador do navegador), sem baixar. */
+export async function abrirAso(exameId: string) {
+  /* A aba é aberta já no clique (antes da requisição) para o navegador não bloqueá-la. */
+  const aba = window.open("", "_blank");
+  try {
+    const blob = await api.blob(`/ponto/saude-ocupacional/exames/${exameId}/arquivo`);
+    const url = URL.createObjectURL(blob);
+    if (aba) aba.location.href = url;
+    else window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  } catch (e) {
+    aba?.close();
+    alert("Não foi possível abrir o ASO: " + (e as Error).message);
+  }
+}
 
 export const lerArquivoBase64 = (file: File) =>
   new Promise<string>((resolve, reject) => {

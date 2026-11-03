@@ -43,7 +43,7 @@ export async function montarDiaNeutro(
   };
   return (iso: string) => {
     if (diaEmCessao(iso, cessoes)) return "Isento — Cedido";
-    if (diaSemObrigacaoPonto(iso, opts)) return "Isento — Comissionado/Chefe";
+    if (diaSemObrigacaoPonto(iso, opts)) return "Isento — Comissionado/Chefe/Assessor";
     return null;
   };
 }

@@ -1473,7 +1473,7 @@ export class PontoService implements OnModuleInit {
     ) {
       throw new BadRequestException(
         "Hoje ainda não há obrigação de registro de ponto. " +
-          "Após retorno de Comissionado/Chefe para categoria com ponto, " +
+          "Após retorno de Comissionado/Chefe/Assessor para categoria com ponto, " +
           "a obrigação começa apenas no dia seguinte."
       );
     }
@@ -2703,7 +2703,7 @@ export class PontoService implements OnModuleInit {
             jornadaEsperadaMinutos: 0,
             saldoDiaMinutos: 0,
             saldoAcumuladoMinutos: saldoAcumulado,
-            observacao: cedidoNoDia ? "Isento — Cedido" : "Isento — Comissionado/Chefe"
+            observacao: cedidoNoDia ? "Isento — Cedido" : "Isento — Comissionado/Chefe/Assessor"
           });
         }
         const prox = new Date(year, month - 1, day);

@@ -152,6 +152,23 @@ export type ExtensionsUserLookup = {
   gerenciaNome?: string | null;
 };
 
+/** Pessoa encontrada na API de ramais pela busca manual (Usuários Cadastrados). */
+export type ExtensionsCandidato = {
+  apiId: string;
+  nome: string;
+  email: string | null;
+  staffId: number | null;
+  secao: string;
+  secaoNome: string;
+  subsecao: string | null;
+  gerente: boolean;
+  /** Todas as palavras buscadas aparecem no nome/e-mail (senão é só um resultado parcial). */
+  completo: boolean;
+  cadastrado: boolean;
+  /** Por que não dá para cadastrar agora (null = pode cadastrar). */
+  bloqueio: string | null;
+};
+
 @Injectable()
 export class ExtensionsService {
   private readonly logger = new Logger(ExtensionsService.name);
@@ -720,6 +737,101 @@ export class ExtensionsService {
       gerenciaId: gerencia?.id ?? null,
       gerenciaNome: gerencia?.nome ?? slugParaNome(encontrado.section.name)
     };
+  }
+
+  /** Todas as pessoas da API (diretas, subseções e gestores), sem repetir o mesmo id. */
+  private pessoasDaApi(sections: ApiSection[]) {
+    const vistos = new Set<string>();
+    const lista: { u: ApiUser; section: ApiSection; sub: string | null; gerente: boolean }[] = [];
+    const add = (u: ApiUser, section: ApiSection, sub: string | null, gerente: boolean) => {
+      if (vistos.has(u.id)) return;
+      vistos.add(u.id);
+      lista.push({ u, section, sub, gerente });
+    };
+    for (const section of sections) {
+      const ehGerente = (u: ApiUser) =>
+        section.managers.some((m) => m.id === u.id || (!!m.email && m.email === u.email));
+      for (const u of section.users) add(u, section, null, ehGerente(u));
+      for (const sub of section.subsections) {
+        for (const u of sub.users) add(u, section, sub.name, ehGerente(u));
+      }
+      for (const m of section.managers) add(m, section, null, true);
+    }
+    return lista;
+  }
+
+  /**
+   * Busca manual de uma pessoa na API de ramais/matrícula (por usuário SSO, e-mail ou nome).
+   * Só consulta: nada é criado até `importarUsuario` ser chamado.
+   */
+  async buscarCandidatos(consulta: string): Promise<{ candidatos: ExtensionsCandidato[] }> {
+    const q = consulta.trim().toLowerCase();
+    const tokens = normTexto(q).split(" ").filter(Boolean);
+    if (tokens.length === 0) return { candidatos: [] };
+    const prefixo = q.split("@")[0];
+
+    const sections = await this.fetchSections();
+    const pontuados = this.pessoasDaApi(sections)
+      .map((p) => {
+        const texto = normTexto(`${p.u.name} ${p.u.email ?? ""}`);
+        const acertos = tokens.filter((t) => texto.includes(t)).length;
+        const exato = !!p.u.email && p.u.email.trim().toLowerCase().split("@")[0] === prefixo;
+        return { ...p, acertos, exato };
+      })
+      .filter((p) => p.acertos > 0)
+      .sort(
+        (a, b) =>
+          Number(b.exato) - Number(a.exato) ||
+          b.acertos - a.acertos ||
+          a.u.name.localeCompare(b.u.name, "pt-BR")
+      )
+      .slice(0, 10);
+
+    const candidatos: ExtensionsCandidato[] = [];
+    for (const p of pontuados) {
+      const email = p.u.email?.trim() || null;
+      const user = email ? await this.resolveUser(email) : null;
+      const func = user
+        ? await this.prisma.funcionario.findUnique({
+            where: { userId: user.id },
+            select: { id: true }
+          })
+        : null;
+      const bloqueio = func
+        ? "Já cadastrado no sistema."
+        : !email
+          ? "Sem e-mail na API de ramais."
+          : p.u.staffId == null
+            ? "Sem matrícula na API: não é possível cadastrar."
+            : null;
+      candidatos.push({
+        apiId: p.u.id,
+        nome: p.u.name,
+        email,
+        staffId: p.u.staffId,
+        secao: p.section.name,
+        secaoNome: slugParaNome(p.section.name),
+        subsecao: p.sub,
+        gerente: p.gerente,
+        completo: p.acertos === tokens.length,
+        cadastrado: !!func,
+        bloqueio
+      });
+    }
+    return { candidatos };
+  }
+
+  /** Cadastra (ou completa) a pessoa escolhida na busca manual, com a matrícula da API. */
+  async importarUsuario(apiId: string): Promise<{ resultado: string; nome: string }> {
+    const sections = await this.fetchSections();
+    const alvo = this.pessoasDaApi(sections).find((p) => p.u.id === apiId);
+    if (!alvo) return { resultado: "nao_encontrado", nome: "" };
+    const { u, section, sub } = alvo;
+    if (!u.email?.trim()) return { resultado: "sem_email", nome: u.name };
+    if (u.staffId == null) return { resultado: "sem_matricula", nome: u.name };
+    const gerencia = await this.resolveGerenciaForSection(section);
+    const r = await this.syncUser(u, gerencia.id, section.name, sub, section.managers);
+    return { resultado: r, nome: u.name };
   }
 
   /** Encontra gerência já cadastrada para a seção, sem criar registro novo. */

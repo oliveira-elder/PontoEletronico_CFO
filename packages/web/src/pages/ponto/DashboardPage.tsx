@@ -140,6 +140,9 @@ interface ApiStatus {
   jornadaMinutos: number;
   proximaAcao: string;
   categoria?: string;
+  /** Quem não bate ponto (chefe, assessor, comissionado ou isento no dia). */
+  semRegistroPonto?: boolean;
+  isentoHoje?: boolean;
 }
 
 interface ApiRelatorio {
@@ -1028,6 +1031,12 @@ export function DashboardPage() {
   const primeiroNome = (user?.name ?? "").split(" ")[0] || "Olá";
 
   const estado = status?.estado ?? "FORA";
+  /* Quem não registra ponto (comissionado, chefe, assessor ou isento no dia) não está "Fora":
+     isso sugere ponto não batido. Quem bate ponto continua "Fora" quando fora do expediente.
+     O backend já resolve a regra, inclusive o override do RH que obriga o registro. */
+  const semRegistroPonto = !!status?.semRegistroPonto || !!status?.isentoHoje;
+  const rotuloEstado =
+    semRegistroPonto && estado === "FORA" ? "Sem registro de ponto" : ESTADO_LABEL[estado];
   /* Horas do dia sempre do servidor (mesma regra da folha: almoço mínimo, pausas, tolerâncias),
      relidas a cada 30 s — sem estimar no navegador, que não conhece essas regras. */
   const horasHoje = status?.horasTrabalhadasMinutos ?? 0;
@@ -1259,7 +1268,7 @@ export function DashboardPage() {
                       : "#f3f4f6"
               }}
             >
-              {ESTADO_LABEL[estado]}
+              {rotuloEstado}
             </span>
           </div>
         </div>
@@ -1660,7 +1669,7 @@ export function DashboardPage() {
               <span
                 className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
               />
-              {ESTADO_LABEL[estado]}
+              {rotuloEstado}
             </span>
             {/* Validação pública de documentos (Espelho de Ponto e comprovantes): página /verificar. */}
             <Link
@@ -1729,7 +1738,7 @@ export function DashboardPage() {
               className={`dot dot-${estado === "TRABALHANDO" ? "green" : estado === "INTERVALO" || estado === "PAUSADO" ? "amber" : "gray"}`}
               style={{ width: 6, height: 6 }}
             />
-            {ESTADO_LABEL[estado]}
+            {rotuloEstado}
           </span>
         </div>
         <div

@@ -8,6 +8,8 @@ export type NivelDemanda = "ok" | "atencao" | "urgente";
 export interface ItemDemanda {
   nome: string;
   matricula: string | null;
+  /** Categoria funcional (enum) do funcionário, quando o item é uma pessoa. */
+  categoria?: string | null;
   extra: string | null;
 }
 
@@ -72,7 +74,9 @@ export class PainelDemandasService {
         status: true,
         tipo: true,
         createdAt: true,
-        funcionario: { select: { matricula: true, user: { select: { name: true } } } }
+        funcionario: {
+          select: { matricula: true, categoria: true, user: { select: { name: true } } }
+        }
       }
     });
     const etapas: Array<[string, string, string, number]> = [
@@ -106,6 +110,7 @@ export class PainelDemandasService {
         itens: lista.slice(0, LIMITE_ITENS).map((s) => ({
           nome: s.funcionario.user.name,
           matricula: s.funcionario.matricula,
+          categoria: s.funcionario.categoria,
           extra: `${(ROTULO_TIPO[s.tipo] ?? [s.tipo])[0]} · desde ${dataCivilISO(s.createdAt)}`
         }))
       });
@@ -124,7 +129,9 @@ export class PainelDemandasService {
           select: {
             mes: true,
             ano: true,
-            funcionario: { select: { matricula: true, user: { select: { name: true } } } }
+            funcionario: {
+              select: { matricula: true, categoria: true, user: { select: { name: true } } }
+            }
           }
         }
       }
@@ -144,6 +151,7 @@ export class PainelDemandasService {
         itens: lista.slice(0, LIMITE_ITENS).map((f) => ({
           nome: f.periodo.funcionario.user.name,
           matricula: f.periodo.funcionario.matricula,
+          categoria: f.periodo.funcionario.categoria,
           extra: `${String(f.periodo.mes).padStart(2, "0")}/${f.periodo.ano}`
         }))
       });
@@ -155,6 +163,7 @@ export class PainelDemandasService {
       exames.itens.filter(filtro).map((i) => ({
         nome: i.nome,
         matricula: i.matricula,
+        categoria: i.categoria,
         extra:
           i.diasParaVencer === null
             ? "sem exame registrado"
@@ -204,6 +213,7 @@ export class PainelDemandasService {
       itens: conferir.slice(0, LIMITE_ITENS).map((i) => ({
         nome: i.nome,
         matricula: i.matricula,
+        categoria: i.categoria,
         extra: `exame de ${i.aguardandoConferencia?.dataRealizacao ?? ""}`
       }))
     });
@@ -217,13 +227,16 @@ export class PainelDemandasService {
       },
       select: {
         requisicao: { select: { titulo: true, prazo: true } },
-        funcionario: { select: { matricula: true, user: { select: { name: true } } } }
+        funcionario: {
+          select: { matricula: true, categoria: true, user: { select: { name: true } } }
+        }
       }
     });
     const mapReq = (l: typeof reqs) =>
       l.slice(0, LIMITE_ITENS).map((r) => ({
         nome: r.funcionario.user.name,
         matricula: r.funcionario.matricula,
+        categoria: r.funcionario.categoria,
         extra: r.requisicao.titulo
       }));
     const vencidasReq = reqs.filter(
@@ -269,7 +282,12 @@ export class PainelDemandasService {
         }
       },
       orderBy: { contratoTermino: "asc" },
-      select: { matricula: true, contratoTermino: true, user: { select: { name: true } } }
+      select: {
+        matricula: true,
+        categoria: true,
+        contratoTermino: true,
+        user: { select: { name: true } }
+      }
     });
     cartoes.push({
       id: "contratos-a-vencer",
@@ -282,13 +300,14 @@ export class PainelDemandasService {
       itens: contratos.slice(0, LIMITE_ITENS).map((c) => ({
         nome: c.user.name,
         matricula: c.matricula,
+        categoria: c.categoria,
         extra: `termina em ${dataCivilISO(c.contratoTermino!)}`
       }))
     });
     const [semLotacao, gerencias] = await Promise.all([
       this.prisma.funcionario.findMany({
         where: { ativo: true, gerenciaId: null },
-        select: { matricula: true, user: { select: { name: true } } }
+        select: { matricula: true, categoria: true, user: { select: { name: true } } }
       }),
       this.prisma.gerencia.findMany({
         where: { ativa: true },
@@ -310,6 +329,7 @@ export class PainelDemandasService {
         itens: semLotacao.slice(0, LIMITE_ITENS).map((f) => ({
           nome: f.user.name,
           matricula: f.matricula,
+          categoria: f.categoria,
           extra: null
         }))
       },

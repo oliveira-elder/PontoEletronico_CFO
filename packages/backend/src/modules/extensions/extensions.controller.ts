@@ -8,6 +8,7 @@ import {
   Query,
   Req,
   ForbiddenException,
+  BadRequestException,
   UseGuards
 } from "@nestjs/common";
 import { AuthGuard } from "@nestjs/passport";
@@ -66,6 +67,24 @@ export class ExtensionsController {
   lookup(@Query("email") email?: string) {
     if (!email?.trim()) return { found: false as const };
     return this.extensionsService.lookupUser(email.trim());
+  }
+
+  /** Busca manual (Usuários Cadastrados): só consulta a API de ramais/matrícula. */
+  @Get("buscar")
+  @Roles("ponto-admin", "PONTO_ADMIN")
+  buscar(@Req() req: AuthRequest, @Query("q") q?: string) {
+    assertSuperAdmin(req);
+    if (!q?.trim()) return { candidatos: [] };
+    return this.extensionsService.buscarCandidatos(q);
+  }
+
+  /** Cadastra a pessoa escolhida na busca manual (User + Funcionário, com a matrícula da API). */
+  @Post("importar")
+  @Roles("ponto-admin", "PONTO_ADMIN")
+  importar(@Req() req: AuthRequest, @Body() body: { apiId?: string }) {
+    assertSuperAdmin(req);
+    if (!body?.apiId) throw new BadRequestException("Informe a pessoa a cadastrar.");
+    return this.extensionsService.importarUsuario(body.apiId);
   }
 
   @RecursoRh("gestao.ramais.sincronizar")

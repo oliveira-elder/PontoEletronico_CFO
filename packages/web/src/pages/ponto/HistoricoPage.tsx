@@ -527,7 +527,7 @@ function StatusPill({
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
     FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
-    ISENTO: { label: "Isento — Comissionado/Chefe", cls: "badge-blue" }
+    ISENTO: { label: "Isento — Comissionado/Chefe/Assessor", cls: "badge-blue" }
   };
   const { label, cls } = map[status];
   const titulo =
@@ -542,7 +542,7 @@ function StatusPill({
   return (
     <span className={`badge ${cls}`} style={BADGE_HISTORICO_STYLE} title={titulo}>
       {status === "ISENTO"
-        ? obs || "Isento — Comissionado/Chefe"
+        ? obs || "Isento — Comissionado/Chefe/Assessor"
         : status === "AFASTAMENTO" && obs
           ? obs
           : status === "FERIADO" && obs

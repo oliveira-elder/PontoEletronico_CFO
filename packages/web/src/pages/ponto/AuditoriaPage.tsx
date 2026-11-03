@@ -4736,7 +4736,7 @@ function buildHistorico(
         horasMin: 0,
         jornadaMin: 0,
         status: "ISENTO",
-        obs: diaCedido(isoKey) ? "Isento — Cedido" : "Isento — Comissionado/Chefe",
+        obs: diaCedido(isoKey) ? "Isento — Cedido" : "Isento — Comissionado/Chefe/Assessor",
         observacoes: dayRegsIsento.flatMap((r) => r.observacoes ?? [])
       });
       continue;
@@ -5216,14 +5216,14 @@ function StatusPillH({
     FERIADO: { label: "Feriado", cls: "badge-gray" },
     FUTURO: { label: "", cls: "badge-gray" },
     FOLGA: { label: "Sem Expediente", cls: "badge-gray" },
-    ISENTO: { label: "Isento — Comissionado/Chefe", cls: "badge-blue" }
+    ISENTO: { label: "Isento — Comissionado/Chefe/Assessor", cls: "badge-blue" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-gray" };
   const titulo = obs ?? undefined;
   return (
     <span className={`badge ${cls}`} title={titulo}>
       {status === "ISENTO"
-        ? obs || "Isento — Comissionado/Chefe"
+        ? obs || "Isento — Comissionado/Chefe/Assessor"
         : status === "AFASTAMENTO" && obs
           ? obs
           : status === "FERIADO" && obs
@@ -6318,7 +6318,7 @@ function usePodeAuditoria(): (recurso: string) => boolean {
   return (recurso: string) => !restrito || podeRh(recurso);
 }
 
-/** Fechamentos do banco por mudança de situação (virou chefe/fiscal/assessor ou voltou a bater). */
+/** Fechamentos do banco por mudança de situação (virou chefe/assessor ou voltou a bater). */
 function FechamentosSituacaoCard({
   funcionarioId,
   token

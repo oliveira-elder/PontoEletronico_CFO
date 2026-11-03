@@ -1125,7 +1125,7 @@ export function transformarHistorico(
           ? `${afastInfo.rotulo || (TIPO_AFASTAMENTO_LABEL[afastInfo.tipo] ?? "Afastamento")} (informativo)`
           : diaEmCessao(isoKey)
             ? "Isento — Cedido"
-            : "Isento — Comissionado/Chefe",
+            : "Isento — Comissionado/Chefe/Assessor",
         apenasInformativo: true,
         observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
       });
@@ -1244,7 +1244,7 @@ export function transformarHistorico(
           horasMin: 0,
           jornadaMin: 0,
           status: "ISENTO",
-          obs: "Isento — Comissionado/Chefe",
+          obs: "Isento — Comissionado/Chefe/Assessor",
           apenasInformativo: true,
           observacoes: dayRegs.flatMap((r) => r.observacoes ?? [])
         });

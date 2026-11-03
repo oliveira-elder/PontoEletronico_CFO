@@ -46,7 +46,7 @@ export function categoriaSemRegistroPonto(categoria: string | null | undefined):
 
 /**
  * Situação relevante para decidir isenção de registro de ponto. "Chefe" (isManager) e
- * "Fiscal" (isFiscal) deixaram de ser categorias próprias (GERENTE) e passaram a ser
+ * "Assessor" (isFiscal) deixaram de ser categorias próprias (GERENTE) e passaram a ser
  * características combináveis com qualquer categoria — por isso a isenção não depende
  * mais só da categoria.
  */
@@ -84,7 +84,7 @@ export type VigenciaCategoria = {
   categoria: string;
   /** Era chefe (isManager) durante esta vigência — ver FuncionarioCategoriaHistorico.isManager. */
   isManager?: boolean;
-  /** Fiscal durante esta vigência (histórico de isenção). */
+  /** Assessor (isFiscal) durante esta vigência (histórico de isenção). */
   isFiscal?: boolean;
   /** Override "registro de ponto" do RH durante esta vigência. */
   registroPontoObrigatorio?: boolean | null;
@@ -134,9 +134,9 @@ export function diaSemObrigacaoPonto(
     const v = vigenciaNaData(diaIso, historico);
     if (v) {
       if (funcionarioSemRegistroPonto(v)) return true;
-      /* O histórico guarda só categoria e "é chefe". Indicadores sem histórico (fiscal e o
+      /* O histórico guarda só categoria e "é chefe". Indicadores sem histórico (assessor e o
          "ponto obrigatório" manual) valem pelo cadastro atual quando o histórico não tem
-         nenhum período isento — igual ao Histórico do funcionário. Sem isso, um fiscal
+         nenhum período isento — igual ao Histórico do funcionário. Sem isso, um assessor
          aparecia com falta e não conseguia assinar a folha. */
       return !historicoTemIsencao(historico) && funcionarioSemRegistroPonto(atual);
     }
@@ -191,7 +191,7 @@ export function periodosSemObrigacaoPonto(
     }
   }
 
-  /* Fiscal / "ponto obrigatório" manual não têm histórico: sem nenhum período isento no
+  /* Assessor / "ponto obrigatório" manual não têm histórico: sem nenhum período isento no
      histórico, valem os indicadores do cadastro atual (mesma regra de diaSemObrigacaoPonto). */
   if (periodos.length === 0 && funcionarioSemRegistroPonto(atual)) {
     periodos.push({ inicio: "1900-01-01", fim: null });

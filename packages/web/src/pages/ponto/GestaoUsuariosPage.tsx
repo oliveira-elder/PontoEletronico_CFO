@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
+import { Modal } from "../../components/Modal";
 
 /* ─── Types ─── */
 interface GrupoKC {
@@ -303,6 +304,212 @@ interface UserLocal {
   } | null;
 }
 
+/* ─── Modal: buscar manualmente na API de matrículas e cadastrar ─── */
+interface CandidatoApi {
+  apiId: string;
+  nome: string;
+  email: string | null;
+  staffId: number | null;
+  secaoNome: string;
+  subsecao: string | null;
+  gerente: boolean;
+  completo: boolean;
+  cadastrado: boolean;
+  bloqueio: string | null;
+}
+
+const RESULTADO_IMPORTAR: Record<string, string> = {
+  created: "Cadastrado com sucesso.",
+  updated: "Cadastro completado com os dados da API.",
+  skipped: "Já estava cadastrado; nada a alterar.",
+  sem_email: "Esta pessoa não tem e-mail na API de ramais.",
+  sem_matricula: "Esta pessoa não tem matrícula na API.",
+  nao_encontrado: "Pessoa não encontrada na API (pode ter sido removida).",
+  error: "Não foi possível cadastrar. Veja os logs do backend."
+};
+
+function ModalBuscarMatricula({
+  onClose,
+  onCadastrado
+}: {
+  onClose: () => void;
+  onCadastrado: () => void;
+}) {
+  const [consulta, setConsulta] = useState("");
+  const [candidatos, setCandidatos] = useState<CandidatoApi[] | null>(null);
+  const [buscando, setBuscando] = useState(false);
+  const [cadastrando, setCadastrando] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+  async function buscar() {
+    if (!consulta.trim()) return;
+    setBuscando(true);
+    setMsg(null);
+    try {
+      const r = await api.get<{ candidatos: CandidatoApi[] }>(
+        `/admin/extensions/buscar?q=${encodeURIComponent(consulta.trim())}`
+      );
+      setCandidatos(r?.candidatos ?? []);
+    } catch (e) {
+      setCandidatos(null);
+      setMsg({ ok: false, texto: e instanceof Error ? e.message : "Falha ao consultar a API." });
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  async function cadastrar(c: CandidatoApi) {
+    setCadastrando(c.apiId);
+    setMsg(null);
+    try {
+      const r = await api.post<{ resultado: string }>("/admin/extensions/importar", {
+        apiId: c.apiId
+      });
+      const ok = r?.resultado === "created" || r?.resultado === "updated";
+      setMsg({ ok, texto: `${c.nome}: ${RESULTADO_IMPORTAR[r?.resultado ?? "error"]}` });
+      if (ok) {
+        onCadastrado();
+        await buscar();
+      }
+    } catch (e) {
+      setMsg({ ok: false, texto: e instanceof Error ? e.message : "Falha ao cadastrar." });
+    } finally {
+      setCadastrando(null);
+    }
+  }
+
+  return (
+    <Modal
+      eyebrow="Usuários Cadastrados"
+      title="Buscar na API de matrículas"
+      subtitle="Consulta manual: nada é cadastrado até você confirmar."
+      onClose={onClose}
+      maxWidth={720}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            autoFocus
+            value={consulta}
+            onChange={(e) => setConsulta(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void buscar()}
+            placeholder="Usuário do SSO, e-mail ou nome (ex.: marcondes.junior)"
+            style={{
+              flex: 1,
+              height: 38,
+              padding: "0 12px",
+              border: "1px solid rgba(122,30,38,0.18)",
+              borderRadius: "var(--radius-md)",
+              fontSize: 13
+            }}
+          />
+          <button
+            className="btn btn-primary"
+            onClick={() => void buscar()}
+            disabled={buscando || !consulta.trim()}
+          >
+            {buscando ? "Buscando…" : "Buscar"}
+          </button>
+        </div>
+
+        {msg && (
+          <p
+            style={{
+              margin: 0,
+              padding: "8px 12px",
+              borderRadius: "var(--radius-md)",
+              fontSize: 12.5,
+              background: msg.ok ? "rgba(22,128,61,0.08)" : "rgba(180,30,30,0.07)",
+              color: msg.ok ? "#166534" : "#8a1a1a"
+            }}
+          >
+            {msg.texto}
+          </p>
+        )}
+
+        {candidatos && candidatos.length === 0 && (
+          <p style={{ margin: 0, fontSize: 13, color: "var(--ink-500)", textAlign: "center" }}>
+            Ninguém encontrado na API de matrículas para “{consulta}”. Confira o usuário/e-mail ou
+            peça ao responsável pela API para cadastrar a matrícula dessa pessoa.
+          </p>
+        )}
+
+        {candidatos && candidatos.length > 0 && !candidatos.some((c) => c.completo) && (
+          <p style={{ margin: 0, fontSize: 12.5, color: "#7a5200" }}>
+            Nenhum resultado completo para “{consulta}”. Abaixo, só resultados parciais (parte do
+            nome ou e-mail):
+          </p>
+        )}
+
+        {candidatos?.map((c) => (
+          <div
+            key={c.apiId}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "10px 12px",
+              border: "1px solid rgba(122,30,38,0.12)",
+              borderRadius: "var(--radius-md)",
+              background: c.completo ? "#fff" : "var(--cream-50)"
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>
+                {c.nome}
+                {c.gerente && (
+                  <span style={{ marginLeft: 6, fontSize: 10.5, color: "var(--ink-500)" }}>
+                    (gestor da seção)
+                  </span>
+                )}
+                {!c.completo && (
+                  <span style={{ marginLeft: 6, fontSize: 10.5, color: "#92400e" }}>
+                    resultado parcial
+                  </span>
+                )}
+              </p>
+              <p
+                style={{
+                  margin: "2px 0 0",
+                  fontSize: 11.5,
+                  color: "var(--ink-500)",
+                  fontFamily: "var(--font-mono)"
+                }}
+              >
+                {c.email ?? "sem e-mail"} · matrícula {c.staffId ?? "—"}
+              </p>
+              <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
+                {c.secaoNome}
+                {c.subsecao ? ` › ${c.subsecao}` : ""}
+              </p>
+            </div>
+            {c.bloqueio ? (
+              <span
+                style={{
+                  fontSize: 11.5,
+                  color: c.cadastrado ? "#166534" : "#92400e",
+                  maxWidth: 190,
+                  textAlign: "right"
+                }}
+              >
+                {c.bloqueio}
+              </span>
+            ) : (
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={cadastrando !== null}
+                onClick={() => void cadastrar(c)}
+              >
+                {cadastrando === c.apiId ? "Cadastrando…" : "Cadastrar"}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 /* ─── Modal para definir e-mail real ─── */
 function ModalEmailReal({
   user: u,
@@ -435,6 +642,7 @@ export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } 
   const [apiErro, setApiErro] = useState<string | null>(null);
   const [modalGrupo, setModalGrupo] = useState<GrupoKC | null>(null);
   const [modalEmailUser, setModalEmailUser] = useState<UserLocal | null>(null);
+  const [modalBuscaApi, setModalBuscaApi] = useState(false);
 
   const carregarGrupos = useCallback(async () => {
     setCarregando(true);
@@ -622,6 +830,16 @@ export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } 
           >
             Buscar
           </button>
+          {aba === "cadastrados" && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => setModalBuscaApi(true)}
+              style={{ fontSize: 13, padding: "9px 16px" }}
+              title="Procurar uma pessoa na API de matrículas e cadastrá-la"
+            >
+              🔎 Buscar na API de matrículas
+            </button>
+          )}
         </div>
       )}
 
@@ -638,8 +856,10 @@ export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } 
             lineHeight: 1.6
           }}
         >
-          Usuários aparecem aqui após o <strong>primeiro login</strong> no Ponto Eletrônico (seed
-          automático via SSO). Não há importação em massa da lista do Keycloak.
+          Usuários aparecem aqui após o <strong>primeiro login</strong> no Ponto Eletrônico ou
+          quando a sincronização com a API de matrículas os traz. Alguém que está no SSO e ainda não
+          aparece pode ser procurado com <strong>“Buscar na API de matrículas”</strong>: a consulta
+          é manual e só cadastra após a sua confirmação.
         </div>
       )}
 
@@ -1048,6 +1268,13 @@ export function GestaoUsuariosPage({ embutido = false }: { embutido?: boolean } 
           user={modalEmailUser}
           onSave={(emailReal) => salvarEmailReal(modalEmailUser.id, emailReal)}
           onClose={() => setModalEmailUser(null)}
+        />
+      )}
+      {/* Modal: busca manual na API de matrículas */}
+      {modalBuscaApi && (
+        <ModalBuscarMatricula
+          onClose={() => setModalBuscaApi(false)}
+          onCadastrado={() => void carregarUsuariosLocais()}
         />
       )}
     </div>

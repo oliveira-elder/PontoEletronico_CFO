@@ -23,7 +23,12 @@ interface Cartao {
   nivel: Nivel;
   rota: string;
   detalhe?: string;
-  itens: { nome: string; matricula: string | null; extra: string | null }[];
+  itens: {
+    nome: string;
+    matricula: string | null;
+    categoria?: string | null;
+    extra: string | null;
+  }[];
 }
 
 interface PainelResposta {
@@ -277,6 +282,7 @@ export function PainelDemandasTab({ token }: { token: string }) {
           subtitle={aberto.secao}
           items={aberto.itens}
           vazio="Nenhum item pendente."
+          colunaExtra="Detalhe"
           onClose={() => setAberto(null)}
           rodape={
             <Link to={aberto.rota} className="btn btn-primary btn-sm">

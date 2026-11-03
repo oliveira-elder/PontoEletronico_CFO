@@ -3792,7 +3792,7 @@ export class AuditoriaService {
     });
   }
 
-  /** Fechamentos do banco por mudança de situação (virou chefe/fiscal/assessor ou voltou a bater). */
+  /** Fechamentos do banco por mudança de situação (virou chefe/assessor ou voltou a bater). */
   async listarFechamentosSituacao(funcionarioId: string) {
     await this.prisma.funcionario.findUniqueOrThrow({ where: { id: funcionarioId } });
     const rows = await this.prisma.fechamentoSituacao.findMany({

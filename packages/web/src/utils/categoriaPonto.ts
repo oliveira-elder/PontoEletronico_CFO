@@ -7,7 +7,7 @@ export function categoriaSemRegistroPonto(categoria: string | null | undefined):
 }
 
 /**
- * "Chefe" (isManager) e "Fiscal" (isFiscal) deixaram de ser categorias próprias (GERENTE)
+ * "Chefe" (isManager) e "Assessor" (isFiscal) deixaram de ser categorias próprias (GERENTE)
  * e passaram a ser características combináveis com qualquer categoria.
  */
 export type SituacaoRegistroPonto = {

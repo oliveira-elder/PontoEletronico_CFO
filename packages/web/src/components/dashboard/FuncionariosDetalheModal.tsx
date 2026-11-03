@@ -48,6 +48,32 @@ const valorColuna = (f: DetalheFuncionario, c: Coluna): string =>
     situacao: SITUACAO_LABEL[f.situacaoHoje]
   })[c];
 
+/** Sem acento e minúsculo: a busca ignora acentuação e caixa. */
+const simples = (t: string) =>
+  t
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+/** Todo o texto visível da linha, para a busca em qualquer campo do modal. */
+const textoDaLinha = (f: DetalheFuncionario) =>
+  simples(
+    [
+      f.nome,
+      f.matricula,
+      f.cargo,
+      f.lotacao,
+      categoriaFuncLabel(f.categoria),
+      MODALIDADE_LABEL[f.modalidade],
+      fmtData(f.dataAdmissao),
+      tempoDeCasa(f.dataAdmissao),
+      SITUACAO_LABEL[f.situacaoHoje],
+      f.chefe ? "chefe" : ""
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+
 const chip: React.CSSProperties = {
   padding: "3px 10px",
   borderRadius: 999,
@@ -73,11 +99,12 @@ export function FuncionariosDetalheModal({
   const [ordem, setOrdem] = useState<{ col: Coluna; asc: boolean }>({ col: "nome", asc: true });
 
   const lista = useMemo(() => {
-    const q = busca.trim().toLowerCase();
-    const filtrada = q
-      ? funcs.filter((f) =>
-          [f.nome, f.matricula, f.cargo, f.lotacao].some((v) => (v ?? "").toLowerCase().includes(q))
-        )
+    const termos = simples(busca).split(/\s+/).filter(Boolean);
+    const filtrada = termos.length
+      ? funcs.filter((f) => {
+          const texto = textoDaLinha(f);
+          return termos.every((t) => texto.includes(t));
+        })
       : funcs;
     return [...filtrada].sort((a, b) => {
       const r = valorColuna(a, ordem.col).localeCompare(valorColuna(b, ordem.col), "pt-BR");
@@ -156,7 +183,7 @@ export function FuncionariosDetalheModal({
           <input
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            placeholder="Buscar por nome, matrícula, cargo ou lotação"
+            placeholder="Buscar em qualquer campo: nome, matrícula, cargo, lotação, categoria, modalidade, situação…"
             style={{
               flex: 1,
               height: 36,

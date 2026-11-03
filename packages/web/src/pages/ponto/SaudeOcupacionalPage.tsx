@@ -8,6 +8,7 @@ import {
   RESULTADO_LABEL,
   RESULTADO_OPCOES,
   SITUACAO_LABEL,
+  abrirAso,
   TIPO_EXAME_LABEL,
   fmtDataBr,
   lerArquivoBase64,
@@ -60,12 +61,6 @@ const lbl: React.CSSProperties = {
   color: "var(--ink-700)"
 };
 const soNumero = (v: string) => v.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
-
-function baixarAso(e: Pick<ExameOcupacional, "id" | "nomeArquivo">) {
-  api
-    .download(`/ponto/saude-ocupacional/exames/${e.id}/arquivo`, e.nomeArquivo ?? "ASO.pdf")
-    .catch((er: Error) => alert("Erro ao baixar o ASO: " + er.message));
-}
 
 /* ─── Modal: registrar (RH) ─── */
 function RegistrarModal({
@@ -283,8 +278,8 @@ function ConferirModal({
         </p>
         {exame.temArquivo && (
           <div>
-            <button className="btn btn-ghost btn-sm" onClick={() => baixarAso(exame)}>
-              ⬇ Abrir o ASO enviado
+            <button className="btn btn-ghost btn-sm" onClick={() => void abrirAso(exame.id)}>
+              Abrir o ASO enviado
             </button>
           </div>
         )}
@@ -452,8 +447,8 @@ function HistoricoModal({
                 {e.conferidoPorNome ? ` · conferido por ${e.conferidoPorNome}` : ""}
               </span>
               {e.temArquivo && (
-                <button className="btn btn-ghost btn-sm" onClick={() => baixarAso(e)}>
-                  ⬇ ASO
+                <button className="btn btn-ghost btn-sm" onClick={() => void abrirAso(e.id)}>
+                  Ver ASO
                 </button>
               )}
               {podeExcluir && (

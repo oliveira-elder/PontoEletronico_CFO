@@ -11,7 +11,12 @@ import { categoriaFuncLabel, type GestaoDashboardStats, type DetalheFuncionario 
 import type { ChartDatum } from "../../../components/dashboard/chartTypes";
 
 function paraItens(funcs: DetalheFuncionario[]): EmployeeListItem[] {
-  return funcs.map((f) => ({ nome: f.nome, matricula: f.matricula, extra: f.lotacao }));
+  return funcs.map((f) => ({
+    nome: f.nome,
+    matricula: f.matricula,
+    categoria: f.categoria,
+    extra: f.lotacao
+  }));
 }
 
 export function PerfilDiversidadeTab({ stats }: { stats: GestaoDashboardStats }) {

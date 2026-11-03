@@ -1833,7 +1833,9 @@ export function RegistroPontoPage() {
             {categoriaFuncional === "ASSESSOR" || isChefeHoje || isFiscalHoje ? (
               <>
                 Funcionários na condição{" "}
-                <strong>{isChefeHoje ? "Chefe" : isFiscalHoje ? "Fiscal" : "Comissionado"}</strong>{" "}
+                <strong>
+                  {isChefeHoje ? "Chefe" : isFiscalHoje ? "Assessor" : "Comissionado"}
+                </strong>{" "}
                 não utilizam o sistema de registro de ponto eletrônico. Solicitações, envio ao RH e
                 demais fluxos permanecem disponíveis; após aprovação, o histórico é apenas
                 informativo e não entra em base de cálculo (mesmo após eventual mudança de

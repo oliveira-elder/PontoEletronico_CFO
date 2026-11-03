@@ -1,6 +1,6 @@
-O sistema distingue **categorias funcionais** (`Concursado`, `Assessor` — comissionado —, `Estagiário`, `Jovem aprendiz`) e características combináveis (**chefe** e **fiscal**). A categoria muda no tempo; o histórico (`FuncionarioCategoriaHistorico`) é usado para saber, **dia a dia**, se havia obrigação de ponto.
+O sistema distingue **categorias funcionais** (`Concursado`, `Assessor` — comissionado —, `Estagiário`, `Jovem aprendiz`) e características combináveis (**chefe** e **assessor**). A categoria muda no tempo; o histórico (`FuncionarioCategoriaHistorico`) é usado para saber, **dia a dia**, se havia obrigação de ponto.
 
-| Tema                                | Concursado | Assessor/Chefe/Fiscal                       | Estagiário / Jovem aprendiz                 |
+| Tema                                | Concursado | Comissionado/Assessor/Chefe                 | Estagiário / Jovem aprendiz                 |
 | ----------------------------------- | ---------- | ------------------------------------------- | ------------------------------------------- |
 | Registra ponto                      | Sim        | Conforme obrigação vigente (override do RH) | Sim                                         |
 | Intervalo de almoço                 | Sim        | —                                           | **Não** (carga corrida; usa pausa/retomada) |
@@ -17,4 +17,4 @@ O sistema distingue **categorias funcionais** (`Concursado`, `Assessor` — comi
 
 ## Isenção de ponto
 
-Chefes e fiscais deixaram de ser categorias próprias: a isenção depende da combinação categoria × chefe × fiscal × override manual do RH (`registroPontoObrigatorio`) × data de início (`pontoObrigatorioDesde`). Dias isentos aparecem como "Isento" no Espelho e não geram falta.
+Chefes e assessores deixaram de ser categorias próprias: a isenção depende da combinação categoria × chefe × assessor × override manual do RH (`registroPontoObrigatorio`) × data de início (`pontoObrigatorioDesde`). Dias isentos aparecem como "Isento" no Espelho e não geram falta.

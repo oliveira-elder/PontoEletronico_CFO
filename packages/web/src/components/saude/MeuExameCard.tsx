@@ -5,6 +5,7 @@ import { FormEnviarExame } from "./FormEnviarExame";
 import {
   RESULTADO_LABEL,
   SITUACAO_LABEL,
+  abrirAso,
   fmtDataBr,
   type ExameOcupacional,
   type SituacaoExame
@@ -164,18 +165,8 @@ export function MeuExameCard({
                 </span>
               )}
               {e.temArquivo && (
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() =>
-                    api
-                      .download(
-                        `/ponto/saude-ocupacional/exames/${e.id}/arquivo`,
-                        e.nomeArquivo ?? "ASO.pdf"
-                      )
-                      .catch((er: Error) => alert(er.message))
-                  }
-                >
-                  ⬇ ASO
+                <button className="btn btn-ghost btn-sm" onClick={() => void abrirAso(e.id)}>
+                  Ver ASO
                 </button>
               )}
             </div>

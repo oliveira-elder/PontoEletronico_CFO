@@ -123,7 +123,7 @@ export async function ensureCategoriaHistorico(
 export type SituacaoCategoria = {
   categoria: CategoriaFuncional;
   isManager: boolean;
-  /** Fiscal e override de registro de ponto (RH): quando informados, entram na vigência. */
+  /** Assessor (isFiscal) e override de registro de ponto (RH): quando informados, entram na vigência. */
   isFiscal?: boolean;
   registroPontoObrigatorio?: boolean | null;
 };
@@ -168,7 +168,7 @@ export async function registrarMudancaSituacao(
   novaSituacao: SituacaoCategoria,
   dataRefIso: string = hojeBrasiliaISO(),
   /**
-   * Fiscal/override ANTES da mudança: a vigência aberta passa a registrá-los, preservando o
+   * Assessor/override ANTES da mudança: a vigência aberta passa a registrá-los, preservando o
    * que já valia para o passado (antes eles não tinham histórico e valiam para todo o período).
    */
   flagsAnteriores?: { isFiscal: boolean; registroPontoObrigatorio: boolean | null }

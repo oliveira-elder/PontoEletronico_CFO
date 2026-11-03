@@ -342,7 +342,7 @@ export function ExtensionsApiPanel({
                 type="url"
                 value={form.url}
                 onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
-                placeholder="http://192.168.161.50:11010/api/sections/integration/users"
+                placeholder="https://192.168.100.120/api/sections/integration/users"
                 style={{ ...inputStyle, marginTop: 4 }}
               />
             </label>

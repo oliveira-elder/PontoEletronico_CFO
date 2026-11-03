@@ -1431,6 +1431,22 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     categoria: "Sincronização (AD/Extensions)"
   },
   {
+    method: "GET",
+    pathPattern: "/admin/extensions/buscar",
+    titulo: "Buscar usuário na API de matrículas",
+    descricao:
+      "Busca manual (Super Admin) de uma pessoa na API de ramais/matrícula por usuário SSO, e-mail ou nome. Só consulta.",
+    categoria: "Sincronização (AD/Extensions)"
+  },
+  {
+    method: "POST",
+    pathPattern: "/admin/extensions/importar",
+    titulo: "Cadastrar usuário buscado na API",
+    descricao:
+      "Cadastra a pessoa escolhida na busca manual (usuário e funcionário) com a matrícula informada pela API.",
+    categoria: "Sincronização (AD/Extensions)"
+  },
+  {
     method: "POST",
     pathPattern: "/admin/extensions/sync",
     titulo: "Sincronizar Gerências",
