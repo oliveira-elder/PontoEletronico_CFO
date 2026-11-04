@@ -17,7 +17,15 @@ stateDiagram-v2
 
 ## Registro do programa no INPI (art. 91)
 
-O sistema guarda os dados do registro (`RegistroProgramaInpi`): hash do código, etapas (protocolo, taxa, certificado), número e data do certificado e o **PDF do certificado** (guardado com segurança). O script `scripts/inpi-hash.sh` calcula o hash do código-fonte para o pedido.
+O sistema guarda os dados do registro (`RegistroProgramaInpi`): hash do código, etapas (protocolo, taxa, certificado), número e data do certificado e o **PDF do certificado** (guardado com segurança). O hash do código-fonte vem de `npm run rep:hash` (`scripts/inpi-hash.sh`) e cobre **somente o núcleo de registro de ponto** (veja _Integridade do código_ abaixo).
+
+## Integridade do código (hash do núcleo de registro)
+
+- **Escopo mínimo** (`packages/backend/rep-escopo.json`): livro do REP (`rep-livro.service`), vigência/hora oficial (`rep-p.service`), `rep.module`, o núcleo `registro-ponto.core` (cria o registro e grava no livro na mesma transação), `afd-campos`, `instancia-rep`, `registro-observacoes`, o DTO de registro e só os modelos Prisma `RegistroPonto`, `MarcacaoRep`, `EventoRep`, `ContadorNsr`, `VigenciaRep` e `InstanciaRep`. Mudanças em outras funcionalidades **não** alteram o hash.
+- **Hash determinístico** (`rep/escopo-hash.ts`): SHA-256 da lista ordenada de arquivos, com texto normalizado (LF, sem BOM). Não depende de git, commit nem data.
+- **Lacre** (`rep-escopo.lock.json`): guarda o hash aceito. `npm run rep:verificar` compara; o hook de pré-commit e o CI **bloqueiam** divergência. O prettier/eslint automáticos **não** tocam nesses arquivos, e `npm run rep:proteger` deixa-os somente leitura.
+- **Alteração intencional**: o Super Admin define a **senha root** em Sistema → Integridade do código (campo com ícone de olho; a senha atual aparece em pontinhos e toda exibição é registrada), gera um token de 30 min com ela, e o desenvolvedor roda `npm run rep:liberar -- <token>`, altera, e `npm run rep:selar -- --motivo "…"`. O servidor recalcula o hash, registra o selo (quem, quando, motivo, arquivos) e o novo hash deve ser registrado no INPI.
+- **No servidor**: na subida e 1×/dia o backend compara os arquivos com o lacre; divergência gera log de erro, notificação aos Super Admins e o selo "Alterado" na aba. O registro de ponto **não** é bloqueado por isso.
 
 ## Ao iniciar
 

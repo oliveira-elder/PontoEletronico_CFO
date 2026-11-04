@@ -1,1 +1,11 @@
 *.sh text eol=lf
+
+# Escopo do hash do código-fonte do REP-P (packages/backend/rep-escopo.json): fim de linha fixo (LF).
+packages/backend/rep-escopo.json text eol=lf
+packages/backend/rep-escopo.lock.json text eol=lf
+packages/backend/src/modules/rep/*.ts text eol=lf
+packages/backend/src/modules/ponto/dto/create-registro.dto.ts text eol=lf
+packages/backend/src/utils/afd-campos.ts text eol=lf
+packages/backend/src/utils/instancia-rep.ts text eol=lf
+packages/backend/src/utils/registro-observacoes.ts text eol=lf
+packages/backend/prisma/schema.prisma text eol=lf

@@ -407,7 +407,7 @@ export function ConfigRepP() {
           <input
             value={reg.hash}
             onChange={(e) => setReg({ ...reg, hash: e.target.value })}
-            placeholder="64 caracteres hexadecimais (gerado por scripts/inpi-hash.sh)"
+            placeholder="64 caracteres hexadecimais (Hash do escopo, gerado por npm run rep:hash)"
             style={{ ...INPUT, fontFamily: "var(--font-mono)", fontSize: 11.5 }}
           />
         </label>
@@ -571,8 +571,10 @@ export function ConfigRepP() {
         ))}
       </div>
       <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--ink-400)" }}>
-        Hash do código-fonte para o INPI: execute <code>scripts/inpi-hash.sh</code> na raiz do
-        repositório e informe o SHA-256 gerado na etapa 4 do checklist.
+        Hash do código-fonte para o INPI: execute <code>npm run rep:hash</code> na raiz do
+        repositório e informe o “Hash do escopo” (SHA-256) na etapa 4 do checklist. O hash cobre só
+        o núcleo de registro de ponto e está protegido por lacre: veja Sistema → Integridade do
+        código.
       </p>
 
       {/* 6. Saúde do REP-P */}

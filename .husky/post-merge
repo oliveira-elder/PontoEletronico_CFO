@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# REP-P: após trocar de branch, deixa o núcleo do registro de ponto somente leitura.
+npm run -s rep:proteger >/dev/null 2>&1 || true

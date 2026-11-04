@@ -20,15 +20,13 @@
     "format:check": "prettier . --check",
     "prepare": "husky || true",
     "deps:install": "node scripts/deps-install.js",
-    "cleanup": "bash scripts/cleanup.sh"
-  },
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,json,md,yml,yaml}": [
-      "node node_modules/prettier/bin/prettier.cjs --write"
-    ],
-    "*.{ts,tsx,js,jsx}": [
-      "node node_modules/eslint/bin/eslint.js --fix"
-    ]
+    "cleanup": "bash scripts/cleanup.sh",
+    "rep:verificar": "ts-node -P packages/backend/tsconfig.json --transpile-only packages/backend/scripts/rep-escopo.ts verificar",
+    "rep:proteger": "ts-node -P packages/backend/tsconfig.json --transpile-only packages/backend/scripts/rep-escopo.ts proteger",
+    "rep:liberar": "ts-node -P packages/backend/tsconfig.json --transpile-only packages/backend/scripts/rep-escopo.ts liberar",
+    "rep:selar": "ts-node -P packages/backend/tsconfig.json --transpile-only packages/backend/scripts/rep-escopo.ts selar",
+    "rep:hash": "bash scripts/inpi-hash.sh",
+    "rep:teste": "ts-node -P packages/backend/tsconfig.json --transpile-only packages/backend/scripts/teste-escopo-hash.ts"
   },
   "overrides": {
     "multer": "^2.2.0",

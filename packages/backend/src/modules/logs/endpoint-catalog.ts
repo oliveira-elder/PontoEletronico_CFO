@@ -1432,6 +1432,69 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/sistema/rep-escopo",
+    titulo: "Integridade do código do REP-P",
+    descricao:
+      "Estado do lacre do hash do código-fonte (escopo mínimo do registro de ponto), arquivos protegidos e histórico de liberações. Só Super Admin.",
+    categoria: "Sistema"
+  },
+  {
+    method: "PUT",
+    pathPattern: "/sistema/rep-escopo/senha",
+    titulo: "Definir senha root do lacre do REP-P",
+    descricao:
+      "Define ou altera a senha root do Super Admin que libera alterações nos arquivos protegidos. Guardada só como hash (scrypt).",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo/senha/revelar",
+    titulo: "Carregar a senha root do lacre do REP-P",
+    descricao:
+      "Entrega a senha root atual ao Super Admin para o campo 'Senha atual' (guardada cifrada). Cada carga é registrada no histórico e no log.",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo/senha/habilitar-visualizacao",
+    titulo: "Habilitar a visualização da senha root do REP-P",
+    descricao:
+      "Confere a senha atual informada e passa a guardá-la cifrada para exibição ao Super Admin. Registrado no histórico e no log.",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo/senha/exibida",
+    titulo: "Registrar exibição da senha root do REP-P",
+    descricao:
+      "Registra no histórico e no log que a senha root foi mostrada na tela (clique no olho).",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo/liberar",
+    titulo: "Liberar edição do código protegido do REP-P",
+    descricao:
+      "Com a senha root, emite um token de 30 minutos para liberar e selar alterações nos arquivos protegidos. Registra a liberação.",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo-cli/verificar",
+    titulo: "Verificar token de liberação (CLI)",
+    descricao: "Usado pelo comando rep:liberar para validar o token assinado. Não revela dados.",
+    categoria: "Sistema"
+  },
+  {
+    method: "POST",
+    pathPattern: "/sistema/rep-escopo-cli/selar",
+    titulo: "Selar o novo hash do REP-P (CLI)",
+    descricao:
+      "Usado pelo comando rep:selar: com token válido e motivo, grava o novo lacre do hash do código-fonte e o registra no histórico.",
+    categoria: "Sistema"
+  },
+  {
+    method: "GET",
     pathPattern: "/admin/extensions/buscar",
     titulo: "Buscar usuário na API de matrículas",
     descricao:

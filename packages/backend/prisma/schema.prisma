@@ -1639,3 +1639,40 @@ model DocumentacaoSnapshot {
 
   @@index([createdAt])
 }
+
+/// Senha root do Super Admin que libera alterações nos arquivos do escopo do hash do REP-P (singleton).
+/// Fora do escopo do hash (rep-escopo.json): mexer aqui não altera o hash do código-fonte.
+model RepEscopoConfig {
+  id                String    @id @default("singleton")
+  /// scrypt: "scrypt$<salt hex>$<hash hex>". Usado para CONFERIR a senha.
+  senhaHash         String?
+  /// A mesma senha cifrada (AES-256-GCM, chave em arquivo no servidor, fora do banco), só para o Super Admin
+  /// poder VER a senha depois (cada exibição é registrada). Nunca em texto puro.
+  senhaCifrada      String?
+  /// Chave aleatória que assina o token de liberação; trocada a cada selo e a cada troca de senha.
+  segredoToken      String?
+  tentativasFalhas  Int       @default(0)
+  bloqueadoAte      DateTime?
+  /// Último hash divergente já avisado aos Super Admins (evita repetir a notificação).
+  ultimoAvisoHash   String?
+  atualizadoPorNome String?
+  atualizadoEm      DateTime  @updatedAt
+}
+
+/// Histórico de definição de senha, liberações, selos do lacre e tentativas falhas.
+model RepEscopoLiberacao {
+  id           String   @id @default(cuid())
+  /// SENHA_DEFINIDA | SENHA_ALTERADA | LIBERACAO | SELO | TENTATIVA_FALHA | BLOQUEIO
+  tipo         String
+  ator         String?
+  motivo       String?
+  hashAnterior String?
+  hashNovo     String?
+  /// Arquivos alterados no selo (ids do manifesto).
+  arquivos     Json?
+  ip           String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([tipo])
+}

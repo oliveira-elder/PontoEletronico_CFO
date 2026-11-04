@@ -6,6 +6,10 @@
 - **Verificação**: refaz a cadeia na subida e uma vez por dia. Quebra → **bloqueia novas marcações** (503) e registra o NSR da primeira divergência.
 - **Marcação original preservada**: correções não apagam nada; o AEJ indica o que foi desconsiderado ("D") e incluído ("I") com motivo. Marcações **reconstituídas** (carga inicial do histórico) são marcadas como tal e aparecem em avisos.
 
+## Integridade do código-fonte do REP-P
+
+O hash do programa (art. 91) cobre só o **núcleo de registro de ponto**, lacrado em `rep-escopo.lock.json`. Alteração acidental é barrada no commit/CI e detectada pelo servidor (log, notificação e selo "Alterado" em Sistema → Integridade do código). Liberar uma alteração exige a **senha root do Super Admin**: conferida por hash scrypt (bloqueio de 15 min após 5 erros) e guardada também **cifrada** (AES-256-GCM, chave em arquivo `instance/rep_escopo.key`, fora do banco e do git) para que um Super Admin possa **vê-la** na aba, em pontinhos com ícone de olho, quando os desenvolvedores esquecerem. Todo o ciclo fica no histórico da aba e no log: definição, troca, recusas, tentativas erradas, bloqueios, carga da senha na tela e cada clique no olho (quem, quando e IP). O arquivo da chave precisa entrar no backup do servidor; sem ele a senha não pode ser exibida (a conferência por hash continua valendo e basta definir a senha de novo).
+
 ## Relógio
 
 A hora gravada é **sempre a do servidor**. O servidor confere a Hora Legal Brasileira (NTP.br) a cada 5 minutos; desvio confirmado acima de 30 s bloqueia marcações. Saltos do relógio geram evento tipo 4 no livro.

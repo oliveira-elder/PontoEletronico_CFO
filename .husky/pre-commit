@@ -1,2 +1,6 @@
 #!/usr/bin/env sh
+# REP-P: bloqueia o commit se o núcleo de registro de ponto divergir do lacre do hash (rep-escopo.lock.json).
+if [ -f packages/backend/rep-escopo.lock.json ]; then
+  npm run -s rep:verificar || exit 1
+fi
 node node_modules/lint-staged/bin/lint-staged.js

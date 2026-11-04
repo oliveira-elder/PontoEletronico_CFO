@@ -1,0 +1,24 @@
+{
+  "descricao": "Escopo do hash do código-fonte do REP-P: só o núcleo de registro de ponto. Alterar esta lista muda o hash e exige liberação do Super Admin.",
+  "arquivos": [
+    "src/modules/ponto/dto/create-registro.dto.ts",
+    "src/modules/rep/registro-ponto.core.ts",
+    "src/modules/rep/rep-livro.service.ts",
+    "src/modules/rep/rep-p.service.ts",
+    "src/modules/rep/rep.module.ts",
+    "src/utils/afd-campos.ts",
+    "src/utils/instancia-rep.ts",
+    "src/utils/registro-observacoes.ts"
+  ],
+  "modelosPrisma": {
+    "arquivo": "prisma/schema.prisma",
+    "modelos": [
+      "ContadorNsr",
+      "EventoRep",
+      "InstanciaRep",
+      "MarcacaoRep",
+      "RegistroPonto",
+      "VigenciaRep"
+    ]
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "versao": "0.1.0",
+  "algoritmo": "SHA-256",
+  "hash": "5acb4914d8303a26afded2121bd316d41c7d56bc37f0b7775cf8b2fed4a47678",
+  "selado_em": "2026-11-04T12:02:17.300Z",
+  "motivo": "Lacre inicial do escopo mínimo do REP-P",
+  "itens": [
+    {
+      "id": "prisma:ContadorNsr",
+      "sha256": "bc47e67cf33118bb5d6a45f77f34a6a4a486b4a7950cd93d56a92ff90b89872e",
+      "bytes": 91
+    },
+    {
+      "id": "prisma:EventoRep",
+      "sha256": "f7b380c9ad74ce580b07a0c83ae30154b1e55d164aee33eba5ed197b1e5c0726",
+      "bytes": 244
+    },
+    {
+      "id": "prisma:InstanciaRep",
+      "sha256": "6504d5493f0e04da06fa4d6ae9b54008d454f5cb43e6cdf7a0daf1e633adedb7",
+      "bytes": 349
+    },
+    {
+      "id": "prisma:MarcacaoRep",
+      "sha256": "35cc0ad6771ee02f49098a61794d30b02ad604749b94672220a304455f6ff5b8",
+      "bytes": 912
+    },
+    {
+      "id": "prisma:RegistroPonto",
+      "sha256": "ac838e1faf4b564a7e2d57b4b0ea0f998efe09f85c9f80931aee5d4fe52cda6c",
+      "bytes": 916
+    },
+    {
+      "id": "prisma:VigenciaRep",
+      "sha256": "643433dd2a7c287922d607259c22239863b5a0ae6dcd824b924c170c9363c37e",
+      "bytes": 287
+    },
+    {
+      "id": "src/modules/ponto/dto/create-registro.dto.ts",
+      "sha256": "6a286c60ffcd81aaa35f5073ebfabd17e184a5d24d6e4f826fe57e92f059de96",
+      "bytes": 1223
+    },
+    {
+      "id": "src/modules/rep/registro-ponto.core.ts",
+      "sha256": "14bc23f0e5326662e506afd7b1cd5f95292ee38a0385424fd26539ed85b92c74",
+      "bytes": 2019
+    },
+    {
+      "id": "src/modules/rep/rep-livro.service.ts",
+      "sha256": "0455b7bdd8c0afe4693b77b5dcb87cb087bb56219ce30a3014bdc1a6a24ab86b",
+      "bytes": 25712
+    },
+    {
+      "id": "src/modules/rep/rep-p.service.ts",
+      "sha256": "b7f1175673897a722fe94e76d719cf205a80f59b00165342f0ce31973dd37203",
+      "bytes": 16284
+    },
+    {
+      "id": "src/modules/rep/rep.module.ts",
+      "sha256": "c7078a5ee9d51b826ede0a93120b4e91d4ab6b50ed653e5d8489ea4abd1a424e",
+      "bytes": 486
+    },
+    {
+      "id": "src/utils/afd-campos.ts",
+      "sha256": "3ef028ddfbd2b4ebe419d72ef9196bdcf3d20e307c542d56053e66151f24a452",
+      "bytes": 3277
+    },
+    {
+      "id": "src/utils/instancia-rep.ts",
+      "sha256": "1acd06704a2b7ecdb769698ff5c317ee40fe5abb85384993410de25c729c6f07",
+      "bytes": 2906
+    },
+    {
+      "id": "src/utils/registro-observacoes.ts",
+      "sha256": "3b1427b84184a341f8a71d4ac91a8fbe0d0a2f388736b4ae21a79c536a165b3d",
+      "bytes": 3353
+    }
+  ]
+}

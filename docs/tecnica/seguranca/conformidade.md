@@ -10,15 +10,15 @@
 
 ## Mapa de artigos principais
 
-| Artigo         | Requisito                                    | Onde atende                               |
-| -------------- | -------------------------------------------- | ----------------------------------------- |
-| 74, IV         | Registro não pode ser alterado nem apagado   | Gatilhos + hash encadeado                 |
-| 74 (restrição) | A marcação não pode ser restringida          | Ponto isento do bloqueio por termos (428) |
-| 78–79          | REP-P e comprovante                          | Módulos `rep`, `comprovante`              |
-| 80, II–III     | Comprovante imediato; últimas 48 h           | PDF A6 e ZIP de 48 h                      |
-| 81–88          | AFD/AEJ e assinatura                         | `arquivos-fiscais`, CAdES                 |
-| 89             | Atestado técnico e termo de responsabilidade | Modelo preenchido para e-CPF              |
-| 91             | Registro do programa no INPI                 | `RegistroProgramaInpi`, hash do código    |
+| Artigo         | Requisito                                    | Onde atende                                                |
+| -------------- | -------------------------------------------- | ---------------------------------------------------------- |
+| 74, IV         | Registro não pode ser alterado nem apagado   | Gatilhos + hash encadeado                                  |
+| 74 (restrição) | A marcação não pode ser restringida          | Ponto isento do bloqueio por termos (428)                  |
+| 78–79          | REP-P e comprovante                          | Módulos `rep`, `comprovante`                               |
+| 80, II–III     | Comprovante imediato; últimas 48 h           | PDF A6 e ZIP de 48 h                                       |
+| 81–88          | AFD/AEJ e assinatura                         | `arquivos-fiscais`, CAdES                                  |
+| 89             | Atestado técnico e termo de responsabilidade | Modelo preenchido para e-CPF                               |
+| 91             | Registro do programa no INPI                 | `RegistroProgramaInpi`, hash do núcleo de registro (lacre) |
 
 ## Pendências conhecidas
 

@@ -651,7 +651,8 @@ export const CAPITULOS: Capitulo[] = [
         passos: [
           "Em Configurações > REP-P, informe o nº do INPI e o certificado de registro.",
           "Confira a validade do certificado A1.",
-          "Quando não houver pendências, inicie a operação do REP-P."
+          "Quando não houver pendências, inicie a operação do REP-P.",
+          "O hash do código-fonte para o INPI cobre só o núcleo de registro de ponto e é gerado com o comando rep:hash. Em Sistema > Integridade do código (Super Admin) você vê se esses arquivos estão íntegros e, com a senha root, libera uma alteração intencional."
         ]
       },
       {

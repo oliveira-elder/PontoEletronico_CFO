@@ -1,5 +1,6 @@
 import { mascararNome, registrarDocumentoEmitido } from "../../utils/documentos-emitidos";
 import { RepLivroService } from "../rep/rep-livro.service";
+import { criarRegistroComMarcacao } from "../rep/registro-ponto.core";
 import {
   Injectable,
   BadRequestException,
@@ -1991,34 +1992,28 @@ export class PontoService implements OnModuleInit {
       });
     }
 
-    /* Batida + marcação ORIGINAL no livro do REP (NSR) na mesma transação (Portaria 671). */
-    const registro = await this.prisma.$transaction(async (tx) => {
-      const criado = await tx.registroPonto.create({
-        data: {
-          funcionarioId: func.id,
-          tipo: dto.tipo as TipoPonto,
-          dataHora: agora,
-          origem: origemPersistida,
-          modoRegistro: modoRegistroEfetivo as import("@prisma/client").ModoRegistro,
-          latitude: dto.latitude,
-          longitude: dto.longitude,
-          dentroPerimetro,
-          observacao: dto.observacao,
-          fotoUrl: fotoUrl ?? null,
-          ...(observacoesRegistro ? { observacoes: observacoesRegistro } : {})
-        }
-      });
-      const marcacaoRep = await this.repLivro?.registrarMarcacao(tx, {
-        registroPontoId: criado.id,
+    /* Batida + marcação ORIGINAL no livro do REP (NSR) na mesma transação (Portaria 671).
+       O núcleo (criar o registro e gravar no livro) fica em rep/registro-ponto.core.ts. */
+    const { registro: criado, marcacaoRep } = await criarRegistroComMarcacao(
+      this.prisma,
+      this.repLivro,
+      {
         funcionarioId: func.id,
         cpf: func.cpf ?? null,
-        tipoPonto: criado.tipo,
-        dataHoraMarcacao: agora,
-        origem: origemPersistida
-      });
-      /* NSR devolvido ao cliente: abre o Comprovante de Registro de Ponto (art. 80, II). */
-      return { ...criado, nsr: marcacaoRep?.nsr ?? null };
-    });
+        tipo: dto.tipo as TipoPonto,
+        dataHora: agora,
+        origem: origemPersistida,
+        modoRegistro: modoRegistroEfetivo as import("@prisma/client").ModoRegistro,
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+        dentroPerimetro,
+        observacao: dto.observacao,
+        fotoUrl: fotoUrl ?? null,
+        observacoes: observacoesRegistro
+      }
+    );
+    /* NSR devolvido ao cliente: abre o Comprovante de Registro de Ponto (art. 80, II). */
+    const registro = { ...criado, nsr: marcacaoRep?.nsr ?? null };
 
     /* Verifica hora extra acima do limite configurado e cria solicitação automática */
     if (dto.tipo === "SAIDA") {

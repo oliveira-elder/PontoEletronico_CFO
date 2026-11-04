@@ -37,3 +37,6 @@ packages/web/public/ocr/
 
 # Saída do scripts/inpi-hash.sh
 inpi-registro/
+
+# Liberação temporária para editar o escopo do hash do REP-P (npm run rep:liberar)
+.rep-liberacao

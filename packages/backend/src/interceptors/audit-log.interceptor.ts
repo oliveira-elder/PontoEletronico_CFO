@@ -29,7 +29,9 @@ const REDACT_KEYS = new Set([
   "token",
   "secret",
   "authorization",
-  "refreshtoken"
+  "refreshtoken",
+  "novasenha",
+  "senhaatual"
 ]);
 
 interface RequestWithUser {

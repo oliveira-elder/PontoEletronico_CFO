@@ -13,6 +13,7 @@ scripts/           operação (subir, diagnosticar, DNS, JWKS, hash do INPI)
 ## Padrões
 
 - **TypeScript estrito**, ESLint 8 e Prettier 3 (aplicados por Husky + lint-staged a cada commit).
+- **Núcleo do REP-P protegido**: os arquivos de `packages/backend/rep-escopo.json` ficam somente leitura e fora do prettier/eslint automáticos; o pré-commit roda `npm run rep:verificar` e bloqueia se o hash divergir do lacre. Alterar só com a liberação do Super Admin (`rep:liberar`/`rep:selar`).
 - Comentários explicam o **porquê** (norma, decisão), não o óbvio.
 - Mensagens ao usuário em **português**, claras e acionáveis.
 - Regras de cálculo ficam em `utils/` e têm espelho no front quando houver prévia (arquivo com a nota "manter iguais").
