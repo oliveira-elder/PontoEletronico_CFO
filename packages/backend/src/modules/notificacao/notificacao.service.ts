@@ -1004,8 +1004,12 @@ export class NotificacaoService {
     if (substituicaoAtiva) {
       const titularNome = substituicaoAtiva.titular.user?.name ?? "titular";
       const g = substituicaoAtiva.gerencia.sigla || substituicaoAtiva.gerencia.nome || "gerência";
-      const ini = new Date(substituicaoAtiva.dataInicio).toLocaleDateString("pt-BR");
-      const fim = new Date(substituicaoAtiva.dataFim).toLocaleDateString("pt-BR");
+      const ini = new Date(substituicaoAtiva.dataInicio).toLocaleDateString("pt-BR", {
+        timeZone: "UTC"
+      });
+      const fim = new Date(substituicaoAtiva.dataFim).toLocaleDateString("pt-BR", {
+        timeZone: "UTC"
+      });
       partes.push(
         `\nChefe Substituto em exercício na ${g} (titular: ${titularNome}; período ${ini}–${fim}). ` +
           `A gerência ficou sem substituto ativo — reatribuir ou encerrar a substituição.`
@@ -1165,13 +1169,13 @@ export class NotificacaoService {
     for (const func of funcionarios) {
       if (!func.dataAdmissao || !func.user) continue;
 
-      const mesAdmissao = func.dataAdmissao.getMonth() + 1; // 1-12
+      const mesAdmissao = func.dataAdmissao.getUTCMonth() + 1; // 1-12
       const mesNoCiclo = ((mesAtual - mesAdmissao + 12) % 12) + 1;
       const limiteObrigatorio = func.categoria === "ESTAGIARIO" ? 5 : 11;
       if (mesNoCiclo < limiteObrigatorio) continue;
 
       // Verifica se já há férias aprovadas ou solicitadas no ciclo atual
-      const anoAdmissao = func.dataAdmissao.getFullYear();
+      const anoAdmissao = func.dataAdmissao.getUTCFullYear();
       const anosDecorridos = agora.getFullYear() - anoAdmissao;
       const inicioCiclo = new Date(anoAdmissao + anosDecorridos, mesAdmissao - 1, 1);
       const fimCiclo = new Date(inicioCiclo.getFullYear() + 1, inicioCiclo.getMonth(), 0);

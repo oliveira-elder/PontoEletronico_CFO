@@ -1159,6 +1159,7 @@ export function RegistroPontoPage() {
           !!status?.semRegistroPonto ||
             !!status?.isentoHoje ||
             status?.categoria === "ASSESSOR" ||
+            status?.categoria === "ALTA_ADMINISTRACAO" ||
             !!status?.isManager ||
             !!status?.isFiscal
         );
@@ -1830,11 +1831,20 @@ export function RegistroPontoPage() {
             Registro de ponto não aplicável
           </p>
           <p style={{ fontSize: 13, color: "var(--ink-500)", lineHeight: 1.7, margin: 0 }}>
-            {categoriaFuncional === "ASSESSOR" || isChefeHoje || isFiscalHoje ? (
+            {categoriaFuncional === "ASSESSOR" ||
+            categoriaFuncional === "ALTA_ADMINISTRACAO" ||
+            isChefeHoje ||
+            isFiscalHoje ? (
               <>
                 Funcionários na condição{" "}
                 <strong>
-                  {isChefeHoje ? "Chefe" : isFiscalHoje ? "Assessor" : "Comissionado"}
+                  {categoriaFuncional === "ALTA_ADMINISTRACAO"
+                    ? "Alta Administração"
+                    : isChefeHoje
+                      ? "Chefe"
+                      : isFiscalHoje
+                        ? "Assessor"
+                        : "Comissionado"}
                 </strong>{" "}
                 não utilizam o sistema de registro de ponto eletrônico. Solicitações, envio ao RH e
                 demais fluxos permanecem disponíveis; após aprovação, o histórico é apenas

@@ -260,9 +260,11 @@ function GestaoListaTab() {
     gerencia?: { nome?: string | null } | null
   ) => resolverNomeGerencia(gerencias, id, gerencia);
 
-  const total = funcionarios.length;
+  /* A Alta Administração aparece na lista (cadastro), mas NÃO entra nos totais/cards (estatística). */
+  const paraEstatistica = funcionarios.filter((f) => f.categoria !== "ALTA_ADMINISTRACAO");
+  const total = paraEstatistica.length;
   /* Cards: as categorias contam só ativos, para somarem o "Total Ativos". */
-  const listaAtivos = funcionarios.filter((f) => f.ativo);
+  const listaAtivos = paraEstatistica.filter((f) => f.ativo);
   const ativos = listaAtivos.length;
   const inativos = total - ativos;
   const ativosPorCategoria = (cat: Categoria) =>
@@ -700,7 +702,8 @@ function GestaoListaTab() {
                               color: "var(--ink-700)"
                             }}
                           >
-                            {f.matricula}
+                            {f.matricula ||
+                              (f.categoria === "ALTA_ADMINISTRACAO" ? "Sem matrícula" : "—")}
                           </span>
                         </td>
                         {/* Categoria */}
@@ -929,7 +932,7 @@ function GestaoListaTab() {
               {lista.length} funcionário{lista.length !== 1 ? "s" : ""} exibido
               {lista.length !== 1 ? "s" : ""}
               {filtroCategoria || filtroGerencia || busca
-                ? ` (filtrado${lista.length !== 1 ? "s" : ""} de ${total})`
+                ? ` (filtrado${lista.length !== 1 ? "s" : ""} de ${funcionarios.length})`
                 : ""}
             </div>
           </div>

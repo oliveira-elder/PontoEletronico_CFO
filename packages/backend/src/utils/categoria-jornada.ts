@@ -15,7 +15,11 @@ export function categoriaSemIntervaloAlmoco(categoria: string | null | undefined
  * GET /ponto/historico e /ponto/relatorio pulam o cálculo do ciclo nessas categorias;
  * RH/auditoria usa calcularBancoHorasAdmin.
  */
-export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = [
+  "ESTAGIARIO",
+  "MENOR_APRENDIZ",
+  "ALTA_ADMINISTRACAO"
+] as const;
 
 export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | undefined): boolean {
   if (!categoria) return false;
@@ -35,7 +39,13 @@ export function categoriaSemHoraExtra(categoria: string | null | undefined): boo
 }
 
 /** Categorias sem obrigação de bater ponto por si só (independente de isManager/isFiscal). */
-export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR"] as const;
+export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR", "ALTA_ADMINISTRACAO"] as const;
+
+/**
+ * Filtro Prisma para ESTATÍSTICAS e indicadores (dashboards, totais, rankings, gráficos): a Alta Administração
+ * (sem matrícula, sem ponto) nunca entra. Filas de trabalho do RH (aprovações, exames, requisições) NÃO usam este filtro.
+ */
+export const SEM_ALTA_ADMINISTRACAO = { not: "ALTA_ADMINISTRACAO" } as const;
 
 export type CategoriaSemRegistroPonto = (typeof CATEGORIAS_SEM_REGISTRO_PONTO)[number];
 
@@ -65,12 +75,15 @@ function historicoTemIsencao(historico: VigenciaCategoria[]): boolean {
 
 /** true = sem obrigação de ponto. Fonte única de verdade para funcionário (situação atual ou vigência histórica). */
 export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
+  /* Alta Administração nunca registra ponto: nem o override do RH (registroPontoObrigatorio) vale. */
+  if (s.categoria === "ALTA_ADMINISTRACAO") return true;
   if (s.registroPontoObrigatorio === true) return false;
   if (s.registroPontoObrigatorio === false) return true;
   return categoriaSemRegistroPonto(s.categoria) || !!s.isManager || !!s.isFiscal;
 }
 
 export function labelSemRegistroPonto(s: SituacaoRegistroPonto): string {
+  if (s.categoria === "ALTA_ADMINISTRACAO") return "Alta Administração";
   if (s.isManager) return "Chefe";
   if (s.isFiscal) return "Assessor";
   return "Comissionado";

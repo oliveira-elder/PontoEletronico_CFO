@@ -1495,6 +1495,70 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "GET",
+    pathPattern: "/admin/extensions/sem-matricula",
+    titulo: "Listar pessoas da API sem matrícula",
+    descricao:
+      "Lista, sem limite, as pessoas da API de ramais sem matrícula e a situação de cada uma (Alta Administração). Só Super Admin.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "GET",
+    pathPattern: "/admin/extensions/sem-matricula/status-sso",
+    titulo: "Verificar se a API Admin do SSO responde",
+    descricao:
+      "Informa se a verificação de SSO/AD está disponível; sem ela nenhuma entrada sem matrícula é autorizada.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "GET",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes",
+    titulo: "Listar solicitações de entrada sem matrícula",
+    descricao:
+      "Solicitações (pendentes, autorizadas, negadas e revogadas) com o resultado das verificações automáticas.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "POST",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes",
+    titulo: "Solicitar entrada sem matrícula",
+    descricao:
+      "Registra a requisição do RH (pessoa, usuário do SSO, CPF, subcategoria, nº do chamado e anexo obrigatório). Não concede acesso: fica pendente de autorização de outro Super Admin.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "POST",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes/:id/autorizar",
+    titulo: "Autorizar entrada sem matrícula",
+    descricao:
+      "Autorização expressa do Super Admin (diferente de quem solicitou). Refaz as verificações de SSO/AD/e-mail pessoal/CPF e só então cria o cadastro da Alta Administração sem matrícula.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "POST",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes/:id/negar",
+    titulo: "Negar entrada sem matrícula",
+    descricao:
+      "Nega a solicitação (fraude suspeita, erro de cadastro, divergência ou outro) com motivo registrado. Nada é criado.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "POST",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes/:id/revogar",
+    titulo: "Revogar entrada sem matrícula",
+    descricao:
+      "Revoga o acesso (novo chamado + motivo): a entrada fica REVOGADA e o funcionário inativo. Nada é apagado.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "GET",
+    pathPattern: "/admin/extensions/sem-matricula/solicitacoes/:id/anexo",
+    titulo: "Abrir o anexo do chamado",
+    descricao:
+      "Entrega o print/PDF do chamado (armazenamento privado) ao Super Admin. Cada abertura é registrada.",
+    categoria: "Alta Administração"
+  },
+  {
+    method: "GET",
     pathPattern: "/admin/extensions/buscar",
     titulo: "Buscar usuário na API de matrículas",
     descricao:

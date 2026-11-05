@@ -172,6 +172,13 @@ export type ExtensionsCandidato = {
 @Injectable()
 export class ExtensionsService {
   private readonly logger = new Logger(ExtensionsService.name);
+  /** Pessoas excluídas pelo Super Admin (carregadas a cada sincronização); null fora dela. */
+  private ignorados: {
+    ids: Set<string>;
+    emails: Set<string>;
+    /** extensionsId das solicitações de entrada sem matrícula (Alta Administração): a sync não mexe. */
+    entradas: Set<string>;
+  } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -274,6 +281,30 @@ export class ExtensionsService {
     await this.syncExtensions();
   }
 
+  private async carregarIgnorados() {
+    const linhas = await this.prisma.extensionsIgnorado.findMany({
+      select: { extensionsId: true, email: true }
+    });
+    const entradas = await this.prisma.entradaSemMatricula.findMany({
+      select: { extensionsId: true }
+    });
+    this.ignorados = {
+      entradas: new Set(entradas.map((e) => e.extensionsId)),
+      ids: new Set(linhas.map((l) => l.extensionsId).filter((i): i is string => !!i)),
+      emails: new Set(linhas.map((l) => l.email?.toLowerCase()).filter((e): e is string => !!e))
+    };
+  }
+
+  private estaIgnorado(u: ApiUser): boolean {
+    const ig = this.ignorados;
+    if (!ig) return false;
+    return (
+      ig.ids.has(u.id) ||
+      ig.entradas.has(u.id) ||
+      (!!u.email && ig.emails.has(u.email.trim().toLowerCase()))
+    );
+  }
+
   async syncExtensions(): Promise<{
     total: number;
     created: number;
@@ -283,6 +314,10 @@ export class ExtensionsService {
     errors: number;
   }> {
     let sections: ApiSection[] = [];
+
+    await this.carregarIgnorados().catch(() => {
+      this.ignorados = null;
+    });
 
     try {
       sections = await this.fetchSections();
@@ -344,7 +379,7 @@ export class ExtensionsService {
           if (r === "created") created++;
           else if (r === "updated") updated++;
           else if (r === "sem_matricula") semMatricula++;
-          else if (r === "skipped") skipped++;
+          else if (r === "skipped" || r === "conflito_matricula") skipped++;
           else errors++;
         }
 
@@ -355,7 +390,7 @@ export class ExtensionsService {
             if (r === "created") created++;
             else if (r === "updated") updated++;
             else if (r === "sem_matricula") semMatricula++;
-            else if (r === "skipped") skipped++;
+            else if (r === "skipped" || r === "conflito_matricula") skipped++;
             else errors++;
           }
         }
@@ -375,7 +410,7 @@ export class ExtensionsService {
           if (r === "created") created++;
           else if (r === "updated") updated++;
           else if (r === "sem_matricula") semMatricula++;
-          else if (r === "skipped") skipped++;
+          else if (r === "skipped" || r === "conflito_matricula") skipped++;
           else errors++;
         }
       } catch (err) {
@@ -396,6 +431,7 @@ export class ExtensionsService {
       }
     });
 
+    this.ignorados = null;
     this.logger.log(
       `Sync Extensions: ${totalUsers} usuários na API | ` +
         `${created} criados, ${updated} complementados, ${skipped} preservados, ` +
@@ -485,12 +521,15 @@ export class ExtensionsService {
     sectionSlug: string,
     subsecaoSlug: string | null,
     managers: ApiUser[]
-  ): Promise<"created" | "updated" | "skipped" | "sem_matricula" | "error"> {
+  ): Promise<"created" | "updated" | "skipped" | "sem_matricula" | "conflito_matricula" | "error"> {
     try {
       if (!u.email?.trim()) {
         this.logger.warn(`Usuário da API sem e-mail (id=${u.id}, name=${u.name}) ignorado.`);
         return "skipped";
       }
+
+      /* Excluída pelo Super Admin: não recria nem completa o cadastro. */
+      if (this.estaIgnorado(u)) return "skipped";
 
       const user = await this.ensureUser(u);
       const isManagerApi = managers.some((m) => m.email?.toLowerCase() === u.email.toLowerCase());
@@ -553,7 +592,7 @@ export class ExtensionsService {
     sectionSlug: string,
     subsecaoSlug: string | null,
     isManagerApi: boolean
-  ): Promise<"created" | "sem_matricula" | "skipped" | "error"> {
+  ): Promise<"created" | "sem_matricula" | "conflito_matricula" | "skipped" | "error"> {
     // Sem matrícula (staffId) no AD: não sincroniza. Sem Funcionario, o acesso ao
     // sistema fica bloqueado no login (ver AuthService.syncUser).
     if (u.staffId == null) {
@@ -562,7 +601,21 @@ export class ExtensionsService {
       );
       return "sem_matricula";
     }
-    const matricula = await this.matriculaDisponivel(String(u.staffId));
+    /* A matrícula identifica a pessoa nos documentos oficiais (Espelho, AFD/AEJ): NUNCA cria uma segunda
+       com sufixo ("534-1"). Se já é de outro cadastro (ex.: mesma pessoa com e-mail diferente na API),
+       não cadastra e avisa: a correção é na API ou no cadastro existente. */
+    const matricula = String(u.staffId).trim();
+    const dono = await this.prisma.funcionario.findUnique({
+      where: { matricula },
+      select: { user: { select: { name: true, email: true } } }
+    });
+    if (dono) {
+      this.logger.warn(
+        `Matrícula ${matricula} de ${u.name} <${u.email}> já pertence a ${dono.user?.name} <${dono.user?.email}>: ` +
+          "cadastro NÃO criado (evita matrícula duplicada). Corrija na API de ramais ou no cadastro existente."
+      );
+      return "conflito_matricula";
+    }
     /* Categoria real não vem da API de ramais (RH ajusta depois); "é chefe" (isManager)
        é a única informação que a API traz, e é independente da categoria. */
     const cat = "CONCURSADO" as const;
@@ -739,6 +792,36 @@ export class ExtensionsService {
     };
   }
 
+  /** Pessoas da API de ramais para a aba Alta Administração (inclui as sem matrícula). */
+  async pessoasDaApiResumo() {
+    const sections = await this.fetchSections();
+    return this.pessoasDaApi(sections).map((p) => ({
+      id: String(p.u.id),
+      nome: p.u.name,
+      email: p.u.email?.trim() || null,
+      staffId: p.u.staffId,
+      ramal: p.u.extension || null,
+      sala: p.u.room || null,
+      andar: p.u.floor || null,
+      secao: p.section.name,
+      secaoNome: slugParaNome(p.section.name),
+      subsecao: p.sub,
+      gerente: p.gerente
+    }));
+  }
+
+  /** Gerência da seção da API (cria se ainda não existir, como a sincronização). */
+  async resolverGerenciaPorSecao(sectionSlug: string) {
+    const section = {
+      id: "",
+      name: sectionSlug,
+      managers: [],
+      users: [],
+      subsections: []
+    } as ApiSection;
+    return this.resolveGerenciaForSection(section);
+  }
+
   /** Todas as pessoas da API (diretas, subseções e gestores), sem repetir o mesmo id. */
   private pessoasDaApi(sections: ApiSection[]) {
     const vistos = new Set<string>();
@@ -829,6 +912,12 @@ export class ExtensionsService {
     const { u, section, sub } = alvo;
     if (!u.email?.trim()) return { resultado: "sem_email", nome: u.name };
     if (u.staffId == null) return { resultado: "sem_matricula", nome: u.name };
+    /* Cadastro MANUAL pelo Super Admin: tira a pessoa da lista de excluídos e volta a sincronizá-la. */
+    const email = u.email.trim().toLowerCase();
+    await this.prisma.extensionsIgnorado.deleteMany({
+      where: { OR: [{ extensionsId: u.id }, { email }] }
+    });
+    this.ignorados = null;
     const gerencia = await this.resolveGerenciaForSection(section);
     const r = await this.syncUser(u, gerencia.id, section.name, sub, section.managers);
     return { resultado: r, nome: u.name };

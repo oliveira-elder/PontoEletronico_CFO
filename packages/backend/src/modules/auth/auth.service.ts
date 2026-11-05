@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException } from "@nestjs/common";
+import { Injectable, ForbiddenException, Logger } from "@nestjs/common";
 import { cedidoHoje } from "../../utils/cessao-historico";
 import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh, isGerenciaRhSlug } from "../../common/gerencia-rh.util";
@@ -47,6 +47,8 @@ const SSO_FAKE_DOMAINS = ["sso.local", "pending.local"];
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   mapTokenPayload(payload: Record<string, unknown>): AuthContext {
@@ -218,7 +220,8 @@ export class AuthService {
         solicitarAtualizacaoFoto: true,
         ativo: true,
         isManager: true,
-        section: true
+        section: true,
+        categoria: true
       }
     });
 
@@ -252,6 +255,7 @@ export class AuthService {
             ativo: true,
             isManager: true,
             section: true,
+            categoria: true,
             fotoPerfilUrl: true,
             solicitarAtualizacaoFoto: true
           }
@@ -262,7 +266,14 @@ export class AuthService {
     // Bloqueia acesso de quem não consta no quadro oficial (sem matrícula do RH).
     // Super admins não são bloqueados.
     if (funcionario && !funcionario.matricula && !ctx.isSuperAdmin) {
-      throw new ForbiddenException("SEM_MATRICULA");
+      /* Exceção ÚNICA: Alta Administração, e só com solicitação AUTORIZADA pelo Super Admin para este
+         mesmo usuário do SSO. Pendente, negada, revogada ou outro usuário = sem acesso. */
+      const categoria = (funcionario as { categoria?: string }).categoria;
+      if (categoria === "ALTA_ADMINISTRACAO") {
+        await this.exigirEntradaAutorizada(funcionario.id, ctx.username);
+      } else {
+        throw new ForbiddenException("SEM_MATRICULA");
+      }
     }
 
     // Registra o login (usado na Gestão para indicar quem já acessou o sistema hoje).
@@ -295,6 +306,49 @@ export class AuthService {
       isSuperAdmin,
       funcionario: funcionario ?? null
     };
+  }
+
+  /** Alta Administração sem matrícula: exige entrada AUTORIZADA ligada a este usuário do SSO. */
+  private async exigirEntradaAutorizada(funcionarioId: string, username: string | undefined) {
+    const entrada = await this.prisma.entradaSemMatricula.findFirst({
+      where: { funcionarioId, status: "AUTORIZADA" },
+      select: { usuarioSso: true }
+    });
+    const usuario = (username ?? "").trim().toLowerCase();
+    if (!entrada || entrada.usuarioSso !== usuario) {
+      this.logger.warn(
+        `Acesso negado (Alta Administração sem autorização válida): usuário SSO "${usuario}" para o funcionário ${funcionarioId}` +
+          (entrada ? ` (autorizado para "${entrada.usuarioSso}").` : " (sem entrada autorizada).")
+      );
+      throw new ForbiddenException("ACESSO_NAO_AUTORIZADO");
+    }
+  }
+
+  /* Alta Administração revogada/desativada: o token em uso deixa de valer logo (não só no próximo login).
+     Uma consulta a cada 30 s no máximo (conjunto de subs bloqueados); falha de banco não bloqueia ninguém. */
+  private altaAdmBloqueados: { subs: Set<string>; em: number } = { subs: new Set(), em: 0 };
+
+  async altaAdmBloqueada(sub: string | undefined): Promise<boolean> {
+    if (!sub) return false;
+    if (Date.now() - this.altaAdmBloqueados.em > 30_000) {
+      try {
+        const linhas = await this.prisma.funcionario.findMany({
+          where: {
+            categoria: "ALTA_ADMINISTRACAO",
+            ativo: false,
+            user: { externalId: { not: null } }
+          },
+          select: { user: { select: { externalId: true } } }
+        });
+        this.altaAdmBloqueados = {
+          subs: new Set(linhas.map((l) => l.user.externalId).filter((e): e is string => !!e)),
+          em: Date.now()
+        };
+      } catch {
+        this.altaAdmBloqueados = { ...this.altaAdmBloqueados, em: Date.now() };
+      }
+    }
+    return this.altaAdmBloqueados.subs.has(sub);
   }
 
   /** Localiza usuário pré-cadastrado pela API de ramais (ainda sem sub do SSO). */

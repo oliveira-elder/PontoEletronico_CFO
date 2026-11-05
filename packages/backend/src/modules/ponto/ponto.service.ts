@@ -136,6 +136,7 @@ import {
 } from "../../utils/abono-periodos";
 import {
   diasCorridos,
+  separarGozoPorData,
   somarDiasIso,
   validarPeriodosEstagiario,
   validarPeriodosFerias,
@@ -4743,11 +4744,14 @@ export class PontoService implements OnModuleInit {
     const diasPorCiclo = 30;
     const maxAcumulo = 2;
 
-    const hoje = new Date();
-    const admissao = new Date(func.dataAdmissao);
+    const hojeISO = hojeBrasiliaISO();
+    /* Datas civis em UTC (coluna @db.Date): evita o deslocamento de -1 dia no fuso de Brasília. */
+    const hoje = new Date(`${hojeISO}T00:00:00Z`);
+    const admissao = new Date(`${dataCivilISO(func.dataAdmissao)}T00:00:00Z`);
 
     const mesesTotal =
-      (hoje.getFullYear() - admissao.getFullYear()) * 12 + (hoje.getMonth() - admissao.getMonth());
+      (hoje.getUTCFullYear() - admissao.getUTCFullYear()) * 12 +
+      (hoje.getUTCMonth() - admissao.getUTCMonth());
     const ciclosVencidos = Math.floor(mesesTotal / duracaoCicloMeses);
 
     const STATUS_EM_ANALISE = [
@@ -4785,10 +4789,12 @@ export class PontoService implements OnModuleInit {
 
     let diasGozo = 0;
     let diasVendidos = 0;
+    let diasGozados = 0;
     for (const s of vigentes) {
       if (s.status !== "APROVADA") continue;
       const m = (s.metadados ?? {}) as Record<string, unknown>;
       diasGozo += Number(m.totalDiasGozo ?? 0);
+      diasGozados += Math.min(Number(m.totalDiasGozo ?? 0), separarGozoPorData(m, hojeISO).gozados);
       diasVendidos += Number(m.diasVendidos ?? 0);
     }
 
@@ -4820,10 +4826,14 @@ export class PontoService implements OnModuleInit {
 
     type CicloDetalhe = {
       numero: number;
-      inicio: Date;
-      fim: Date;
+      inicio: string;
+      fim: string;
       diasPorCiclo: number;
       diasGozo: number;
+      /** Parte de `diasGozo` cuja data real já passou. */
+      diasGozados: number;
+      /** Parte de `diasGozo` agendada para o futuro (ainda não gozada). */
+      diasAgendados: number;
       diasVendidos: number;
       diasDisponiveis: number;
       status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
@@ -4839,18 +4849,20 @@ export class PontoService implements OnModuleInit {
       (_, i) => {
         const cicloNum = ciclosVencidos - ciclosVisiveis + i + 1;
         const emFormacao = cicloNum === cicloFormacaoNum && temFormacao;
-        const inicio = new Date(admissao);
-        inicio.setMonth(admissao.getMonth() + (cicloNum - 1) * duracaoCicloMeses);
-        const fim = new Date(inicio);
-        fim.setMonth(fim.getMonth() + duracaoCicloMeses);
-        fim.setDate(fim.getDate() - 1);
+        const inicioD = new Date(admissao);
+        inicioD.setUTCMonth(admissao.getUTCMonth() + (cicloNum - 1) * duracaoCicloMeses);
+        const fimD = new Date(inicioD);
+        fimD.setUTCMonth(fimD.getUTCMonth() + duracaoCicloMeses);
+        fimD.setUTCDate(fimD.getUTCDate() - 1);
+        const inicio = dataCivilISO(inicioD);
+        const fim = dataCivilISO(fimD);
         const cota = emFormacao ? cotaFormacao : diasPorCiclo;
-        const liberaEmData = new Date(inicio);
-        liberaEmData.setMonth(liberaEmData.getMonth() + (isEstagiario ? 6 : 12));
+        const liberaEmData = new Date(inicioD);
+        liberaEmData.setUTCMonth(liberaEmData.getUTCMonth() + (isEstagiario ? 6 : 12));
         const liberaEm =
           emFormacao && (!isEstagiario || mesesNoCicloAtual < 6)
             ? dataCivilISO(
-                emFormacao && !isEstagiario ? new Date(fim.getTime() + 86400000) : liberaEmData
+                emFormacao && !isEstagiario ? new Date(fimD.getTime() + 86400000) : liberaEmData
               )
             : null;
         return {
@@ -4859,6 +4871,8 @@ export class PontoService implements OnModuleInit {
           fim,
           diasPorCiclo: cota,
           diasGozo: 0,
+          diasGozados: 0,
+          diasAgendados: 0,
           diasVendidos: 0,
           diasDisponiveis: cota,
           status: "DISPONIVEL" as const,
@@ -4875,6 +4889,7 @@ export class PontoService implements OnModuleInit {
       number,
       {
         diasGozo: number;
+        diasGozados: number;
         diasVendidos: number;
         solicitacaoId: string;
         solicitacaoStatus: string;
@@ -4883,7 +4898,22 @@ export class PontoService implements OnModuleInit {
 
     const alocarEmCiclo = (cicloNum: number, s: SolFerias, gozo: number, venda: number) => {
       const prev = consumoPorCiclo.get(cicloNum);
+      /* Dos dias alocados neste ciclo, quantos já passaram (só solicitações aprovadas gozam de fato). */
+      const total = Number(((s.metadados ?? {}) as Record<string, unknown>).totalDiasGozo ?? 0);
+      const feitos =
+        s.status === "APROVADA" && total > 0
+          ? Math.min(
+              gozo,
+              Math.round(
+                (separarGozoPorData((s.metadados ?? {}) as Record<string, unknown>, hojeISO)
+                  .gozados *
+                  gozo) /
+                  total
+              )
+            )
+          : 0;
       if (prev) {
+        prev.diasGozados += feitos;
         prev.diasGozo += gozo;
         prev.diasVendidos += venda;
         // Mantém a solicitação mais recente / em análise como referência
@@ -4894,6 +4924,7 @@ export class PontoService implements OnModuleInit {
       } else {
         consumoPorCiclo.set(cicloNum, {
           diasGozo: gozo,
+          diasGozados: feitos,
           diasVendidos: venda,
           solicitacaoId: s.id,
           solicitacaoStatus: s.status
@@ -4953,6 +4984,8 @@ export class PontoService implements OnModuleInit {
       return {
         ...c,
         diasGozo: gozo,
+        diasGozados: uso.diasGozados,
+        diasAgendados: gozo - uso.diasGozados,
         diasVendidos: venda,
         diasDisponiveis: emAnalise ? 0 : disp,
         status: emAnalise
@@ -4966,10 +4999,13 @@ export class PontoService implements OnModuleInit {
     });
 
     return {
-      dataAdmissao: admissao,
+      dataAdmissao: dataCivilISO(admissao),
       ciclosVencidos,
       diasDisponiveis,
       diasGozo,
+      /** Gozados de fato (data real já passou) e agendados (futuros): `diasGozo` = soma dos dois. */
+      diasGozados,
+      diasAgendados: diasGozo - diasGozados,
       diasVendidos,
       totalVencido,
       obrigatorio,

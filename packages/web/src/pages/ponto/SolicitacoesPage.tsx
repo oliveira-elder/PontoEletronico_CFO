@@ -1312,6 +1312,8 @@ interface CicloFerias {
   fim: string;
   diasPorCiclo: number;
   diasGozo: number;
+  diasGozados?: number;
+  diasAgendados?: number;
   diasVendidos: number;
   diasDisponiveis: number;
   status: "DISPONIVEL" | "EM_ANALISE" | "CONFIGURADO";
@@ -1333,6 +1335,8 @@ interface SaldoFerias {
   ciclosVencidos: number;
   diasDisponiveis: number;
   diasGozo: number;
+  diasGozados?: number;
+  diasAgendados?: number;
   diasVendidos: number;
   totalVencido: number;
   obrigatorio: boolean;
@@ -1473,7 +1477,7 @@ function FormFerias({
 
   const diasDisponiveisCiclo =
     modo === "nova" ? (cicloAtual?.diasDisponiveis ?? saldo?.diasDisponiveis ?? 0) : 0;
-  const diasJaGozadosCiclo = cicloAtual?.diasGozo ?? 0;
+  const diasJaGozadosCiclo = cicloAtual?.diasGozados ?? 0;
 
   // Garante que estagiário não tenha diasVenda > 0
   useEffect(() => {
@@ -1820,7 +1824,7 @@ function FormFerias({
             {saldoLoading
               ? "Carregando saldo de férias…"
               : isEstagiario
-                ? "Não há dias disponíveis neste ciclo. O saldo já foi totalmente gozado ou há solicitação em análise."
+                ? "Não há dias disponíveis neste ciclo. O saldo já foi totalmente gozado ou agendado, ou há solicitação em análise."
                 : "Não há dias disponíveis para nova solicitação neste ciclo. Se já configurou as férias, use a opção de mudança nos períodos ainda elegíveis (antecedência mínima)."}
           </div>
         )}
@@ -1859,7 +1863,8 @@ function FormFerias({
                 String(saldo.diasDisponiveis),
                 saldo.diasDisponiveis > 0 ? "var(--green)" : "var(--ink-500)"
               ],
-              ["Já gozados", String(saldo.diasGozo), "var(--ink-700)"],
+              ["Já gozados", String(saldo.diasGozados ?? 0), "var(--ink-700)"],
+              ["Agendados", String(saldo.diasAgendados ?? saldo.diasGozo), "var(--ink-700)"],
               ...(!saldo.isEstagiario
                 ? [["Já vendidos", String(saldo.diasVendidos), "var(--ink-700)"]]
                 : []),
@@ -2302,7 +2307,8 @@ function SeletorCicloFerias({
                 {fmtPeriodoCurto(c.inicio)} – {fmtPeriodoCurto(c.fim)} · {c.diasDisponiveis}d
                 disponíveis
                 {c.diasVendidos > 0 ? ` · ${c.diasVendidos}d vendidos` : ""}
-                {c.diasGozo > 0 ? ` · ${c.diasGozo}d gozo` : ""}
+                {(c.diasGozados ?? 0) > 0 ? ` · ${c.diasGozados}d gozados` : ""}
+                {(c.diasAgendados ?? 0) > 0 ? ` · ${c.diasAgendados}d agendados` : ""}
               </p>
             </button>
           );

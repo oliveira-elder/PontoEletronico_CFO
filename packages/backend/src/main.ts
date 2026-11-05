@@ -1,3 +1,6 @@
+/* Fuso de Brasília em todo o processo (mesmo fora do Docker), antes de qualquer uso de Date. */
+process.env.TZ = process.env.TZ || "America/Sao_Paulo";
+
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";

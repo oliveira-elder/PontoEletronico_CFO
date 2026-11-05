@@ -86,6 +86,12 @@ export class GestaoController {
 
   /* ─── Funcionários ─── */
 
+  @Get("funcionarios/:id/entrada-sem-matricula")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  entradaSemMatricula(@Param("id") id: string) {
+    return this.gestaoService.entradaSemMatriculaDoFuncionario(id);
+  }
+
   @Get("funcionarios")
   @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
   listFuncionarios() {
@@ -144,6 +150,7 @@ export class GestaoController {
         cpf: string;
         cargo: string;
         categoria: string;
+        subcategoria: string | null;
         gerenciaId: string;
         subsecao: string | null;
         ativo: boolean;

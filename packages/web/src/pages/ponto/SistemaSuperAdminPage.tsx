@@ -12,6 +12,7 @@ import {
 } from "../../components/icons";
 import { GestaoUsuariosPage } from "./GestaoUsuariosPage";
 import { RepEscopoTab } from "../../components/sistema/RepEscopoTab";
+import { AltaAdministracaoTab } from "../../components/sistema/AltaAdministracaoTab";
 
 /* ── Types ── */
 
@@ -86,14 +87,16 @@ function mesAtualYYYYMM() {
 export function SistemaSuperAdminPage() {
   const { user } = useAuth();
   const [params] = useSearchParams();
-  const [tab, setTab] = useState<"sa" | "start" | "usuarios" | "rep">(
+  const [tab, setTab] = useState<"sa" | "start" | "usuarios" | "rep" | "alta">(
     params.get("aba") === "usuarios"
       ? "usuarios"
       : params.get("aba") === "start"
         ? "start"
         : params.get("aba") === "rep"
           ? "rep"
-          : "sa"
+          : params.get("aba") === "alta"
+            ? "alta"
+            : "sa"
   );
   const [erro, setErro] = useState("");
   const [ok, setOk] = useState("");
@@ -232,6 +235,11 @@ export function SistemaSuperAdminPage() {
             { id: "usuarios" as const, label: "Usuários / Grupos", icon: <SsoIcon size={16} /> },
             { id: "start" as const, label: "Start do Sistema", icon: <PlayIcon size={16} /> },
             {
+              id: "alta" as const,
+              label: "Alta Administração (sem matrícula)",
+              icon: <CrownIcon size={16} />
+            },
+            {
               id: "rep" as const,
               label: "Integridade do código (REP-P)",
               icon: <KeyIcon size={16} />
@@ -307,6 +315,8 @@ export function SistemaSuperAdminPage() {
         <GestaoUsuariosPage embutido />
       ) : tab === "rep" ? (
         <RepEscopoTab />
+      ) : tab === "alta" ? (
+        <AltaAdministracaoTab />
       ) : loading ? (
         <p style={{ color: "var(--ink-400)" }}>Carregando…</p>
       ) : tab === "sa" ? (

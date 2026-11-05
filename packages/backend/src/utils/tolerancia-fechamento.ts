@@ -3,7 +3,12 @@ import type { PrismaClient } from "@prisma/client";
 type Db = Pick<PrismaClient, "funcionario" | "configuracaoSistema">;
 
 /** Categorias sem tolerância individual de fechamento (vale só a geral). */
-export const CATEGORIAS_SEM_TOLERANCIA_INDIVIDUAL = ["ESTAGIARIO", "MENOR_APRENDIZ", "ASSESSOR"];
+export const CATEGORIAS_SEM_TOLERANCIA_INDIVIDUAL = [
+  "ESTAGIARIO",
+  "MENOR_APRENDIZ",
+  "ASSESSOR",
+  "ALTA_ADMINISTRACAO"
+];
 
 export function categoriaSemToleranciaIndividual(categoria: string | null | undefined): boolean {
   return !!categoria && CATEGORIAS_SEM_TOLERANCIA_INDIVIDUAL.includes(categoria);

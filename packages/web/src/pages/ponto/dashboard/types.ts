@@ -172,7 +172,8 @@ export const LABEL_CATEGORIA_FUNC: Record<string, string> = {
   ESTAGIARIO: "Estagiário",
   MENOR_APRENDIZ: "Jovem Aprendiz",
   CONCURSADO: "Efetivo",
-  ASSESSOR: "Comissionado"
+  ASSESSOR: "Comissionado",
+  ALTA_ADMINISTRACAO: "Alta Administração"
 };
 
 export function categoriaFuncLabel(chave: string): string {

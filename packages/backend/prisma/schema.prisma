@@ -365,6 +365,26 @@ enum CategoriaFuncional {
   MENOR_APRENDIZ
   CONCURSADO
   ASSESSOR
+  /// Sem matrícula e sem registro de ponto; entra só por EntradaSemMatricula autorizada pelo Super Admin.
+  ALTA_ADMINISTRACAO
+}
+
+/// Subcategoria de quem é da Alta Administração.
+enum SubcategoriaAltaAdministracao {
+  PRESIDENTE
+  VICE_PRESIDENTE
+  SECRETARIO_GERAL
+  TESOUREIRO
+  SUPERINTENDENTE
+  OUTROS
+}
+
+/// Estado de uma solicitação de entrada sem matrícula (Alta Administração).
+enum StatusEntradaSemMatricula {
+  PENDENTE
+  AUTORIZADA
+  NEGADA
+  REVOGADA
 }
 
 /// Atividade-meio (suporte/administrativa) x atividade-fim (finalística do órgão).
@@ -747,6 +767,8 @@ model Funcionario {
   modoHomeOffice                     Boolean                          @default(false)
   modoHibridoLocal                   Boolean                          @default(false)
   categoria                          CategoriaFuncional               @default(CONCURSADO)
+  /// Só para categoria ALTA_ADMINISTRACAO.
+  subcategoria                       SubcategoriaAltaAdministracao?
   /// A partir desta data o funcionário passa a ter obrigação de ponto (ex.: assessor → concursado).
   /// Dias anteriores e efeitos de solicitações informativas não entram no cálculo.
   pontoObrigatorioDesde              DateTime?                        @db.Date
@@ -1675,4 +1697,71 @@ model RepEscopoLiberacao {
 
   @@index([createdAt])
   @@index([tipo])
+}
+
+/// Pessoas EXCLUÍDAS pelo Super Admin que ainda constam na API de ramais: a sincronização não as recria.
+/// Para voltar a sincronizar, cadastre manualmente (Usuários Cadastrados → Buscar na API de matrículas).
+model ExtensionsIgnorado {
+  id           String   @id @default(cuid())
+  /// id da pessoa na API de ramais (Funcionario.extensionsId), quando existia.
+  extensionsId String?  @unique
+  /// E-mail em minúsculas (da conta no sistema e/ou da API).
+  email        String?
+  matricula    String?
+  nome         String?
+  /// Chamado interno que autorizou a exclusão.
+  chamado      String?
+  excluidoPor  String?
+  createdAt    DateTime @default(now())
+
+  @@index([email])
+}
+
+/// Solicitação de entrada, SEM matrícula, de uma pessoa da Alta Administração. O acesso só existe com status AUTORIZADA.
+/// Só inclusão: nada é apagado (negadas e revogadas ficam como prova).
+model EntradaSemMatricula {
+  id                     String                        @id @default(cuid())
+  /// Preenchido quando a entrada é autorizada (cria o funcionário).
+  funcionarioId          String?                       @unique
+  extensionsId           String
+  /// Seção/subseção da API de ramais e contatos (para criar a lotação ao autorizar).
+  secaoApi               String?
+  subsecaoApi            String?
+  ramal                  String?
+  sala                   String?
+  andar                  String?
+  nomeApi                String
+  emailApi               String?
+  /// Usuário do SSO (preferred_username), normalizado.
+  usuarioSso             String
+  /// E-mail institucional derivado do usuário do SSO.
+  emailInstitucional     String
+  /// Opcional: quando informado, é validado e único.
+  cpf                    String?
+  subcategoria           SubcategoriaAltaAdministracao
+  numeroChamado          String
+  anexoCaminho           String
+  anexoNome              String
+  anexoMime              String
+  anexoSha256            String
+  status                 StatusEntradaSemMatricula     @default(PENDENTE)
+  solicitadoPorUserId    String?
+  solicitadoPorNome      String
+  solicitadoPorSub       String?
+  ip                     String?
+  createdAt              DateTime                      @default(now())
+  decididoPorNome        String?
+  decididoPorSub         String?
+  decididoEm             DateTime?
+  /// FRAUDE_SUSPEITA | ERRO_DE_CADASTRO | DADOS_DIVERGENTES | OUTRO (negação/revogação).
+  categoriaMotivo        String?
+  motivoDecisao          String?
+  chamadoDecisao         String?
+  /// Resultado das verificações automáticas (SSO, AD, e-mail pessoal, CPF…).
+  resultadoVerificacao   Json?
+  ultimaVerificacaoSsoEm DateTime?
+
+  @@index([status])
+  @@index([extensionsId])
+  @@index([usuarioSso])
 }

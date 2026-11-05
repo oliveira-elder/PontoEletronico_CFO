@@ -27,6 +27,7 @@ import { RequisicaoRhModule } from "./modules/requisicao-rh/requisicao-rh.module
 import { SaudeOcupacionalModule } from "./modules/saude-ocupacional/saude-ocupacional.module";
 import { PainelDemandasModule } from "./modules/painel-demandas/painel-demandas.module";
 import { RepEscopoModule } from "./modules/rep-escopo/rep-escopo.module";
+import { AltaAdministracaoModule } from "./modules/alta-administracao/alta-administracao.module";
 import { LogsModule } from "./modules/logs/logs.module";
 import { IngestModule } from "./modules/ingest/ingest.module";
 import { BackupModule } from "./modules/backup/backup.module";
@@ -62,6 +63,7 @@ import { PerfisRhModule } from "./modules/perfis-rh/perfis-rh.module";
     SaudeOcupacionalModule,
     PainelDemandasModule,
     RepEscopoModule,
+    AltaAdministracaoModule,
     IngestModule,
     BackupModule,
     ApiServidoraModule,

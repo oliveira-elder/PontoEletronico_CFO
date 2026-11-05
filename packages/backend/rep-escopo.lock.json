@@ -1,9 +1,9 @@
 {
   "versao": "0.1.0",
   "algoritmo": "SHA-256",
-  "hash": "5acb4914d8303a26afded2121bd316d41c7d56bc37f0b7775cf8b2fed4a47678",
-  "selado_em": "2026-11-04T12:02:17.300Z",
-  "motivo": "Lacre inicial do escopo mínimo do REP-P",
+  "hash": "2ee6db4dceca210ccdcbd313d1b6cd4a8c2be6ad718273064536ecd798062db0",
+  "selado_em": "2026-11-05T14:26:24.300Z",
+  "motivo": "Alta Administração fora do REP-P (sem evento tipo 5 no cadastro de empregados)",
   "itens": [
     {
       "id": "prisma:ContadorNsr",
@@ -47,8 +47,8 @@
     },
     {
       "id": "src/modules/rep/rep-livro.service.ts",
-      "sha256": "0455b7bdd8c0afe4693b77b5dcb87cb087bb56219ce30a3014bdc1a6a24ab86b",
-      "bytes": 25712
+      "sha256": "b7ad307fd4e0d3e33d428d9ab2e62b3cb1927225705e935eaf4e864aad033016",
+      "bytes": 25884
     },
     {
       "id": "src/modules/rep/rep-p.service.ts",

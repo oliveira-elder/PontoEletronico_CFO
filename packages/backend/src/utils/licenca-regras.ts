@@ -179,7 +179,13 @@ export function inteiroConfig(valor: unknown, campo: string): number | null {
   return n;
 }
 
-const CATEGORIAS_VALIDAS = ["ESTAGIARIO", "MENOR_APRENDIZ", "CONCURSADO", "ASSESSOR"];
+const CATEGORIAS_VALIDAS = [
+  "ESTAGIARIO",
+  "MENOR_APRENDIZ",
+  "CONCURSADO",
+  "ASSESSOR",
+  "ALTA_ADMINISTRACAO"
+];
 
 /** Normaliza e valida a entrada do RH. Lança Error com a lista de problemas. */
 export function normalizarTipoLicenca(

@@ -238,3 +238,48 @@ export function validarPeriodosEstagiario(opts: {
   }
   return erros;
 }
+
+/**
+ * Separa os dias de férias de uma solicitação em GOZADOS (data real já passou, inclusive a parte decorrida de um
+ * período em andamento; o dia de hoje conta) e AGENDADOS (ainda por vir). Sem `periodos`, tudo é agendado.
+ */
+export function separarGozoPorData(
+  metadados: Record<string, unknown> | null | undefined,
+  hojeISO: string
+): { gozados: number; agendados: number } {
+  const m = metadados ?? {};
+  const periodos = Array.isArray(m.periodos)
+    ? (m.periodos as Array<{ dataInicio?: string; dataFim?: string; dias?: number }>)
+    : [];
+  if (!periodos.length) return { gozados: 0, agendados: Number(m.totalDiasGozo ?? 0) };
+  let gozados = 0;
+  let agendados = 0;
+  for (const p of periodos) {
+    const inicio = String(p.dataInicio ?? "").slice(0, 10);
+    const fim = String(p.dataFim ?? p.dataInicio ?? "").slice(0, 10);
+    if (!inicio || !fim) continue;
+    const total = Number(p.dias ?? diasCorridos(inicio, fim));
+    if (fim <= hojeISO) gozados += total;
+    else if (inicio > hojeISO) agendados += total;
+    else {
+      const feitos = Math.min(total, diasCorridos(inicio, hojeISO));
+      gozados += feitos;
+      agendados += total - feitos;
+    }
+  }
+  return { gozados, agendados };
+}
+
+/** Algum período já começou (data de início ≤ hoje)? Férias iniciadas não podem ser canceladas. */
+export function feriasJaIniciadas(
+  metadados: Record<string, unknown> | null | undefined,
+  hojeISO: string
+): boolean {
+  const periodos = Array.isArray(metadados?.periodos)
+    ? (metadados!.periodos as Array<{ dataInicio?: string }>)
+    : [];
+  return periodos.some((p) => {
+    const i = String(p.dataInicio ?? "").slice(0, 10);
+    return !!i && i <= hojeISO;
+  });
+}

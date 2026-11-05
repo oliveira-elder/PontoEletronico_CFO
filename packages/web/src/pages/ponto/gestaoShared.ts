@@ -4,10 +4,38 @@ import {
   UsersIcon,
   GraduationCapIcon,
   ShieldCheckIcon,
-  BriefcaseIcon
+  BriefcaseIcon,
+  CrownIcon
 } from "../../components/icons";
 
-export type Categoria = "ESTAGIARIO" | "MENOR_APRENDIZ" | "CONCURSADO" | "ASSESSOR";
+export type Categoria =
+  | "ESTAGIARIO"
+  | "MENOR_APRENDIZ"
+  | "CONCURSADO"
+  | "ASSESSOR"
+  | "ALTA_ADMINISTRACAO";
+
+/** Subcategoria da Alta Administração (categoria sem matrícula e sem registro de ponto). */
+export type SubcategoriaAltaAdm =
+  | "PRESIDENTE"
+  | "VICE_PRESIDENTE"
+  | "SECRETARIO_GERAL"
+  | "TESOUREIRO"
+  | "SUPERINTENDENTE"
+  | "OUTROS";
+
+export const SUBCATEGORIAS_ALTA_ADM: { v: SubcategoriaAltaAdm; l: string }[] = [
+  { v: "PRESIDENTE", l: "Presidente" },
+  { v: "VICE_PRESIDENTE", l: "Vice-Presidente" },
+  { v: "SECRETARIO_GERAL", l: "Secretário-Geral" },
+  { v: "TESOUREIRO", l: "Tesoureiro" },
+  { v: "SUPERINTENDENTE", l: "Superintendente" },
+  { v: "OUTROS", l: "Outros" }
+];
+
+export function rotuloSubcategoria(v: string | null | undefined): string {
+  return SUBCATEGORIAS_ALTA_ADM.find((s) => s.v === v)?.l ?? "";
+}
 
 /** "Estágio" (ESTAGIARIO/MENOR_APRENDIZ) tem "Supervisor"; "Efetivo"/"Comissionado" têm "Chefe". */
 export function isCategoriaEstagio(categoria: Categoria | string | null | undefined): boolean {
@@ -96,6 +124,8 @@ export interface Funcionario {
   email: string;
   cargo: string;
   categoria: Categoria;
+  /** Só na Alta Administração. */
+  subcategoria?: SubcategoriaAltaAdm | null;
   gerenciaId: string;
   jornadaPeriodoId?: string | null;
   jornadaPeriodo?: JornadaPeriodo | null;
@@ -387,6 +417,12 @@ export const CAT: Record<
     cor: "#8a6a00",
     bg: "rgba(247,196,55,0.12)",
     icon: BriefcaseIcon
+  },
+  ALTA_ADMINISTRACAO: {
+    label: "Alta Administração",
+    cor: "#7a1e26",
+    bg: "rgba(122,30,38,0.10)",
+    icon: CrownIcon
   }
 };
 
@@ -396,6 +432,7 @@ export const FORM_VAZIO = {
   email: "",
   cpf: "",
   categoria: "CONCURSADO" as Categoria,
+  subcategoria: "" as "" | SubcategoriaAltaAdm,
   gerenciaId: "",
   jornadaPeriodoId: "",
   subsecao: "",
@@ -479,6 +516,7 @@ export function formFromFuncionario(f: Funcionario): FuncionarioFormState {
     email: f.user ? resolveEmail(f.user) : "",
     cpf: f.cpf ?? "",
     categoria: f.categoria ?? "CONCURSADO",
+    subcategoria: f.subcategoria ?? "",
     gerenciaId: f.gerenciaId ?? "",
     jornadaPeriodoId: f.jornadaPeriodoId ?? "",
     subsecao: f.subsecao ?? "",

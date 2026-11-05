@@ -644,6 +644,20 @@ export const CAPITULOS: Capitulo[] = [
         rota: "/ponto/logs"
       },
       {
+        id: "alta-administracao-sem-matricula",
+        titulo: "Alta Administração: entrada sem matrícula",
+        perfil: "superadmin",
+        resumo:
+          "Exceção para pessoas da API de ramais sem matrícula: solicitação com chamado e anexo, autorização expressa de outro Super Admin e acesso preso ao SSO/AD.",
+        passos: [
+          "Abra Sistema > Alta Administração (sem matrícula). A tabela lista todas as pessoas da API de ramais sem matrícula.",
+          "Em “Solicitar entrada”, informe o usuário do SSO da pessoa (conta pessoal, nome.sobrenome), o CPF, a subcategoria, o número do chamado e anexe o print ou PDF do chamado. E-mail geral ou compartilhado não é aceito.",
+          "A solicitação fica Pendente e o sistema verifica o SSO e o AD (conta habilitada, federada, e-mail pessoal, CPF). Nada é liberado ainda.",
+          "Outro Super Administrador confere o anexo e escolhe Autorizar (com a confirmação expressa) ou Negar (fraude suspeita, erro de cadastro, divergência ou outro, com motivo).",
+          "Autorizada, a pessoa entra no 1º login do SSO. Ela não registra ponto e não faz parte do REP-P. Se a conta for desabilitada no AD, o acesso é revogado sozinho e não volta sem nova autorização; o Super Admin também pode revogar a qualquer momento."
+        ]
+      },
+      {
         id: "rep-p-inpi",
         titulo: "REP-P, INPI e certificado",
         perfil: "superadmin",

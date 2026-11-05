@@ -247,12 +247,15 @@ export class SaudeOcupacionalService {
           : null
       };
     });
+    /* Os cartões do resumo são ESTATÍSTICA: a Alta Administração não entra neles. Ela continua na lista e na fila
+       "aguardando conferência" (trabalho do RH), por isso esse contador usa todos os itens. */
+    const paraEstatistica = itens.filter((i) => i.categoria !== "ALTA_ADMINISTRACAO");
     const resumo = {
-      total: itens.length,
-      emDia: itens.filter((i) => i.situacao === "EM_DIA").length,
-      aVencer: itens.filter((i) => i.situacao === "A_VENCER").length,
-      vencidos: itens.filter((i) => i.situacao === "VENCIDO").length,
-      semExame: itens.filter((i) => i.situacao === "SEM_EXAME").length,
+      total: paraEstatistica.length,
+      emDia: paraEstatistica.filter((i) => i.situacao === "EM_DIA").length,
+      aVencer: paraEstatistica.filter((i) => i.situacao === "A_VENCER").length,
+      vencidos: paraEstatistica.filter((i) => i.situacao === "VENCIDO").length,
+      semExame: paraEstatistica.filter((i) => i.situacao === "SEM_EXAME").length,
       aguardandoConferencia: itens.filter((i) => i.aguardandoConferencia).length
     };
     if (busca) {

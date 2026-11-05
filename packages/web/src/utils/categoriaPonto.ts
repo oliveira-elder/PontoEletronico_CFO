@@ -1,5 +1,5 @@
 /** Categorias sem obrigação de bater ponto por si só (independente de isManager/isFiscal). */
-export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR"] as const;
+export const CATEGORIAS_SEM_REGISTRO_PONTO = ["ASSESSOR", "ALTA_ADMINISTRACAO"] as const;
 
 export function categoriaSemRegistroPonto(categoria: string | null | undefined): boolean {
   if (!categoria) return false;
@@ -18,6 +18,8 @@ export type SituacaoRegistroPonto = {
 };
 
 export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
+  /* Alta Administração nunca registra ponto: nem o override do RH vale (espelha o backend). */
+  if (s.categoria === "ALTA_ADMINISTRACAO") return true;
   if (s.registroPontoObrigatorio === true) return false;
   if (s.registroPontoObrigatorio === false) return true;
   return categoriaSemRegistroPonto(s.categoria) || !!s.isManager || !!s.isFiscal;
@@ -27,7 +29,11 @@ export function funcionarioSemRegistroPonto(s: SituacaoRegistroPonto): boolean {
  * Estagiário e Jovem Aprendiz não veem banco de horas (página, links, relatórios self-service).
  * O cálculo permanece no backend; RH vê em auditoria.
  */
-export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = ["ESTAGIARIO", "MENOR_APRENDIZ"] as const;
+export const CATEGORIAS_SEM_VISIBILIDADE_BANCO_HORAS = [
+  "ESTAGIARIO",
+  "MENOR_APRENDIZ",
+  "ALTA_ADMINISTRACAO"
+] as const;
 
 export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | undefined): boolean {
   if (!categoria) return false;
@@ -35,6 +41,7 @@ export function categoriaSemVisibilidadeBancoHoras(categoria: string | null | un
 }
 
 export function labelSemRegistroPonto(s: SituacaoRegistroPonto): string {
+  if (s.categoria === "ALTA_ADMINISTRACAO") return "Alta Administração";
   if (s.isManager) return "Chefe";
   if (s.isFiscal) return "Assessor";
   return "Comissionado";

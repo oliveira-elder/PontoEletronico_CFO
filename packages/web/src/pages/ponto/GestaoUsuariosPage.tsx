@@ -324,6 +324,8 @@ const RESULTADO_IMPORTAR: Record<string, string> = {
   skipped: "Já estava cadastrado; nada a alterar.",
   sem_email: "Esta pessoa não tem e-mail na API de ramais.",
   sem_matricula: "Esta pessoa não tem matrícula na API.",
+  conflito_matricula:
+    "A matrícula desta pessoa já pertence a outro cadastro. Corrija na API de ramais ou no cadastro existente.",
   nao_encontrado: "Pessoa não encontrada na API (pode ter sido removida).",
   error: "Não foi possível cadastrar. Veja os logs do backend."
 };

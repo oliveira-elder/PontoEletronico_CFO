@@ -1,0 +1,11 @@
+--- a/src/modules/rep/rep-livro.service.ts
++++ b/src/modules/rep/rep-livro.service.ts
+@@ -322,6 +322,8 @@
+     try {
+       const [funcs, eventos] = await Promise.all([
+         this.prisma.funcionario.findMany({
++          /* Alta Administração (sem matrícula, sem ponto) não faz parte do REP-P: sem evento tipo 5. */
++          where: { categoria: { not: "ALTA_ADMINISTRACAO" } },
+           select: {
+             id: true,
+             cpf: true,

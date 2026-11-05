@@ -40,3 +40,7 @@ O saldo é calculado por ciclos aquisitivos (`calcularSaldoFeriasFuncionario`); 
 ## Tabelas
 
 `Solicitacao` (metadados com os documentos e assinaturas), `Afastamento`, `ConfiguracaoSolicitacoes`, `Notificacao`, `DocumentoEmitido`.
+
+## Gozado × agendado
+
+O saldo separa o que foi **realmente gozado** (data real já passou, em horário de Brasília; o dia de hoje conta, e um período em andamento conta só a parte decorrida) do que está **agendado** (datas futuras). `diasGozo` continua sendo o total programado (`diasGozados + diasAgendados`) por compatibilidade; o saldo disponível não muda. Regra de gozo imutável: o RH não cancela férias com período já iniciado (usa "Alterar" nos dias futuros). Funções: `separarGozoPorData` e `feriasJaIniciadas` em `utils/ferias-regras.ts`; teste: `scripts/teste-ferias-gozo.ts`.

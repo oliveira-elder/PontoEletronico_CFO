@@ -170,7 +170,7 @@ function NovaReqModal({
     "individual" | "gerencia" | "categoria" | "todos"
   >("individual");
   const [selectedCategoria, setSelectedCategoria] = useState<
-    "ESTAGIARIO" | "MENOR_APRENDIZ" | "CONCURSADO" | "ASSESSOR" | ""
+    "ESTAGIARIO" | "MENOR_APRENDIZ" | "CONCURSADO" | "ASSESSOR" | "ALTA_ADMINISTRACAO" | ""
   >("");
   const [funcionarios, setFuncionarios] = useState<FuncionarioItem[]>([]);
   const [gerencias, setGerencias] = useState<GerenciaItem[]>([]);
@@ -930,7 +930,8 @@ function NovaReqModal({
                       { value: "ASSESSOR", label: "Comissionados", cor: "#1a4f7a" },
                       { value: "ESTAGIARIO", label: "Estagiários", cor: "#7a6c1a" },
                       { value: "MENOR_APRENDIZ", label: "Jovens Aprendizes", cor: "#5b4a9e" },
-                      { value: "CONCURSADO", label: "Efetivos", cor: "#1e5c38" }
+                      { value: "CONCURSADO", label: "Efetivos", cor: "#1e5c38" },
+                      { value: "ALTA_ADMINISTRACAO", label: "Alta Administração", cor: "#7a1e26" }
                     ] as const
                   ).map((cat) => {
                     const ativo = selectedCategoria === cat.value;
@@ -965,7 +966,9 @@ function NovaReqModal({
                           ? "Estagiários"
                           : selectedCategoria === "MENOR_APRENDIZ"
                             ? "Jovens Aprendizes"
-                            : "Efetivos"}
+                            : selectedCategoria === "ALTA_ADMINISTRACAO"
+                              ? "da Alta Administração"
+                              : "Efetivos"}
                     </strong>{" "}
                     ativos.
                   </p>

@@ -25,6 +25,7 @@ import {
   XIcon
 } from "../../components/icons";
 import {
+  SUBCATEGORIAS_ALTA_ADM,
   CAT,
   FORM_VAZIO,
   formatCpf,
@@ -1402,7 +1403,9 @@ export function FuncionarioFormPage() {
   const cpfValido = cpfCompleto && isValidCpf(form.cpf);
   const cpfInvalido = cpfPreenchido && cpfCompleto && !cpfValido;
   /* CPF é obrigatório para todas as categorias: vazio, incompleto ou inválido bloqueia. */
-  const cpfBloqueio = !cpfValido;
+  /* Alta Administração (sem matrícula): CPF opcional; se preenchido, precisa ser válido. */
+  const cpfBloqueio =
+    form.categoria === "ALTA_ADMINISTRACAO" ? cpfPreenchido && !cpfValido : !cpfValido;
   /* Cessão marcada (só Efetivo): datas e órgãos passam a ser obrigatórios. */
   /* Cessão marcada (só Efetivo): no cadastro novo os campos do 1º período são
      obrigatórios; no existente, é preciso ter ao menos um período no histórico. */
@@ -1421,7 +1424,7 @@ export function FuncionarioFormPage() {
         : [];
   const podeSalvar =
     !!form.nome.trim() &&
-    !!form.matricula.trim() &&
+    (form.categoria === "ALTA_ADMINISTRACAO" ? !!form.subcategoria : !!form.matricula.trim()) &&
     !!form.gerenciaId &&
     !cpfBloqueio &&
     cessaoPendencias.length === 0 &&
@@ -1443,18 +1446,39 @@ export function FuncionarioFormPage() {
         onNivel: (v) => setForm((f) => ({ ...f, nivelCargo: v }))
       }
     : undefined;
+  const catAltaAdm = form.categoria === "ALTA_ADMINISTRACAO";
   const catComissionado = form.categoria === "ASSESSOR";
   const catEstagiario = form.categoria === "ESTAGIARIO";
   const catJovemAprendiz = form.categoria === "MENOR_APRENDIZ";
-  const catComChefe = catEmpregado || catComissionado;
+  const catComChefe = catEmpregado || catComissionado || catAltaAdm;
+
+  /* Alta Administração: dados da autorização (chamado, quem autorizou) para o aviso ao RH. */
+  const [entradaAlta, setEntradaAlta] = useState<{
+    numeroChamado: string;
+    usuarioSso: string;
+    solicitadoPorNome: string | null;
+    createdAt: string | null;
+    decididoPorNome: string | null;
+    decididoEm: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!id || isNovo || !catAltaAdm) return;
+    api
+      .get<typeof entradaAlta>(`/ponto/gestao/funcionarios/${id}/entrada-sem-matricula`)
+      .then((e) => setEntradaAlta(e ?? null))
+      .catch(() => setEntradaAlta(null));
+  }, [id, isNovo, catAltaAdm]);
 
   function motivosBloqueio(): string[] {
     const m: string[] = [];
     if (!form.nome.trim()) m.push("Nome completo");
-    if (!form.matricula.trim()) m.push("Matrícula");
+    if (catAltaAdm) {
+      if (!form.subcategoria) m.push("Subcategoria");
+    } else if (!form.matricula.trim()) m.push("Matrícula");
     if (!form.gerenciaId) m.push("Gerência");
-    if (!cpfPreenchido) m.push("CPF");
-    else if (!cpfValido) m.push("CPF inválido ou incompleto");
+    if (!cpfPreenchido) {
+      if (!catAltaAdm) m.push("CPF");
+    } else if (!cpfValido) m.push("CPF inválido ou incompleto");
     m.push(...cessaoPendencias);
     return m;
   }
@@ -1672,6 +1696,13 @@ export function FuncionarioFormPage() {
       delete payload.cessaoOrgaoDestino;
       if (catComissionado) delete payload.cargo;
     }
+    if (catAltaAdm) {
+      /* Sem matrícula e sem dados de ponto: só a subcategoria é enviada. */
+      delete payload.matricula;
+      payload.subcategoria = form.subcategoria || null;
+    } else {
+      delete payload.subcategoria;
+    }
 
     if (isCategoriaEstagio(form.categoria)) {
       payload.supervisorEstagioId = supervisorEstagioId || null;
@@ -1709,7 +1740,7 @@ export function FuncionarioFormPage() {
         if (Object.keys(followUp).length) {
           await api.put(`/ponto/gestao/funcionarios/${novo.id}`, followUp);
         }
-        if (isRhOuAdmin) {
+        if (isRhOuAdmin && !catAltaAdm) {
           await Promise.all([
             jornadaPeriodoId
               ? api.patch(`/ponto/gestao/funcionarios/${novo.id}/jornada-periodo`, {
@@ -1721,7 +1752,7 @@ export function FuncionarioFormPage() {
         }
       } else if (id) {
         await api.put(`/ponto/gestao/funcionarios/${id}`, payload);
-        if (isRhOuAdmin) {
+        if (isRhOuAdmin && !catAltaAdm) {
           await Promise.all([
             api.patch(`/ponto/gestao/funcionarios/${id}/jornada-periodo`, {
               jornadaPeriodoId: jornadaPeriodoId || null
@@ -1948,12 +1979,60 @@ export function FuncionarioFormPage() {
       </div>
 
       <div className="card-flat" style={{ padding: isMobile ? 16 : 28 }}>
+        {catAltaAdm && !isNovo && (
+          <div
+            role="note"
+            style={{
+              marginBottom: 20,
+              padding: "14px 16px",
+              borderRadius: "var(--radius-md)",
+              background: "rgba(198,127,0,0.08)",
+              border: "1px solid rgba(198,127,0,0.30)",
+              fontSize: 12.5,
+              lineHeight: 1.65,
+              color: "var(--ink-800)"
+            }}
+          >
+            <strong>Alta Administração — acesso sem matrícula (exceção).</strong> Esta pessoa foi
+            habilitada sem matrícula, por solicitação do RH
+            {entradaAlta?.numeroChamado ? ` (chamado ${entradaAlta.numeroChamado})` : ""}.{" "}
+            {entradaAlta?.solicitadoPorNome && (
+              <>
+                A demanda foi registrada e <strong>aceita</strong> pelo usuário{" "}
+                <strong>{entradaAlta.solicitadoPorNome}</strong>
+                {entradaAlta.createdAt
+                  ? ` em ${new Date(entradaAlta.createdAt).toLocaleDateString("pt-BR")}`
+                  : ""}{" "}
+                e{" "}
+              </>
+            )}
+            <strong>autorizada expressamente</strong> pelo Super Administrador{" "}
+            <strong>{entradaAlta?.decididoPorNome ?? "—"}</strong>
+            {entradaAlta?.decididoEm
+              ? ` em ${new Date(entradaAlta.decididoEm).toLocaleDateString("pt-BR")}`
+              : ""}
+            , com o documento do chamado arquivado de forma privada. Ela não registra ponto e não
+            faz parte do REP-P (livro, AFD/AEJ, comprovantes e espelho) e usa o sistema pelo usuário
+            do SSO{entradaAlta?.usuarioSso ? ` (${entradaAlta.usuarioSso})` : ""} e, quando
+            informado, pelo CPF. Como não há matrícula para comprovar o vínculo, a segurança depende
+            de: <strong>conta pessoal e intransferível</strong> (e-mail geral ou compartilhado não é
+            aceito), <strong>dados corretos</strong> (um erro de digitação ou homônimo liga a conta
+            à pessoa errada), <strong>chamado verdadeiro</strong> (o arquivo é guardado com hash,
+            autor, data e IP, mas o sistema não prova que o print/PDF é autêntico: confira o
+            chamado) e <strong>acesso preso ao SSO/AD</strong> (se a conta for desabilitada no AD, o
+            acesso no Ponto é desativado e não volta sozinho). Sem registro de ponto, presença e
+            jornada não são rastreáveis pelo REP; as ações no sistema ficam no log por usuário. O
+            Super Administrador pode negar ou revogar a qualquer momento em caso de suspeita de
+            fraude ou erro, e relatórios que usam matrícula mostram “—”. CPF e documento são dados
+            pessoais (LGPD): acesso restrito.
+          </div>
+        )}
         {/* ══════════════════ GERAL ══════════════════ */}
         <SectionTitle>Geral</SectionTitle>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: gridCols(catComChefe ? 3 : 2),
+            gridTemplateColumns: gridCols(catAltaAdm ? 4 : catComChefe ? 3 : 2),
             gap: 16,
             marginBottom: 24
           }}
@@ -1981,15 +2060,47 @@ export function FuncionarioFormPage() {
                   }));
                 }}
                 style={selectStyle}
+                disabled={catAltaAdm}
+                title={
+                  catAltaAdm
+                    ? "Quem entrou sem matrícula (Alta Administração) não pode mudar de categoria."
+                    : undefined
+                }
               >
-                {(Object.keys(CAT) as Categoria[]).map((cat) => (
-                  <option key={cat} value={cat}>
-                    {CAT[cat].label}
-                  </option>
-                ))}
+                {(Object.keys(CAT) as Categoria[])
+                  .filter((cat) => cat !== "ALTA_ADMINISTRACAO" || catAltaAdm)
+                  .map((cat) => (
+                    <option key={cat} value={cat}>
+                      {CAT[cat].label}
+                    </option>
+                  ))}
               </select>
             </SelectWrap>
           </div>
+          {catAltaAdm && (
+            <div>
+              <FieldLabel>Subcategoria *</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.subcategoria}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      subcategoria: e.target.value as typeof f.subcategoria
+                    }))
+                  }
+                  style={selectStyle}
+                >
+                  <option value="">Selecione…</option>
+                  {SUBCATEGORIAS_ALTA_ADM.map((s) => (
+                    <option key={s.v} value={s.v}>
+                      {s.l}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
+            </div>
+          )}
           {!isNovo && renderSituacaoToggle()}
           {catComChefe && (
             <div>
@@ -2297,19 +2408,21 @@ export function FuncionarioFormPage() {
               style={fieldStyle}
             />
           </div>
-          <div>
-            <FieldLabel>Matrícula *</FieldLabel>
-            <input
-              type="text"
-              value={form.matricula}
-              onChange={(e) => setForm((f) => ({ ...f, matricula: e.target.value }))}
-              placeholder="Ex: 00123 ou EST01"
-              style={fieldStyle}
-            />
-          </div>
+          {!catAltaAdm && (
+            <div>
+              <FieldLabel>Matrícula *</FieldLabel>
+              <input
+                type="text"
+                value={form.matricula}
+                onChange={(e) => setForm((f) => ({ ...f, matricula: e.target.value }))}
+                placeholder="Ex: 00123 ou EST01"
+                style={fieldStyle}
+              />
+            </div>
+          )}
           <div>
             <FieldLabel>
-              CPF <span style={{ color: "var(--red)" }}>*</span>
+              CPF {!catAltaAdm && <span style={{ color: "var(--red)" }}>*</span>}
             </FieldLabel>
             <input
               type="text"
@@ -2488,7 +2601,9 @@ export function FuncionarioFormPage() {
           </div>
         </div>
 
-        {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
+        {(form.categoria === "CONCURSADO" ||
+          form.categoria === "ASSESSOR" ||
+          form.categoria === "ALTA_ADMINISTRACAO") && (
           <div style={{ marginBottom: 20 }}>
             {cabecalhoComRequerimento("Dependentes (Filhos)", "DEPENDENTES")}
             {form.dependentes.length > 0 && (
@@ -2789,12 +2904,17 @@ export function FuncionarioFormPage() {
         </div>
 
         {/* Estagiário, Jovem Aprendiz e Comissionado não têm tolerância individual (vale a geral). */}
-        {id && isRhOuAdmin && !catEstagiario && !catJovemAprendiz && !catComissionado && (
-          <ToleranciaFechamentoFuncionario
-            funcionarioId={id}
-            somenteLeitura={!podeFuncao("gestao.funcionarios.banco-horas")}
-          />
-        )}
+        {id &&
+          isRhOuAdmin &&
+          !catEstagiario &&
+          !catJovemAprendiz &&
+          !catComissionado &&
+          !catAltaAdm && (
+            <ToleranciaFechamentoFuncionario
+              funcionarioId={id}
+              somenteLeitura={!podeFuncao("gestao.funcionarios.banco-horas")}
+            />
+          )}
 
         {(catEstagiario || catJovemAprendiz) && (
           <div style={{ marginTop: 16 }}>
@@ -2881,7 +3001,7 @@ export function FuncionarioFormPage() {
         )}
 
         {/* ══════════════════ CAPACITAÇÃO ══════════════════ */}
-        {(catEmpregado || catComissionado) && (
+        {(catEmpregado || catComissionado || catAltaAdm) && (
           <>
             <SectionTitle>Capacitação</SectionTitle>
 
@@ -3119,7 +3239,7 @@ export function FuncionarioFormPage() {
           </>
         )}
 
-        {isRhOuAdmin && (
+        {isRhOuAdmin && !catAltaAdm && (
           <>
             <hr
               style={{

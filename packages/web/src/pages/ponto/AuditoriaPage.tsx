@@ -278,6 +278,8 @@ interface SaldoFerias {
   ciclosVencidos: number;
   diasDisponiveis: number;
   diasGozo: number;
+  diasGozados?: number;
+  diasAgendados?: number;
   diasVendidos: number;
   totalVencido: number;
   obrigatorio: boolean;
@@ -664,6 +666,11 @@ const MESES = [
 function fmtDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString("pt-BR");
+}
+
+/** Data civil (AAAA-MM-DD) sem deslocar de fuso. */
+function fmtDataCurtaCivil(iso: string) {
+  return iso.slice(0, 10).split("-").reverse().join("/");
 }
 
 function fmtDataCurta(iso: string) {
@@ -7373,7 +7380,8 @@ function PainelFerias({
                 saldo.diasDisponiveis,
                 saldo.diasDisponiveis > 0 ? "#2f7d4f" : "var(--ink-500)"
               ],
-              ["Já gozados", saldo.diasGozo, "var(--ink-700)"],
+              ["Já gozados", saldo.diasGozados ?? 0, "var(--ink-700)"],
+              ["Agendados", saldo.diasAgendados ?? saldo.diasGozo, "var(--ink-700)"],
               ["Já vendidos", saldo.diasVendidos, "var(--ink-700)"],
               ["Total vencido", saldo.totalVencido, "var(--ink-700)"],
               ["Ciclos vencidos", saldo.ciclosVencidos, "var(--ink-700)"]
@@ -7409,14 +7417,9 @@ function PainelFerias({
             <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: "10px 0 0" }}>
               Ciclo(s):{" "}
               {(saldo.ciclos ?? [])
-                .map(
-                  (c) =>
-                    `${new Date(c.inicio).toLocaleDateString("pt-BR")} – ${new Date(c.fim).toLocaleDateString("pt-BR")}`
-                )
+                .map((c) => `${fmtDataCurtaCivil(c.inicio)} – ${fmtDataCurtaCivil(c.fim)}`)
                 .join(" | ")}
-              {saldo.dataAdmissao
-                ? ` · Admissão: ${new Date(saldo.dataAdmissao).toLocaleDateString("pt-BR")}`
-                : ""}
+              {saldo.dataAdmissao ? ` · Admissão: ${fmtDataCurtaCivil(saldo.dataAdmissao)}` : ""}
             </p>
           )}
         </div>

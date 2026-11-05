@@ -120,7 +120,8 @@ export class ArquivosFiscaisService {
           ? { gerenciaId: f.gerenciaId }
           : {};
     return this.prisma.funcionario.findMany({
-      where,
+      /* Alta Administração (sem matrícula, sem ponto) não faz parte do REP-P: fora do AFD e do AEJ. */
+      where: { ...where, categoria: { not: "ALTA_ADMINISTRACAO" } },
       select: {
         id: true,
         cpf: true,

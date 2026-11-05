@@ -28,7 +28,8 @@ const CATEGORIAS = [
   { v: "CONCURSADO", l: "Concursado" },
   { v: "ASSESSOR", l: "Assessor" },
   { v: "ESTAGIARIO", l: "Estagiário" },
-  { v: "MENOR_APRENDIZ", l: "Jovem aprendiz" }
+  { v: "MENOR_APRENDIZ", l: "Jovem aprendiz" },
+  { v: "ALTA_ADMINISTRACAO", l: "Alta Administração" }
 ];
 
 /** Campos numéricos em texto: aceitam só dígitos, sem negativo e sem zero à esquerda. */

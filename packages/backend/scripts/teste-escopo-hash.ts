@@ -2,7 +2,7 @@
  * Testa o hash do escopo do REP-P numa CÓPIA temporária (nenhum arquivo do projeto é alterado).
  *   npx ts-node -P tsconfig.json --transpile-only scripts/teste-escopo-hash.ts
  */
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -23,9 +23,11 @@ const confere = (rotulo: string, ok: boolean) => {
 function copia(): string {
   const dir = mkdtempSync(join(tmpdir(), "rep-escopo-"));
   cpSync(join(real, NOME_MANIFESTO), join(dir, NOME_MANIFESTO));
+  chmodSync(join(dir, NOME_MANIFESTO), 0o644);
   for (const rel of [...manifesto.arquivos, manifesto.modelosPrisma.arquivo]) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
     cpSync(join(real, rel), join(dir, rel));
+    chmodSync(join(dir, rel), 0o644); // os originais são somente leitura (lacre); a cópia precisa ser editável
   }
   return dir;
 }

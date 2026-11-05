@@ -428,7 +428,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setContaCedida(true);
             return;
           }
-          if (msg === "SEM_MATRICULA" && !cancelled) {
+          if ((msg === "SEM_MATRICULA" || msg === "ACESSO_NAO_AUTORIZADO") && !cancelled) {
             setSemMatricula(true);
             return;
           }
@@ -545,7 +545,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const msg = e instanceof Error ? e.message : "";
       if (msg === "CONTA_DESATIVADA") setContaDesativada(true);
       if (msg === "CONTA_CEDIDA") setContaCedida(true);
-      if (msg === "SEM_MATRICULA") setSemMatricula(true);
+      if (msg === "SEM_MATRICULA" || msg === "ACESSO_NAO_AUTORIZADO") setSemMatricula(true);
     }
   }
 

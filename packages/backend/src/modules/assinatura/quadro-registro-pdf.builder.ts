@@ -8,7 +8,8 @@ const CATEGORIA_LABEL: Record<string, string> = {
   CONCURSADO: "Efetivo",
   ESTAGIARIO: "Estagiário",
   MENOR_APRENDIZ: "Jovem Aprendiz",
-  ASSESSOR: "Comissionado"
+  ASSESSOR: "Comissionado",
+  ALTA_ADMINISTRACAO: "Alta Administração"
 };
 
 /** "Chefe" deixou de ser categoria (GERENTE) e virou característica (isManager) —

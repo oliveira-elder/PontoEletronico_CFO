@@ -333,8 +333,7 @@ export function FormFeriasRh({
             >
               {ciclosAgendaveis.map((c) => (
                 <option key={c.numero} value={c.numero}>
-                  Ciclo {c.numero} — {new Date(c.inicio).toLocaleDateString("pt-BR")} a{" "}
-                  {new Date(c.fim).toLocaleDateString("pt-BR")}
+                  Ciclo {c.numero} — {fmtBr(c.inicio.slice(0, 10))} a {fmtBr(c.fim.slice(0, 10))}
                   {c.status === "EM_ANALISE" ? " (pedido em análise será substituído)" : ""}
                 </option>
               ))}

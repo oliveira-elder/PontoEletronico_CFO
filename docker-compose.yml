@@ -79,6 +79,10 @@ services:
       # Credenciais da API Admin do Keycloak (lista usuários/grupos do AD para seed no banco).
       KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER:-}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
+      # Alta Administração (entrada sem matrícula): "false" relaxa a regra; EMAIL_GENERICO_EXTRA = palavras extras (vírgulas).
+      ALTA_ADM_EXIGE_SEGUNDO_APROVADOR: ${ALTA_ADM_EXIGE_SEGUNDO_APROVADOR:-true}
+      ALTA_ADM_EXIGE_AD_FEDERADO: ${ALTA_ADM_EXIGE_AD_FEDERADO:-true}
+      EMAIL_GENERICO_EXTRA: ${EMAIL_GENERICO_EXTRA:-}
       # URL pública do frontend — links de atalho em e-mails/notificações
       APP_BASE_URL: ${APP_BASE_URL:-https://ponto.cfo.org.br}
       VITE_APP_BASE_URL: ${VITE_APP_BASE_URL:-https://ponto.cfo.org.br}

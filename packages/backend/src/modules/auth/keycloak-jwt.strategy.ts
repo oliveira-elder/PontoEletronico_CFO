@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
@@ -124,6 +124,9 @@ export class KeycloakJwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: Record<string, unknown>) {
     const ctx = this.authService.mapTokenPayload(payload);
+    if (!ctx.isSuperAdmin && (await this.authService.altaAdmBloqueada(ctx.sub))) {
+      throw new ForbiddenException("CONTA_DESATIVADA");
+    }
     return this.authService.enrichRoles(ctx);
   }
 }

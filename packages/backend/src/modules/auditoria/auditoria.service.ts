@@ -48,6 +48,7 @@ import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service"
 import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
 import { toleranciaFechamentoDias } from "../../utils/tolerancia-fechamento";
 import {
+  SEM_ALTA_ADMINISTRACAO,
   funcionarioSemRegistroPonto,
   periodosSemObrigacaoPonto,
   MSG_SOLICITACAO_APENAS_INFORMATIVA
@@ -70,6 +71,7 @@ import {
 } from "../../utils/ferias-rodadas";
 import {
   diasCorridos,
+  feriasJaIniciadas,
   somarDiasIso,
   validarPeriodosEstagiario,
   validarPeriodosFerias
@@ -272,10 +274,12 @@ export class AuditoriaService {
       periodosFechados,
       periodosAprovados
     ] = await Promise.all([
-      this.prisma.funcionario.count(),
-      this.prisma.funcionario.count({ where: { ativo: true } }),
+      this.prisma.funcionario.count({ where: { categoria: SEM_ALTA_ADMINISTRACAO } }),
+      this.prisma.funcionario.count({ where: { ativo: true, categoria: SEM_ALTA_ADMINISTRACAO } }),
       this.prisma.registroPonto.count({ where: { dataHora: { gte: inicioHoje, lte: fimHoje } } }),
-      this.prisma.solicitacao.count({ where: { status: "PENDENTE" } }),
+      this.prisma.solicitacao.count({
+        where: { status: "PENDENTE", funcionario: { categoria: SEM_ALTA_ADMINISTRACAO } }
+      }),
       this.prisma.periodoPonto.count({ where: { status: "ABERTO" } }),
       this.prisma.periodoPonto.count({ where: { status: "FECHADO" } }),
       this.prisma.periodoPonto.count({ where: { status: "APROVADO" } })
@@ -306,6 +310,7 @@ export class AuditoriaService {
     /* Afastamentos ativos hoje */
     const afastamentosAtivos = await this.prisma.afastamento.count({
       where: {
+        funcionario: { categoria: SEM_ALTA_ADMINISTRACAO },
         dataInicio: { lte: fimHoje },
         dataFim: { gte: inicioHoje }
       }
@@ -550,6 +555,7 @@ export class AuditoriaService {
       where: {
         tipo: "ATESTADO",
         status: { not: "CANCELADA" },
+        funcionario: { categoria: SEM_ALTA_ADMINISTRACAO },
         createdAt: { gte: inicioSerie, lte: fimSerie }
       },
       select: { createdAt: true }
@@ -585,7 +591,11 @@ export class AuditoriaService {
     const fimSerie = intervaloDiaBrasilia(dataFim).fim;
 
     const afastamentos = await this.prisma.afastamento.findMany({
-      where: { tipo: "FERIAS", dataInicio: { gte: inicioSerie, lte: fimSerie } },
+      where: {
+        tipo: "FERIAS",
+        funcionario: { categoria: SEM_ALTA_ADMINISTRACAO },
+        dataInicio: { gte: inicioSerie, lte: fimSerie }
+      },
       select: { dataInicio: true }
     });
 
@@ -615,15 +625,26 @@ export class AuditoriaService {
     ] = await Promise.all([
       this.prisma.afastamento.groupBy({
         by: ["tipo"],
-        where: { dataInicio: { lte: fimPeriodo }, dataFim: { gte: inicioPeriodo } },
+        where: {
+          funcionario: { categoria: SEM_ALTA_ADMINISTRACAO },
+          dataInicio: { lte: fimPeriodo },
+          dataFim: { gte: inicioPeriodo }
+        },
         _count: { _all: true }
       }),
       this.prisma.afastamento.findMany({
-        where: { dataInicio: { lte: fimPeriodo }, dataFim: { gte: inicioPeriodo } },
+        where: {
+          funcionario: { categoria: SEM_ALTA_ADMINISTRACAO },
+          dataInicio: { lte: fimPeriodo },
+          dataFim: { gte: inicioPeriodo }
+        },
         select: { funcionario: { select: { categoria: true } } }
       }),
       this.prisma.solicitacao.findMany({
-        where: { createdAt: { gte: inicioPeriodo, lte: fimPeriodo } },
+        where: {
+          createdAt: { gte: inicioPeriodo, lte: fimPeriodo },
+          funcionario: { categoria: SEM_ALTA_ADMINISTRACAO }
+        },
         select: {
           status: true,
           tipo: true,
@@ -635,6 +656,7 @@ export class AuditoriaService {
       }),
       this.prisma.assinaturaQuadro.groupBy({
         by: ["status"],
+        where: { periodo: { funcionario: { categoria: SEM_ALTA_ADMINISTRACAO } } },
         _count: { _all: true }
       }),
       this.prisma.registroPonto.count({
@@ -732,7 +754,7 @@ export class AuditoriaService {
     registrosPeriodo: { dataHora: Date; tipo: string; funcionarioId: string }[]
   ) {
     const funcionarios = await this.prisma.funcionario.findMany({
-      where: { ativo: true },
+      where: { ativo: true, categoria: SEM_ALTA_ADMINISTRACAO },
       select: {
         id: true,
         matricula: true,
@@ -3635,7 +3657,7 @@ export class AuditoriaService {
     const limiteMinutos = cfg?.bancoHorasLimiteMin ?? 120;
     const { cicloInicio, proximaZeragem, hojeIso } = await this.getCicloBancoHoras();
 
-    const where: Record<string, unknown> = { ativo: true };
+    const where: Record<string, unknown> = { ativo: true, categoria: SEM_ALTA_ADMINISTRACAO };
     if (filtros.gerenciaId) where.gerenciaId = filtros.gerenciaId;
     if (filtros.busca) {
       where.OR = [
@@ -4681,6 +4703,15 @@ export class AuditoriaService {
       !AuditoriaService.STATUS_FERIAS_EM_ANALISE.includes(sol.status)
     ) {
       throw new BadRequestException("Só é possível cancelar férias aprovadas ou em análise.");
+    }
+    /* Gozo é imutável: férias com período já iniciado não se cancelam (use "Alterar" nos dias futuros). */
+    if (
+      sol.status === "APROVADA" &&
+      feriasJaIniciadas((sol.metadados ?? {}) as Record<string, unknown>, hojeBrasiliaISO())
+    ) {
+      throw new BadRequestException(
+        "Estas férias já começaram e parte dos dias já foi gozada: não podem ser canceladas. Use “Alterar” para remarcar apenas os dias ainda não gozados."
+      );
     }
     const rh = await this.rhAutor(keycloakSub);
     const alteracoesPendentes = await this.prisma.solicitacao.findMany({

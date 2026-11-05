@@ -322,6 +322,8 @@ export class RepLivroService implements OnModuleInit, OnModuleDestroy {
     try {
       const [funcs, eventos] = await Promise.all([
         this.prisma.funcionario.findMany({
+          /* Alta Administração (sem matrícula, sem ponto) não faz parte do REP-P: sem evento tipo 5. */
+          where: { categoria: { not: "ALTA_ADMINISTRACAO" } },
           select: {
             id: true,
             cpf: true,

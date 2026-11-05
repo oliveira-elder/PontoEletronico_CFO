@@ -1,6 +1,6 @@
 import { categoriaSemToleranciaIndividual } from "../../utils/tolerancia-fechamento";
 import { RepLivroService } from "../rep/rep-livro.service";
-import { mensagemCpfObrigatorio } from "../../utils/cpf";
+import { cpfValido, mensagemCpfObrigatorio } from "../../utils/cpf";
 import { PontoService } from "./ponto.service";
 import { inteiroConfig } from "../../utils/licenca-regras";
 import {
@@ -23,6 +23,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { dataCivilISO, hojeBrasiliaISO, intervaloDiaBrasilia } from "../../utils/horario-brasilia";
 import { NotificacaoService } from "../notificacao/notificacao.service";
 import {
+  SEM_ALTA_ADMINISTRACAO,
   funcionarioSemRegistroPonto,
   labelSemRegistroPonto,
   type SituacaoRegistroPonto
@@ -237,6 +238,17 @@ function nomesDeCargo(cargos: string[]): (cargo: string) => string | null {
   return (cargo) => (cargo.trim() ? (exibicao.get(chave(cargo)) ?? null) : null);
 }
 
+const MSG_ALTA_ADM_SO_PELO_FLUXO =
+  "A categoria Alta Administração (sem matrícula) só entra por solicitação autorizada pelo Super Administrador em Sistema → Alta Administração.";
+const SUBCATEGORIAS_ALTA_ADM = [
+  "PRESIDENTE",
+  "VICE_PRESIDENTE",
+  "SECRETARIO_GERAL",
+  "TESOUREIRO",
+  "SUPERINTENDENTE",
+  "OUTROS"
+];
+
 @Injectable()
 export class GestaoService {
   private readonly logger = new Logger(GestaoService.name);
@@ -253,7 +265,9 @@ export class GestaoService {
   listGerencias() {
     return this.prisma.gerencia.findMany({
       orderBy: { nome: "asc" },
-      include: { _count: { select: { funcionarios: true } } }
+      include: {
+        _count: { select: { funcionarios: { where: { categoria: SEM_ALTA_ADMINISTRACAO } } } }
+      }
     });
   }
 
@@ -295,7 +309,7 @@ export class GestaoService {
       },
       include: {
         responsavelUser: { select: { id: true, name: true, email: true } },
-        _count: { select: { funcionarios: true } }
+        _count: { select: { funcionarios: { where: { categoria: SEM_ALTA_ADMINISTRACAO } } } }
       }
     });
   }
@@ -332,6 +346,25 @@ export class GestaoService {
       }
     }
   };
+
+  /** Dados da autorização de uma pessoa da Alta Administração, para o aviso na tela do RH (sem CPF e sem anexo). */
+  async entradaSemMatriculaDoFuncionario(funcionarioId: string) {
+    const e = await this.prisma.entradaSemMatricula.findFirst({
+      where: { funcionarioId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        status: true,
+        numeroChamado: true,
+        usuarioSso: true,
+        solicitadoPorNome: true,
+        createdAt: true,
+        decididoPorNome: true,
+        decididoEm: true,
+        motivoDecisao: true
+      }
+    });
+    return e ?? null;
+  }
 
   async listFuncionarios() {
     const list = await this.prisma.funcionario.findMany({
@@ -584,6 +617,13 @@ export class GestaoService {
   ) {
     const erroCpf = mensagemCpfObrigatorio(data.cpf);
     if (erroCpf) throw new BadRequestException(erroCpf);
+    /* Quem não tem matrícula só pode ser Alta Administração, e essa categoria só nasce pela solicitação
+       autorizada pelo Super Admin (Sistema → Alta Administração): nunca pelo cadastro comum. */
+    if ((data.categoria as string) === "ALTA_ADMINISTRACAO") {
+      throw new BadRequestException(MSG_ALTA_ADM_SO_PELO_FLUXO);
+    }
+    data.matricula = (data.matricula ?? "").trim();
+    if (!data.matricula) throw new BadRequestException("Informe a matrícula.");
     validarCessao({
       categoria: data.categoria as CategoriaFuncional,
       cedido: !!data.cedido,
@@ -667,6 +707,7 @@ export class GestaoService {
         cpf: string;
         cargo: string;
         categoria: string;
+        subcategoria: string | null;
         gerenciaId: string;
         subsecao: string | null;
         ativo: boolean;
@@ -698,7 +739,10 @@ export class GestaoService {
        (com nome/matrícula) quem ainda não tem CPF precisa informá-lo. Outras ações (ex.:
        desativar) não são bloqueadas por CPF ausente. */
     const edicaoCompleta = data.nome !== undefined || data.matricula !== undefined;
-    if (data.cpf !== undefined || (edicaoCompleta && !func.cpf)) {
+    if (func.categoria === "ALTA_ADMINISTRACAO") {
+      /* Alta Administração: CPF opcional; se informado, precisa ser válido. */
+      if (data.cpf && !cpfValido(data.cpf)) throw new BadRequestException("CPF inválido.");
+    } else if (data.cpf !== undefined || (edicaoCompleta && !func.cpf)) {
       const erroCpf = mensagemCpfObrigatorio(data.cpf !== undefined ? data.cpf : func.cpf);
       if (erroCpf) throw new BadRequestException(erroCpf);
     }
@@ -761,6 +805,38 @@ export class GestaoService {
     }
 
     const categoriaFinal = (categoria ?? func.categoria) as CategoriaFuncional;
+    /* Alta Administração: sem matrícula, sem migração de/para outras categorias (sem "porta dos fundos"
+       para ponto, banco de horas e matrícula). */
+    if (categoriaFinal === "ALTA_ADMINISTRACAO" && func.categoria !== "ALTA_ADMINISTRACAO") {
+      throw new BadRequestException(MSG_ALTA_ADM_SO_PELO_FLUXO);
+    }
+    if (func.categoria === "ALTA_ADMINISTRACAO" && categoriaFinal !== "ALTA_ADMINISTRACAO") {
+      throw new BadRequestException(
+        "A Alta Administração entrou sem matrícula e não pode mudar de categoria. Para encerrar o acesso, use a revogação em Sistema → Alta Administração."
+      );
+    }
+    if (func.categoria === "ALTA_ADMINISTRACAO" && ativo === true && !func.ativo) {
+      const vigente = await this.prisma.entradaSemMatricula.findFirst({
+        where: { funcionarioId: id, status: "AUTORIZADA" },
+        select: { id: true }
+      });
+      if (!vigente) {
+        throw new BadRequestException(
+          "Acesso revogado: a reativação exige nova solicitação autorizada em Sistema → Alta Administração."
+        );
+      }
+    }
+    if (categoriaFinal === "ALTA_ADMINISTRACAO" && matricula !== undefined && matricula.trim()) {
+      throw new BadRequestException("A Alta Administração não tem matrícula.");
+    }
+    if (data.subcategoria !== undefined && data.subcategoria !== null) {
+      if (categoriaFinal !== "ALTA_ADMINISTRACAO") {
+        throw new BadRequestException("Subcategoria só existe para a Alta Administração.");
+      }
+      if (!SUBCATEGORIAS_ALTA_ADM.includes(data.subcategoria)) {
+        throw new BadRequestException("Subcategoria inválida.");
+      }
+    }
     const isManagerFinal = isManager ?? func.isManager;
     const gerenciaFinal = gerenciaId !== undefined ? gerenciaId || null : func.gerenciaId;
     const subsecaoFinal = subsecao !== undefined ? subsecao || null : func.subsecao;
@@ -859,7 +935,12 @@ export class GestaoService {
           await tx.user.update({ where: { id: func.userId }, data: userUpdate });
         }
         const funcUpdate: Record<string, unknown> = {};
-        if (matricula !== undefined) funcUpdate.matricula = matricula || null;
+        if (matricula !== undefined && categoriaFinal !== "ALTA_ADMINISTRACAO") {
+          funcUpdate.matricula = matricula || null;
+        }
+        if (data.subcategoria !== undefined && categoriaFinal === "ALTA_ADMINISTRACAO") {
+          funcUpdate.subcategoria = data.subcategoria;
+        }
         if (cpf !== undefined) funcUpdate.cpf = cpf || null;
         if (cargo !== undefined) funcUpdate.cargo = cargo;
         if (camposManuaisConfigurados !== undefined) {
@@ -1098,10 +1179,14 @@ export class GestaoService {
         "O substituto deve pertencer à mesma subseção (coordenação) do chefe titular."
       );
     }
-    const categoriasPermitidas: CategoriaFuncional[] = ["CONCURSADO", "ASSESSOR"];
+    const categoriasPermitidas: CategoriaFuncional[] = [
+      "CONCURSADO",
+      "ASSESSOR",
+      "ALTA_ADMINISTRACAO"
+    ];
     if (!categoriasPermitidas.includes(substituto.categoria)) {
       throw new BadRequestException(
-        "O chefe só pode ser substituído por um Efetivo ou Comissionado."
+        "O chefe só pode ser substituído por um Efetivo, Comissionado ou da Alta Administração."
       );
     }
 
@@ -1453,6 +1538,8 @@ export class GestaoService {
     const hoje = hojeBrasiliaISO();
     const [funcionarios, gerencias] = await Promise.all([
       this.prisma.funcionario.findMany({
+        /* Estatísticas: a Alta Administração não entra em nenhum indicador. */
+        where: { categoria: SEM_ALTA_ADMINISTRACAO },
         include: {
           dependentes: { select: { id: true } },
           formacoesAcademicas: { select: { grauEscolaridade: true } },
@@ -1926,6 +2013,54 @@ export class GestaoService {
       .catch((e) =>
         this.logger.error(`Falha ao notificar RH antes de excluir funcionário (${id}): ${e}`)
       );
+    /* Se a pessoa ainda consta na API de ramais, a sincronização horária a recriaria (foi o que fazia
+       a exclusão "voltar"). Guarda-a na lista de ignorados ANTES de apagar. */
+    const f = await this.prisma.funcionario.findUnique({
+      where: { id },
+      select: {
+        extensionsId: true,
+        matricula: true,
+        user: { select: { name: true, email: true, emailReal: true } }
+      }
+    });
+    if (f) {
+      const emails = [f.user?.emailReal, f.user?.email]
+        .map((e) => e?.trim().toLowerCase())
+        .filter(
+          (e): e is string => !!e && !e.endsWith("@sso.local") && !e.endsWith("@pending.local")
+        );
+      const dados = {
+        email: emails[0] ?? null,
+        matricula: f.matricula,
+        nome: f.user?.name ?? null,
+        chamado: numeroChamado,
+        excluidoPor: superAdminSub
+      };
+      if (f.extensionsId) {
+        await this.prisma.extensionsIgnorado.upsert({
+          where: { extensionsId: f.extensionsId },
+          create: { extensionsId: f.extensionsId, ...dados },
+          update: dados
+        });
+      } else if (dados.email) {
+        await this.prisma.extensionsIgnorado.create({ data: dados });
+      }
+    }
+    /* Alta Administração: a entrada autorizada deixa de valer junto com o funcionário (fica REVOGADA). */
+    await this.prisma.entradaSemMatricula
+      .updateMany({
+        where: { funcionarioId: id, status: "AUTORIZADA" },
+        data: {
+          status: "REVOGADA",
+          decididoPorNome: `Exclusão do funcionário (chamado ${numeroChamado})`,
+          decididoPorSub: superAdminSub,
+          decididoEm: new Date(),
+          categoriaMotivo: "OUTRO",
+          motivoDecisao: "Funcionário excluído pelo Super Administrador na Gestão.",
+          chamadoDecisao: numeroChamado
+        }
+      })
+      .catch(() => undefined);
     return this.prisma.funcionario.delete({ where: { id } });
   }
 }
