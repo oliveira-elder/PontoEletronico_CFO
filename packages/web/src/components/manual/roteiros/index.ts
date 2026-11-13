@@ -7,6 +7,12 @@ import {
   atualizarDados,
   verBancoHoras
 } from "./banco-requisicoes";
+import {
+  cancelarSolicitacao,
+  corrigirDocumento,
+  devolverDocumento,
+  enviarDocumentoViaChefe
+} from "./documento-via-chefe";
 import { intervaloEPausas } from "./jornada-dia";
 import {
   consultarHistorico,
@@ -47,6 +53,10 @@ export const ROTEIROS: Record<string, Roteiro> = Object.fromEntries(
     pedirFerias,
     pedirHoraExtra,
     enviarDocumentoRh,
+    enviarDocumentoViaChefe,
+    cancelarSolicitacao,
+    corrigirDocumento,
+    devolverDocumento,
     acompanharSolicitacoes,
     verBancoHoras,
     assinarEspelho,

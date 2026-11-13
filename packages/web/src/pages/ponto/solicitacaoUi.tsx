@@ -8,8 +8,11 @@ import {
   TextoComSetaHorario
 } from "../../components/icons";
 import { MSG_SOLICITACAO_APENAS_INFORMATIVA } from "../../utils/categoriaPonto";
-import { dataCivilPeriodo } from "../../utils/horario-brasilia";
+import { dataCivilPeriodo, hojeBrasiliaISO } from "../../utils/horario-brasilia";
+import { prazoDocumento, primeiroPeriodoFerias, textoPrazo } from "../../utils/feriasDocumentos";
 import { api } from "../../hooks/useApi";
+import { ProrrogarPrazoFeriasModal } from "../../components/ferias/ProrrogarPrazoFeriasModal";
+import { EnviarDocumentoFeriasModal } from "../../components/ferias/EnviarDocumentoFeriasModal";
 
 /* ─── Tipos compartilhados ─── */
 
@@ -188,8 +191,13 @@ const TIPO_LABEL: Record<string, string> = {
   ABONO: "Abono de Falta",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
-  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH",
+  DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
 };
+
+/** Tipos de envio de documento ao RH (direto, ou passando antes pelo chefe). */
+export const ehEnvioDocumento = (tipo: string) =>
+  tipo === "ENVIO_DOCUMENTO_RH" || tipo === "DOCUMENTO_VIA_CHEFE";
 
 const TIPO_PONTO: Record<string, string> = {
   ENTRADA: "Entrada",
@@ -396,6 +404,7 @@ export function textoResumo(s: SolicitacaoResumo): string {
       const dia = s.dataInicio ? fmtDate(s.dataInicio) : fmtDate(s.dataReferencia);
       return `${nome} solicita Day Off de Aniversário em ${dia}.`;
     }
+    case "DOCUMENTO_VIA_CHEFE":
     case "ENVIO_DOCUMENTO_RH": {
       const arquivo =
         typeof meta?.nomeArquivo === "string" && meta.nomeArquivo ? ` (${meta.nomeArquivo})` : "";
@@ -730,13 +739,16 @@ export function SolicitacaoCardRH({
   mostrarAcoes = true,
   onDecidir,
   onEnviarGuia,
-  onEnviarFolhaFerias
+  onEnviarFolhaFerias,
+  onAtualizado
 }: {
   s: SolicitacaoResumo;
   mostrarAcoes?: boolean;
   onDecidir: (s: SolicitacaoResumo, decisao: "APROVAR" | "REJEITAR") => void;
   onEnviarGuia?: (s: SolicitacaoResumo) => void;
+  /** Fluxo antigo (modal único com Aviso+Recibo); o novo usa botões separados (`onAtualizado`). */
   onEnviarFolhaFerias?: (s: SolicitacaoResumo) => void;
+  onAtualizado?: () => void;
 }) {
   const email = s.funcionario.user.emailReal || s.funcionario.user.email;
   const resumo = textoResumo(s);
@@ -744,8 +756,13 @@ export function SolicitacaoCardRH({
   const requerHomologacao = s.metadados?.requerHomologacao === true;
   const podeEnviarGuia =
     mostrarAcoes && s.tipo === "ATESTADO" && (s.status === "AGUARDANDO_RH" || !s.status);
-  const podeEnviarFolhaFerias =
-    mostrarAcoes && s.tipo === "FERIAS" && (s.status === "AGUARDANDO_RH" || !s.status);
+  const mostrarDocsFerias =
+    mostrarAcoes &&
+    s.tipo === "FERIAS" &&
+    !!onAtualizado &&
+    (s.status === "AGUARDANDO_RH" || s.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO");
+  /* Férias: a aprovação é a assinatura do Aviso; o RH só aprova aqui o que ficou no fluxo antigo. */
+  const feriasLegadoAprovavel = !!s.metadados?.assinaturaFerias || !!s.documentoRetornoUrl;
   const aguardandoRetornoConsulta =
     s.tipo === "ATESTADO" && requerHomologacao && !s.documentoRetornoUrl;
   /* Férias: Aviso + Recibo enviados e assinados pelo funcionário (envios antigos: folha +
@@ -884,9 +901,15 @@ export function SolicitacaoCardRH({
         <LogTimelineGestor s={s} />
 
         {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
-        {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
-          s.tipo
-        ) && <AbonoDetalheBlock meta={s.metadados} />}
+        {[
+          "ABONO",
+          "LICENCA",
+          "ATESTADO",
+          "DAY_OFF",
+          "HORA_EXTRA",
+          "ENVIO_DOCUMENTO_RH",
+          "DOCUMENTO_VIA_CHEFE"
+        ].includes(s.tipo) && <AbonoDetalheBlock meta={s.metadados} />}
         {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
         {s.tipo === "FERIAS" && (s.guiaMedicoUrl || s.documentoRetornoUrl) && (
@@ -935,7 +958,7 @@ export function SolicitacaoCardRH({
           />
         )}
 
-        {(s.tipo === "ENVIO_DOCUMENTO_RH" || s.tipo === "ABONO" || s.tipo === "LICENCA") &&
+        {(ehEnvioDocumento(s.tipo) || s.tipo === "ABONO" || s.tipo === "LICENCA") &&
           typeof s.metadados?.documentoUrl === "string" && (
             <LinkDocumentoAnexado
               href={s.metadados.documentoUrl as string}
@@ -1010,38 +1033,40 @@ export function SolicitacaoCardRH({
         <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
           {!aguardandoDocFuncionario && (
             <>
-              <button
-                onClick={() => !bloqueadoAprovar && onDecidir(s, "APROVAR")}
-                disabled={bloqueadoAprovar}
-                title={
-                  aguardandoFolhaAssinada
-                    ? !feriasDocsEnviados
-                      ? "Envie o Aviso e o Recibo de Férias ao funcionário antes de aprovar"
-                      : s.metadados?.rejeicaoDocumentoFerias
-                        ? "O funcionário rejeitou um documento — corrija e reenvie os documentos de férias"
-                        : "Aguardando o funcionário assinar pelo sistema cada documento de férias"
-                    : aguardandoRetornoConsulta
-                      ? "Aguardando o funcionário enviar o documento de retorno da consulta médica"
-                      : undefined
-                }
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  padding: "7px 14px",
-                  border: "none",
-                  borderRadius: "var(--radius-md)",
-                  background: bloqueadoAprovar ? "#9ca3af" : "#16a34a",
-                  color: "#fff",
-                  cursor: bloqueadoAprovar ? "not-allowed" : "pointer",
-                  opacity: bloqueadoAprovar ? 0.7 : 1,
-                  fontSize: 12,
-                  fontWeight: 600
-                }}
-              >
-                <CheckCircleIcon size={14} />{" "}
-                {s.tipo === "ENVIO_DOCUMENTO_RH" ? "Confirmar recebimento" : "Aprovar (RH)"}
-              </button>
+              {(s.tipo !== "FERIAS" || feriasLegadoAprovavel) && (
+                <button
+                  onClick={() => !bloqueadoAprovar && onDecidir(s, "APROVAR")}
+                  disabled={bloqueadoAprovar}
+                  title={
+                    aguardandoFolhaAssinada
+                      ? !feriasDocsEnviados
+                        ? "Envie o Aviso e o Recibo de Férias ao funcionário antes de aprovar"
+                        : s.metadados?.rejeicaoDocumentoFerias
+                          ? "O funcionário rejeitou um documento — corrija e reenvie os documentos de férias"
+                          : "Aguardando o funcionário assinar pelo sistema cada documento de férias"
+                      : aguardandoRetornoConsulta
+                        ? "Aguardando o funcionário enviar o documento de retorno da consulta médica"
+                        : undefined
+                  }
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "7px 14px",
+                    border: "none",
+                    borderRadius: "var(--radius-md)",
+                    background: bloqueadoAprovar ? "#9ca3af" : "#16a34a",
+                    color: "#fff",
+                    cursor: bloqueadoAprovar ? "not-allowed" : "pointer",
+                    opacity: bloqueadoAprovar ? 0.7 : 1,
+                    fontSize: 12,
+                    fontWeight: 600
+                  }}
+                >
+                  <CheckCircleIcon size={14} />{" "}
+                  {ehEnvioDocumento(s.tipo) ? "Confirmar recebimento" : "Aprovar (RH)"}
+                </button>
+              )}
               <button
                 onClick={() => onDecidir(s, "REJEITAR")}
                 style={{
@@ -1082,26 +1107,33 @@ export function SolicitacaoCardRH({
               📄 Enviar Guia Médico
             </button>
           )}
-          {podeEnviarFolhaFerias && onEnviarFolhaFerias && (
-            <button
-              onClick={() => onEnviarFolhaFerias(s)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                padding: "7px 14px",
-                border: "none",
-                borderRadius: "var(--radius-md)",
-                background: "#2f7d4f",
-                color: "#fff",
-                cursor: "pointer",
-                fontSize: 12,
-                fontWeight: 600
-              }}
-            >
-              🌴 Enviar documentos de férias
-            </button>
+          {mostrarDocsFerias && (
+            <BlocoDocumentosFeriasRh s={s} onAtualizado={onAtualizado!} compacto />
           )}
+          {mostrarAcoes &&
+            s.tipo === "FERIAS" &&
+            !onAtualizado &&
+            onEnviarFolhaFerias &&
+            (s.status === "AGUARDANDO_RH" || !s.status) && (
+              <button
+                onClick={() => onEnviarFolhaFerias(s)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "7px 14px",
+                  border: "none",
+                  borderRadius: "var(--radius-md)",
+                  background: "#2f7d4f",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600
+                }}
+              >
+                🌴 Enviar documentos de férias
+              </button>
+            )}
         </div>
       )}
     </div>
@@ -1133,7 +1165,7 @@ export function ModalDecisaoRH({
   const corBorda = isAprovar ? "rgba(22,163,74,0.25)" : "rgba(220,38,38,0.25)";
   const emoji = isAprovar ? "✅" : "❌";
   const titulo = isAprovar
-    ? solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+    ? ehEnvioDocumento(solicitacao.tipo)
       ? "Confirmar recebimento do documento"
       : "Confirmar Aprovação Final (RH)"
     : "Confirmar Rejeição (RH)";
@@ -1233,9 +1265,15 @@ export function ModalDecisaoRH({
           </div>
 
           {solicitacao.tipo === "FERIAS" && <FeriasDetalheBlock meta={solicitacao.metadados} />}
-          {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
-            solicitacao.tipo
-          ) && <AbonoDetalheBlock meta={solicitacao.metadados} />}
+          {[
+            "ABONO",
+            "LICENCA",
+            "ATESTADO",
+            "DAY_OFF",
+            "HORA_EXTRA",
+            "ENVIO_DOCUMENTO_RH",
+            "DOCUMENTO_VIA_CHEFE"
+          ].includes(solicitacao.tipo) && <AbonoDetalheBlock meta={solicitacao.metadados} />}
           {solicitacao.tipo === "CORRECAO_PONTO" && (
             <AvisoInterjornadaBlock meta={solicitacao.metadados} />
           )}
@@ -1252,12 +1290,12 @@ export function ModalDecisaoRH({
             }}
           >
             {isAprovar
-              ? solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+              ? ehEnvioDocumento(solicitacao.tipo)
                 ? "Confirma o recebimento deste documento?"
                 : "Você confirma a aprovação final desta solicitação?"
               : "Você confirma a rejeição desta solicitação?"}
           </p>
-          {isAprovar && solicitacao.tipo !== "ENVIO_DOCUMENTO_RH" && (
+          {isAprovar && !ehEnvioDocumento(solicitacao.tipo) && (
             <p
               style={{
                 margin: "-8px 0 0",
@@ -1270,7 +1308,7 @@ export function ModalDecisaoRH({
             </p>
           )}
           {isAprovar &&
-            (solicitacao.tipo === "ENVIO_DOCUMENTO_RH" ||
+            (ehEnvioDocumento(solicitacao.tipo) ||
               solicitacao.tipo === "ABONO" ||
               solicitacao.tipo === "LICENCA") &&
             typeof solicitacao.metadados?.documentoUrl === "string" && (
@@ -1365,7 +1403,7 @@ export function ModalDecisaoRH({
                 <>⏳ Processando...</>
               ) : isAprovar ? (
                 <>
-                  {solicitacao.tipo === "ENVIO_DOCUMENTO_RH"
+                  {ehEnvioDocumento(solicitacao.tipo)
                     ? "✅ Confirmar recebimento"
                     : "✅ Sim, aprovar"}
                 </>
@@ -1956,6 +1994,11 @@ export function FeriasDetalheBlock({ meta }: { meta: Record<string, unknown> | n
           </p>
         )
       )}
+      {typeof meta?.adiantamento13 === "boolean" && (
+        <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--ink-600)" }}>
+          Adiantamento da 1ª parcela do 13º: <strong>{meta.adiantamento13 ? "Sim" : "Não"}</strong>
+        </p>
+      )}
       {(periodos.length > 0 || diasVendidos > 0) && (
         <p
           style={{
@@ -2009,6 +2052,7 @@ interface DocFeriasMeta {
   urlAssinado?: string;
   assinatura?: { nome?: string; em?: string; codigo?: string };
   rejeicao?: { nome?: string; em?: string; justificativa?: string };
+  prazoProrrogadoAte?: string;
 }
 
 const fmtBrasilia = (iso?: string) =>
@@ -2066,7 +2110,19 @@ export function LinksDocumentosFerias({
             </span>
           )}
           {!d.assinatura && !d.rejeicao && (
-            <span style={{ fontSize: 11, color: "#8a6a00" }}>⏳ Aguardando assinatura</span>
+            <span style={{ fontSize: 11, color: "#8a6a00" }}>
+              ⏳ Aguardando assinatura
+              {(() => {
+                const per = primeiroPeriodoFerias(meta);
+                const t = per
+                  ? textoPrazo(
+                      prazoDocumento(d.tipo ?? "", per, d.prazoProrrogadoAte),
+                      hojeBrasiliaISO()
+                    )
+                  : null;
+                return t ? ` · ${t.texto}` : "";
+              })()}
+            </span>
           )}
         </div>
       ))}
@@ -2106,9 +2162,20 @@ export function AssinarDocumentosFerias({
   onAssinado: () => void;
 }) {
   const docs = rodada ? (rodada.documentos ?? []) : docsFeriasDe(solicitacao.metadados);
+  /* Aviso e Recibo são independentes: cada um pode ser assinado enquanto estiver enviado e no prazo. */
   const pendente = rodada
     ? rodada.situacao === "AGUARDANDO_ASSINATURA"
-    : solicitacao.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO";
+    : ["AGUARDANDO_DOCUMENTO_FUNCIONARIO", "AGUARDANDO_RH", "APROVADA"].includes(
+        solicitacao.status
+      ) && docs.some((d) => !d.assinatura && !d.rejeicao);
+  const hojeIso = hojeBrasiliaISO();
+  const periodoDoc = rodada
+    ? { inicio: rodada.inicio, fim: rodada.fim }
+    : primeiroPeriodoFerias(solicitacao.metadados);
+  const prazoDe = (d: DocFeriasMeta) =>
+    periodoDoc
+      ? textoPrazo(prazoDocumento(d.tipo ?? "", periodoDoc, d.prazoProrrogadoAte), hojeIso)
+      : null;
   const enviadaEm = rodada ? rodada.enviadaEm : solicitacao.guiaMedicoEnviadaEm;
   const observacao = rodada ? rodada.observacao : solicitacao.guiaMedicoObservacao;
   const tituloRodada = rodada
@@ -2198,7 +2265,9 @@ export function AssinarDocumentosFerias({
           Abra e leia cada documento. Depois, <strong>assine</strong> (selo digital no rodapé com
           seu nome, data e hora de Brasília, IP e navegador) ou <strong>rejeite</strong> com a
           justificativa — a rejeição devolve ao RH.
-          {rodada ? "" : " A aprovação das férias depende da assinatura de todos os documentos."}
+          {rodada
+            ? ""
+            : " As férias são aprovadas quando você assina o Aviso de Férias (até o 1º dia de gozo); o Recibo pode ser assinado até o fim do mês do término do gozo."}
         </p>
       )}
 
@@ -2242,6 +2311,17 @@ export function AssinarDocumentosFerias({
                   ✕ Rejeitado em {fmtBrasilia(d.rejeicao.em)}
                 </span>
               )}
+              {!d.assinatura && !d.rejeicao && prazoDe(d) && (
+                <span
+                  style={{
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    color: prazoDe(d)!.vencido ? "var(--red)" : "#8a6a00"
+                  }}
+                >
+                  ⏱ {prazoDe(d)!.texto}
+                </span>
+              )}
             </div>
             {d.rejeicao && (
               <span style={{ fontSize: 12, color: "var(--red)" }}>
@@ -2249,7 +2329,12 @@ export function AssinarDocumentosFerias({
               </span>
             )}
 
-            {pendente && !tratado && (
+            {pendente && !tratado && prazoDe(d)?.vencido && (
+              <span style={{ fontSize: 12, color: "var(--red)" }}>
+                O prazo para assinar este documento terminou. Fale com o RH.
+              </span>
+            )}
+            {pendente && !tratado && !prazoDe(d)?.vencido && (
               <>
                 {!aberto && (
                   <span style={{ fontSize: 11.5, color: "var(--ink-500)" }}>
@@ -2371,6 +2456,208 @@ export function AssinarRodadasFerias({
         />
       ))}
     </>
+  );
+}
+
+/** Documento de férias com a situação para o RH (Aviso, Recibo ou outro). */
+const CHIP_DOC: Record<string, { l: string; c: string; bg: string }> = {
+  ENVIADO: { l: "Enviado — aguardando assinatura", c: "#8a6a00", bg: "rgba(247,196,55,0.18)" },
+  ASSINADO: { l: "Assinado", c: "#065f46", bg: "rgba(47,125,79,0.14)" },
+  REJEITADO: { l: "Rejeitado pelo funcionário", c: "#b91c1c", bg: "rgba(200,57,63,0.12)" },
+  PENDENTE: { l: "Ainda não enviado", c: "#475569", bg: "rgba(71,85,105,0.10)" }
+};
+
+/**
+ * RH envia o Aviso e o Recibo de Férias SEPARADAMENTE (um botão para cada), acompanha a situação, o prazo e a
+ * rejeição de cada um. Mesmo bloco para as férias pedidas pelo funcionário e para as configuradas pelo RH.
+ * Aviso: o funcionário assina até o 1º dia de gozo e a assinatura aprova as férias. Recibo: até o fim do mês do término do gozo.
+ */
+export function BlocoDocumentosFeriasRh({
+  s,
+  onAtualizado,
+  compacto = false
+}: {
+  s: {
+    id: string;
+    tipo: string;
+    status?: string;
+    metadados?: Record<string, unknown> | null;
+  };
+  onAtualizado: () => void;
+  /** Só os botões (cartão de Aprovações). */
+  compacto?: boolean;
+}) {
+  const [aberto, setAberto] = useState<"AVISO" | "RECIBO" | "OUTROS" | null>(null);
+  const [prorrogar, setProrrogar] = useState<{
+    tipo: "AVISO" | "RECIBO";
+    prazoAtual: string;
+  } | null>(null);
+  const status = s.status ?? "";
+  if (
+    s.tipo !== "FERIAS" ||
+    !["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO", "APROVADA"].includes(status)
+  ) {
+    return null;
+  }
+  const docs = docsFeriasDe(s.metadados);
+  const achar = (tipo: string) => docs.find((d) => d.tipo === tipo);
+  const periodo = primeiroPeriodoFerias(s.metadados);
+  const hoje = hojeBrasiliaISO();
+  const situacao = (d?: DocFeriasMeta) =>
+    !d ? "PENDENTE" : d.urlAssinado ? "ASSINADO" : d.rejeicao ? "REJEITADO" : "ENVIADO";
+
+  const botao = (tipo: "AVISO" | "RECIBO" | "OUTROS", d?: DocFeriasMeta) => {
+    const sit = situacao(d);
+    const assinado = sit === "ASSINADO";
+    const reenvio = sit === "ENVIADO" || sit === "REJEITADO";
+    const rot =
+      tipo === "AVISO"
+        ? "Aviso de Férias"
+        : tipo === "RECIBO"
+          ? "Recibo de Férias"
+          : "outro documento";
+    const bloqueadoAviso = tipo === "AVISO" && status === "APROVADA";
+    return (
+      <button
+        key={tipo}
+        type="button"
+        disabled={assinado || bloqueadoAviso}
+        onClick={() => setAberto(tipo)}
+        title={
+          assinado
+            ? `${rot} já assinado`
+            : bloqueadoAviso
+              ? "O Aviso já foi assinado e as férias estão aprovadas"
+              : undefined
+        }
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "7px 14px",
+          border: "none",
+          borderRadius: "var(--radius-md)",
+          background:
+            assinado || bloqueadoAviso ? "#9ca3af" : sit === "REJEITADO" ? "#b45309" : "#2f7d4f",
+          color: "#fff",
+          cursor: assinado || bloqueadoAviso ? "not-allowed" : "pointer",
+          fontSize: 12,
+          fontWeight: 600,
+          whiteSpace: "nowrap"
+        }}
+      >
+        🌴{" "}
+        {tipo === "OUTROS"
+          ? "Enviar outro documento"
+          : reenvio
+            ? `Reenviar ${rot}`
+            : `Enviar ${rot}`}
+      </button>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {!compacto && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {(["AVISO", "RECIBO"] as const).map((t) => {
+            const d = achar(t);
+            const sit = situacao(d);
+            const chip = CHIP_DOC[sit];
+            const prazoVig = periodo ? prazoDocumento(t, periodo, d?.prazoProrrogadoAte) : null;
+            const pz = prazoVig ? textoPrazo(prazoVig, hoje) : null;
+            return (
+              <div
+                key={t}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  fontSize: 12.5
+                }}
+              >
+                <strong style={{ minWidth: 118 }}>
+                  {t === "AVISO" ? "Aviso de Férias" : "Recibo de Férias"}
+                </strong>
+                <span
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: chip.c,
+                    background: chip.bg
+                  }}
+                >
+                  {chip.l}
+                </span>
+                {pz && sit !== "ASSINADO" && (
+                  <span
+                    style={{
+                      fontSize: 11.5,
+                      color: pz.vencido ? "var(--red)" : "var(--ink-500)",
+                      fontWeight: pz.vencido ? 700 : 400
+                    }}
+                  >
+                    ⏱ {pz.texto}
+                  </span>
+                )}
+                {d?.rejeicao && (
+                  <span style={{ fontSize: 11.5, color: "var(--red)" }}>
+                    “{d.rejeicao.justificativa}”
+                  </span>
+                )}
+                {d && prazoVig && sit !== "ASSINADO" && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setProrrogar({ tipo: t, prazoAtual: prazoVig })}
+                  >
+                    ⏱ Prorrogar prazo
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          flexDirection: compacto ? "column" : "row"
+        }}
+      >
+        {botao("AVISO", achar("AVISO"))}
+        {botao("RECIBO", achar("RECIBO"))}
+        {!compacto && botao("OUTROS")}
+      </div>
+      {prorrogar && (
+        <ProrrogarPrazoFeriasModal
+          rotulo={prorrogar.tipo === "AVISO" ? "Aviso de Férias" : "Recibo de Férias"}
+          url={`/auditoria/rh/solicitacoes/${s.id}/ferias/documentos/${prorrogar.tipo}/prazo`}
+          prazoAtual={prorrogar.prazoAtual}
+          onClose={() => setProrrogar(null)}
+          onSalvo={() => {
+            setProrrogar(null);
+            onAtualizado();
+          }}
+        />
+      )}
+      {aberto && (
+        <EnviarDocumentoFeriasModal
+          tipo={aberto}
+          url={`/auditoria/rh/solicitacoes/${s.id}/ferias/documentos/${aberto}`}
+          onClose={() => setAberto(null)}
+          onEnviado={() => {
+            setAberto(null);
+            onAtualizado();
+          }}
+        />
+      )}
+    </div>
   );
 }
 

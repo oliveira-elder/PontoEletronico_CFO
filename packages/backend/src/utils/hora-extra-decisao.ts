@@ -489,22 +489,73 @@ export function aplicarRegraHoraExtra(
  * (continuam "OK"). Usa a modalidade vigente em cada dia (histórico), então mudar a modalidade
  * depois não altera os dias passados.
  */
+/**
+ * Dias de home office para o ícone da casinha no histórico (só dias com batidas). Quem está em regime de home
+ * office naquele dia (histórico de modalidade com vigência) tem o dia marcado. No regime híbrido, vale o modo gravado
+ * em cada batida ("HOME_OFFICE"/"HIBRIDO" = bateu dentro do raio da residência, sem nenhuma batida presencial);
+ * batidas ajustadas à mão não entram. Sem modo utilizável, a apuração por GPS (todas as batidas em casa).
+ */
+export async function localModalidadePorDia(
+  prisma: PrismaHe,
+  funcionarioId: string,
+  inicio: Date,
+  fim: Date
+): Promise<Record<string, "HOME_OFFICE" | "PRESENCIAL">> {
+  const [ctx, vigencias, regs] = await Promise.all([
+    carregarContextoHoraExtra(prisma, funcionarioId, inicio, fim),
+    ensureModalidadeHistorico(prisma, funcionarioId),
+    prisma.registroPonto.findMany({
+      where: { funcionarioId, apenasInformativo: false, dataHora: { gte: inicio, lte: fim } },
+      select: { dataHora: true, modoRegistro: true, ajustado: true }
+    })
+  ]);
+  const modosPorDia = new Map<string, string[]>();
+  const diasComBatida = new Set<string>();
+  for (const r of regs) {
+    const dia = dataBrasiliaISO(r.dataHora);
+    diasComBatida.add(dia);
+    if (r.ajustado) continue;
+    modosPorDia.set(dia, [...(modosPorDia.get(dia) ?? []), String(r.modoRegistro)]);
+  }
+  const out: Record<string, "HOME_OFFICE" | "PRESENCIAL"> = {};
+  for (const dia of diasComBatida) {
+    const modalidade = modalidadeNoDia(vigencias, dia);
+    /* Regime de home office vigente no dia (histórico com vigência): o dia de expediente é home office. */
+    if (modalidade === "HOME_OFFICE") {
+      out[dia] = "HOME_OFFICE";
+      continue;
+    }
+    /* Híbrido (ou outro): vale onde bateu — modo gravado na batida (dentro do raio da residência). */
+    const modos = modosPorDia.get(dia) ?? [];
+    const remoto = modos.some((m) => m === "HOME_OFFICE" || m === "HIBRIDO");
+    const presencial = modos.some((m) => m === "DESKTOP" || m === "MOBILE" || m === "VIAGEM");
+    if (remoto && !presencial) {
+      out[dia] = "HOME_OFFICE";
+      continue;
+    }
+    if (remoto && presencial) continue; /* dia misto */
+    /* Sem modo gravado utilizável: apuração por GPS, só para quem é híbrido naquele dia. */
+    if (modalidade !== "PRESENCIAL" && ctx.dias[dia]?.local === "CASA") out[dia] = "HOME_OFFICE";
+  }
+  return out;
+}
+
 export async function rotulosModalidadePorDia(
   prisma: PrismaHe,
   funcionarioId: string,
   inicio: Date,
   fim: Date
 ): Promise<Record<string, string>> {
-  const [ctx, vigencias] = await Promise.all([
-    carregarContextoHoraExtra(prisma, funcionarioId, inicio, fim),
+  /* Mesmo critério do ícone 🏠 do histórico (localModalidadePorDia): regime vigente no dia, modo gravado
+     na batida ou, na falta dele, a apuração por GPS. O rótulo segue a modalidade do dia. */
+  const [locais, vigencias] = await Promise.all([
+    localModalidadePorDia(prisma, funcionarioId, inicio, fim),
     ensureModalidadeHistorico(prisma, funcionarioId)
   ]);
   const out: Record<string, string> = {};
-  for (const [dia, v] of Object.entries(ctx.dias)) {
-    if (v.local !== "CASA") continue;
-    const mod = modalidadeNoDia(vigencias, dia);
-    if (mod === "HOME_OFFICE") out[dia] = "Home Office";
-    else if (mod === "HIBRIDO") out[dia] = "Híbrido";
+  for (const [dia, local] of Object.entries(locais)) {
+    if (local !== "HOME_OFFICE") continue;
+    out[dia] = modalidadeNoDia(vigencias, dia) === "HIBRIDO" ? "Híbrido" : "Home Office";
   }
   return out;
 }

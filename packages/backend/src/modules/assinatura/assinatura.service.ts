@@ -2409,7 +2409,7 @@ export class AssinaturaService implements OnModuleInit {
         /* Qualquer solicitação em andamento que mexa na folha do mês (correção, atestado,
            abono, férias, licença, day off, hora extra). Só o envio de documento ao RH e
            as solicitações apenas informativas (isentos) não afetam a folha. */
-        tipo: { not: "ENVIO_DOCUMENTO_RH" },
+        tipo: { notIn: ["ENVIO_DOCUMENTO_RH", "DOCUMENTO_VIA_CHEFE"] },
         apenasInformativo: false,
         status: { in: [...STATUS_SOLICITACAO_EM_ANDAMENTO] },
         OR: [

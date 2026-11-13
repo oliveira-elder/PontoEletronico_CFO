@@ -12,7 +12,8 @@ export function RankingHorizontalChart({
   unidade,
   corPositiva,
   corNegativa,
-  modoNegativo
+  modoNegativo,
+  onItemClick
 }: {
   chart: { nome: string; nomeCompleto: string; label: string; [k: string]: unknown }[];
   dataKey: string;
@@ -20,6 +21,8 @@ export function RankingHorizontalChart({
   corPositiva: string;
   corNegativa: string;
   modoNegativo: boolean;
+  /** Clique numa barra (recebe a linha do gráfico, ex.: com `funcionarioId`). */
+  onItemClick?: (item: { [k: string]: unknown }) => void;
 }) {
   if (chart.length === 0) {
     return (
@@ -52,6 +55,15 @@ export function RankingHorizontalChart({
           dataKey={dataKey}
           fill={modoNegativo ? corNegativa : corPositiva}
           radius={[0, 4, 4, 0]}
+          onClick={
+            onItemClick
+              ? (entry: unknown) => {
+                  const e = entry as { payload?: { [k: string]: unknown } };
+                  onItemClick(e.payload ?? (entry as { [k: string]: unknown }));
+                }
+              : undefined
+          }
+          style={onItemClick ? { cursor: "pointer" } : undefined}
         />
       </BarChart>
     </ResponsiveContainer>

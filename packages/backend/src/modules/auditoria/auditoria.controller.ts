@@ -73,6 +73,19 @@ export class AuditoriaController {
     return this.auditoriaService.getDashboard({ dataInicio, dataFim });
   }
 
+  /** Lista por trás de um gráfico do dashboard (modal de detalhamento). */
+  @RecursoRh("dashboard.ponto-frequencia", "dashboard.afastamentos", "dashboard.solicitacoes")
+  @Get("dashboard/detalhe")
+  getDashboardDetalhe(
+    @Query("tipo") tipo: string,
+    @Query("chave") chave?: string,
+    @Query("hora") hora?: string,
+    @Query("dataInicio") dataInicio?: string,
+    @Query("dataFim") dataFim?: string
+  ) {
+    return this.auditoriaService.getDashboardDetalhe({ tipo, chave, hora, dataInicio, dataFim });
+  }
+
   @RecursoRh("dashboard.ponto-frequencia")
   @Get("dashboard/registros-hora")
   getRegistrosPorHora(@Query("data") data?: string) {
@@ -318,16 +331,22 @@ export class AuditoriaController {
     @Query("gerenciaId") gerenciaId?: string,
     @Query("dataInicio") dataInicio?: string,
     @Query("dataFim") dataFim?: string,
+    @Query("busca") busca?: string,
+    @Query("ordem") ordem?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string
+    @Query("limit") limit?: string,
+    @Query("afastamento") afastamento?: string
   ) {
     const r = await this.auditoriaService.getSolicitacoes({
+      afastamento,
       status,
       tipo,
       funcionarioId,
       gerenciaId,
       dataInicio,
       dataFim,
+      busca,
+      ordem,
       page: page ? parseInt(page) : undefined,
       limit: limit ? parseInt(limit) : undefined
     });
@@ -361,16 +380,22 @@ export class AuditoriaController {
     @Query("dataInicio") dataInicio?: string,
     @Query("dataFim") dataFim?: string,
     @Query("ativo") ativo?: string,
+    @Query("busca") busca?: string,
+    @Query("ordem") ordem?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string
+    @Query("limit") limit?: string,
+    @Query("semSolicitacao") semSolicitacao?: string
   ) {
     return this.auditoriaService.getAfastamentos({
+      semSolicitacao: semSolicitacao === "true" ? true : undefined,
       funcionarioId,
       gerenciaId,
       tipo,
       dataInicio,
       dataFim,
       ativo: ativo === "true" ? true : undefined,
+      busca,
+      ordem,
       page: page ? parseInt(page) : undefined,
       limit: limit ? parseInt(limit) : undefined
     });
@@ -477,7 +502,7 @@ export class AuditoriaController {
   @Roles("GESTOR_APROVACAO", "gestor", "ponto-admin", "PONTO_ADMIN")
   gestorResolverSolicitacao(
     @Param("id") id: string,
-    @Body() body: { decisao: "APROVAR" | "REJEITAR"; observacao: string },
+    @Body() body: { decisao: "APROVAR" | "REJEITAR" | "DEVOLVER"; observacao: string },
     @Request() req: AuthRequest
   ) {
     return this.auditoriaService.gestorResolverSolicitacao(
@@ -486,7 +511,8 @@ export class AuditoriaController {
       body.observacao,
       req.user.sub,
       !!req.user.isSuperAdmin,
-      getCienciaMeta(req)
+      getCienciaMeta(req),
+      (req.user.roles ?? []).some((r) => r === "ponto-admin" || r === "PONTO_ADMIN")
     );
   }
 
@@ -562,6 +588,87 @@ export class AuditoriaController {
       id,
       Number(ordem),
       { documentos: body.documentos },
+      body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
+  /** Rodada (2º/3º período): envia/reenvia UM documento sem mexer nos demais. */
+  @Patch("rh/solicitacoes/:id/ferias/rodadas/:ordem/documentos/:tipo")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  enviarDocumentoRodadaFerias(
+    @Param("id") id: string,
+    @Param("ordem") ordem: string,
+    @Param("tipo") tipo: string,
+    @Body()
+    body: {
+      rotulo?: string;
+      arquivoBase64: string;
+      nomeArquivo?: string;
+      mimeType?: string;
+      observacao?: string;
+    },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhEnviarDocumentoRodadaFerias(
+      id,
+      Number(ordem),
+      {
+        tipo: tipo.toUpperCase(),
+        rotulo: body.rotulo,
+        arquivoBase64: body.arquivoBase64,
+        nomeArquivo: body.nomeArquivo,
+        mimeType: body.mimeType
+      },
+      body.observacao ?? "",
+      req.user.sub
+    );
+  }
+
+  /** Prorroga o prazo de assinatura do Aviso ou do Recibo (1º período; `ordem` opcional para 2º/3º). */
+  @Patch("rh/solicitacoes/:id/ferias/documentos/:tipo/prazo")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  prorrogarPrazoDocumentoFerias(
+    @Param("id") id: string,
+    @Param("tipo") tipo: string,
+    @Body() body: { novoPrazo: string; motivo: string; ordem?: number },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhProrrogarPrazoDocumentoFerias(
+      id,
+      tipo,
+      body.ordem ? Number(body.ordem) : null,
+      String(body.novoPrazo ?? ""),
+      body.motivo ?? "",
+      req.user.sub
+    );
+  }
+
+  /** Envia/reenvia UM documento de férias (AVISO, RECIBO ou OUTROS) sem mexer nos demais. */
+  @Patch("rh/solicitacoes/:id/ferias/documentos/:tipo")
+  @Roles("RH_AUDITORIA", "ponto-admin", "PONTO_ADMIN")
+  enviarDocumentoFerias(
+    @Param("id") id: string,
+    @Param("tipo") tipo: string,
+    @Body()
+    body: {
+      rotulo?: string;
+      arquivoBase64: string;
+      nomeArquivo?: string;
+      mimeType?: string;
+      observacao?: string;
+    },
+    @Request() req: AuthRequest
+  ) {
+    return this.auditoriaService.rhEnviarDocumentoFerias(
+      id,
+      {
+        tipo: tipo.toUpperCase(),
+        rotulo: body.rotulo,
+        arquivoBase64: body.arquivoBase64,
+        nomeArquivo: body.nomeArquivo,
+        mimeType: body.mimeType
+      },
       body.observacao ?? "",
       req.user.sub
     );

@@ -7,7 +7,11 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { isGerenciaRh, isGerenciaRhSlug } from "../../common/gerencia-rh.util";
 import { TODOS_RECURSOS_RH, recursoRhValido } from "../../utils/recursos-rh";
-import { PAPEIS_GERENTE_RH, carregarPermissoesRh } from "../auth/permissao-rh.guard";
+import {
+  PAPEIS_GERENTE_RH,
+  carregarPermissoesRh,
+  usuarioSemMatricula
+} from "../auth/permissao-rh.guard";
 
 type Usuario = { sub: string; roles?: string[]; isSuperAdmin?: boolean };
 
@@ -117,6 +121,10 @@ export class PerfisRhService {
 
   /** Permissões do próprio usuário (menu, abas e botões do front). */
   async minhas(u: Usuario) {
+    /* Sem matrícula (Alta Administração): nenhuma área do RH (some do menu e é barrada no servidor). */
+    if (await usuarioSemMatricula(this.prisma, u)) {
+      return { acessoTotal: false, recursos: [] as string[], semMatricula: true };
+    }
     if (this.ehGerenteRh(u)) return { acessoTotal: true, recursos: TODOS_RECURSOS_RH };
     if (!(u.roles ?? []).includes("RH_AUDITORIA")) return { acessoTotal: false, recursos: [] };
     return { acessoTotal: false, recursos: [...(await carregarPermissoesRh(this.prisma, u.sub))] };

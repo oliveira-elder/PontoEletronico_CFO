@@ -16,7 +16,12 @@ import { situacaoDoExame, vencimentoPeriodico } from "../../utils/exame-ocupacio
 import { inteiroConfig } from "../../utils/licenca-regras";
 
 const RESULTADOS = ["APTO", "INAPTO"] as const;
-const TIPOS_EXAME = ["ADMISSIONAL", "PERIODICO", "RETORNO_AO_TRABALHO"] as const;
+const TIPOS_EXAME = [
+  "ADMISSIONAL",
+  "PERIODICO",
+  "RETORNO_AO_TRABALHO",
+  "MUDANCA_DE_RISCO"
+] as const;
 const TAMANHO_MAX_BYTES = 8 * 1024 * 1024;
 const MIME_PERMITIDOS: Record<string, string> = {
   "application/pdf": "pdf",
@@ -116,9 +121,14 @@ export class SaudeOcupacionalService {
     return { caminho, mime };
   }
 
-  async lerArquivo(exameId: string, user: { funcionarioId?: string; rh: boolean }) {
+  async lerArquivo(
+    exameId: string,
+    user: { funcionarioId?: string; rh: boolean; superAdmin?: boolean }
+  ) {
     const ex = await this.prisma.exameOcupacional.findUnique({ where: { id: exameId } });
     if (!ex || !ex.arquivoCaminho) throw new NotFoundException("Arquivo não encontrado.");
+    /* Exame excluído (exclusão lógica): só o super administrador ainda abre o arquivo. */
+    if (ex.excluidoEm && !user.superAdmin) throw new NotFoundException("Arquivo não encontrado.");
     if (!user.rh && ex.funcionarioId !== user.funcionarioId) {
       throw new ForbiddenException("Sem acesso a este documento.");
     }
@@ -190,6 +200,8 @@ export class SaudeOcupacionalService {
       registradoPorNome: e.registradoPorNome,
       conferidoPorNome: e.conferidoPorNome,
       conferidoEm: e.conferidoEm,
+      excluidoEm: e.excluidoEm,
+      excluidoPorNome: e.excluidoPorNome,
       createdAt: e.createdAt
     };
   }
@@ -217,7 +229,7 @@ export class SaudeOcupacionalService {
       orderBy: { user: { name: "asc" } }
     });
     const exames = await this.prisma.exameOcupacional.findMany({
-      where: { funcionarioId: { in: funcs.map((f) => f.id) } },
+      where: { funcionarioId: { in: funcs.map((f) => f.id) }, excluidoEm: null },
       orderBy: [{ dataRealizacao: "desc" }, { createdAt: "desc" }]
     });
     const porFunc = new Map<string, ExameRow[]>();
@@ -275,9 +287,10 @@ export class SaudeOcupacionalService {
     return { config: cfg, resumo, itens };
   }
 
-  async examesDoFuncionario(funcionarioId: string) {
+  /** Histórico de exames. Os excluídos logicamente só aparecem (marcados) para o super administrador. */
+  async examesDoFuncionario(funcionarioId: string, incluirExcluidos = false) {
     const rows = await this.prisma.exameOcupacional.findMany({
-      where: { funcionarioId },
+      where: { funcionarioId, ...(incluirExcluidos ? {} : { excluidoEm: null }) },
       orderBy: [{ dataRealizacao: "desc" }, { createdAt: "desc" }]
     });
     return rows.map((r) => this.serializar(r));
@@ -354,6 +367,7 @@ export class SaudeOcupacionalService {
   ) {
     const ex = await this.prisma.exameOcupacional.findUnique({ where: { id } });
     if (!ex) throw new NotFoundException("Exame não encontrado.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame foi excluído.");
     const data = this.validarEntrada({
       dataRealizacao: body.dataRealizacao ?? dataCivilISO(ex.dataRealizacao),
       resultado: body.resultado === undefined ? ex.resultado : body.resultado,
@@ -394,6 +408,7 @@ export class SaudeOcupacionalService {
   ) {
     const ex = await this.prisma.exameOcupacional.findUnique({ where: { id } });
     if (!ex) throw new NotFoundException("Exame não encontrado.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame foi excluído.");
     if (ex.situacao !== "AGUARDANDO_CONFERENCIA") {
       throw new BadRequestException("Este exame não está aguardando conferência.");
     }
@@ -443,6 +458,7 @@ export class SaudeOcupacionalService {
     if (motivo.length < 5) throw new BadRequestException("Informe o motivo da devolução.");
     const ex = await this.prisma.exameOcupacional.findUnique({ where: { id } });
     if (!ex) throw new NotFoundException("Exame não encontrado.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame foi excluído.");
     if (ex.situacao !== "AGUARDANDO_CONFERENCIA") {
       throw new BadRequestException("Este exame não está aguardando conferência.");
     }
@@ -481,9 +497,28 @@ export class SaudeOcupacionalService {
     return this.serializar(up);
   }
 
+  /**
+   * Exclusão lógica (usuários do RH): o exame deixa de aparecer e de contar no vencimento, mas o registro e o
+   * arquivo ficam guardados, com quem excluiu e quando.
+   */
+  async excluirLogico(id: string, sub: string) {
+    const ex = await this.prisma.exameOcupacional.findUnique({ where: { id } });
+    if (!ex) throw new NotFoundException("Exame não encontrado.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame foi excluído.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame já foi excluído.");
+    const quem = await this.nomeUsuario(sub);
+    await this.prisma.exameOcupacional.update({
+      where: { id },
+      data: { excluidoEm: new Date(), excluidoPorNome: quem.nome, excluidoPorUserId: quem.id }
+    });
+    return { ok: true, logico: true };
+  }
+
+  /** Exclusão definitiva: só o super administrador. */
   async excluir(id: string) {
     const ex = await this.prisma.exameOcupacional.findUnique({ where: { id } });
     if (!ex) throw new NotFoundException("Exame não encontrado.");
+    if (ex.excluidoEm) throw new BadRequestException("Este exame foi excluído.");
     await this.prisma.exameOcupacional.delete({ where: { id } });
     if (ex.arquivoCaminho) await unlink(ex.arquivoCaminho).catch(() => undefined);
     return { ok: true };
@@ -582,7 +617,7 @@ export class SaudeOcupacionalService {
     const f = await this.funcionarioDoUsuario(sub);
     const cfg = await this.getConfig();
     const rows = await this.prisma.exameOcupacional.findMany({
-      where: { funcionarioId: f.id },
+      where: { funcionarioId: f.id, excluidoEm: null },
       orderBy: [{ dataRealizacao: "desc" }, { createdAt: "desc" }]
     });
     const ultimo = rows.find((r) => r.situacao === "CONFIRMADO");
@@ -616,7 +651,7 @@ export class SaudeOcupacionalService {
     if (!body.arquivoBase64) throw new BadRequestException("Anexe o ASO (PDF, JPG ou PNG).");
     this.validarArquivo(body.arquivoBase64);
     const pendente = await this.prisma.exameOcupacional.findFirst({
-      where: { funcionarioId: f.id, situacao: "AGUARDANDO_CONFERENCIA" }
+      where: { funcionarioId: f.id, situacao: "AGUARDANDO_CONFERENCIA", excluidoEm: null }
     });
     if (pendente) {
       throw new BadRequestException(
@@ -691,6 +726,7 @@ export class SaudeOcupacionalService {
       const confirmados = await this.prisma.exameOcupacional.findMany({
         where: {
           situacao: "CONFIRMADO",
+          excluidoEm: null,
           funcionario: { ativo: true, categoria: { not: "ESTAGIARIO" } }
         },
         orderBy: [{ dataRealizacao: "desc" }, { createdAt: "desc" }],

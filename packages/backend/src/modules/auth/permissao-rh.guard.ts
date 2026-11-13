@@ -9,6 +9,31 @@ export const PAPEIS_GERENTE_RH = ["ponto-admin", "PONTO_ADMIN"];
 
 type UsuarioReq = { sub?: string; roles?: string[]; isSuperAdmin?: boolean };
 
+const MSG_SEM_MATRICULA = "Usuários sem matrícula (Alta Administração) não têm acesso a esta área.";
+const cacheSemMatricula = new Map<string, { valor: boolean; ate: number }>();
+
+/**
+ * Usuário sem matrícula (Alta Administração)? Fica fora das áreas do RH: Auditoria, Saúde Ocupacional, Gestão,
+ * Configurações etc. (todas as rotas marcadas com @RecursoRh). O super administrador não é afetado.
+ * Cache curto por usuário para não consultar o banco em toda requisição.
+ */
+export async function usuarioSemMatricula(
+  prisma: PrismaService,
+  user: UsuarioReq | undefined
+): Promise<boolean> {
+  if (!user?.sub || user.isSuperAdmin) return false;
+  const agora = Date.now();
+  const c = cacheSemMatricula.get(user.sub);
+  if (c && c.ate > agora) return c.valor;
+  const f = await prisma.funcionario.findFirst({
+    where: { user: { externalId: user.sub } },
+    select: { categoria: true }
+  });
+  const valor = f?.categoria === "ALTA_ADMINISTRACAO";
+  cacheSemMatricula.set(user.sub, { valor, ate: agora + 60_000 });
+  return valor;
+}
+
 /**
  * Perfis do RH: quando o usuário chega à rota APENAS pelo papel RH_AUDITORIA, exige a
  * permissão declarada em @RecursoRh (aba = Ver; função = ação + Ver da aba-mãe).
@@ -34,6 +59,8 @@ export class PermissaoRhGuard implements CanActivate {
       permissoesRh?: Set<string>;
     }>();
     const user = req.user;
+    if (await usuarioSemMatricula(this.prisma, user))
+      throw new ForbiddenException(MSG_SEM_MATRICULA);
     const papeisRota =
       this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
         context.getHandler(),
@@ -73,6 +100,7 @@ export async function exigirRecursoRh(
   papeisRota: string[],
   recurso: string
 ): Promise<void> {
+  if (await usuarioSemMatricula(prisma, user)) throw new ForbiddenException(MSG_SEM_MATRICULA);
   if (!acessoDependeDoPerfilRh(user, papeisRota)) return;
   const concedidos = await carregarPermissoesRh(prisma, user?.sub);
   if (!temRecursoRh(concedidos, recurso)) {

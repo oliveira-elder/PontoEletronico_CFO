@@ -314,8 +314,14 @@ export class ConfigController {
 
   @Get("solicitacoes")
   @Roles() // qualquer usuário autenticado pode ler as regras
-  getConfigSolicitacoes() {
-    return this.configSolicitacoesService.getConfig();
+  async getConfigSolicitacoes(@Request() req: { user: UsuarioAuth }) {
+    const cfg = await this.configSolicitacoesService.getConfig();
+    /* Quem está em home office vê o "Envio de Documento - Home Office" em Solicitações. */
+    const func = await this.prisma.funcionario.findFirst({
+      where: { user: { externalId: req.user.sub } },
+      select: { modoHomeOffice: true }
+    });
+    return { ...cfg, usuarioHomeOffice: !!func?.modoHomeOffice };
   }
 
   @RecursoRh("configuracoes.solicitacoes.salvar")

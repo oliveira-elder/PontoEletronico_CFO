@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { RelatorioQuadroMensal } from "../../utils/historico-quadro";
+import { motivoInconsistencia, type RelatorioQuadroMensal } from "../../utils/historico-quadro";
 import { computeQuadroSignatoryHash, groupCodigoAssinatura } from "../../utils/assinatura-codigo";
 import { categoriaSemVisibilidadeBancoHoras } from "../../utils/categoria-jornada";
 
@@ -507,6 +507,23 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
     vazio
   ];
 
+  /* Justificativa completa, igual à tela: motivo da inconsistência e porcentagem do banco de horas. */
+  const detalheJustificativa = (d: (typeof relatorio.dias)[number]) => {
+    const partes: string[] = [];
+    const motivo = motivoInconsistencia(d);
+    if (motivo) partes.push(motivo);
+    const fimDeSemanaOuFeriado = /^Trabalhado \((Sábado|Domingo|Feriado)/.test(d.status);
+    if (
+      d.multiplicadorPct &&
+      (d.multiplicadorPct !== 100 || fimDeSemanaOuFeriado) &&
+      d.horasMin > 0 &&
+      !ocultarBh
+    ) {
+      partes.push(`Banco de horas: ${d.multiplicadorPct}%`);
+    }
+    return partes.length ? `\n${partes.join("; ")}` : "";
+  };
+
   const fmtH = (min: number | undefined) =>
     min && min > 0 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}` : "—";
 
@@ -545,7 +562,7 @@ function buildTabelaDias(input: QuadroPdfInput): unknown {
             cell(fmtH(deb), deb > 0 ? { color: "#B91C1C", bold: true } : {}),
             cell(fmtH(cred), cred > 0 ? { color: "#15803D", bold: true } : {})
           ]),
-      cell(`${dia.status}${pausas}`, { alignment: "left" })
+      cell(`${dia.status}${detalheJustificativa(dia)}${pausas}`, { alignment: "left" })
     ]);
   }
 

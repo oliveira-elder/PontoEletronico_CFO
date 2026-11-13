@@ -21,7 +21,8 @@ import { PrismaService } from "../../prisma/prisma.service";
 import {
   GestaoService,
   CamposSimplesFuncionario as CamposSimplesFuncionarioBody,
-  LinhaLotacaoBody
+  LinhaLotacaoBody,
+  PeriodoAssessorBody
 } from "./gestao.service";
 import type { PeriodoCessao } from "../../utils/cessao-historico";
 
@@ -249,6 +250,38 @@ export class GestaoController {
   @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
   removerCessao(@Param("id") id: string, @Param("cessaoId") cessaoId: string) {
     return this.gestaoService.removerCessao(id, cessaoId);
+  }
+
+  @RecursoRh("gestao.funcionarios")
+  @Get("funcionarios/:id/assessor-historico")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  getAssessorHistorico(@Param("id") id: string) {
+    return this.gestaoService.getAssessorHistorico(id);
+  }
+
+  @RecursoRh("gestao.funcionarios.lotacao")
+  @Post("funcionarios/:id/assessor-historico")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  adicionarAssessor(@Param("id") id: string, @Body() body: PeriodoAssessorBody) {
+    return this.gestaoService.adicionarAssessor(id, body);
+  }
+
+  @RecursoRh("gestao.funcionarios.lotacao")
+  @Patch("funcionarios/:id/assessor-historico/:periodoId")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  atualizarAssessor(
+    @Param("id") id: string,
+    @Param("periodoId") periodoId: string,
+    @Body() body: PeriodoAssessorBody
+  ) {
+    return this.gestaoService.atualizarAssessor(id, periodoId, body);
+  }
+
+  @RecursoRh("gestao.funcionarios.lotacao")
+  @Delete("funcionarios/:id/assessor-historico/:periodoId")
+  @Roles("gestor", "ponto-admin", "RH_AUDITORIA", "PONTO_ADMIN")
+  removerAssessor(@Param("id") id: string, @Param("periodoId") periodoId: string) {
+    return this.gestaoService.removerAssessor(id, periodoId);
   }
 
   @RecursoRh("gestao.funcionarios.lotacao")

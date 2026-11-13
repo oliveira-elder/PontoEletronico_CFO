@@ -107,6 +107,9 @@ export function FormFeriasRh({
     periodosOrig.length ? periodosOrig : [{ inicio: "", fim: "" }]
   );
   const [diasVendidos, setDiasVendidos] = useState<number>(Number(metaOrig?.diasVendidos ?? 0));
+  const [adiantamento13, setAdiantamento13] = useState<"" | "sim" | "nao">(
+    metaOrig?.adiantamento13 === true ? "sim" : metaOrig?.adiantamento13 === false ? "nao" : ""
+  );
   const [justificativa, setJustificativa] = useState("");
   const [ignorarVedacao, setIgnorarVedacao] = useState(false);
   const [cfg, setCfg] = useState<ConfigFerias>(CFG_PADRAO);
@@ -208,6 +211,7 @@ export function FormFeriasRh({
       cicloNumero: cicloNumero ?? undefined,
       periodos,
       diasVendidos: venda,
+      ...(adiantamento13 && !isEstagiario ? { adiantamento13: adiantamento13 === "sim" } : {}),
       justificativa: justificativa.trim(),
       ignorarVedacao: ignorarVedacao && temVedacao
     };
@@ -418,14 +422,31 @@ export function FormFeriasRh({
         {!isEstagiario && (
           <div>
             <label style={label}>Dias vendidos (abono pecuniário)</label>
-            <input
-              type="number"
-              min={0}
-              max={cfg.feriasMaxDiasVenda}
-              style={{ ...input, width: 120 }}
+            <select
+              style={{ ...input, width: 170 }}
               value={diasVendidos}
               onChange={(e) => setDiasVendidos(Number(e.target.value))}
-            />
+            >
+              <option value={0}>Não vender (0 dia)</option>
+              <option value={cfg.feriasMaxDiasVenda}>Vender {cfg.feriasMaxDiasVenda} dias</option>
+              {diasVendidos !== 0 && diasVendidos !== cfg.feriasMaxDiasVenda && (
+                <option value={diasVendidos}>{diasVendidos} dias (valor já registrado)</option>
+              )}
+            </select>
+          </div>
+        )}
+        {!isEstagiario && (
+          <div>
+            <label style={label}>Adiantamento do 13º (1ª parcela)</label>
+            <select
+              style={{ ...input, width: 170 }}
+              value={adiantamento13}
+              onChange={(e) => setAdiantamento13(e.target.value as "" | "sim" | "nao")}
+            >
+              <option value="">Não informado</option>
+              <option value="sim">Sim</option>
+              <option value="nao">Não</option>
+            </select>
           </div>
         )}
         <p

@@ -357,13 +357,53 @@ export const CAPITULOS: Capitulo[] = [
         ]
       },
       {
+        id: "documento-via-chefe",
+        roteiro: "documento-via-chefe",
+        titulo: "Enviar um documento ao RH pelo chefe",
+        perfil: "todos",
+        resumo: "O seu chefe confere o documento antes de ele chegar ao RH.",
+        passos: [
+          "Em Solicitações, escolha “Envio de Documento - Home Office” (aparece só para quem está em home office, quando o RH ativa o tipo).",
+          "Descreva o documento (mínimo 3 caracteres) e anexe o arquivo (PDF, JPG, PNG ou WebP, até 10 MB).",
+          "Envie. Seu chefe imediato vê o documento e pode encaminhar ao RH, rejeitar ou devolver para correção. Sem chefe imediato, vai direto ao RH."
+        ],
+        rota: "/ponto/solicitacoes"
+      },
+      {
+        id: "corrigir-documento",
+        roteiro: "corrigir-documento",
+        titulo: "Corrigir um documento devolvido pelo chefe",
+        perfil: "todos",
+        resumo: "Quando o chefe devolve, você corrige e reenvia sem abrir outro pedido.",
+        passos: [
+          "Você recebe um aviso. Em Solicitações o pedido aparece como “Devolvida para correção”, com o motivo.",
+          "Se precisar, ajuste a descrição e troque o arquivo.",
+          "Clique em “Corrigir e reenviar”: o pedido volta ao chefe como “Aguardando Chefe”."
+        ],
+        rota: "/ponto/solicitacoes"
+      },
+      {
+        id: "cancelar-solicitacao",
+        roteiro: "cancelar-solicitacao",
+        titulo: "Cancelar uma solicitação",
+        perfil: "todos",
+        resumo: "Você pode cancelar enquanto o chefe ainda não decidiu.",
+        passos: [
+          "Em Solicitações, no pedido “Aguardando Chefe” (ou “Devolvida para correção”), clique em “Cancelar solicitação”.",
+          "Confirme em “Sim, cancelar”. O pedido sai da fila do chefe e fica como “Cancelada por você”.",
+          "Depois que o chefe encaminha ao RH, só o RH pode cancelar. Pedidos abertos pelo RH em seu nome também são cancelados pelo RH."
+        ],
+        rota: "/ponto/solicitacoes"
+      },
+      {
         id: "acompanhar",
         roteiro: "acompanhar",
         titulo: "Acompanhar e entender a situação",
         perfil: "todos",
         resumo: "O que significa cada situação da solicitação.",
         passos: [
-          "Pendente: aguardando o seu chefe.",
+          "Pendente: aguardando o seu chefe (você ainda pode cancelar).",
+          "Devolvida para correção: o chefe pediu um ajuste; corrija e reenvie.",
           "Aguardando RH: o chefe aprovou; o RH vai analisar.",
           "Aguardando documento: o RH pediu algum arquivo seu.",
           "Aprovada: aplicada. Rejeitada: veja a observação de quem decidiu."
@@ -499,6 +539,19 @@ export const CAPITULOS: Capitulo[] = [
           "Em atestados o botão é “Ter Ciência”: a sua assinatura digital é aplicada no documento, que segue ao RH.",
           "Correção de ponto aprovada por você já é aplicada. Você não decide a própria solicitação.",
           "Use a etapa “Assinaturas de Quadro” para assinar as folhas da equipe e a aba Histórico para rever o que já decidiu."
+        ],
+        rota: "/ponto/aprovacoes"
+      },
+      {
+        id: "devolver-documento",
+        roteiro: "devolver-documento",
+        titulo: "Conferir e devolver um documento da equipe",
+        perfil: "gestor",
+        resumo: "Em “Envio de Documento - Home Office” você vê o arquivo antes do RH.",
+        passos: [
+          "Em Aprovações, abra o arquivo anexado e confira.",
+          "“Encaminhar ao RH” segue o pedido; “Rejeitar” encerra (motivo obrigatório).",
+          "“Devolver” pede uma correção: escreva o motivo (mínimo de 10 caracteres). O funcionário corrige e reenvia, e o pedido volta para você."
         ],
         rota: "/ponto/aprovacoes"
       },

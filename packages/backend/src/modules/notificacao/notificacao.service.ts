@@ -116,6 +116,15 @@ export const EVENTOS_NOTIFICACAO = [
     gatilho: "Automático — ao aprovar solicitação"
   },
   {
+    id: "SOLICITACAO_DEVOLVIDA",
+    titulo: "Solicitação Devolvida para Correção",
+    descricao:
+      "Notifica o funcionário quando o chefe devolve uma solicitação de envio de documento " +
+      "para correção, com o motivo informado.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — quando o chefe devolve a solicitação"
+  },
+  {
     id: "SOLICITACAO_RECUSADA",
     titulo: "Solicitação Recusada",
     descricao:
@@ -177,6 +186,23 @@ export const EVENTOS_NOTIFICACAO = [
       "(atestado assinado, folha de férias assinada etc.).",
     destinatario: "Funcionário",
     gatilho: "Automático — ao solicitar documento de retorno"
+  },
+  {
+    id: "FERIAS_DOCUMENTO_ASSINAR",
+    titulo: "Documento de Férias Pendente de Assinatura",
+    descricao:
+      "Lembra o funcionário de assinar o Aviso e o Recibo de Férias: uma vez por semana e, " +
+      "nos últimos 4 dias do prazo, todos os dias. Aviso: até o 1º dia de gozo; Recibo: até o fim do mês do término.",
+    destinatario: "Funcionário",
+    gatilho: "Automático — semanal e diário nos últimos 4 dias do prazo"
+  },
+  {
+    id: "FERIAS_DOCUMENTO_VENCIDO",
+    titulo: "Documento de Férias com Prazo Vencido",
+    descricao:
+      "Alerta o RH de Aviso ou Recibo de Férias que o funcionário não assinou até o prazo (repete a cada 7 dias).",
+    destinatario: "RH",
+    gatilho: "Automático — diariamente, para documentos vencidos"
   },
   {
     id: "FERIAS_RODADA_PENDENTE_RH",
@@ -389,6 +415,8 @@ export const EVENTOS_NOTIFICACAO = [
 /** Eventos que devem nascer (e permanecer default) com e-mail + sistema ativos. */
 export const EVENTOS_NOTIFICACAO_CRITICOS = new Set([
   "FERIAS_RH",
+  "FERIAS_DOCUMENTO_ASSINAR",
+  "FERIAS_DOCUMENTO_VENCIDO",
   "SELO_ICP_VENCENDO",
   "FERIAS_RODADA_PENDENTE_RH",
   "FERIAS_RODADA_ASSINAR",
@@ -1184,7 +1212,15 @@ export class NotificacaoService {
         where: {
           funcionarioId: func.id,
           tipo: "FERIAS",
-          status: { in: ["PENDENTE", "AGUARDANDO_RH", "APROVADA"] },
+          status: {
+            in: [
+              "PENDENTE",
+              "AGUARDANDO_RH",
+              "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+              "AGUARDANDO_GESTOR_RH",
+              "APROVADA"
+            ]
+          },
           dataInicio: { gte: inicioCiclo, lte: fimCiclo }
         }
       });

@@ -8,7 +8,7 @@ export interface ExameOcupacional {
   dataRealizacao: string;
   situacao: "AGUARDANDO_CONFERENCIA" | "CONFIRMADO" | "DEVOLVIDO";
   resultado: "APTO" | "APTO_COM_RESTRICAO" | "INAPTO" | null;
-  tipo: "ADMISSIONAL" | "PERIODICO" | "RETORNO_AO_TRABALHO";
+  tipo: "ADMISSIONAL" | "PERIODICO" | "RETORNO_AO_TRABALHO" | "MUDANCA_DE_RISCO";
   medico: string | null;
   clinica: string | null;
   proximoVencimento: string | null;
@@ -21,6 +21,9 @@ export interface ExameOcupacional {
   registradoPorNome: string | null;
   conferidoPorNome: string | null;
   conferidoEm: string | null;
+  /** Exclusão lógica (só o super administrador vê os excluídos). */
+  excluidoEm?: string | null;
+  excluidoPorNome?: string | null;
   createdAt: string;
 }
 
@@ -33,7 +36,8 @@ export const RESULTADO_LABEL: Record<string, string> = {
 export const TIPO_EXAME_LABEL: Record<string, string> = {
   ADMISSIONAL: "Admissional",
   PERIODICO: "Periódico",
-  RETORNO_AO_TRABALHO: "Retorno ao trabalho"
+  RETORNO_AO_TRABALHO: "Retorno ao trabalho",
+  MUDANCA_DE_RISCO: "Mudança de risco"
 };
 
 export const SITUACAO_LABEL: Record<SituacaoExame, { label: string; cor: string; bg: string }> = {

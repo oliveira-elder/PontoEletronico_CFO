@@ -142,11 +142,19 @@ import {
   validarPeriodosFerias,
   type CalendarioFerias
 } from "../../utils/ferias-regras";
-import { ordemArquivoRodada, rodadasDe, type RodadaFeriasMeta } from "../../utils/ferias-rodadas";
+import { prazoDocumento, prazoVencido } from "../../utils/ferias-documentos";
+import { validarDocumentoEnvio } from "../../utils/validar-documento-envio";
+import {
+  ordemArquivoRodada,
+  rodadasDe,
+  situacaoDaRodada,
+  type RodadaFeriasMeta
+} from "../../utils/ferias-rodadas";
 import {
   aplicarRegraHoraExtra,
   carregarContextoHoraExtra,
   rotulosModalidadePorDia,
+  localModalidadePorDia,
   contextoDoDia,
   diasCicloCompletoEmCasa,
   type AjusteHoraExtraDia
@@ -179,7 +187,8 @@ const TIPO_SOLICITACAO_LABEL: Record<string, string> = {
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
-  ENVIO_DOCUMENTO_RH: "Envio de documento ao RH"
+  ENVIO_DOCUMENTO_RH: "Envio de documento ao RH",
+  DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
 };
 
 const TIPO_PONTO_LABEL: Record<string, string> = {
@@ -366,6 +375,12 @@ interface DocumentoFeriasMeta {
   rotulo?: string;
   nome?: string | null;
   url: string;
+  /** Quando o RH enviou o documento (base dos lembretes semanais). */
+  enviadoEm?: string;
+  ultimoLembreteEm?: string;
+  ultimoAlertaRhEm?: string;
+  /** Prorrogação do prazo feita pelo RH (data civil). */
+  prazoProrrogadoAte?: string;
   urlAssinado?: string;
   assinatura?: Record<string, unknown>;
   rejeicao?: { nome: string; em: string; justificativa: string };
@@ -374,6 +389,15 @@ interface DocumentoFeriasMeta {
 @Injectable()
 export class PontoService implements OnModuleInit {
   private readonly logger = new Logger(PontoService.name);
+
+  /**
+   * Finalização das férias ao assinar o Aviso (aprova e cria os afastamentos). Registrada pelo AuditoriaService, dono
+   * da regra de aprovação — evita dependência circular entre os dois serviços.
+   */
+  private finalizadorFerias?: (solicitacaoId: string) => Promise<void>;
+  registrarFinalizadorFerias(fn: (solicitacaoId: string) => Promise<void>) {
+    this.finalizadorFerias = fn;
+  }
 
   onModuleInit() {
     this.migrarDocumentosEmbutidos().catch((e) =>
@@ -2290,6 +2314,8 @@ export class PontoService implements OnModuleInit {
       cicloCompletoEmCasa,
       /* Status "OK - Home Office" / "OK - Híbrido": só dias em que bateu em casa. */
       rotuloModalidadePorDia: await rotulosModalidadePorDia(this.prisma, func.id, inicio, fim),
+      /* Badge Home Office / Presencial por dia (só para quem está em home office ou híbrido). */
+      localModalidadePorDia: await localModalidadePorDia(this.prisma, func.id, inicio, fim),
       /* Presencial: dias que exigem o ciclo (e o tipo de intervalo), pela jornada e pela lei. */
       cicloCompletoPresencial: await exigenciasCicloPresencial(
         this.prisma,
@@ -3383,7 +3409,7 @@ export class PontoService implements OnModuleInit {
           );
         }
       }
-    } else if (body.tipo !== "ENVIO_DOCUMENTO_RH") {
+    } else if (body.tipo !== "ENVIO_DOCUMENTO_RH" && body.tipo !== "DOCUMENTO_VIA_CHEFE") {
       /* Envio de documento ao RH pode ocorrer várias vezes no mesmo dia.
          Estagiário pode ter várias solicitações de férias no mesmo ciclo (saldo residual),
          desde que as datas não se sobreponham. */
@@ -3397,7 +3423,7 @@ export class PontoService implements OnModuleInit {
       });
       const conflito = aprovadas.find((s) => {
         if (alteracaoDeId && s.id === alteracaoDeId) return false;
-        if (s.tipo === "ENVIO_DOCUMENTO_RH") return false;
+        if (s.tipo === "ENVIO_DOCUMENTO_RH" || s.tipo === "DOCUMENTO_VIA_CHEFE") return false;
         /* Hora extra só conflita com outra hora extra (correção aprovada no dia não impede). */
         if (body.tipo === "HORA_EXTRA" && s.tipo !== "HORA_EXTRA") return false;
         return intervalosDaSolicitacao(s).some(([ie, fe]) =>
@@ -3495,6 +3521,15 @@ export class PontoService implements OnModuleInit {
         metadados
       );
       if (aviso) metadados = { ...metadados, avisoInterjornada: aviso };
+    }
+
+    /* Adiantamento da 1ª parcela do 13º (Lei 4.749): só booleano; ausente = "não informado". */
+    if (body.tipo === "FERIAS" && body.metadados && "adiantamento13" in body.metadados) {
+      const v = body.metadados.adiantamento13;
+      const { adiantamento13: _descartado, ...resto } = body.metadados as Record<string, unknown>;
+      void _descartado;
+      body.metadados = v === true || v === false ? { ...resto, adiantamento13: v } : resto;
+      metadados = body.metadados;
     }
 
     if (body.tipo === "FERIAS" && func.categoria === "ESTAGIARIO") {
@@ -3656,7 +3691,7 @@ export class PontoService implements OnModuleInit {
       metadados = body.metadados;
     }
     if (body.tipo === "LICENCA") {
-      const prep = await this.prepararLicenca(func, body);
+      const prep = await this.prepararLicenca(func, body, !!opcoes?.origemRh);
       body.metadados = prep.metadados;
       body.dataReferencia = prep.dataReferencia;
       body.dataInicio = prep.dataInicio;
@@ -3668,6 +3703,36 @@ export class PontoService implements OnModuleInit {
       throw new BadRequestException(
         `${labelCategoriaSemIntervalo(func.categoria as string)} não faz hora extra: o que passar da jornada é apenas informativo e não vai ao banco de horas.`
       );
+    }
+
+    if (body.tipo === "DOCUMENTO_VIA_CHEFE") {
+      /* Exclusiva de quem está em home office (o RH, ao abrir em nome do funcionário, pode dispensar). */
+      if (!func.modoHomeOffice && !dispensar) {
+        throw new BadRequestException(
+          "O Envio de Documento - Home Office é exclusivo para quem trabalha em home office."
+        );
+      }
+      if (!func.modoHomeOffice) dispensasUsadas.push("Funcionário fora do home office");
+      const solCfg = await this.prisma.configuracaoSolicitacoes.findUnique({
+        where: { id: "singleton" },
+        select: { tipoAtivoDocumentoViaChefe: true }
+      });
+      if (solCfg?.tipoAtivoDocumentoViaChefe === false) {
+        if (!dispensar) {
+          throw new BadRequestException(
+            "O envio de documento - home office está desativado. Entre em contato com o RH."
+          );
+        }
+        dispensasUsadas.push("Envio de documento - home office desativado em Configurações");
+      }
+      if (!body.descricao?.trim() || body.descricao.trim().length < 3) {
+        throw new BadRequestException("Informe uma descrição com pelo menos 3 caracteres.");
+      }
+      const erroArquivo = validarDocumentoEnvio(
+        metadados?.documentoBase64,
+        metadados?.documentoMime
+      );
+      if (erroArquivo) throw new BadRequestException(erroArquivo);
     }
 
     if (body.tipo === "ENVIO_DOCUMENTO_RH") {
@@ -3696,7 +3761,8 @@ export class PontoService implements OnModuleInit {
       (body.tipo === "ATESTADO" ||
         body.tipo === "ABONO" ||
         body.tipo === "LICENCA" ||
-        body.tipo === "ENVIO_DOCUMENTO_RH") &&
+        body.tipo === "ENVIO_DOCUMENTO_RH" ||
+        body.tipo === "DOCUMENTO_VIA_CHEFE") &&
       metadados &&
       typeof metadados.documentoBase64 === "string"
     ) {
@@ -3713,6 +3779,7 @@ export class PontoService implements OnModuleInit {
         ...resto,
         documentoUrl: url,
         ...((body.tipo === "ENVIO_DOCUMENTO_RH" ||
+          body.tipo === "DOCUMENTO_VIA_CHEFE" ||
           body.tipo === "ABONO" ||
           body.tipo === "LICENCA") &&
         typeof resto.nomeArquivo === "string"
@@ -3721,7 +3788,10 @@ export class PontoService implements OnModuleInit {
       };
     }
 
-    const vaiDiretoAoRh = body.tipo === "ENVIO_DOCUMENTO_RH";
+    /* "Via chefe": passa pelo chefe imediato; sem chefe (ou o próprio funcionário é o chefe), segue direto ao RH. */
+    const viaChefe = body.tipo === "DOCUMENTO_VIA_CHEFE";
+    const vaiDiretoAoRh =
+      body.tipo === "ENVIO_DOCUMENTO_RH" || (viaChefe && (await this.semChefeImediato(func.id)));
 
     /* Origem: pedido aberto pelo RH em nome do funcionário (mesma chave que as férias usam). */
     if (opcoes?.origemRh) {
@@ -3748,7 +3818,9 @@ export class PontoService implements OnModuleInit {
         dataFim: body.dataFim ? new Date(body.dataFim) : null,
         descricao: body.descricao,
         apenasInformativo:
-          (funcionarioSemRegistroPonto(func) && !usaCreditoBanco && !usaCotaAbono) || vaiDiretoAoRh,
+          (funcionarioSemRegistroPonto(func) && !usaCreditoBanco && !usaCotaAbono) ||
+          vaiDiretoAoRh ||
+          viaChefe,
         status: vaiDiretoAoRh ? "AGUARDANDO_RH" : "PENDENTE",
         metadados: metadados ? JSON.parse(JSON.stringify(metadados)) : undefined
       },
@@ -4053,7 +4125,11 @@ export class PontoService implements OnModuleInit {
   /** Tipos de licença que o funcionário pode pedir, com o saldo usado na janela de cada um. */
   async getTiposLicenca(keycloakSub: string) {
     const func = await this.getFuncionario(keycloakSub);
-    const tipos = await listarTiposLicenca(this.prisma, true);
+    /* Tipos "somente RH" só aparecem quando o RH age em nome do funcionário (Auditoria). */
+    const comoRh = keycloakSub.startsWith("@func:");
+    const tipos = (await listarTiposLicenca(this.prisma, true)).filter(
+      (t) => comoRh || !t.somenteRh
+    );
     const sols = await this.prisma.solicitacao.findMany({
       where: {
         funcionarioId: func.id,
@@ -4079,7 +4155,8 @@ export class PontoService implements OnModuleInit {
       dataInicio?: string;
       dataFim?: string;
       metadados?: Record<string, unknown>;
-    }
+    },
+    comoRh = false
   ) {
     const meta = { ...(body.metadados ?? {}) };
     const tipoId = typeof meta.tipoLicencaId === "string" ? meta.tipoLicencaId : null;
@@ -4089,6 +4166,11 @@ export class PontoService implements OnModuleInit {
     const tipos = await listarTiposLicenca(this.prisma, false);
     const tipo: TipoLicencaRegra | undefined = tipos.find((t) => t.id === tipoId);
     if (!tipo) throw new BadRequestException("Tipo de licença não encontrado.");
+    if (tipo.somenteRh && !comoRh) {
+      throw new BadRequestException(
+        `"${tipo.nome}" só pode ser registrada pelo RH. Procure o RH para solicitar.`
+      );
+    }
 
     /* Períodos: lista informada (não consecutivos/parcial) ou o intervalo único da solicitação. */
     const periodosBrutos = Array.isArray(meta.periodos)
@@ -4171,6 +4253,15 @@ export class PontoService implements OnModuleInit {
         }
       }
     };
+  }
+
+  /** Sem chefe que possa analisar: não há quem seja notificado, ou o chefe é o próprio funcionário. */
+  private async semChefeImediato(funcionarioId: string): Promise<boolean> {
+    const [chefe, proprio] = await Promise.all([
+      this.notificacaoService.getGestorDoFuncionario(funcionarioId),
+      this.notificacaoService.getFuncionarioDestinatario(funcionarioId)
+    ]);
+    return !chefe || (!!proprio && chefe.externalId === proprio.externalId);
   }
 
   private async notificarEnvioDocumentoRh(solicitacao: {
@@ -4336,7 +4427,13 @@ export class PontoService implements OnModuleInit {
     if (solicitacao.tipo !== "FERIAS") {
       throw new BadRequestException("Esta solicitação não é de férias.");
     }
-    if (solicitacao.status !== "AGUARDANDO_DOCUMENTO_FUNCIONARIO") {
+    /* Aviso e Recibo são independentes: valem desde que o RH enviou o documento (após o aceite), mesmo com as
+       férias já aprovadas (Recibo em paralelo). */
+    if (
+      !["AGUARDANDO_DOCUMENTO_FUNCIONARIO", "AGUARDANDO_RH", "APROVADA"].includes(
+        solicitacao.status
+      )
+    ) {
       throw new BadRequestException(
         "Estes documentos não estão aguardando a sua assinatura (a etapa mudou ou já foram tratados)."
       );
@@ -4350,6 +4447,32 @@ export class PontoService implements OnModuleInit {
       select: { name: true }
     });
     return { func, solicitacao, meta, docs, nome: user?.name ?? "Funcionário" };
+  }
+
+  /** Assinar só até o prazo: Aviso = 1º dia do gozo; Recibo = fim do mês do término do gozo. */
+  private exigirDentroDoPrazoDocumentoFerias(
+    meta: Record<string, unknown>,
+    doc: DocumentoFeriasMeta
+  ) {
+    const periodos = (
+      Array.isArray(meta.periodos)
+        ? (meta.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+        : []
+    )
+      .map((p) => ({
+        inicio: dataCivilPeriodo(String(p.dataInicio ?? "")),
+        fim: dataCivilPeriodo(String(p.dataFim ?? p.dataInicio ?? ""))
+      }))
+      .filter((p) => p.inicio && p.fim)
+      .sort((a, b) => (a.inicio < b.inicio ? -1 : 1));
+    const prazo = periodos[0]
+      ? prazoDocumento(doc.tipo, periodos[0], doc.prazoProrrogadoAte)
+      : null;
+    if (prazoVencido(prazo, hojeBrasiliaISO())) {
+      throw new BadRequestException(
+        `O prazo para assinar ${doc.rotulo ?? "este documento"} terminou. Fale com o RH.`
+      );
+    }
   }
 
   private documentoFeriasPendente(docs: DocumentoFeriasMeta[], indice: number) {
@@ -4380,8 +4503,12 @@ export class PontoService implements OnModuleInit {
         "Confirme que leu e concorda com o documento antes de assinar."
       );
     }
-    const { meta, docs, nome } = await this.feriasAguardandoAssinatura(keycloakSub, id);
+    const { solicitacao, meta, docs, nome } = await this.feriasAguardandoAssinatura(
+      keycloakSub,
+      id
+    );
     const doc = this.documentoFeriasPendente(docs, indice);
+    this.exigirDentroDoPrazoDocumentoFerias(meta, doc);
     const assinadoEm = new Date();
     const urlAssinado = await this.documentoService.assinarDocumentoFerias({
       documentoUrl: doc.url,
@@ -4410,7 +4537,11 @@ export class PontoService implements OnModuleInit {
     });
     const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
     const todosAssinados = novos.every((d) => !!d.urlAssinado);
-    const aviso = novos.find((d) => d.tipo === "AVISO");
+    const assinouAviso = doc.tipo === "AVISO";
+    /* Assinar o Aviso aprova as férias (nos dois processos). O Recibo corre em paralelo e não trava nada. */
+    const finalizar =
+      assinouAviso &&
+      ["AGUARDANDO_DOCUMENTO_FUNCIONARIO", "AGUARDANDO_RH"].includes(solicitacao.status);
 
     const atualizada = await this.prisma.solicitacao.update({
       where: { id },
@@ -4418,30 +4549,34 @@ export class PontoService implements OnModuleInit {
         metadados: {
           ...meta,
           documentosFerias: novos,
-          /* Concluída: todos os documentos assinados (a aprovação do RH depende disso). */
+          /* Todos os documentos enviados já assinados (mantido por compatibilidade com o fluxo antigo). */
           ...(todosAssinados
             ? { assinaturaFerias: { ...assinatura, documentos: novos.length } }
             : {})
         } as unknown as Prisma.InputJsonValue,
-        ...(todosAssinados
-          ? {
-              status: "AGUARDANDO_RH" as const,
-              documentoRetornoUrl: aviso?.urlAssinado ?? urlAssinado,
-              documentoRetornoEm: assinadoEm
-            }
+        ...(assinouAviso
+          ? { documentoRetornoUrl: urlAssinado, documentoRetornoEm: assinadoEm }
           : {})
       }
     });
 
-    if (todosAssinados) {
-      this.avisarRhFerias(
-        `Documentos de férias assinados — ${nome}`,
-        `${nome} assinou pelo sistema todos os documentos de férias ` +
-          `(${novos.map((d) => d.rotulo ?? d.tipo).join(", ")}).\n\n` +
-          "A solicitação aguarda a aprovação do RH."
-      );
+    if (finalizar) {
+      if (!this.finalizadorFerias) {
+        throw new BadRequestException("Não foi possível aprovar as férias agora. Tente novamente.");
+      }
+      await this.finalizadorFerias(id);
     }
-    return atualizada;
+    this.avisarRhFerias(
+      assinouAviso
+        ? `Aviso de Férias assinado — ${nome}`
+        : `${doc.rotulo ?? "Documento de férias"} assinado — ${nome}`,
+      assinouAviso
+        ? `${nome} assinou o Aviso de Férias.${finalizar ? " As férias foram aprovadas." : ""}`
+        : `${nome} assinou pelo sistema ${doc.rotulo ?? "o documento de férias"}.`
+    );
+    return finalizar
+      ? await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } })
+      : atualizada;
   }
 
   /**
@@ -4460,15 +4595,21 @@ export class PontoService implements OnModuleInit {
         "Informe a justificativa da rejeição (mínimo de 10 caracteres)."
       );
     }
-    const { meta, docs, nome } = await this.feriasAguardandoAssinatura(keycloakSub, id);
+    const { solicitacao, meta, docs, nome } = await this.feriasAguardandoAssinatura(
+      keycloakSub,
+      id
+    );
     const doc = this.documentoFeriasPendente(docs, indice);
     const rejeicao = { nome, em: new Date().toISOString(), justificativa };
     const novos = docs.map((d, i) => (i === indice ? { ...d, rejeicao } : d));
+    /* Rejeitar o Aviso devolve a solicitação ao RH; o Recibo não mexe no andamento das férias. */
+    const voltaAoRh =
+      doc.tipo === "AVISO" && solicitacao.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO";
 
     const atualizada = await this.prisma.solicitacao.update({
       where: { id },
       data: {
-        status: "AGUARDANDO_RH",
+        ...(voltaAoRh ? { status: "AGUARDANDO_RH" as const } : {}),
         metadados: {
           ...meta,
           documentosFerias: novos,
@@ -4481,7 +4622,7 @@ export class PontoService implements OnModuleInit {
       `Documento de férias rejeitado — ${nome}`,
       `${nome} rejeitou o documento "${doc.rotulo ?? doc.tipo}".\n\n` +
         `Justificativa: ${justificativa}\n\n` +
-        "Corrija e reenvie os documentos de férias em Aprovações (etapa RH)."
+        "Corrija e reenvie o documento em Auditoria → Funcionário → Férias (ou em Aprovações, etapa RH)."
     );
     return atualizada;
   }
@@ -4498,7 +4639,8 @@ export class PontoService implements OnModuleInit {
     }
     const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
     const rodada = rodadasDe(meta)[String(ordem)];
-    if (!rodada || rodada.situacao !== "AGUARDANDO_ASSINATURA") {
+    /* Aviso e Recibo da rodada são independentes: vale enquanto a rodada não estiver concluída e houver documento enviado. */
+    if (!rodada || rodada.situacao === "CONCLUIDA" || !rodada.documentos?.length) {
       throw new BadRequestException(
         "Estes documentos não estão aguardando a sua assinatura (a etapa mudou ou já foram tratados)."
       );
@@ -4558,13 +4700,13 @@ export class PontoService implements OnModuleInit {
       }
     });
     const novos = docs.map((d, i) => (i === indice ? { ...d, urlAssinado, assinatura } : d));
-    const concluida = novos.every((d) => !!d.urlAssinado);
+    const novaSituacao = situacaoDaRodada(novos);
+    const concluida = novaSituacao === "CONCLUIDA";
     const novaRodada: RodadaFeriasMeta = {
       ...rodada,
       documentos: novos,
-      ...(concluida
-        ? { situacao: "CONCLUIDA" as const, concluidaEm: assinadoEm.toISOString() }
-        : {})
+      situacao: novaSituacao,
+      ...(concluida ? { concluidaEm: assinadoEm.toISOString() } : {})
     };
     const atualizada = await this.prisma.solicitacao.update({
       where: { id },
@@ -4616,7 +4758,7 @@ export class PontoService implements OnModuleInit {
           ...meta,
           rodadasFerias: {
             ...rodadasDe(meta),
-            [String(ordem)]: { ...rodada, documentos: novos, situacao: "REJEITADA" }
+            [String(ordem)]: { ...rodada, documentos: novos, situacao: situacaoDaRodada(novos) }
           }
         } as unknown as Prisma.InputJsonValue
       }
@@ -4664,6 +4806,12 @@ export class PontoService implements OnModuleInit {
       );
     }
 
+    if (solicitacao.tipo === "DOCUMENTO_VIA_CHEFE") {
+      throw new BadRequestException(
+        "O documento enviado via chefe só pode ser trocado quando o chefe devolver para correção."
+      );
+    }
+
     const metadados = (solicitacao.metadados as Record<string, unknown> | null) ?? {};
     if (typeof metadados.documentoUrl !== "string") {
       throw new BadRequestException("Esta solicitação não possui documento anexado.");
@@ -4684,6 +4832,116 @@ export class PontoService implements OnModuleInit {
         metadados: { ...metadados, documentoUrl: url } as unknown as Prisma.InputJsonValue
       }
     });
+  }
+
+  /**
+   * Funcionário cancela a própria solicitação enquanto o chefe ainda não a decidiu (`PENDENTE`) ou depois que o
+   * chefe a devolveu para correção (`DEVOLVIDA`).
+   * Nada foi aplicado até aí (os efeitos só ocorrem na aprovação do RH). Pedidos abertos pelo RH em nome do
+   * funcionário e horas extras geradas automaticamente não podem ser canceladas por ele.
+   */
+  async cancelarSolicitacaoPeloFuncionario(keycloakSub: string, id: string) {
+    const func = await this.getFuncionario(keycloakSub);
+    const sol = await this.prisma.solicitacao.findUnique({ where: { id } });
+    if (!sol) throw new NotFoundException("Solicitação não encontrada.");
+    if (sol.funcionarioId !== func.id) {
+      throw new ForbiddenException("Esta solicitação não pertence a você.");
+    }
+    if (sol.status !== "PENDENTE" && sol.status !== "DEVOLVIDA") {
+      throw new BadRequestException(
+        "Só é possível cancelar enquanto a solicitação aguarda o seu chefe. Depois disso, fale com o RH."
+      );
+    }
+    const meta = (sol.metadados as Record<string, unknown> | null) ?? {};
+    if (meta.origem === "RH" || meta.criadaPorRh) {
+      throw new BadRequestException(
+        "Esta solicitação foi aberta pelo RH em seu nome; peça ao RH para cancelá-la."
+      );
+    }
+    if (meta.automatica === true) {
+      throw new BadRequestException(
+        "Solicitações geradas automaticamente não podem ser canceladas."
+      );
+    }
+    return this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        status: "CANCELADA",
+        metadados: {
+          ...meta,
+          canceladaPeloFuncionario: { em: new Date().toISOString() }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+  }
+
+  /** Funcionário corrige e reenvia um documento devolvido pelo chefe (só "Envio de Documento - Home Office"). */
+  async reenviarDocumentoViaChefe(
+    keycloakSub: string,
+    id: string,
+    body: {
+      descricao?: string;
+      documentoBase64?: string;
+      documentoMime?: string;
+      nomeArquivo?: string;
+    }
+  ) {
+    const func = await this.getFuncionario(keycloakSub);
+    const sol = await this.prisma.solicitacao.findUnique({
+      where: { id },
+      include: { funcionario: { include: { user: { select: { name: true } } } } }
+    });
+    if (!sol || sol.tipo !== "DOCUMENTO_VIA_CHEFE") {
+      throw new NotFoundException("Solicitação não encontrada.");
+    }
+    if (sol.funcionarioId !== func.id) {
+      throw new ForbiddenException("Esta solicitação não pertence a você.");
+    }
+    if (sol.status !== "DEVOLVIDA") {
+      throw new BadRequestException(
+        "Só é possível reenviar uma solicitação devolvida para correção."
+      );
+    }
+    const descricao = (body.descricao ?? sol.descricao ?? "").trim();
+    if (descricao.length < 3) {
+      throw new BadRequestException("Informe uma descrição com pelo menos 3 caracteres.");
+    }
+    const meta = { ...((sol.metadados as Record<string, unknown> | null) ?? {}) };
+    if (body.documentoBase64) {
+      const erro = validarDocumentoEnvio(body.documentoBase64, body.documentoMime);
+      if (erro) throw new BadRequestException(erro);
+      if (typeof meta.documentoUrl === "string") {
+        await this.documentoService.excluirDocumento(meta.documentoUrl);
+      }
+      meta.documentoUrl = await this.documentoService.salvarDocumento({
+        funcionarioId: func.id,
+        solicitacaoId: `${func.id}-${Date.now()}`,
+        arquivoBase64: body.documentoBase64,
+        mimeType: body.documentoMime
+      });
+      if (body.nomeArquivo) meta.nomeArquivo = body.nomeArquivo;
+    }
+    const reenvios = Array.isArray(meta.reenvios) ? (meta.reenvios as unknown[]) : [];
+    meta.reenvios = [
+      ...reenvios,
+      { em: new Date().toISOString(), trocouArquivo: !!body.documentoBase64 }
+    ];
+    const semChefe = await this.semChefeImediato(func.id);
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        descricao,
+        status: semChefe ? "AGUARDANDO_RH" : "PENDENTE",
+        gestorObservacao: null,
+        metadados: JSON.parse(JSON.stringify(meta)) as Prisma.InputJsonValue
+      },
+      include: { funcionario: { include: { user: { select: { name: true } } } } }
+    });
+    const notificar = semChefe
+      ? this.notificarEnvioDocumentoRh(atualizada)
+      : this.notificarNovaSolicitacaoGestor(atualizada);
+    notificar.catch((e) => this.logger.error(`Falha ao notificar reenvio de documento: ${e}`));
+    return atualizada;
   }
 
   /* ─── Saldo de Férias ─── */
@@ -4757,7 +5015,8 @@ export class PontoService implements OnModuleInit {
     const STATUS_EM_ANALISE = [
       "PENDENTE",
       "AGUARDANDO_RH",
-      "AGUARDANDO_DOCUMENTO_FUNCIONARIO"
+      "AGUARDANDO_DOCUMENTO_FUNCIONARIO",
+      "AGUARDANDO_GESTOR_RH"
     ] as const;
 
     // Aprovadas + em análise (para bloquear nova 1ª solicitação do mesmo ciclo)

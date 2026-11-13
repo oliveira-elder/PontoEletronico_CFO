@@ -27,6 +27,8 @@ export interface TipoLicencaRegra {
   permiteParcial: boolean;
   exigeDocumento: boolean;
   orientacao: string | null;
+  /** Só o RH registra (Auditoria → funcionário); some das Solicitações do funcionário. */
+  somenteRh: boolean;
   efeito: EfeitoLicenca;
   reducaoMaxPct: number | null;
   codigoSistema: string | null;
@@ -54,6 +56,7 @@ const base = (
   permiteParcial: false,
   exigeDocumento: false,
   orientacao: null,
+  somenteRh: false,
   efeito: "AFASTAMENTO",
   reducaoMaxPct: null,
   codigoSistema: null,
@@ -63,6 +66,7 @@ const base = (
 /** Padrões do RH do conselho (todos editáveis; nenhum valor é mínimo legal imposto pelo sistema). */
 export const TIPOS_LICENCA_PADRAO: Array<Omit<TipoLicencaRegra, "id" | "ordem">> = [
   base("Afastamento INSS", {
+    somenteRh: true,
     modoDuracao: "LIVRE",
     exigeDocumento: true,
     orientacao: "Anexe o comprovante do afastamento (INSS)."
@@ -116,7 +120,8 @@ export const TIPOS_LICENCA_PADRAO: Array<Omit<TipoLicencaRegra, "id" | "ordem">>
     exigeDocumento: true,
     orientacao: "Anexe a convocação ou a declaração de comparecimento."
   }),
-  base("Serviço Militar", {
+  base("Serviço Militar Obrigatório", {
+    somenteRh: true,
     modoDuracao: "LIVRE",
     exigeDocumento: true,
     orientacao: "Anexe a convocação ou o comprovante do período."
@@ -149,6 +154,18 @@ export const TIPOS_LICENCA_PADRAO: Array<Omit<TipoLicencaRegra, "id" | "ordem">>
     exigeDocumento: true,
     orientacao: "Anexe o comprovante de cada consulta ou exame."
   }),
+  base("Licença não Remunerada", {
+    somenteRh: true,
+    modoDuracao: "LIVRE",
+    exigeDocumento: true,
+    orientacao: "Anexe o documento que autoriza a licença."
+  }),
+  base("Outros", {
+    somenteRh: true,
+    modoDuracao: "LIVRE",
+    exigeDocumento: true,
+    orientacao: "Descreva o motivo e anexe o documento comprobatório."
+  }),
   base("Redução de jornada para avaliações – Estagiário", {
     categorias: ["ESTAGIARIO"],
     efeito: "REDUCAO_JORNADA",
@@ -159,6 +176,34 @@ export const TIPOS_LICENCA_PADRAO: Array<Omit<TipoLicencaRegra, "id" | "ordem">>
     orientacao: "Anexe o calendário de avaliações da instituição de ensino."
   })
 ];
+
+/**
+ * Tipos que só o RH registra (Auditoria → funcionário), mesmo que a marcação "Somente RH" não tenha sido
+ * gravada no cadastro: Afastamento INSS, Serviço Militar, Licença não Remunerada e Outros.
+ */
+export function nomeDeTipoSomenteRh(nome: string): boolean {
+  const n = semAcentoMin(nome);
+  return TIPOS_SOMENTE_RH.some((t) => t.reconhece(n));
+}
+
+/** Cada tipo só-RH com o reconhecimento pelo nome (o cadastro pode usar variações do nome). */
+export const TIPOS_SOMENTE_RH: Array<{
+  padrao: string;
+  reconhece: (nomeNormalizado: string) => boolean;
+}> = [
+  { padrao: "Afastamento INSS", reconhece: (n) => /\binss\b/.test(n) },
+  { padrao: "Serviço Militar Obrigatório", reconhece: (n) => /servico militar/.test(n) },
+  { padrao: "Licença não Remunerada", reconhece: (n) => /nao remunerada/.test(n) },
+  { padrao: "Outros", reconhece: (n) => n === "outros" || n === "outro" }
+];
+
+export function semAcentoMin(nome: string): string {
+  return String(nome ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
 
 /* ─── Validação dos campos numéricos (sem negativo e sem zero à esquerda) ─── */
 
@@ -260,6 +305,7 @@ export function normalizarTipoLicenca(
     permiteParcial: !!entrada.permiteParcial,
     exigeDocumento: !!entrada.exigeDocumento,
     orientacao: String(entrada.orientacao ?? "").trim() || null,
+    somenteRh: !!entrada.somenteRh,
     efeito,
     reducaoMaxPct,
     ...(entrada.ordem !== undefined ? { ordem: Number(entrada.ordem) } : {})

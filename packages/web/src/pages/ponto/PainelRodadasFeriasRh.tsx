@@ -1,10 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api } from "../../hooks/useApi";
-import {
-  ModalEnviarFolhaFerias,
-  type DocumentoFeriasEnvio,
-  type SolicitacaoResumo
-} from "./solicitacaoUi";
+import { ProrrogarPrazoFeriasModal } from "../../components/ferias/ProrrogarPrazoFeriasModal";
+import { prazoDocumento, textoPrazo } from "../../utils/feriasDocumentos";
+import { hojeBrasiliaISO } from "../../utils/horario-brasilia";
+import { EnviarDocumentoFeriasModal } from "../../components/ferias/EnviarDocumentoFeriasModal";
 
 interface RodadaPendente {
   solicitacaoId: string;
@@ -17,6 +16,14 @@ interface RodadaPendente {
   diasParaInicio: number;
   noPrazo: boolean;
   situacao: "PENDENTE_RH" | "AGUARDANDO_ASSINATURA" | "REJEITADA";
+  documentos: Array<{
+    tipo: string;
+    rotulo?: string;
+    url: string;
+    urlAssinado?: string;
+    rejeicao?: { nome: string; em: string; justificativa: string };
+    prazoProrrogadoAte?: string;
+  }>;
 }
 
 const fmt = (iso: string) => iso.split("-").reverse().join("/");
@@ -33,9 +40,14 @@ const SITUACAO: Record<RodadaPendente["situacao"], { texto: string; cor: string 
  */
 export function PainelRodadasFeriasRh({ onMensagem }: { onMensagem: (msg: string) => void }) {
   const [linhas, setLinhas] = useState<RodadaPendente[]>([]);
-  const [modal, setModal] = useState<RodadaPendente | null>(null);
-  const [enviando, setEnviando] = useState(false);
-  const [erro, setErro] = useState("");
+  const [prorrogar, setProrrogar] = useState<{
+    linha: RodadaPendente;
+    tipo: "AVISO" | "RECIBO";
+    prazoAtual: string;
+  } | null>(null);
+  const [envio, setEnvio] = useState<{ linha: RodadaPendente; tipo: "AVISO" | "RECIBO" } | null>(
+    null
+  );
 
   const carregar = useCallback(async () => {
     try {
@@ -50,53 +62,7 @@ export function PainelRodadasFeriasRh({ onMensagem }: { onMensagem: (msg: string
 
   if (!linhas.length) return null;
 
-  async function enviar(documentos: DocumentoFeriasEnvio[], observacao: string) {
-    if (!modal) return;
-    setEnviando(true);
-    setErro("");
-    try {
-      await api.patch(
-        `/auditoria/rh/solicitacoes/${modal.solicitacaoId}/ferias/rodadas/${modal.ordem}/documentos`,
-        { documentos, observacao }
-      );
-      onMensagem(
-        `Documentos do ${modal.ordem}º período enviados a ${modal.funcionarioNome} para assinatura.`
-      );
-      setModal(null);
-      await carregar();
-    } catch (e) {
-      setErro((e as Error).message || "Não foi possível enviar os documentos.");
-    } finally {
-      setEnviando(false);
-    }
-  }
-
-  const resumo: SolicitacaoResumo | null = modal
-    ? {
-        id: modal.solicitacaoId,
-        tipo: "FERIAS",
-        dataReferencia: modal.inicio,
-        descricao: "",
-        createdAt: modal.inicio,
-        metadados: {
-          periodos: [
-            {
-              dataInicio: `${modal.inicio}T00:00:00.000Z`,
-              dataFim: `${modal.fim}T23:59:59.000Z`,
-              dias:
-                Math.round(
-                  (Date.parse(`${modal.fim}T00:00:00Z`) - Date.parse(`${modal.inicio}T00:00:00Z`)) /
-                    86400000
-                ) + 1
-            }
-          ]
-        },
-        funcionario: {
-          matricula: modal.matricula,
-          user: { name: modal.funcionarioNome }
-        }
-      }
-    : null;
+  const docDe = (l: RodadaPendente, tipo: string) => l.documentos.find((d) => d.tipo === tipo);
 
   return (
     <div
@@ -112,8 +78,8 @@ export function PainelRodadasFeriasRh({ onMensagem }: { onMensagem: (msg: string
         🌴 Rodadas de férias — Aviso e Recibo do 2º/3º período ({linhas.length})
       </p>
       <p style={{ margin: "2px 0 10px", fontSize: 12, color: "var(--ink-500)" }}>
-        Férias divididas: cada período futuro precisa de novo Aviso e Recibo e de nova assinatura do
-        funcionário.
+        Férias divididas: cada período futuro tem Aviso (assinar até o 1º dia do período) e Recibo
+        (até o fim do mês do término), enviados separadamente.
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {linhas.map((l) => (
@@ -142,28 +108,89 @@ export function PainelRodadasFeriasRh({ onMensagem }: { onMensagem: (msg: string
                 {SITUACAO[l.situacao].texto}
                 {l.noPrazo && l.situacao === "PENDENTE_RH" ? " · dentro do prazo de envio" : ""}
               </div>
+              {(["AVISO", "RECIBO"] as const).map((t) => {
+                const d = docDe(l, t);
+                const prazo = prazoDocumento(t, l, d?.prazoProrrogadoAte);
+                const pz = prazo ? textoPrazo(prazo, hojeBrasiliaISO()) : null;
+                return (
+                  <div key={t} style={{ fontSize: 11.5, color: "var(--ink-600)" }}>
+                    {t === "AVISO" ? "Aviso" : "Recibo"}:{" "}
+                    {!d
+                      ? "ainda não enviado"
+                      : d.urlAssinado
+                        ? "assinado"
+                        : d.rejeicao
+                          ? `rejeitado — “${d.rejeicao.justificativa}”`
+                          : "aguardando assinatura"}
+                    {pz && !d?.urlAssinado && (
+                      <span style={{ color: pz.vencido ? "var(--red)" : undefined }}>
+                        {" "}
+                        · {pz.texto}
+                      </span>
+                    )}
+                    {d && prazo && !d.urlAssinado && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ marginLeft: 8 }}
+                        onClick={() => setProrrogar({ linha: l, tipo: t, prazoAtual: prazo })}
+                      >
+                        ⏱ Prorrogar prazo
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => {
-                setErro("");
-                setModal(l);
-              }}
-            >
-              {l.situacao === "PENDENTE_RH" ? "Enviar Aviso e Recibo" : "Reenviar documentos"}
-            </button>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {(["AVISO", "RECIBO"] as const).map((t) => {
+                const d = docDe(l, t);
+                const assinado = !!d?.urlAssinado;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={assinado}
+                    title={assinado ? "Já assinado" : undefined}
+                    onClick={() => setEnvio({ linha: l, tipo: t })}
+                  >
+                    {d ? "Reenviar" : "Enviar"} {t === "AVISO" ? "Aviso" : "Recibo"}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ))}
       </div>
-      {modal && resumo && (
-        <ModalEnviarFolhaFerias
-          solicitacao={resumo}
-          titulo={`Documentos do ${modal.ordem}º período de férias`}
-          onConfirm={enviar}
-          onClose={() => setModal(null)}
-          loading={enviando}
-          erro={erro}
+      {prorrogar && (
+        <ProrrogarPrazoFeriasModal
+          rotulo={`${prorrogar.tipo === "AVISO" ? "Aviso" : "Recibo"} do ${prorrogar.linha.ordem}º período`}
+          url={`/auditoria/rh/solicitacoes/${prorrogar.linha.solicitacaoId}/ferias/documentos/${prorrogar.tipo}/prazo`}
+          ordem={prorrogar.linha.ordem}
+          prazoAtual={prorrogar.prazoAtual}
+          onClose={() => setProrrogar(null)}
+          onSalvo={() => {
+            onMensagem(
+              `Prazo do ${prorrogar.tipo === "AVISO" ? "Aviso" : "Recibo"} do ${prorrogar.linha.ordem}º período prorrogado.`
+            );
+            setProrrogar(null);
+            void carregar();
+          }}
+        />
+      )}
+      {envio && (
+        <EnviarDocumentoFeriasModal
+          tipo={envio.tipo}
+          url={`/auditoria/rh/solicitacoes/${envio.linha.solicitacaoId}/ferias/rodadas/${envio.linha.ordem}/documentos/${envio.tipo}`}
+          onClose={() => setEnvio(null)}
+          onEnviado={() => {
+            onMensagem(
+              `${envio.tipo === "AVISO" ? "Aviso" : "Recibo"} do ${envio.linha.ordem}º período enviado a ${envio.linha.funcionarioNome} para assinatura.`
+            );
+            setEnvio(null);
+            void carregar();
+          }}
         />
       )}
     </div>

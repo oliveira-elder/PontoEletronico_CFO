@@ -2,19 +2,18 @@ import { CID_ORIENTACAO, normalizarCid } from "../../utils/cid";
 import { ModalArquivosFiscais } from "../../components/arquivos-fiscais/ModalArquivosFiscais";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { SaudeOcupacionalPage } from "./SaudeOcupacionalPage";
+import { BadgeLocalDia } from "../../components/ponto/BadgeLocalDia";
+import { FeriasControlePage } from "./FeriasControlePage";
 import { FolhasAssinadasLista } from "../../components/assinatura/FolhasAssinadasLista";
 import { VerificadorDocumento } from "../VerificarDocumentoPage";
 import { nomeArquivoRelatorioMes } from "../../utils/nomeArquivo";
 import { categoriaSemIntervaloAlmoco } from "../../utils/categoriaPonto";
-import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../hooks/useApi";
 import {
   BarChart2Icon,
-  UsersIcon,
   ClockIcon,
   InboxIcon,
-  CalendarIcon,
   DownloadIcon,
   SearchIcon,
   RefreshCwIcon,
@@ -23,9 +22,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ChevronDownIcon,
-  TrendingUpIcon,
   CheckCircleIcon,
-  ActivityIcon,
   Edit2Icon,
   FileTextIcon,
   DatabaseIcon,
@@ -63,6 +60,7 @@ import {
 import {
   FeriasDetalheBlock,
   LinksDocumentosFerias,
+  BlocoDocumentosFeriasRh,
   AbonoDetalheBlock,
   AvisoInterjornadaBlock,
   LinkDocumentoAnexado,
@@ -233,6 +231,8 @@ interface Registro {
 
 interface Solicitacao extends SolicitacaoResumo {
   status: string;
+  /** Afastamento(s) que a solicitação gerou (estado final do pedido). */
+  afastamentos?: AfastamentoGerado[];
   // Legado
   observacaoGestor: string | null;
   resolvidoPor: string | null;
@@ -253,8 +253,20 @@ interface Solicitacao extends SolicitacaoResumo {
   };
 }
 
+/** Afastamento gerado por uma solicitação aprovada (o estado final do pedido). */
+interface AfastamentoGerado {
+  id: string;
+  tipo: string;
+  rotulo?: string | null;
+  dataInicio: string;
+  dataFim: string;
+  horarioInicio?: string | null;
+  horarioFim?: string | null;
+}
+
 interface Afastamento {
   id: string;
+  solicitacaoId?: string | null;
   tipo: string;
   rotulo?: string | null;
   dataInicio: string;
@@ -638,11 +650,11 @@ type Aba =
   | "funcionarios"
   | "registros"
   | "solicitacoes"
-  | "afastamentos"
   | "periodos"
   | "logs"
   | "validacoes"
-  | "saude";
+  | "saude"
+  | "ferias";
 
 /* ═══════════════════════════════════════════════
    UTILITÁRIOS
@@ -745,6 +757,8 @@ function statusSolBadge(status: string) {
     return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo Chefe" };
   if (status === "REJEITADA_RH")
     return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada pelo RH" };
+  if (status === "DEVOLVIDA")
+    return { bg: "rgba(198,127,0,0.12)", color: "#c67f00", label: "Devolvida para correção" };
   if (status === "CANCELADA")
     return { bg: "rgba(109,110,113,0.12)", color: "#6d6e71", label: "Cancelada" };
   return { bg: "rgba(200,57,63,0.10)", color: "#c8393f", label: "Rejeitada" };
@@ -1444,7 +1458,6 @@ function DetalhesFuncionario({
     | "historico"
     | "periodos"
     | "solicitacoes"
-    | "afastamentos"
     | "bancoHoras"
     | "documentos"
     | "folhasAssinadas"
@@ -1507,7 +1520,7 @@ function DetalhesFuncionario({
     setLoading(true);
     try {
       const data = await api.get<{ afastamentos: Afastamento[] }>(
-        `/auditoria/afastamentos?funcionarioId=${funcionario.id}&limit=200`,
+        `/auditoria/afastamentos?funcionarioId=${funcionario.id}&semSolicitacao=true&limit=200`,
         token
       );
       setAfastamentos((data as { afastamentos: Afastamento[] }).afastamentos ?? []);
@@ -1563,9 +1576,10 @@ function DetalhesFuncionario({
 
   useEffect(() => {
     if (subAba === "registros") carregarRegistros();
-    else if (subAba === "solicitacoes") carregarSolicitacoes();
-    else if (subAba === "afastamentos") carregarAfastamentos();
-    else if (subAba === "bancoHoras") carregarBancoHoras();
+    else if (subAba === "solicitacoes") {
+      carregarSolicitacoes();
+      carregarAfastamentos();
+    } else if (subAba === "bancoHoras") carregarBancoHoras();
     else if (subAba === "documentos") carregarDocumentosRh();
     else if (subAba === "ferias") carregarFerias();
   }, [
@@ -1856,12 +1870,6 @@ function DetalhesFuncionario({
               icone: <span style={{ fontSize: 13, lineHeight: 1 }}>🌴</span>
             },
             {
-              id: "afastamentos",
-              label: "Afastamentos",
-              cor: "#7c3aed",
-              icone: <CalendarIcon size={13} />
-            },
-            {
               id: "bancoHoras",
               label: "Banco de Horas",
               cor: "#0891b2",
@@ -1947,6 +1955,21 @@ function DetalhesFuncionario({
             token={token}
           />
           <TabelaSolicitacoes solicitacoes={solicitacoes} />
+          {afastamentos.length > 0 && (
+            <div>
+              <p
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--ink-600)",
+                  margin: "4px 0 0"
+                }}
+              >
+                Afastamentos sem solicitação (legado)
+              </p>
+              <TabelaAfastamentos afastamentos={afastamentos} />
+            </div>
+          )}
         </div>
       ) : subAba === "ferias" ? (
         <PainelFerias
@@ -1956,8 +1979,6 @@ function DetalhesFuncionario({
           funcionarioId={funcionario.id}
           token={token}
         />
-      ) : subAba === "afastamentos" ? (
-        <TabelaAfastamentos afastamentos={afastamentos} />
       ) : subAba === "bancoHoras" && bancoHoras ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <PainelLiberacaoBancoRh
@@ -3099,6 +3120,9 @@ function TabelaRegistros({
    ABA SOLICITAÇÕES
 ═══════════════════════════════════════════════ */
 
+/** Valor do filtro Tipo que lista os afastamentos lançados sem solicitação (legado). */
+const TIPO_AFASTAMENTO_LEGADO = "AFASTAMENTO_SEM_PEDIDO";
+
 function TabSolicitacoes({
   token,
   isPontoAdmin = false
@@ -3113,6 +3137,16 @@ function TabSolicitacoes({
   const [erro, setErro] = useState<string | null>(null);
   const [statusFiltro, setStatusFiltro] = useState("");
   const [tipoFiltro, setTipoFiltro] = useState("");
+  const [afastFiltro, setAfastFiltro] = useState("");
+  /** Afastamentos lançados sem solicitação (legado), listados na mesma aba quando o tipo é escolhido. */
+  const [afastLegado, setAfastLegado] = useState<Afastamento[]>([]);
+  const legado = tipoFiltro === TIPO_AFASTAMENTO_LEGADO;
+  const [busca, setBusca] = useState("");
+  const [buscaAplicada, setBuscaAplicada] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setBuscaAplicada(busca.trim()), 300);
+    return () => clearTimeout(t);
+  }, [busca]);
   const [modalAdminSol, setModalAdminSol] = useState<Solicitacao | null>(null);
   const [modalAdminDecisao, setModalAdminDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
   const [adminObs, setAdminObs] = useState("");
@@ -3127,13 +3161,32 @@ function TabSolicitacoes({
       setLoading(true);
       setErro(null);
       try {
-        const params = new URLSearchParams({ page: String(p), limit: String(limit) });
+        const params = new URLSearchParams({
+          page: String(p),
+          limit: String(limit),
+          ordem: "nome"
+        });
+        if (buscaAplicada) params.set("busca", buscaAplicada);
+        if (tipoFiltro === TIPO_AFASTAMENTO_LEGADO) {
+          params.set("semSolicitacao", "true");
+          const d = await api.get<{ total: number; afastamentos: Afastamento[] }>(
+            `/auditoria/afastamentos?${params}`,
+            token
+          );
+          setAfastLegado(d?.afastamentos ?? []);
+          setSolicitacoes([]);
+          setTotal(d?.total ?? 0);
+          setPage(p);
+          return;
+        }
         if (statusFiltro) params.set("status", statusFiltro);
         if (tipoFiltro) params.set("tipo", tipoFiltro);
+        if (afastFiltro) params.set("afastamento", afastFiltro);
         const data = await api.get<{ total: number; solicitacoes: Solicitacao[] }>(
           `/auditoria/solicitacoes?${params}`,
           token
         );
+        setAfastLegado([]);
         setSolicitacoes(data?.solicitacoes ?? []);
         setTotal(data?.total ?? 0);
         setPage(p);
@@ -3143,7 +3196,7 @@ function TabSolicitacoes({
         setLoading(false);
       }
     },
-    [token, statusFiltro, tipoFiltro]
+    [token, statusFiltro, tipoFiltro, afastFiltro, buscaAplicada]
   );
 
   useEffect(() => {
@@ -3179,11 +3232,32 @@ function TabSolicitacoes({
   }
 
   function exportar() {
+    if (legado) {
+      exportCSV(
+        afastLegado.map((a) => ({
+          Funcionario: a.funcionario.user.name,
+          Matricula: a.funcionario.matricula,
+          Tipo: a.rotulo || tipoAfastamentoLabel(a.tipo),
+          Inicio: fmtDate(a.dataInicio),
+          Fim: fmtDate(a.dataFim),
+          Justificativa: a.justificativa ?? "",
+          AprovadoPor: a.aprovadoPor ?? ""
+        })),
+        "afastamentos_sem_solicitacao.csv"
+      );
+      return;
+    }
     exportCSV(
       solicitacoes.map((s) => ({
         Funcionario: s.funcionario.user.name,
         Matricula: s.funcionario.matricula,
         Tipo: s.tipo,
+        Afastamento: (s.afastamentos ?? [])
+          .map(
+            (a) =>
+              `${a.rotulo || tipoAfastamentoLabel(a.tipo)} ${fmtDate(a.dataInicio)}-${fmtDate(a.dataFim)}`
+          )
+          .join(" | "),
         DataReferencia: fmtDate(s.dataReferencia),
         Descricao: s.descricao,
         Status: s.status,
@@ -3358,6 +3432,14 @@ function TabSolicitacoes({
       )}
 
       <FiltrosBox>
+        <div style={{ flex: "1 1 240px" }}>
+          <InputField
+            label="Buscar"
+            value={busca}
+            onChange={setBusca}
+            placeholder="Nome, matrícula, setor, tipo, situação…"
+          />
+        </div>
         <SelectField
           label="Status"
           value={statusFiltro}
@@ -3375,6 +3457,7 @@ function TabSolicitacoes({
             { value: "APROVADA", label: "Aprovadas pelo RH" },
             { value: "REJEITADA_GESTOR", label: "Rejeitadas pelo Chefe" },
             { value: "REJEITADA_RH", label: "Rejeitadas pelo RH" },
+            { value: "DEVOLVIDA", label: "Devolvidas para correção" },
             { value: "REJEITADA", label: "Rejeitadas (legado)" },
             { value: "CANCELADA", label: "Canceladas" }
           ]}
@@ -3392,7 +3475,20 @@ function TabSolicitacoes({
             { value: "ABONO", label: "Abono" },
             { value: "DAY_OFF", label: "Day Off de Aniversário" },
             { value: "HORA_EXTRA", label: "Hora Extra" },
-            { value: "ENVIO_DOCUMENTO_RH", label: "Envio de Documento ao RH" }
+            { value: "ENVIO_DOCUMENTO_RH", label: "Envio de Documento ao RH" },
+            { value: "DOCUMENTO_VIA_CHEFE", label: "Envio de Documento - Home Office" },
+            { value: TIPO_AFASTAMENTO_LEGADO, label: "Afastamento sem solicitação (legado)" }
+          ]}
+        />
+        <SelectField
+          label="Afastamento"
+          value={afastFiltro}
+          onChange={setAfastFiltro}
+          options={[
+            { value: "", label: "Todos" },
+            { value: "ATIVO", label: "Em vigor" },
+            { value: "PROGRAMADO", label: "Programado" },
+            { value: "ENCERRADO", label: "Encerrado" }
           ]}
         />
         <BtnBuscar onClick={() => carregar(1)} />
@@ -3402,27 +3498,325 @@ function TabSolicitacoes({
       {erro && <ErroBox msg={erro} />}
 
       <CardTabela>
-        <TabelaSolicitacoes
-          solicitacoes={loading ? [] : solicitacoes}
-          loading={loading}
-          isPontoAdmin={isPontoAdmin}
-          onAprovarAdmin={(s) => {
-            setModalAdminSol(s);
-            setModalAdminDecisao("APROVAR");
-            setAdminObs("");
-            setAdminErro("");
-            setFeedback("");
-          }}
-          onRejeitarAdmin={(s) => {
-            setModalAdminSol(s);
-            setModalAdminDecisao("REJEITAR");
-            setAdminObs("");
-            setAdminErro("");
-            setFeedback("");
-          }}
-        />
+        {legado ? (
+          <QuadroAfastamentos afastamentos={loading ? [] : afastLegado} loading={loading} />
+        ) : (
+          <QuadroSolicitacoes
+            solicitacoes={loading ? [] : solicitacoes}
+            loading={loading}
+            isPontoAdmin={isPontoAdmin}
+            onAprovarAdmin={(s) => {
+              setModalAdminSol(s);
+              setModalAdminDecisao("APROVAR");
+              setAdminObs("");
+              setAdminErro("");
+              setFeedback("");
+            }}
+            onRejeitarAdmin={(s) => {
+              setModalAdminSol(s);
+              setModalAdminDecisao("REJEITAR");
+              setAdminObs("");
+              setAdminErro("");
+              setFeedback("");
+            }}
+          />
+        )}
         <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
       </CardTabela>
+    </div>
+  );
+}
+
+/** Estado final da solicitação: o afastamento que ela gerou, com o estado (em vigor / programado / encerrado). */
+function AfastamentoGeradoLinhas({ lista }: { lista?: AfastamentoGerado[] }) {
+  if (!lista?.length) return null;
+  const hojeIso = hojeBrasiliaISO();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+      {lista.map((a) => {
+        const ini = dataCivilPeriodo(a.dataInicio);
+        const fim = dataCivilPeriodo(a.dataFim);
+        const [y1, m1, d1] = ini.split("-").map(Number);
+        const [y2, m2, d2] = fim.split("-").map(Number);
+        const dias =
+          Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000) + 1;
+        const est =
+          ini <= hojeIso && fim >= hojeIso
+            ? { l: "Em vigor", bg: "rgba(47,125,79,0.12)", c: "#2f7d4f" }
+            : ini > hojeIso
+              ? { l: "Programado", bg: "rgba(37,99,235,0.10)", c: "#1e40af" }
+              : { l: "Encerrado", bg: "rgba(109,110,113,0.12)", c: "#6d6e71" };
+        return (
+          <div
+            key={a.id}
+            style={{
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              flexWrap: "wrap",
+              fontSize: 11.5,
+              color: "var(--ink-600)"
+            }}
+          >
+            <span title="Afastamento gerado">📅</span>
+            <strong style={{ color: "var(--ink-800)" }}>
+              {a.rotulo || tipoAfastamentoLabel(a.tipo)}
+            </strong>
+            <span style={{ whiteSpace: "nowrap" }}>
+              {fmtDate(a.dataInicio)} → {fmtDate(a.dataFim)} ({dias} dia{dias !== 1 ? "s" : ""})
+            </span>
+            <Badge label={est.l} bg={est.bg} color={est.c} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Quadro (tabela) de solicitações da aba Auditoria: uma linha por solicitação; clicar abre o detalhe completo. */
+function QuadroSolicitacoes({
+  solicitacoes,
+  loading = false,
+  isPontoAdmin = false,
+  onAprovarAdmin,
+  onRejeitarAdmin
+}: {
+  solicitacoes: Solicitacao[];
+  loading?: boolean;
+  isPontoAdmin?: boolean;
+  onAprovarAdmin?: (s: Solicitacao) => void;
+  onRejeitarAdmin?: (s: Solicitacao) => void;
+}) {
+  const [aberto, setAberto] = useState<Set<string>>(new Set());
+  if (loading) return <Loading />;
+  if (!solicitacoes.length)
+    return (
+      <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
+        Nenhuma solicitação encontrada.
+      </p>
+    );
+  const alternar = (id: string) => {
+    const n = new Set(aberto);
+    if (n.has(id)) n.delete(id);
+    else n.add(id);
+    setAberto(n);
+  };
+  const rotuloTipo = (t: string) =>
+    t === "ENVIO_DOCUMENTO_RH"
+      ? "Envio de Documento ao RH"
+      : t === "DOCUMENTO_VIA_CHEFE"
+        ? "Envio de Documento - Home Office"
+        : (TIPO_SOL_ROTULO[t] ?? t.replace(/_/g, " "));
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="table-cfo table-cfo-destaque" style={{ width: "100%", fontSize: 13 }}>
+        <thead>
+          <tr>
+            <th>Funcionário</th>
+            <th>Setor</th>
+            <th>Tipo</th>
+            <th>Resumo</th>
+            <th>Referência</th>
+            <th>Enviada</th>
+            <th>Situação</th>
+          </tr>
+        </thead>
+        <tbody>
+          {solicitacoes.map((s) => {
+            const bd = statusSolBadge(s.status);
+            const exp = aberto.has(s.id);
+            const correcaoRh = s.status === "AGUARDANDO_GESTOR_RH";
+            return (
+              <React.Fragment key={s.id}>
+                <tr
+                  onClick={() => alternar(s.id)}
+                  style={{
+                    cursor: "pointer",
+                    borderLeft: correcaoRh ? "3px solid #7a1e26" : undefined
+                  }}
+                >
+                  <td>
+                    <strong>
+                      {exp ? "▾ " : "▸ "}
+                      {s.funcionario.user.name}
+                    </strong>
+                    <div style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                      {s.funcionario.matricula ?? "—"}
+                    </div>
+                  </td>
+                  <td>{s.funcionario.gerencia?.nome ?? "—"}</td>
+                  <td>
+                    <Badge
+                      label={rotuloTipo(s.tipo)}
+                      bg="rgba(122,30,38,0.06)"
+                      color="var(--burgundy-700)"
+                    />
+                  </td>
+                  <td style={{ maxWidth: 360 }}>
+                    <span
+                      style={{
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                        fontSize: 12.5
+                      }}
+                    >
+                      <TextoComSetaHorario texto={textoResumo(s)} />
+                    </span>
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDate(s.dataReferencia)}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDate(s.createdAt)}</td>
+                  <td>
+                    <Badge label={bd.label} bg={bd.bg} color={bd.color} />
+                    <AfastamentoGeradoLinhas lista={s.afastamentos} />
+                    {correcaoRh && isPontoAdmin && onAprovarAdmin && onRejeitarAdmin && (
+                      <div
+                        style={{ display: "flex", gap: 6, marginTop: 6 }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          className="btn btn-sm"
+                          style={{ background: "#2f7d4f", color: "#fff" }}
+                          onClick={() => onAprovarAdmin(s)}
+                        >
+                          Aprovar
+                        </button>
+                        <button
+                          className="btn btn-sm"
+                          style={{ background: "#c8393f", color: "#fff" }}
+                          onClick={() => onRejeitarAdmin(s)}
+                        >
+                          Rejeitar
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+                {exp && (
+                  <tr>
+                    <td colSpan={7} style={{ background: "rgba(122,30,38,0.03)", padding: 0 }}>
+                      <TabelaSolicitacoes
+                        solicitacoes={[s]}
+                        isPontoAdmin={isPontoAdmin}
+                        onAprovarAdmin={onAprovarAdmin}
+                        onRejeitarAdmin={onRejeitarAdmin}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const TIPO_SOL_ROTULO: Record<string, string> = {
+  CORRECAO_PONTO: "Correção de Ponto",
+  ATESTADO: "Atestado",
+  FERIAS: "Férias",
+  LICENCA: "Licença e Outros",
+  ABONO: "Abono",
+  DAY_OFF: "Day Off de Aniversário",
+  HORA_EXTRA: "Hora Extra"
+};
+
+/** Quadro (tabela) de afastamentos da aba Auditoria. */
+function QuadroAfastamentos({
+  afastamentos,
+  loading = false
+}: {
+  afastamentos: Afastamento[];
+  loading?: boolean;
+}) {
+  if (loading) return <Loading />;
+  if (!afastamentos.length)
+    return (
+      <p style={{ padding: 32, textAlign: "center", fontSize: 13, color: "var(--ink-400)" }}>
+        Nenhum afastamento encontrado.
+      </p>
+    );
+  const corTipo: Record<string, string> = {
+    FERIAS: "#2f7d4f",
+    LICENCA_MEDICA: "#2563eb",
+    ATESTADO: "#7c3aed",
+    LICENCA_MATERNIDADE: "#db2777",
+    LICENCA_PATERNIDADE: "#0891b2",
+    FALTA_JUSTIFICADA: "#c67f00",
+    FALTA_INJUSTIFICADA: "#c8393f",
+    ABONO: "#6b7280"
+  };
+  const hojeIso = hojeBrasiliaISO();
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="table-cfo table-cfo-destaque" style={{ width: "100%", fontSize: 13 }}>
+        <thead>
+          <tr>
+            <th>Funcionário</th>
+            <th>Setor</th>
+            <th>Tipo</th>
+            <th>Período</th>
+            <th style={{ textAlign: "center" }}>Dias</th>
+            <th>Situação</th>
+            <th>Justificativa</th>
+          </tr>
+        </thead>
+        <tbody>
+          {afastamentos.map((a) => {
+            const cor = corTipo[a.tipo] ?? "#6b7280";
+            const ini = dataCivilPeriodo(a.dataInicio);
+            const fim = dataCivilPeriodo(a.dataFim);
+            const [y1, m1, d1] = ini.split("-").map(Number);
+            const [y2, m2, d2] = fim.split("-").map(Number);
+            const dias =
+              Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000) + 1;
+            const situacao =
+              ini <= hojeIso && fim >= hojeIso
+                ? { l: "Ativo", bg: "rgba(47,125,79,0.12)", c: "#2f7d4f" }
+                : ini > hojeIso
+                  ? { l: "Programado", bg: "rgba(37,99,235,0.10)", c: "#1e40af" }
+                  : { l: "Encerrado", bg: "rgba(109,110,113,0.12)", c: "#6d6e71" };
+            return (
+              <tr key={a.id}>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <FuncAvatar
+                      name={a.funcionario.user.name}
+                      fotoUrl={a.funcionario.fotoPerfilUrl}
+                      size={30}
+                    />
+                    <div>
+                      <strong>{a.funcionario.user.name}</strong>
+                      <div style={{ fontSize: 11, color: "var(--ink-500)" }}>
+                        {a.funcionario.matricula ?? "—"}
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td>{a.funcionario.gerencia?.nome ?? "—"}</td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <span style={{ fontWeight: 700, color: cor }}>
+                    {a.rotulo || tipoAfastamentoLabel(a.tipo)}
+                  </span>
+                </td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  {fmtDate(a.dataInicio)} → {fmtDate(a.dataFim)}
+                </td>
+                <td style={{ textAlign: "center" }}>{dias}</td>
+                <td>
+                  <Badge label={situacao.l} bg={situacao.bg} color={situacao.c} />
+                </td>
+                <td style={{ maxWidth: 320, fontSize: 12, color: "var(--ink-600)" }}>
+                  {a.justificativa || "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -3671,7 +4065,9 @@ function TabelaSolicitacoes({
                   label={
                     s.tipo === "ENVIO_DOCUMENTO_RH"
                       ? "Envio de Documento ao RH"
-                      : s.tipo.replace(/_/g, " ")
+                      : s.tipo === "DOCUMENTO_VIA_CHEFE"
+                        ? "Envio de Documento - Home Office"
+                        : s.tipo.replace(/_/g, " ")
                   }
                   bg="rgba(122,30,38,0.06)"
                   color="var(--burgundy-700)"
@@ -3694,6 +4090,7 @@ function TabelaSolicitacoes({
               >
                 <TextoComSetaHorario texto={resumo} />
               </p>
+              <AfastamentoGeradoLinhas lista={s.afastamentos} />
               {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
               {[
                 "ABONO",
@@ -3701,12 +4098,14 @@ function TabelaSolicitacoes({
                 "ATESTADO",
                 "DAY_OFF",
                 "HORA_EXTRA",
-                "ENVIO_DOCUMENTO_RH"
+                "ENVIO_DOCUMENTO_RH",
+                "DOCUMENTO_VIA_CHEFE"
               ].includes(s.tipo) && <AbonoDetalheBlock meta={s.metadados} />}
               {s.tipo === "ATESTADO" && <AlterarCidRh solicitacaoId={s.id} meta={s.metadados} />}
               {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
               {(s.tipo === "ATESTADO" ||
                 s.tipo === "ENVIO_DOCUMENTO_RH" ||
+                s.tipo === "DOCUMENTO_VIA_CHEFE" ||
                 s.tipo === "ABONO" ||
                 s.tipo === "LICENCA") &&
                 typeof meta?.documentoUrl === "string" && (
@@ -3880,102 +4279,6 @@ function TabelaSolicitacoes({
    ABA AFASTAMENTOS
 ═══════════════════════════════════════════════ */
 
-function TabAfastamentos({ token }: { token: string }) {
-  const [afastamentos, setAfastamentos] = useState<Afastamento[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [erro, setErro] = useState<string | null>(null);
-  const [tipo, setTipo] = useState("");
-  const [ativo, setAtivo] = useState("");
-
-  const limit = 30;
-
-  const carregar = useCallback(
-    async (p = 1) => {
-      setLoading(true);
-      setErro(null);
-      try {
-        const params = new URLSearchParams({ page: String(p), limit: String(limit) });
-        if (tipo) params.set("tipo", tipo);
-        if (ativo === "true") params.set("ativo", "true");
-        const data = await api.get<{ total: number; afastamentos: Afastamento[] }>(
-          `/auditoria/afastamentos?${params}`,
-          token
-        );
-        setAfastamentos(data?.afastamentos ?? []);
-        setTotal(data?.total ?? 0);
-        setPage(p);
-      } catch (e) {
-        setErro((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [token, tipo, ativo]
-  );
-
-  useEffect(() => {
-    carregar(1);
-  }, [carregar]);
-
-  function exportar() {
-    exportCSV(
-      afastamentos.map((a) => ({
-        Funcionario: a.funcionario.user.name,
-        Matricula: a.funcionario.matricula,
-        Tipo: a.rotulo || tipoAfastamentoLabel(a.tipo),
-        Inicio: fmtDate(a.dataInicio),
-        Fim: fmtDate(a.dataFim),
-        Justificativa: a.justificativa ?? "",
-        AprovadoPor: a.aprovadoPor ?? ""
-      })),
-      `afastamentos.csv`
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <FiltrosBox>
-        <SelectField
-          label="Tipo"
-          value={tipo}
-          onChange={setTipo}
-          options={[
-            { value: "", label: "Todos" },
-            { value: "FERIAS", label: "Férias" },
-            { value: "LICENCA_MEDICA", label: "Licença Médica" },
-            { value: "ATESTADO", label: "Atestado" },
-            { value: "LICENCA_MATERNIDADE", label: "Lic. Maternidade" },
-            { value: "LICENCA_PATERNIDADE", label: "Lic. Paternidade" },
-            { value: "FALTA_JUSTIFICADA", label: "Falta Justificada" },
-            { value: "FALTA_INJUSTIFICADA", label: "Falta Injustificada" },
-            { value: "ABONO", label: "Abono" }
-          ]}
-        />
-        <SelectField
-          label="Apenas ativos"
-          value={ativo}
-          onChange={setAtivo}
-          options={[
-            { value: "", label: "Todos" },
-            { value: "true", label: "Ativos hoje" }
-          ]}
-        />
-        <BtnBuscar onClick={() => carregar(1)} />
-        <BtnCSV onClick={exportar} />
-      </FiltrosBox>
-
-      {erro && <ErroBox msg={erro} />}
-
-      <CardTabela>
-        <TabelaAfastamentos afastamentos={loading ? [] : afastamentos} loading={loading} />
-        <Pagination page={page} total={total} limit={limit} onChange={(p) => carregar(p)} />
-      </CardTabela>
-    </div>
-  );
-}
-
 /* ═══════════════════════════════════════════════
    ABA HISTÓRICO DO FUNCIONÁRIO — tipos e helpers
 ═══════════════════════════════════════════════ */
@@ -4077,6 +4380,8 @@ interface ApiRegHist {
   tipo: string;
   dataHora: string;
   ajustado?: boolean;
+  /** Só informativo: não entra no cálculo (mesma regra do Histórico). */
+  apenasInformativo?: boolean;
   observacoes?: {
     data: string;
     texto: string;
@@ -4093,6 +4398,7 @@ interface ApiAfast {
   dataFim: string;
   horarioInicio?: string | null;
   horarioFim?: string | null;
+  apenasInformativo?: boolean;
 }
 interface ApiFeriadoH {
   data: string;
@@ -4627,8 +4933,11 @@ function buildHistorico(
   const hoje = new Date();
   const dias = new Date(ano, mes, 0).getDate();
   const NOMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+  /* Mesma regra do Histórico: registros e afastamentos "só informativos" não entram no cálculo/status. */
+  const afastsTodos = afasts;
+  afasts = afasts.filter((a) => !a.apenasInformativo);
   const byDay: Record<string, ApiRegHist[]> = {};
-  for (const r of regs) {
+  for (const r of regs.filter((x) => !x.apenasInformativo)) {
     const k = dtKeyH(r.dataHora);
     (byDay[k] ??= []).push(r);
   }
@@ -4730,6 +5039,23 @@ function buildHistorico(
 
     if (diaIsento(isoKey)) {
       const dayRegsIsento = byDay[isoKey] ?? [];
+      /* Afastamento no dia isento: como no Histórico, aparece como Afastamento (informativo). */
+      const afastIsento = afastDoDia(isoKey, afastsTodos);
+      if (afastIsento && !(fimDeSemana && dayRegsIsento.length === 0)) {
+        result.push({
+          data: dataStr,
+          diaSemana: NOMES[dow],
+          entrada: null,
+          inicioIntervalo: null,
+          fimIntervalo: null,
+          saida: null,
+          horasMin: 0,
+          jornadaMin: 0,
+          status: "AFASTAMENTO",
+          obs: `${afastIsento.rotulo || (TIPO_AFAST_LABEL[afastIsento.tipo] ?? "Afastamento")} (informativo)`
+        });
+        continue;
+      }
       const getI = (tipo: string) => dayRegsIsento.find((r) => r.tipo === tipo);
       result.push({
         data: dataStr,
@@ -4750,6 +5076,26 @@ function buildHistorico(
     }
 
     const af = afastDoDia(isoKey, afasts);
+    /* Afastamento só informativo sem batidas: mostra no histórico sem efeito de cálculo. */
+    const afInfo = afastDoDia(
+      isoKey,
+      afastsTodos.filter((a) => a.apenasInformativo)
+    );
+    if (afInfo && (byDay[isoKey]?.length ?? 0) === 0) {
+      result.push({
+        data: dataStr,
+        diaSemana: NOMES[dow],
+        entrada: null,
+        inicioIntervalo: null,
+        fimIntervalo: null,
+        saida: null,
+        horasMin: 0,
+        jornadaMin: 0,
+        status: "AFASTAMENTO",
+        obs: `${afInfo.rotulo || (TIPO_AFAST_LABEL[afInfo.tipo] ?? "Afastamento")} (informativo)`
+      });
+      continue;
+    }
     if (af && !isAfastParcial(af)) {
       result.push({
         data: dataStr,
@@ -5128,6 +5474,13 @@ function buildHistorico(
     if (dayRegs.length > 0) {
       if (status === "FALTA") status = "INCONSISTENTE";
       else if (status === "PENDENTE" && !isHoje) status = "INCONSISTENTE";
+    }
+    /* Mesma regra do Histórico (marcarDiasFeriado): feriado integral sem horas trabalhadas, em
+       andamento, é Feriado — não Pendente. */
+    if (status === "PENDENTE" && horasMin === 0 && feriadoDia && !feriadoDia.marcoHorario) {
+      status = "FERIADO";
+      jornadaMin = 0;
+      obs = feriadoDia.nome;
     }
 
     result.push({
@@ -6413,7 +6766,9 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
   const [bancoMesDias, setBancoMesDias] = useState<Record<string, number>>({});
   const [rawPorDia, setRawPorDia] = useState<Record<string, ApiRegHist[]>>({});
   const [periodoLocked, setPeriodoLocked] = useState(false);
-  const [rotuloModalidadePorDia, setRotuloModalidadePorDia] = useState<Record<string, string>>({});
+  const [localModalidadePorDia, setLocalModalidadePorDia] = useState<
+    Record<string, "HOME_OFFICE" | "PRESENCIAL">
+  >({});
   const [loading, setLoading] = useState(false);
   const [modalObs, setModalObs] = useState<{
     dia: string;
@@ -6453,6 +6808,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
           contextoHoraExtra?: ContextoHoraExtraPeriodo;
           interjornadaPorDia?: Record<string, InterjornadaDia>;
           rotuloModalidadePorDia?: Record<string, string>;
+          localModalidadePorDia?: Record<string, "HOME_OFFICE" | "PRESENCIAL">;
           cicloCompletoEmCasa?: { desde: string | null; dias: string[] };
           cicloCompletoPresencial?: {
             desde: string | null;
@@ -6513,7 +6869,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
       setRawPorDia(byDay);
 
       const interjornadaDias = regsRaw?.interjornadaPorDia ?? {};
-      setRotuloModalidadePorDia(regsRaw?.rotuloModalidadePorDia ?? {});
+      setLocalModalidadePorDia(regsRaw?.localModalidadePorDia ?? {});
       const contextoHe: ContextoHoraExtraPeriodo = regsRaw?.contextoHoraExtra ?? {
         dias: {},
         padrao: { situacao: "SEM_SOLICITACAO", remoto: false }
@@ -6826,17 +7182,17 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
         <div className="card-flat" style={{ padding: 0, overflow: "hidden" }}>
           <table className="table-cfo table-cfo-freq">
             <colgroup>
-              <col style={{ width: "11%" }} />
+              <col style={{ width: "12%" }} />
               <col style={{ width: "5%" }} />
+              <col style={{ width: "9%" }} />
+              <col style={{ width: "10.5%" }} />
+              <col style={{ width: "10.5%" }} />
+              <col style={{ width: "9%" }} />
               <col style={{ width: "8.5%" }} />
-              <col style={{ width: "10%" }} />
-              <col style={{ width: "10%" }} />
-              <col style={{ width: "8.5%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "6.5%" }} />
-              <col style={{ width: "6.5%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "9.5%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "7%" }} />
+              <col style={{ width: "12.5%" }} />
+              <col style={{ width: "9%" }} />
             </colgroup>
             <thead>
               <tr>
@@ -6998,7 +7354,7 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                           display: "inline-flex",
                           alignItems: "center",
                           gap: 4,
-                          flexWrap: "wrap"
+                          flexWrap: "nowrap"
                         }}
                       >
                         <StatusPillH
@@ -7007,8 +7363,8 @@ function TabHistoricoFunc({ funcionarioId, token }: { funcionarioId: string; tok
                           atestadoParcial={r.atestadoParcial}
                           atestadoParcialHorario={r.atestadoParcialHorario}
                           onClickAtestado={() => setModalAtestado({ data: isoKey })}
-                          modalidade={rotuloModalidadePorDia[isoKey]}
                         />
+                        <BadgeLocalDia local={localModalidadePorDia[isoKey]} status={r.status} />
                         <BotaoObsH
                           observacoes={r.observacoes ?? []}
                           onClick={() =>
@@ -7212,12 +7568,44 @@ function PainelFerias({
     PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguard. doc. funcionário", cls: "badge-amber" },
+    AGUARDANDO_GESTOR_RH: { label: "Aguardando Gerente de RH", cls: "badge-amber" },
     APROVADA: { label: "Aprovada", cls: "badge-green" },
     REJEITADA_GESTOR: { label: "Rej. Chefe", cls: "badge-red" },
     REJEITADA_RH: { label: "Rej. RH", cls: "badge-red" },
+    DEVOLVIDA: { label: "Devolvida", cls: "badge-amber" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     CANCELADA: { label: "Cancelada", cls: "badge-gray" }
   };
+
+  /* Aceite discricionário do Gerente de RH (no lugar do chefe imediato) — só férias configuradas pelo RH. */
+  const ehGerenteRh =
+    !!usuarioAtual?.isSuperAdmin || hasRole("ponto-admin") || hasRole("PONTO_ADMIN");
+  const [aceitandoId, setAceitandoId] = useState<string | null>(null);
+  async function aceitarComoGerenteRh(sol: Solicitacao) {
+    if (
+      !window.confirm(
+        "Aceitar estas férias como Gerente de RH, no lugar do chefe imediato? O chefe será avisado e não precisará mais decidir."
+      )
+    )
+      return;
+    setAceitandoId(sol.id);
+    setMsgRh(null);
+    try {
+      await api.patch(`/auditoria/gestao/solicitacoes/${sol.id}`, {
+        decisao: "APROVAR",
+        observacao: "Aceite discricionário do Gerente de RH."
+      });
+      setMsgRh({
+        ok: true,
+        texto: "Férias aceitas. Agora envie o Aviso de Férias ao funcionário."
+      });
+      onRecarregar();
+    } catch (e) {
+      setMsgRh({ ok: false, texto: (e as Error).message || "Não foi possível aceitar." });
+    } finally {
+      setAceitandoId(null);
+    }
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -7587,46 +7975,84 @@ function PainelFerias({
                   )}
                 </div>
                 {meta?.origem === "RH" && s.status === "PENDENTE" && (
-                  <p
+                  <div
                     style={{
-                      margin: 0,
                       flexBasis: "100%",
                       fontSize: 12,
                       color: "#8a6a00",
                       background: "rgba(247,196,55,0.10)",
                       border: "1px solid rgba(247,196,55,0.30)",
                       borderRadius: "var(--radius-md)",
-                      padding: "6px 10px"
+                      padding: "8px 10px",
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "center",
+                      flexWrap: "wrap"
                     }}
                   >
-                    Próximo passo: o <strong>chefe imediato</strong> precisa aprovar esta
-                    programação. Depois, em{" "}
-                    <Link to="/ponto/aprovacoes" style={{ color: "var(--burgundy-600)" }}>
-                      Aprovações (etapa RH)
-                    </Link>
-                    , anexar o Aviso e o Recibo de Férias para a assinatura do funcionário.
-                  </p>
+                    <span style={{ flex: "1 1 260px" }}>
+                      Próximo passo: o <strong>chefe imediato</strong> aceita esta programação — ou
+                      o <strong>Gerente de RH</strong>, de forma discricionária (vale quem decidir
+                      primeiro). Depois do aceite, envie o Aviso e o Recibo de Férias aqui mesmo.
+                    </span>
+                    {ehGerenteRh && podeConfigurar && (
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={aceitandoId === s.id}
+                        onClick={() => void aceitarComoGerenteRh(s)}
+                      >
+                        {aceitandoId === s.id ? "Aceitando…" : "Aceitar como Gerente de RH"}
+                      </button>
+                    )}
+                  </div>
                 )}
-                {meta?.origem === "RH" && s.status === "AGUARDANDO_RH" && (
+                {(meta?.aceite as { por?: string; nome?: string; em?: string } | undefined)
+                  ?.por && (
                   <p
                     style={{
                       margin: 0,
                       flexBasis: "100%",
-                      fontSize: 12,
-                      color: "#8a6a00",
-                      background: "rgba(247,196,55,0.10)",
-                      border: "1px solid rgba(247,196,55,0.30)",
-                      borderRadius: "var(--radius-md)",
-                      padding: "6px 10px"
+                      fontSize: 11.5,
+                      color: "var(--ink-500)"
                     }}
                   >
-                    Próximo passo: em{" "}
-                    <Link to="/ponto/aprovacoes" style={{ color: "var(--burgundy-600)" }}>
-                      Aprovações (etapa RH)
-                    </Link>
-                    , anexar o Aviso e o Recibo de Férias para a assinatura do funcionário.
+                    ✔ Aceita{" "}
+                    {(meta!.aceite as { por?: string }).por === "GERENTE_RH"
+                      ? "pelo Gerente de RH"
+                      : "pelo chefe imediato"}{" "}
+                    {(meta!.aceite as { nome?: string }).nome ?? ""}
+                    {(meta!.aceite as { em?: string }).em
+                      ? ` em ${new Date((meta!.aceite as { em: string }).em).toLocaleDateString("pt-BR")}`
+                      : ""}
                   </p>
                 )}
+                {podeConfigurar &&
+                  ["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO", "APROVADA"].includes(
+                    s.status
+                  ) && (
+                    <div
+                      style={{
+                        flexBasis: "100%",
+                        padding: "10px 12px",
+                        border: "1px solid rgba(47,125,79,0.25)",
+                        borderRadius: "var(--radius-md)",
+                        background: "rgba(47,125,79,0.04)"
+                      }}
+                    >
+                      <p
+                        style={{
+                          margin: "0 0 8px",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: "#2f7d4f"
+                        }}
+                      >
+                        Documentos de férias
+                      </p>
+                      <BlocoDocumentosFeriasRh s={s} onAtualizado={onRecarregar} />
+                    </div>
+                  )}
                 {podeConfigurar && STATUS_FERIAS_AJUSTAVEIS.includes(s.status) && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     <button
@@ -10266,15 +10692,18 @@ function TabValidacoes({ token }: { token: string }) {
    PÁGINA PRINCIPAL
 ═══════════════════════════════════════════════ */
 
+/** Ícones coloridos (emoji), no mesmo estilo do ícone de Férias. */
+const iconeAba = (emoji: string) => <span style={{ fontSize: 13, lineHeight: 1 }}>{emoji}</span>;
+
 const ABAS: { id: Aba; label: string; icon: React.ReactNode }[] = [
-  { id: "funcionarios", label: "Funcionários", icon: <UsersIcon size={14} /> },
-  { id: "registros", label: "Registros", icon: <ClockIcon size={14} /> },
-  { id: "solicitacoes", label: "Solicitações", icon: <InboxIcon size={14} /> },
-  { id: "afastamentos", label: "Afastamentos", icon: <CalendarIcon size={14} /> },
-  { id: "periodos", label: "Banco de Horas", icon: <TrendingUpIcon size={14} /> },
-  { id: "logs", label: "Logs", icon: <ShieldCheckIcon size={14} /> },
-  { id: "validacoes", label: "Validações", icon: <CheckCircleIcon size={14} /> },
-  { id: "saude", label: "Saúde Ocupacional", icon: <ActivityIcon size={14} /> }
+  { id: "funcionarios", label: "Funcionários", icon: iconeAba("👥") },
+  { id: "registros", label: "Registros", icon: iconeAba("🕒") },
+  { id: "solicitacoes", label: "Solicitações", icon: iconeAba("📥") },
+  { id: "periodos", label: "Banco de Horas", icon: iconeAba("📈") },
+  { id: "logs", label: "Logs", icon: iconeAba("🛡️") },
+  { id: "validacoes", label: "Validações", icon: iconeAba("✅") },
+  { id: "saude", label: "Saúde Ocupacional", icon: iconeAba("🩺") },
+  { id: "ferias", label: "Férias", icon: iconeAba("🌴") }
 ];
 
 export function AuditoriaPage() {
@@ -10302,11 +10731,11 @@ export function AuditoriaPage() {
     funcionarios: "auditoria.funcionarios",
     registros: "auditoria.registros",
     solicitacoes: "auditoria.solicitacoes",
-    afastamentos: "auditoria.afastamentos",
     periodos: "auditoria.banco-horas",
     logs: "auditoria.logs",
     validacoes: "auditoria.validacoes",
-    saude: "saude.exames"
+    saude: "saude.exames",
+    ferias: "ferias.controle"
   };
   const abasPermitidas = ABAS.filter((a) => podeAuditoria(recursoDaAba[a.id]));
   useEffect(() => {
@@ -10431,11 +10860,11 @@ export function AuditoriaPage() {
       )}
       {aba === "registros" && <TabRegistros token={tk} />}
       {aba === "solicitacoes" && <TabSolicitacoes token={tk} isPontoAdmin={isPontoAdmin} />}
-      {aba === "afastamentos" && <TabAfastamentos token={tk} />}
       {aba === "periodos" && <TabPeriodos token={tk} />}
       {aba === "logs" && <TabLogs token={tk} />}
       {aba === "validacoes" && <TabValidacoes token={tk} />}
       {aba === "saude" && <SaudeOcupacionalPage embutida />}
+      {aba === "ferias" && <FeriasControlePage embutida />}
     </div>
   );
 }

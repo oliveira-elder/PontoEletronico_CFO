@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Delete,
-  ForbiddenException,
   Get,
   Param,
   Post,
@@ -53,8 +52,8 @@ export class SaudeOcupacionalController {
   @RecursoRh("saude.exames")
   @Get("saude-ocupacional/funcionarios/:id/exames")
   @Roles(...RH)
-  exames(@Param("id") id: string) {
-    return this.service.examesDoFuncionario(id);
+  exames(@Param("id") id: string, @Request() req: AuthRequest) {
+    return this.service.examesDoFuncionario(id, !!req.user.isSuperAdmin);
   }
 
   @RecursoRh("saude.exames.registrar")
@@ -110,14 +109,16 @@ export class SaudeOcupacionalController {
     return this.service.setConfig(body);
   }
 
-  /** Só o super usuário exclui definitivamente um lançamento. */
+  /**
+   * Usuários do RH: exclusão lógica (o exame some das telas, mas fica guardado com quem excluiu e quando).
+   * Super administrador: exclusão definitiva.
+   */
+  @RecursoRh("saude.exames.registrar")
   @Delete("saude-ocupacional/exames/:id")
   @Roles(...RH)
   excluir(@Param("id") id: string, @Request() req: AuthRequest) {
-    if (!req.user.isSuperAdmin) {
-      throw new ForbiddenException("Apenas o super usuário pode excluir um exame lançado.");
-    }
-    return this.service.excluir(id);
+    if (req.user.isSuperAdmin) return this.service.excluir(id);
+    return this.service.excluirLogico(id, req.user.sub);
   }
 
   /** Arquivo do ASO: RH autorizado ou o próprio funcionário (nunca pasta pública). */
@@ -139,7 +140,11 @@ export class SaudeOcupacionalController {
     } else {
       funcionarioId = (await this.service.funcionarioDoUsuario(req.user.sub)).id;
     }
-    const arq = await this.service.lerArquivo(id, { funcionarioId, rh: ehRh && !funcionarioId });
+    const arq = await this.service.lerArquivo(id, {
+      funcionarioId,
+      rh: ehRh && !funcionarioId,
+      superAdmin: !!req.user.isSuperAdmin
+    });
     res.setHeader("Content-Type", arq.mime);
     res.setHeader("Content-Disposition", contentDispositionAnexo(arq.nome));
     res.send(arq.buffer);

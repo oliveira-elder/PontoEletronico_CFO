@@ -44,6 +44,13 @@ import {
 import { enriquecerAfastamentosComSolicitacoes } from "../../utils/atestado-parcial-enrich";
 import { DocumentoService } from "../ponto/documento.service";
 import { PontoService } from "../ponto/ponto.service";
+import {
+  diasParaPrazo,
+  precisaAlertaVencidoRh,
+  precisaLembrete,
+  prazoDocumento,
+  validarProrrogacao
+} from "../../utils/ferias-documentos";
 import { ConfigSolicitacoesService } from "../ponto/config-solicitacoes.service";
 import { resolverCicloBancoHoras } from "../../utils/banco-horas-marco";
 import { toleranciaFechamentoDias } from "../../utils/tolerancia-fechamento";
@@ -66,6 +73,7 @@ import {
   ordemArquivoRodada,
   periodosComRodada,
   rodadasDe,
+  situacaoDaRodada,
   type DocumentoRodadaFerias,
   type RodadaFeriasMeta
 } from "../../utils/ferias-rodadas";
@@ -79,7 +87,8 @@ import {
 import {
   carregarContextoHoraExtra,
   diasCicloCompletoEmCasa,
-  rotulosModalidadePorDia
+  rotulosModalidadePorDia,
+  localModalidadePorDia
 } from "../../utils/hora-extra-decisao";
 import {
   validarItensCorrecaoPontoPausa,
@@ -117,6 +126,23 @@ function semAssinaturaFerias(meta: Record<string, unknown>): Record<string, unkn
 
 const fmtDataBr = (iso: string) => iso.split("-").reverse().join("/");
 
+/** Períodos de gozo da solicitação em ordem cronológica (dia civil). */
+function periodosOrdenadosFerias(
+  meta: Record<string, unknown> | null | undefined
+): Array<{ ordem: number; inicio: string; fim: string }> {
+  const lista = Array.isArray(meta?.periodos)
+    ? (meta!.periodos as Array<{ dataInicio?: string; dataFim?: string }>)
+    : [];
+  return lista
+    .map((p) => ({
+      inicio: dataCivilPeriodo(String(p.dataInicio ?? "")),
+      fim: dataCivilPeriodo(String(p.dataFim ?? p.dataInicio ?? ""))
+    }))
+    .filter((p) => p.inicio && p.fim)
+    .sort((a, b) => (a.inicio < b.inicio ? -1 : 1))
+    .map((p, i) => ({ ordem: i + 1, ...p }));
+}
+
 /** Documento de férias enviado pelo RH: AVISO, RECIBO ou OUTROS (com `rotulo`). */
 export interface DocumentoFeriasEntrada {
   tipo: string;
@@ -131,6 +157,8 @@ export interface FeriasRhEntrada {
   cicloNumero?: number;
   periodos: Array<{ inicio: string; fim: string }>;
   diasVendidos?: number;
+  /** Adiantar a 1ª parcela do 13º junto às férias (opcional; ausente = não informado). */
+  adiantamento13?: boolean;
   justificativa: string;
   ignorarVedacao?: boolean;
 }
@@ -145,7 +173,10 @@ export class AuditoriaService {
     private readonly pontoService: PontoService,
     private readonly notificacaoService: NotificacaoService,
     private readonly configSolicitacoesService: ConfigSolicitacoesService
-  ) {}
+  ) {
+    /* Assinar o Aviso de Férias aprova as férias: o PontoService chama de volta esta regra. */
+    this.pontoService.registrarFinalizadorFerias((id) => this.finalizarFeriasPorAssinatura(id));
+  }
 
   private startOfDay(date: Date) {
     const d = new Date(date);
@@ -751,7 +782,9 @@ export class AuditoriaService {
   private async calcularRankingsDashboard(
     dataInicio: string,
     dataFim: string,
-    registrosPeriodo: { dataHora: Date; tipo: string; funcionarioId: string }[]
+    registrosPeriodo: { dataHora: Date; tipo: string; funcionarioId: string }[],
+    /** Detalhamento do dashboard: só a pontualidade (pula banco de horas de todos e contagens de solicitações). */
+    somentePontualidade = false
   ) {
     const funcionarios = await this.prisma.funcionario.findMany({
       where: { ativo: true, categoria: SEM_ALTA_ADMINISTRACAO },
@@ -822,6 +855,15 @@ export class AuditoriaService {
     /* Pontualidade: 1ª ENTRADA do dia vs horaEntrada esperada (dias úteis do período) */
     type Agg = { nome: string; matricula: string; somaMin: number; dias: number };
     const pontMap = new Map<string, Agg>();
+    /* Dias que entram na conta (para o detalhamento em modal do dashboard). */
+    const pontualidadeDias: {
+      funcionarioId: string;
+      gerenciaId: string | null;
+      dia: string;
+      real: string;
+      esperado: string;
+      deltaMin: number;
+    }[] = [];
     const entradasPorFuncDia = new Map<string, Date>();
     for (const r of registrosPeriodo) {
       if (r.tipo !== "ENTRADA") continue;
@@ -862,6 +904,14 @@ export class AuditoriaService {
       if (delta < 0 && Math.abs(delta) <= toleranciaEntrada) delta = 0;
       if (delta === 0) continue;
 
+      pontualidadeDias.push({
+        funcionarioId: f.id,
+        gerenciaId: f.gerenciaId ?? null,
+        dia,
+        real: horarioDeDataBrasilia(dataHora),
+        esperado: jornadaCtx.horaEntrada ?? horaEntradaPadrao,
+        deltaMin: delta
+      });
       const agg = pontMap.get(f.id) ?? {
         nome: f.user.name,
         matricula: f.matricula ?? "",
@@ -925,6 +975,41 @@ export class AuditoriaService {
         minutos: Math.abs(p.minutos),
         minutosFormatado: this.formatMinutes(Math.abs(p.minutos))
       }));
+
+    if (somentePontualidade) {
+      return {
+        topAtrasados,
+        topAdiantados,
+        topBancoNegativo: [] as typeof topAtrasados,
+        topBancoPositivo: [] as typeof topAtrasados,
+        topMaisAtestados: [] as {
+          funcionarioId: string;
+          nome: string;
+          matricula: string;
+          quantidade: number;
+        }[],
+        topMenosAtestados: [] as {
+          funcionarioId: string;
+          nome: string;
+          matricula: string;
+          quantidade: number;
+        }[],
+        topMaisAbonos: [] as {
+          funcionarioId: string;
+          nome: string;
+          matricula: string;
+          quantidade: number;
+        }[],
+        topMenosAbonos: [] as {
+          funcionarioId: string;
+          nome: string;
+          matricula: string;
+          quantidade: number;
+        }[],
+        atrasoMedioPorGerencia,
+        pontualidadeDias
+      };
+    }
 
     /* Banco: saldo do ciclo atual (mesma regra de /ponto/banco-horas e /ponto/historico) */
     const bancoRows = (
@@ -1006,8 +1091,532 @@ export class AuditoriaService {
       topMenosAtestados: atestados.topMenos,
       topMaisAbonos: abonos.topMais,
       topMenosAbonos: abonos.topMenos,
-      atrasoMedioPorGerencia
+      atrasoMedioPorGerencia,
+      pontualidadeDias
     };
+  }
+
+  /* ─── Detalhamento em modal dos gráficos do dashboard ─── */
+
+  /**
+   * Lista por trás de uma barra/fatia/ponto dos gráficos do dashboard (Auditoria). Mesmos filtros e fuso dos
+   * gráficos (Brasília); alta administração fora das estatísticas. `tipo` identifica o gráfico e `chave` o item.
+   */
+  async getDashboardDetalhe(f: {
+    tipo: string;
+    chave?: string;
+    hora?: string;
+    dataInicio?: string;
+    dataFim?: string;
+  }) {
+    const ISO = /^\d{4}-\d{2}-\d{2}$/;
+    const hojeIso = hojeBrasiliaISO();
+    const fimIso = f.dataFim && ISO.test(f.dataFim) ? f.dataFim : hojeIso;
+    const iniIso =
+      f.dataInicio && ISO.test(f.dataInicio)
+        ? f.dataInicio
+        : (() => {
+            const d = new Date(`${fimIso}T12:00:00-03:00`);
+            d.setMonth(d.getMonth() - 1);
+            return dataCivilISO(d);
+          })();
+    const inicio = iniIso <= fimIso ? iniIso : fimIso;
+    const fim = iniIso <= fimIso ? fimIso : iniIso;
+    const periodo = {
+      gte: intervaloDiaBrasilia(inicio).inicio,
+      lte: intervaloDiaBrasilia(fim).fim
+    };
+    const hojeIntervalo = intervaloDiaBrasilia(hojeIso);
+    const semAlta = { categoria: SEM_ALTA_ADMINISTRACAO };
+    const LIMITE = 3000;
+    const chave = f.chave ?? "";
+
+    type Linha = {
+      funcionarioId: string | null;
+      nome: string;
+      matricula: string;
+      gerencia: string;
+      quando: string;
+      detalhe: string;
+      valor: string;
+    };
+    const fmtDia = (iso: string) => iso.slice(0, 10).split("-").reverse().join("/");
+    const fmtDataHora = (d: Date) => `${fmtDia(dataBrasiliaISO(d))} ${horarioDeDataBrasilia(d)}`;
+    const TIPO_PONTO: Record<string, string> = {
+      ENTRADA: "Entrada",
+      SAIDA: "Saída",
+      INICIO_INTERVALO: "Início do intervalo",
+      FIM_INTERVALO: "Fim do intervalo",
+      INTERROMPER_EXPEDIENTE: "Interromper expediente",
+      REINICIAR_EXPEDIENTE: "Reiniciar expediente"
+    };
+    const info = async (ids: string[]) => {
+      const rows = await this.prisma.funcionario.findMany({
+        where: { id: { in: [...new Set(ids)] } },
+        select: {
+          id: true,
+          matricula: true,
+          gerencia: { select: { nome: true, sigla: true } },
+          user: { select: { name: true } }
+        }
+      });
+      return new Map(
+        rows.map((r) => [
+          r.id,
+          {
+            nome: r.user?.name ?? "—",
+            matricula: r.matricula ?? "",
+            gerencia: r.gerencia?.sigla || r.gerencia?.nome || ""
+          }
+        ])
+      );
+    };
+    const montar = async (
+      itens: { funcionarioId: string; quando: string; detalhe: string; valor: string }[]
+    ): Promise<Linha[]> => {
+      const m = await info(itens.map((i) => i.funcionarioId));
+      return itens.map((i) => ({
+        funcionarioId: i.funcionarioId,
+        nome: m.get(i.funcionarioId)?.nome ?? "—",
+        matricula: m.get(i.funcionarioId)?.matricula ?? "",
+        gerencia: m.get(i.funcionarioId)?.gerencia ?? "",
+        quando: i.quando,
+        detalhe: i.detalhe,
+        valor: i.valor
+      }));
+    };
+    const formatMin = (min: number) => this.formatMinutes(min);
+    const resposta = async (
+      titulo: string,
+      colunas: { quando: string; detalhe: string; valor: string },
+      linhas: Linha[]
+    ) => ({
+      titulo,
+      colunas,
+      total: linhas.length,
+      truncado: linhas.length >= LIMITE,
+      periodo: { dataInicio: inicio, dataFim: fim },
+      linhas
+    });
+
+    /* Registros (por dia, por hora, origem, ajustados, KPIs de hoje) */
+    const registros = async (
+      where: Record<string, unknown>,
+      titulo: string,
+      colunas = { quando: "Data/hora", detalhe: "Tipo", valor: "Origem" }
+    ) => {
+      const regs = await this.prisma.registroPonto.findMany({
+        where: where as never,
+        orderBy: { dataHora: "asc" },
+        take: LIMITE,
+        select: { funcionarioId: true, dataHora: true, tipo: true, origem: true }
+      });
+      return resposta(
+        titulo,
+        colunas,
+        await montar(
+          regs.map((r) => ({
+            funcionarioId: r.funcionarioId,
+            quando: fmtDataHora(r.dataHora),
+            detalhe: TIPO_PONTO[r.tipo] ?? r.tipo,
+            valor: String(r.origem)
+          }))
+        )
+      );
+    };
+
+    if (f.tipo === "entradas-dia" && ISO.test(chave)) {
+      const { inicio: i, fim: e } = intervaloDiaBrasilia(chave);
+      return registros(
+        { dataHora: { gte: i, lte: e }, tipo: "ENTRADA", funcionario: semAlta },
+        `Entradas em ${fmtDia(chave)}`
+      );
+    }
+    if (f.tipo === "registros-hora" && ISO.test(chave)) {
+      const { inicio: i, fim: e } = intervaloDiaBrasilia(chave);
+      const regs = await this.prisma.registroPonto.findMany({
+        where: { dataHora: { gte: i, lte: e }, funcionario: semAlta },
+        orderBy: { dataHora: "asc" },
+        select: { funcionarioId: true, dataHora: true, tipo: true, origem: true }
+      });
+      const alvo = (f.hora ?? "").trim();
+      const doRecorte = regs.filter((r) => {
+        const h = horarioDeDataBrasilia(r.dataHora);
+        return /^\d{2}:\d{2}$/.test(alvo) ? h === alvo : h.slice(0, 2) === alvo.slice(0, 2);
+      });
+      return resposta(
+        `Registros em ${fmtDia(chave)}, ${/^\d{2}:\d{2}$/.test(alvo) ? alvo : `${alvo.slice(0, 2)}h`}`,
+        { quando: "Data/hora", detalhe: "Tipo", valor: "Origem" },
+        await montar(
+          doRecorte.slice(0, LIMITE).map((r) => ({
+            funcionarioId: r.funcionarioId,
+            quando: fmtDataHora(r.dataHora),
+            detalhe: TIPO_PONTO[r.tipo] ?? r.tipo,
+            valor: String(r.origem)
+          }))
+        )
+      );
+    }
+    if (f.tipo === "origem-hoje") {
+      return registros(
+        { dataHora: { gte: hojeIntervalo.inicio, lte: hojeIntervalo.fim }, origem: chave },
+        `Registros de hoje — origem ${chave}`
+      );
+    }
+    if (f.tipo === "registros-hoje") {
+      return registros(
+        { dataHora: { gte: hojeIntervalo.inicio, lte: hojeIntervalo.fim }, funcionario: semAlta },
+        "Registros de hoje"
+      );
+    }
+    if (f.tipo === "ajustados") {
+      const ajustado = chave !== "original";
+      return registros(
+        { dataHora: periodo, ajustado, funcionario: semAlta },
+        ajustado ? "Registros ajustados manualmente" : "Registros sem ajuste",
+        { quando: "Data/hora", detalhe: "Tipo", valor: "Origem" }
+      );
+    }
+    if (f.tipo === "canal") {
+      /* Todo o histórico (como o gráfico): por funcionário, com a quantidade de registros. */
+      const grupos = await this.prisma.registroPonto.groupBy({
+        by: ["funcionarioId"],
+        where: { origem: chave as never },
+        _count: { _all: true },
+        _max: { dataHora: true }
+      });
+      return resposta(
+        `Registros pelo canal ${chave}`,
+        { quando: "Último registro", detalhe: "Registros", valor: "" },
+        await montar(
+          grupos
+            .sort((a, b) => b._count._all - a._count._all)
+            .slice(0, LIMITE)
+            .map((g) => ({
+              funcionarioId: g.funcionarioId,
+              quando: g._max.dataHora ? fmtDataHora(g._max.dataHora) : "",
+              detalhe: String(g._count._all),
+              valor: ""
+            }))
+        )
+      );
+    }
+
+    /* Quem está trabalhando / em intervalo / pausado agora */
+    if (["trabalhando", "intervalo", "pausados"].includes(f.tipo)) {
+      const regs = await this.prisma.registroPonto.findMany({
+        where: { dataHora: { gte: hojeIntervalo.inicio, lte: hojeIntervalo.fim } },
+        orderBy: { dataHora: "asc" },
+        select: { funcionarioId: true, tipo: true, dataHora: true }
+      });
+      const ultimo = new Map<string, { tipo: string; dataHora: Date }>();
+      for (const r of regs) ultimo.set(r.funcionarioId, { tipo: r.tipo, dataHora: r.dataHora });
+      const casa = (t: string) =>
+        f.tipo === "trabalhando"
+          ? ["ENTRADA", "FIM_INTERVALO", "REINICIAR_EXPEDIENTE"].includes(t)
+          : f.tipo === "intervalo"
+            ? t === "INICIO_INTERVALO"
+            : t === "INTERROMPER_EXPEDIENTE";
+      const itens = [...ultimo.entries()].filter(([, v]) => casa(v.tipo));
+      const ativos = await this.prisma.funcionario.findMany({
+        where: { id: { in: itens.map(([id]) => id) }, ...semAlta },
+        select: { id: true }
+      });
+      const permitidos = new Set(ativos.map((a) => a.id));
+      return resposta(
+        f.tipo === "trabalhando"
+          ? "Trabalhando agora"
+          : f.tipo === "intervalo"
+            ? "Em intervalo"
+            : "Expediente interrompido",
+        { quando: "Último registro", detalhe: "Tipo", valor: "" },
+        await montar(
+          itens
+            .filter(([id]) => permitidos.has(id))
+            .map(([id, v]) => ({
+              funcionarioId: id,
+              quando: fmtDataHora(v.dataHora),
+              detalhe: TIPO_PONTO[v.tipo] ?? v.tipo,
+              valor: ""
+            }))
+        )
+      );
+    }
+
+    /* Afastamentos (ativos hoje, por tipo, por categoria, férias por mês) */
+    const afastamentos = async (where: Record<string, unknown>, titulo: string) => {
+      const rows = await this.prisma.afastamento.findMany({
+        where: { funcionario: semAlta, ...where } as never,
+        orderBy: { dataInicio: "desc" },
+        take: LIMITE,
+        select: { funcionarioId: true, tipo: true, dataInicio: true, dataFim: true }
+      });
+      return resposta(
+        titulo,
+        { quando: "Período", detalhe: "Tipo", valor: "Dias" },
+        await montar(
+          rows.map((a) => {
+            const i = dataBrasiliaISO(a.dataInicio);
+            const e = dataBrasiliaISO(a.dataFim);
+            return {
+              funcionarioId: a.funcionarioId,
+              quando: i === e ? fmtDia(i) : `${fmtDia(i)} a ${fmtDia(e)}`,
+              detalhe: String(a.tipo).replace(/_/g, " ").toLowerCase(),
+              valor: String(Math.round((Date.parse(e) - Date.parse(i)) / 86400000) + 1)
+            };
+          })
+        )
+      );
+    };
+    const noPeriodo = { dataInicio: { lte: periodo.lte }, dataFim: { gte: periodo.gte } };
+    if (f.tipo === "afastamentos-ativos") {
+      return afastamentos(
+        { dataInicio: { lte: hojeIntervalo.fim }, dataFim: { gte: hojeIntervalo.inicio } },
+        "Afastamentos ativos hoje"
+      );
+    }
+    if (f.tipo === "afastamento-tipo") {
+      return afastamentos(
+        { ...noPeriodo, tipo: chave },
+        `Afastamentos — ${chave.replace(/_/g, " ").toLowerCase()}`
+      );
+    }
+    if (f.tipo === "afastamento-categoria") {
+      return afastamentos(
+        { ...noPeriodo, funcionario: { categoria: chave } },
+        `Afastamentos — categoria ${chave}`
+      );
+    }
+    if (f.tipo === "ferias-mes" && /^\d{4}-\d{2}$/.test(chave)) {
+      const ini = intervaloDiaBrasilia(`${chave}-01`).inicio;
+      const ultimo = new Date(Number(chave.slice(0, 4)), Number(chave.slice(5, 7)), 0).getDate();
+      const fimMes = intervaloDiaBrasilia(`${chave}-${String(ultimo).padStart(2, "0")}`).fim;
+      return afastamentos(
+        { tipo: "FERIAS", dataInicio: { gte: ini, lte: fimMes } },
+        `Férias iniciadas em ${chave.slice(5)}/${chave.slice(0, 4)}`
+      );
+    }
+
+    /* Solicitações (por status, tipo, pendentes, atestados por mês, tempo de aprovação) */
+    const TIPO_SOL: Record<string, string> = {
+      CORRECAO_PONTO: "Correção de ponto",
+      ATESTADO: "Atestado médico",
+      FERIAS: "Férias",
+      LICENCA: "Licença e outros",
+      ABONO: "Abono",
+      DAY_OFF: "Day Off de aniversário",
+      HORA_EXTRA: "Hora extra",
+      ENVIO_DOCUMENTO_RH: "Envio de documento ao RH",
+      DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
+    };
+    const solicitacoes = async (where: Record<string, unknown>, titulo: string) => {
+      const rows = await this.prisma.solicitacao.findMany({
+        where: { funcionario: semAlta, ...where } as never,
+        orderBy: { createdAt: "desc" },
+        take: LIMITE,
+        select: { funcionarioId: true, tipo: true, status: true, createdAt: true }
+      });
+      return resposta(
+        titulo,
+        { quando: "Aberta em", detalhe: "Tipo", valor: "Situação" },
+        await montar(
+          rows.map((r) => ({
+            funcionarioId: r.funcionarioId,
+            quando: fmtDataHora(r.createdAt),
+            detalhe: TIPO_SOL[r.tipo] ?? r.tipo,
+            valor: String(r.status).replace(/_/g, " ").toLowerCase()
+          }))
+        )
+      );
+    };
+    if (f.tipo === "sol-pendentes") {
+      return solicitacoes({ status: "PENDENTE" }, "Solicitações pendentes (aguardando o chefe)");
+    }
+    if (f.tipo === "sol-status") {
+      return solicitacoes(
+        { status: chave, createdAt: periodo },
+        `Solicitações — ${chave.replace(/_/g, " ").toLowerCase()}`
+      );
+    }
+    if (f.tipo === "sol-tipo") {
+      return solicitacoes(
+        { tipo: chave, createdAt: periodo },
+        `Solicitações — ${TIPO_SOL[chave] ?? chave}`
+      );
+    }
+    if (f.tipo === "atestados-mes" && /^\d{4}-\d{2}$/.test(chave)) {
+      const ini = intervaloDiaBrasilia(`${chave}-01`).inicio;
+      const ultimo = new Date(Number(chave.slice(0, 4)), Number(chave.slice(5, 7)), 0).getDate();
+      const fimMes = intervaloDiaBrasilia(`${chave}-${String(ultimo).padStart(2, "0")}`).fim;
+      return solicitacoes(
+        { tipo: "ATESTADO", status: { not: "CANCELADA" }, createdAt: { gte: ini, lte: fimMes } },
+        `Atestados de ${chave.slice(5)}/${chave.slice(0, 4)}`
+      );
+    }
+    if (f.tipo === "tempo-aprovacao") {
+      const rows = await this.prisma.solicitacao.findMany({
+        where: { createdAt: periodo, funcionario: semAlta },
+        select: {
+          funcionarioId: true,
+          tipo: true,
+          createdAt: true,
+          gestorResolvidoEm: true,
+          rhResolvidoEm: true,
+          resolvidoEm: true
+        },
+        orderBy: { createdAt: "desc" },
+        take: LIMITE
+      });
+      const horas = (a: Date, b: Date) =>
+        Math.round(((b.getTime() - a.getTime()) / 3600000) * 10) / 10;
+      const itens: { funcionarioId: string; quando: string; detalhe: string; valor: string }[] = [];
+      for (const s of rows) {
+        if (chave === "gestor" && s.gestorResolvidoEm) {
+          itens.push({
+            funcionarioId: s.funcionarioId,
+            quando: fmtDataHora(s.createdAt),
+            detalhe: TIPO_SOL[s.tipo] ?? s.tipo,
+            valor: `${horas(s.createdAt, s.gestorResolvidoEm)} h`
+          });
+        }
+        if (chave === "rh") {
+          const fimRh = s.rhResolvidoEm ?? (!s.gestorResolvidoEm ? s.resolvidoEm : null);
+          if (fimRh) {
+            itens.push({
+              funcionarioId: s.funcionarioId,
+              quando: fmtDataHora(s.createdAt),
+              detalhe: TIPO_SOL[s.tipo] ?? s.tipo,
+              valor: `${horas(s.gestorResolvidoEm ?? s.createdAt, fimRh)} h`
+            });
+          }
+        }
+      }
+      return resposta(
+        chave === "rh" ? "Tempo de aprovação — etapa do RH" : "Tempo de aprovação — etapa do chefe",
+        { quando: "Aberta em", detalhe: "Tipo", valor: "Tempo" },
+        await montar(itens)
+      );
+    }
+
+    /* Assinatura do quadro de ponto */
+    if (f.tipo === "assinatura-status") {
+      const rows = await this.prisma.assinaturaQuadro.findMany({
+        where: { status: chave as never, periodo: { funcionario: semAlta } },
+        take: LIMITE,
+        select: { periodo: { select: { funcionarioId: true, mes: true, ano: true } } }
+      });
+      return resposta(
+        `Assinatura do quadro — ${chave.replace(/_/g, " ").toLowerCase()}`,
+        { quando: "Mês", detalhe: "", valor: "" },
+        await montar(
+          rows.map((r) => ({
+            funcionarioId: r.periodo.funcionarioId,
+            quando: `${String(r.periodo.mes).padStart(2, "0")}/${r.periodo.ano}`,
+            detalhe: "",
+            valor: ""
+          }))
+        )
+      );
+    }
+    if (f.tipo === "periodos") {
+      const rows = await this.prisma.periodoPonto.findMany({
+        where: { status: chave as never, funcionario: semAlta },
+        take: LIMITE,
+        select: { funcionarioId: true, mes: true, ano: true }
+      });
+      return resposta(
+        `Períodos de ponto — ${chave.toLowerCase()}`,
+        { quando: "Mês", detalhe: "", valor: "" },
+        await montar(
+          rows.map((r) => ({
+            funcionarioId: r.funcionarioId,
+            quando: `${String(r.mes).padStart(2, "0")}/${r.ano}`,
+            detalhe: "",
+            valor: ""
+          }))
+        )
+      );
+    }
+
+    /* Rankings por pessoa: ocorrências de quem foi clicado */
+    if (["atraso", "adiantado", "atraso-gerencia"].includes(f.tipo)) {
+      const registrosPeriodo = await this.prisma.registroPonto.findMany({
+        where: { dataHora: periodo },
+        select: { dataHora: true, tipo: true, funcionarioId: true },
+        orderBy: { dataHora: "asc" }
+      });
+      const r = await this.calcularRankingsDashboard(inicio, fim, registrosPeriodo, true);
+      if (f.tipo === "atraso-gerencia") {
+        const dias = r.pontualidadeDias.filter((d) => d.gerenciaId === chave && d.deltaMin > 0);
+        const porFunc = new Map<string, { soma: number; qtd: number }>();
+        for (const d of dias) {
+          const a = porFunc.get(d.funcionarioId) ?? { soma: 0, qtd: 0 };
+          a.soma += d.deltaMin;
+          a.qtd += 1;
+          porFunc.set(d.funcionarioId, a);
+        }
+        return resposta(
+          "Atraso médio na gerência",
+          { quando: "Dias com atraso", detalhe: "Atraso médio", valor: "" },
+          await montar(
+            [...porFunc.entries()]
+              .sort((a, b) => b[1].soma / b[1].qtd - a[1].soma / a[1].qtd)
+              .map(([id, a]) => ({
+                funcionarioId: id,
+                quando: String(a.qtd),
+                detalhe: formatMin(Math.round(a.soma / a.qtd)),
+                valor: ""
+              }))
+          )
+        );
+      }
+      const atraso = f.tipo === "atraso";
+      const dias = r.pontualidadeDias.filter(
+        (d) => d.funcionarioId === chave && (atraso ? d.deltaMin !== 0 : d.deltaMin !== 0)
+      );
+      return resposta(
+        atraso
+          ? "Entradas com diferença de horário (atrasos e adiantamentos)"
+          : "Entradas adiantadas",
+        { quando: "Dia", detalhe: "Entrada (esperada)", valor: "Diferença" },
+        await montar(
+          dias
+            .filter((d) => (atraso ? true : d.deltaMin < 0))
+            .map((d) => ({
+              funcionarioId: d.funcionarioId,
+              quando: fmtDia(d.dia),
+              detalhe: `${d.real} (${d.esperado})`,
+              valor: `${d.deltaMin > 0 ? "+" : "-"}${formatMin(Math.abs(d.deltaMin))}`
+            }))
+        )
+      );
+    }
+    if (f.tipo === "banco") {
+      const b = await this.pontoService.bancoHorasDoIntervalo(chave, inicio, fim);
+      return resposta(
+        "Banco de horas no período",
+        { quando: "Dia", detalhe: "Saldo do dia", valor: "Saldo acumulado" },
+        await montar(
+          b.dias
+            .filter((d) => d.saldoDiaMinutos !== 0)
+            .map((d) => ({
+              funcionarioId: chave,
+              quando: fmtDia(d.data),
+              detalhe: `${d.saldoDiaMinutos < 0 ? "-" : "+"}${formatMin(Math.abs(d.saldoDiaMinutos))}`,
+              valor: `${d.saldoAcumuladoMinutos < 0 ? "-" : ""}${formatMin(Math.abs(d.saldoAcumuladoMinutos))}`
+            }))
+        )
+      );
+    }
+    if (f.tipo === "atestados" || f.tipo === "abonos") {
+      const tipo = f.tipo === "atestados" ? "ATESTADO" : "ABONO";
+      return solicitacoes(
+        { funcionarioId: chave, tipo, status: { not: "CANCELADA" }, createdAt: periodo },
+        f.tipo === "atestados" ? "Atestados no período" : "Abonos no período"
+      );
+    }
+
+    throw new BadRequestException("Detalhamento não disponível para este gráfico.");
   }
 
   /* ─── Funcionários ─── */
@@ -1449,6 +2058,13 @@ export class AuditoriaService {
         intervaloDiaBrasilia(primeiroDia).inicio,
         intervaloDiaBrasilia(ultimoDiaIso).fim
       ),
+      /* Badge Home Office / Presencial por dia (só para quem está em home office ou híbrido). */
+      localModalidadePorDia: await localModalidadePorDia(
+        this.prisma,
+        funcionarioId,
+        intervaloDiaBrasilia(primeiroDia).inicio,
+        intervaloDiaBrasilia(ultimoDiaIso).fim
+      ),
       interjornadaPorDia: await interjornadaCurtaPorDia(
         this.prisma,
         funcionarioId,
@@ -1482,6 +2098,12 @@ export class AuditoriaService {
     gerenciaId?: string;
     dataInicio?: string;
     dataFim?: string;
+    /** Busca sem acento por nome, matrícula, cargo, setor, tipo, situação e descrição. */
+    busca?: string;
+    /** "nome": ordem alfabética do funcionário (mais recentes primeiro dentro de cada um). */
+    ordem?: string;
+    /** Estado do afastamento gerado pela solicitação: ATIVO (em vigor), PROGRAMADO ou ENCERRADO. */
+    afastamento?: string;
     page?: number;
     limit?: number;
   }) {
@@ -1490,6 +2112,29 @@ export class AuditoriaService {
     const skip = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
+    if (filtros.afastamento) {
+      const hoje = new Date();
+      const ini = this.startOfDay(hoje);
+      const fim = this.endOfDay(hoje);
+      const cond =
+        filtros.afastamento === "ATIVO"
+          ? { dataInicio: { lte: fim }, dataFim: { gte: ini } }
+          : filtros.afastamento === "PROGRAMADO"
+            ? { dataInicio: { gt: fim } }
+            : filtros.afastamento === "ENCERRADO"
+              ? { dataFim: { lt: ini } }
+              : null;
+      if (cond) {
+        const geradores = await this.prisma.afastamento.findMany({
+          where: { solicitacaoId: { not: null }, ...cond },
+          select: { solicitacaoId: true },
+          distinct: ["solicitacaoId"]
+        });
+        where.id = {
+          in: geradores.map((g) => g.solicitacaoId).filter((id): id is string => !!id)
+        };
+      }
+    }
     if (filtros.status) {
       const statusList = filtros.status
         .split(",")
@@ -1509,19 +2154,137 @@ export class AuditoriaService {
       where.funcionario = { gerenciaId: filtros.gerenciaId };
     }
 
+    const busca = (filtros.busca ?? "").trim();
+    const porNome = filtros.ordem === "nome";
+
+    if (busca) {
+      /* Busca sem acento: filtra em memória os candidatos (colunas leves) e só então carrega a página. */
+      const termos = this.semAcento(busca).split(/\s+/).filter(Boolean);
+      const candidatos = await this.prisma.solicitacao.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: 8000,
+        select: {
+          id: true,
+          tipo: true,
+          status: true,
+          descricao: true,
+          createdAt: true,
+          funcionario: {
+            select: {
+              matricula: true,
+              cargo: true,
+              user: { select: { name: true } },
+              gerencia: { select: { nome: true, sigla: true } }
+            }
+          }
+        }
+      });
+      const achados = candidatos.filter((c) => {
+        const texto = this.semAcento(
+          [
+            c.funcionario.user?.name,
+            c.funcionario.matricula,
+            c.funcionario.cargo,
+            c.funcionario.gerencia?.nome,
+            c.funcionario.gerencia?.sigla,
+            this.TIPO_LABEL[c.tipo] ?? c.tipo,
+            c.status.replace(/_/g, " "),
+            c.descricao
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+        return termos.every((t) => texto.includes(t));
+      });
+      if (porNome) {
+        achados.sort(
+          (a, b) =>
+            (a.funcionario.user?.name ?? "").localeCompare(
+              b.funcionario.user?.name ?? "",
+              "pt-BR"
+            ) || b.createdAt.getTime() - a.createdAt.getTime()
+        );
+      }
+      const ids = achados.slice(skip, skip + limit).map((c) => c.id);
+      const carregadas = await this.prisma.solicitacao.findMany({
+        where: { id: { in: ids } },
+        include: this.solicitacaoFuncionarioInclude
+      });
+      const porId = new Map(carregadas.map((r) => [r.id, r]));
+      const rows = ids.map((id) => porId.get(id)).filter((r): r is NonNullable<typeof r> => !!r);
+      return {
+        total: achados.length,
+        page,
+        limit,
+        solicitacoes: await this.anexarAfastamentos(
+          await this.enriquecerSolicitacoesComGestor(rows)
+        )
+      };
+    }
+
     const [total, rows] = await Promise.all([
       this.prisma.solicitacao.count({ where }),
       this.prisma.solicitacao.findMany({
         where,
-        orderBy: { createdAt: "desc" },
+        orderBy: porNome
+          ? [{ funcionario: { user: { name: "asc" } } }, { createdAt: "desc" }]
+          : { createdAt: "desc" },
         skip,
         take: limit,
         include: this.solicitacaoFuncionarioInclude
       })
     ]);
 
-    const solicitacoes = await this.enriquecerSolicitacoesComGestor(rows);
+    const solicitacoes = await this.anexarAfastamentos(
+      await this.enriquecerSolicitacoesComGestor(rows)
+    );
     return { total, page, limit, solicitacoes };
+  }
+
+  /**
+   * Cada solicitação passa a levar o(s) afastamento(s) que ela gerou: o afastamento é o estado final
+   * da solicitação, então aparece junto dela e não numa lista separada.
+   */
+  private async anexarAfastamentos<T extends { id: string }>(
+    solicitacoes: T[]
+  ): Promise<
+    (T & {
+      afastamentos: Array<{
+        id: string;
+        tipo: string;
+        rotulo: string | null;
+        dataInicio: Date;
+        dataFim: Date;
+        horarioInicio: string | null;
+        horarioFim: string | null;
+      }>;
+    })[]
+  > {
+    if (!solicitacoes.length) return [];
+    const afs = await this.prisma.afastamento.findMany({
+      where: { solicitacaoId: { in: solicitacoes.map((s) => s.id) } },
+      orderBy: { dataInicio: "asc" },
+      select: {
+        id: true,
+        tipo: true,
+        rotulo: true,
+        dataInicio: true,
+        dataFim: true,
+        horarioInicio: true,
+        horarioFim: true,
+        solicitacaoId: true
+      }
+    });
+    const porSol = new Map<string, typeof afs>();
+    for (const a of afs) {
+      const k = a.solicitacaoId as string;
+      porSol.set(k, [...(porSol.get(k) ?? []), a]);
+    }
+    return solicitacoes.map((s) => ({
+      ...s,
+      afastamentos: (porSol.get(s.id) ?? []).map(({ solicitacaoId: _x, ...a }) => (void _x, a))
+    }));
   }
 
   async atualizarStatusSolicitacao(
@@ -1808,11 +2571,12 @@ export class AuditoriaService {
 
   async gestorResolverSolicitacao(
     id: string,
-    decisao: "APROVAR" | "REJEITAR",
+    decisao: "APROVAR" | "REJEITAR" | "DEVOLVER",
     observacao: string,
     keycloakSub: string,
     isSuperAdmin = false,
-    cienciaMeta?: GestorCienciaMeta
+    cienciaMeta?: GestorCienciaMeta,
+    ehGerenteRh = false
   ) {
     const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
     if (solicitacao.status !== "PENDENTE") {
@@ -1824,16 +2588,66 @@ export class AuditoriaService {
     const user = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
     await this.assertNaoEhAutoaprovacao(solicitacao.funcionarioId, user?.id);
 
+    /* Férias configuradas pelo RH: o aceite é do chefe imediato OU do Gerente de RH (discricionário); vale o primeiro. */
+    const feriasDoRh =
+      solicitacao.tipo === "FERIAS" &&
+      ((solicitacao.metadados ?? {}) as Record<string, unknown>).origem === "RH";
+    let aceitePor: "CHEFE" | "GERENTE_RH" = "CHEFE";
     // Super admin tem autoridade sobre qualquer funcionário
     if (!isSuperAdmin) {
       const equipe = await this.getEquipeDoGestor(keycloakSub);
       const pertenceEquipe = equipe.some((f) => f.id === solicitacao.funcionarioId);
       if (!pertenceEquipe) {
-        throw new ForbiddenException("Você não tem autoridade sobre este funcionário.");
+        if (ehGerenteRh && feriasDoRh) aceitePor = "GERENTE_RH";
+        else throw new ForbiddenException("Você não tem autoridade sobre este funcionário.");
       }
+    } else if (feriasDoRh) {
+      aceitePor = "GERENTE_RH";
     }
 
     const agora = new Date();
+
+    /* Devolver para correção: só no "Envio de Documento - Home Office"; o funcionário corrige e reenvia. */
+    if (decisao === "DEVOLVER") {
+      if (solicitacao.tipo !== "DOCUMENTO_VIA_CHEFE") {
+        throw new BadRequestException("Esta solicitação não pode ser devolvida para correção.");
+      }
+      const motivo = (observacao ?? "").trim();
+      if (motivo.length < 10) {
+        throw new BadRequestException("Informe o motivo da devolução (mínimo de 10 caracteres).");
+      }
+      const metaDev = (solicitacao.metadados as Record<string, unknown> | null) ?? {};
+      const anteriores = Array.isArray(metaDev.devolucoes) ? (metaDev.devolucoes as unknown[]) : [];
+      const devolvida = await this.prisma.solicitacao.update({
+        where: { id },
+        data: {
+          status: "DEVOLVIDA",
+          gestorUserId: user?.id,
+          gestorObservacao: motivo,
+          gestorResolvidoEm: agora,
+          metadados: {
+            ...metaDev,
+            devolucoes: [
+              ...anteriores,
+              {
+                porNome: user?.name ?? "Chefe",
+                porUserId: user?.id ?? null,
+                em: agora.toISOString(),
+                motivo
+              }
+            ]
+          } as unknown as Prisma.InputJsonValue
+        },
+        include: { funcionario: { include: { user: { select: { name: true } } } } }
+      });
+      this.notificarSolicitacaoFuncionario(
+        solicitacao.funcionarioId,
+        "DEVOLVIDA",
+        solicitacao.tipo,
+        motivo
+      ).catch((e) => this.logger.error(`Falha ao notificar SOLICITACAO_DEVOLVIDA: ${e}`));
+      return devolvida;
+    }
 
     /* Correção de ponto: aprovação do gestor já finaliza — não precisa de RH */
     if (decisao === "APROVAR" && solicitacao.tipo === "CORRECAO_PONTO") {
@@ -1931,20 +2745,60 @@ export class AuditoriaService {
     }
 
     /* Demais tipos: fluxo bifásico normal (gestor → RH) */
-    const novoStatus = decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
-    const resolvida = await this.prisma.solicitacao.update({
-      where: { id },
-      data: {
-        status: novoStatus,
-        gestorUserId: user?.id,
-        gestorObservacao: observacao,
-        gestorResolvidoEm: agora,
-        ...(metadadosUpdate ? { metadados: metadadosUpdate as Prisma.InputJsonValue } : {})
-      },
-      include: {
-        funcionario: { include: { user: { select: { name: true } } } }
+    const novoStatus: StatusSolicitacao =
+      decisao === "APROVAR" ? "AGUARDANDO_RH" : "REJEITADA_GESTOR";
+    const dadosDecisao = {
+      status: novoStatus,
+      gestorUserId: user?.id,
+      gestorObservacao: observacao,
+      gestorResolvidoEm: agora,
+      ...(metadadosUpdate ? { metadados: metadadosUpdate as Prisma.InputJsonValue } : {})
+    };
+    let resolvida;
+    if (feriasDoRh) {
+      /* Aceite exclusivo (chefe XOR Gerente de RH): só muda se ainda estiver PENDENTE. */
+      const metaAceite = {
+        ...((metadadosUpdate ?? solicitacao.metadados ?? {}) as Record<string, unknown>),
+        aceite: {
+          por: aceitePor,
+          decisao,
+          nome: user?.name ?? (aceitePor === "GERENTE_RH" ? "Gerente de RH" : "Chefe"),
+          em: agora.toISOString(),
+          observacao: observacao ?? ""
+        }
+      };
+      const r = await this.prisma.solicitacao.updateMany({
+        where: { id, status: "PENDENTE" },
+        data: { ...dadosDecisao, metadados: metaAceite as Prisma.InputJsonValue }
+      });
+      if (r.count === 0) {
+        throw new BadRequestException(
+          "Esta solicitação já foi decidida pelo chefe ou pelo Gerente de RH."
+        );
       }
-    });
+      resolvida = await this.prisma.solicitacao.findUniqueOrThrow({
+        where: { id },
+        include: { funcionario: { include: { user: { select: { name: true } } } } }
+      });
+      if (aceitePor === "GERENTE_RH") {
+        this.notificarChefeAceiteGerenteRh(
+          solicitacao.funcionarioId,
+          resolvida.funcionario.user?.name ?? "Funcionário",
+          user?.name ?? "Gerente de RH",
+          decisao
+        ).catch((e) =>
+          this.logger.error(`Falha ao avisar o chefe do aceite do Gerente de RH: ${e}`)
+        );
+      }
+    } else {
+      resolvida = await this.prisma.solicitacao.update({
+        where: { id },
+        data: dadosDecisao,
+        include: {
+          funcionario: { include: { user: { select: { name: true } } } }
+        }
+      });
+    }
 
     if (novoStatus === "REJEITADA_GESTOR") {
       this.notificarSolicitacaoFuncionario(
@@ -2040,6 +2894,17 @@ export class AuditoriaService {
 
     if (decisao === "APROVAR") {
       const metadados = solicitacao.metadados as Record<string, unknown> | null;
+      /* Férias: a aprovação acontece quando o funcionário assina o Aviso. O RH só aprova aqui o que ficou no
+         fluxo antigo (tudo já assinado antes da mudança). */
+      if (
+        solicitacao.tipo === "FERIAS" &&
+        !metadados?.assinaturaFerias &&
+        !solicitacao.documentoRetornoUrl
+      ) {
+        throw new BadRequestException(
+          "As férias são aprovadas quando o funcionário assina o Aviso de Férias. Envie o Aviso (e o Recibo) ao funcionário."
+        );
+      }
       const requerHomologacao = metadados?.requerHomologacao === true;
       if (
         solicitacao.tipo === "ATESTADO" &&
@@ -2115,6 +2980,25 @@ export class AuditoriaService {
       return rejeitada;
     }
 
+    return this.concluirAprovacaoSolicitacao(solicitacao, {
+      atorSub: keycloakSub,
+      rhUserId: rhUser?.id ?? null,
+      observacao,
+      agora
+    });
+  }
+
+  /**
+   * Fecho da aprovação (aplica a mudança, cancela a original em alteração de férias, marca APROVADA e avisa).
+   * Usado pela aprovação do RH e, nas férias, pela assinatura do Aviso de Férias pelo funcionário.
+   */
+  private async concluirAprovacaoSolicitacao(
+    solicitacao: Awaited<ReturnType<PrismaService["solicitacao"]["findUniqueOrThrow"]>>,
+    o: { atorSub: string; rhUserId: string | null; observacao: string; agora: Date }
+  ) {
+    const { atorSub: keycloakSub, observacao, agora } = o;
+    const id = solicitacao.id;
+    const rhUser = o.rhUserId ? { id: o.rhUserId } : null;
     // Aprovar: aplicar a mudança conforme o tipo
     await this.aplicarMudancaSolicitacao(solicitacao, keycloakSub);
 
@@ -2275,7 +3159,13 @@ export class AuditoriaService {
         arquivoBase64: d.arquivoBase64,
         mimeType: d.mimeType
       });
-      documentos.push({ tipo, rotulo, nome: d.nomeArquivo?.trim() || null, url });
+      documentos.push({
+        tipo,
+        rotulo,
+        nome: d.nomeArquivo?.trim() || null,
+        url,
+        enviadoEm: new Date().toISOString()
+      } as unknown as (typeof documentos)[number]);
     }
 
     const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
@@ -2325,6 +3215,289 @@ export class AuditoriaService {
     return atualizada;
   }
 
+  /**
+   * Assinou o Aviso de Férias: as férias são aprovadas (afastamentos criados). Chamado pelo PontoService ao registrar
+   * a assinatura do Aviso, nos dois processos (configuração do RH e solicitação do funcionário).
+   */
+  /** Chefe informado de que o Gerente de RH decidiu as férias no lugar dele. */
+  private async notificarChefeAceiteGerenteRh(
+    funcionarioId: string,
+    funcNome: string,
+    gerenteNome: string,
+    decisao: string
+  ) {
+    const chefe = await this.notificacaoService.getGestorDoFuncionario(funcionarioId);
+    if (!chefe) return;
+    const verbo = decisao === "APROVAR" ? "aceitou" : "recusou";
+    await this.notificacaoService.dispararEvento(
+      "FERIAS_RH",
+      `Férias de ${funcNome}: ${verbo} pelo Gerente de RH`,
+      `${gerenteNome} (Gerente de RH) ${verbo} as férias de ${funcNome} programadas pelo RH, no lugar da sua análise. ` +
+        "A solicitação segue o fluxo e não precisa mais da sua decisão.",
+      [chefe]
+    );
+  }
+
+  async finalizarFeriasPorAssinatura(id: string) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    if (solicitacao.tipo !== "FERIAS" || solicitacao.status === "APROVADA") return;
+    const rh = solicitacao.rhUserId
+      ? await this.prisma.user.findUnique({
+          where: { id: solicitacao.rhUserId },
+          select: { externalId: true }
+        })
+      : null;
+    await this.concluirAprovacaoSolicitacao(solicitacao, {
+      atorSub: rh?.externalId ?? "sistema:assinatura-aviso-ferias",
+      rhUserId: solicitacao.rhUserId ?? null,
+      observacao: "Aprovada com a assinatura do Aviso de Férias pelo funcionário.",
+      agora: new Date()
+    });
+  }
+
+  /**
+   * RH envia (ou reenvia) UM documento de férias: AVISO, RECIBO ou OUTROS. Não mexe nos demais nem nas assinaturas
+   * deles. Disponível a partir do aceite (chefe ou Gerente de RH). O Aviso libera a assinatura que aprova as férias;
+   * o Recibo corre em paralelo.
+   */
+  async rhEnviarDocumentoFerias(
+    id: string,
+    entrada: DocumentoFeriasEntrada,
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
+    if (solicitacao.tipo !== "FERIAS") {
+      throw new BadRequestException(
+        "Os documentos de férias só podem ser enviados para solicitações de férias."
+      );
+    }
+    if (
+      !["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO", "APROVADA"].includes(
+        solicitacao.status
+      )
+    ) {
+      throw new BadRequestException(
+        "Os documentos de férias só podem ser enviados depois do aceite do chefe (ou do Gerente de RH)."
+      );
+    }
+    if (typeof entrada?.arquivoBase64 !== "string" || !entrada.arquivoBase64) {
+      throw new BadRequestException("Anexe o arquivo do documento (PDF, JPG ou PNG).");
+    }
+    const tipo = ["AVISO", "RECIBO", "OUTROS"].includes(entrada.tipo) ? entrada.tipo : "OUTROS";
+    if (tipo === "AVISO" && solicitacao.status === "APROVADA") {
+      throw new BadRequestException(
+        "O Aviso de Férias já foi assinado e as férias estão aprovadas."
+      );
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const docs = (Array.isArray(meta.documentosFerias) ? meta.documentosFerias : []) as Array<
+      Record<string, unknown>
+    >;
+    const idx = tipo === "OUTROS" ? -1 : docs.findIndex((d) => d.tipo === tipo);
+    if (idx >= 0 && docs[idx].urlAssinado) {
+      throw new BadRequestException(
+        `${tipo === "AVISO" ? "O Aviso" : "O Recibo"} de Férias já foi assinado pelo funcionário.`
+      );
+    }
+    const ROTULO: Record<string, string> = { AVISO: "Aviso de Férias", RECIBO: "Recibo de Férias" };
+    const rotulo = (ROTULO[tipo] ?? (entrada.rotulo ?? "").trim()) || "Outro documento";
+    const ordem = (idx >= 0 ? idx : docs.length) + 1;
+    const url = await this.documentoService.salvarDocumentoFerias({
+      solicitacaoId: id,
+      ordem,
+      tipo,
+      arquivoBase64: entrada.arquivoBase64,
+      mimeType: entrada.mimeType
+    });
+    const novoDoc: Record<string, unknown> = {
+      tipo,
+      rotulo,
+      nome: entrada.nomeArquivo?.trim() || null,
+      url,
+      enviadoEm: new Date().toISOString(),
+      ...(idx >= 0 && docs[idx].prazoProrrogadoAte
+        ? { prazoProrrogadoAte: docs[idx].prazoProrrogadoAte }
+        : {})
+    };
+    const novos = idx >= 0 ? docs.map((d, i) => (i === idx ? novoDoc : d)) : [...docs, novoDoc];
+    const restoMeta = { ...meta } as Record<string, unknown>;
+    delete restoMeta.rejeicaoDocumentoFerias;
+    /* Mantém a rejeição apenas se ainda houver outro documento rejeitado aguardando correção. */
+    const outroRejeitado = novos.find((d) => d !== novoDoc && d.rejeicao) as
+      | { rotulo?: string; rejeicao?: { nome: string; em: string; justificativa: string } }
+      | undefined;
+    if (outroRejeitado?.rejeicao) {
+      restoMeta.rejeicaoDocumentoFerias = {
+        ...outroRejeitado.rejeicao,
+        documento: outroRejeitado.rotulo ?? "documento"
+      };
+    }
+    const rhUser = await this.prisma.user.findFirst({ where: { externalId: keycloakSub } });
+    const obsFinal = observacao || `${rotulo} enviado para assinatura.`;
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        guiaMedicoUrl: docs.length === 0 ? url : solicitacao.guiaMedicoUrl,
+        guiaMedicoEnviadaEm: new Date(),
+        guiaMedicoObservacao: obsFinal,
+        rhUserId: rhUser?.id ?? solicitacao.rhUserId,
+        ...(tipo === "AVISO" && solicitacao.status === "AGUARDANDO_RH"
+          ? { status: "AGUARDANDO_DOCUMENTO_FUNCIONARIO" as const }
+          : {}),
+        metadados: { ...restoMeta, documentosFerias: novos } as unknown as Prisma.InputJsonValue
+      }
+    });
+
+    const primeiro = periodosOrdenadosFerias(meta)[0];
+    const prazo = primeiro ? prazoDocumento(tipo, primeiro) : null;
+    const textoPrazo = prazo ? ` Prazo para assinar: ${fmtDataBr(prazo)}.` : "";
+    this.notificarDocumentoRhEnviado(
+      atualizada.funcionarioId,
+      `${rotulo} de férias`,
+      obsFinal
+    ).catch((e) => this.logger.error(`Falha ao notificar RH_DOCUMENTO_ENVIADO: ${e}`));
+    this.notificacaoService
+      .getFuncionarioDestinatario(atualizada.funcionarioId)
+      .then((dest) =>
+        dest
+          ? this.notificacaoService.dispararEvento(
+              "DOCUMENTO_RETORNO_PENDENTE",
+              `Assine o ${rotulo} das suas férias`,
+              `O RH enviou o ${rotulo} para a sua assinatura.${textoPrazo}\n\n` +
+                "Assine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH." +
+                (tipo === "AVISO" ? " As férias são aprovadas com a assinatura do Aviso." : ""),
+              [dest]
+            )
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar DOCUMENTO_RETORNO_PENDENTE: ${e}`));
+    return atualizada;
+  }
+
+  /**
+   * RH prorroga o prazo de assinatura de UM documento (Aviso ou Recibo) já enviado — do 1º período
+   * (`ordem` ausente/1) ou de uma rodada (2º/3º). A nova data vale só para esse documento.
+   */
+  async rhProrrogarPrazoDocumentoFerias(
+    id: string,
+    tipoEntrada: string,
+    ordem: number | null,
+    novoPrazo: string,
+    motivo: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
+    const tipo = String(tipoEntrada).toUpperCase();
+    if (solicitacao.tipo !== "FERIAS" || !["AVISO", "RECIBO"].includes(tipo)) {
+      throw new BadRequestException("Só o Aviso e o Recibo de férias têm prazo para prorrogar.");
+    }
+    if ((motivo ?? "").trim().length < 5) {
+      throw new BadRequestException("Informe o motivo da prorrogação (mínimo 5 caracteres).");
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const periodos = periodosOrdenadosFerias(meta);
+    const rodada = ordem !== null && ordem > 1;
+    const periodo = periodos.find((p) => p.ordem === (rodada ? ordem : 1));
+    if (!periodo) throw new BadRequestException("Período de férias não encontrado.");
+    const hoje = hojeBrasiliaISO();
+    const rotuloDoc = tipo === "AVISO" ? "Aviso de Férias" : "Recibo de Férias";
+
+    const aplicar = (docs: Array<Record<string, unknown>>) => {
+      const idx = docs.findIndex((d) => d.tipo === tipo);
+      if (idx < 0) {
+        throw new BadRequestException(`O ${rotuloDoc} ainda não foi enviado ao funcionário.`);
+      }
+      const doc = docs[idx];
+      if (doc.urlAssinado) {
+        throw new BadRequestException(`O ${rotuloDoc} já foi assinado; não há prazo a prorrogar.`);
+      }
+      const vigente = prazoDocumento(tipo, periodo, doc.prazoProrrogadoAte as string | undefined);
+      const erro = validarProrrogacao(vigente, novoPrazo, hoje);
+      if (erro) throw new BadRequestException(erro);
+      return docs.map((d, i) =>
+        i === idx
+          ? {
+              ...d,
+              prazoProrrogadoAte: novoPrazo,
+              prorrogadoEm: new Date().toISOString(),
+              prorrogadoPor: keycloakSub,
+              prorrogacaoMotivo: motivo.trim(),
+              /* Recomeça a cobrança: o lembrete semanal conta a partir da prorrogação. */
+              ultimoLembreteEm: new Date().toISOString(),
+              ultimoAlertaRhEm: undefined
+            }
+          : d
+      );
+    };
+
+    let data: Prisma.SolicitacaoUpdateInput;
+    if (rodada) {
+      if (solicitacao.status !== "APROVADA") {
+        throw new BadRequestException("Só férias aprovadas têm rodadas de Aviso e Recibo.");
+      }
+      const atual = rodadasDe(meta)[String(ordem)];
+      if (!atual) throw new BadRequestException("Este período ainda não recebeu documentos.");
+      if (atual.situacao === "CONCLUIDA") {
+        throw new BadRequestException("Os documentos deste período já foram assinados.");
+      }
+      const docs = aplicar([...(atual.documentos ?? [])] as unknown as Array<
+        Record<string, unknown>
+      >);
+      data = {
+        metadados: {
+          ...meta,
+          rodadasFerias: {
+            ...rodadasDe(meta),
+            [String(ordem)]: { ...atual, documentos: docs }
+          }
+        } as unknown as Prisma.InputJsonValue
+      };
+    } else {
+      if (
+        !["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO", "APROVADA"].includes(
+          solicitacao.status
+        )
+      ) {
+        throw new BadRequestException("Esta solicitação ainda não tem documentos enviados.");
+      }
+      const docs = aplicar(
+        (Array.isArray(meta.documentosFerias) ? meta.documentosFerias : []) as Array<
+          Record<string, unknown>
+        >
+      );
+      data = { metadados: { ...meta, documentosFerias: docs } as unknown as Prisma.InputJsonValue };
+    }
+    const atualizada = await this.prisma.solicitacao.update({ where: { id }, data });
+    const sufixo = periodos.length > 1 ? ` do ${periodo.ordem}º período` : "";
+    this.notificacaoService
+      .getFuncionarioDestinatario(atualizada.funcionarioId)
+      .then((dest) =>
+        dest
+          ? this.notificacaoService.dispararEvento(
+              "DOCUMENTO_RETORNO_PENDENTE",
+              `Prazo prorrogado: ${rotuloDoc}${sufixo}`,
+              `O RH prorrogou o prazo para você assinar o ${rotuloDoc}${sufixo} das suas férias. ` +
+                `Novo prazo: ${fmtDataBr(novoPrazo)}.\n\nAssine pelo sistema em Solicitações → Férias ` +
+                "ou em Minhas Requisições do RH.",
+              [dest]
+            )
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar prorrogação de prazo: ${e}`));
+    return atualizada;
+  }
+
   /* ─── Férias divididas: Aviso e Recibo do 2º e 3º período ─── */
 
   /** Férias aprovadas com período futuro (2º/3º) que ainda não teve a rodada concluída. */
@@ -2356,7 +3529,14 @@ export class AuditoriaService {
       diasParaInicio: number;
       noPrazo: boolean;
       situacao: string;
-      documentos: Array<{ tipo: string; rotulo?: string; url: string; urlAssinado?: string }>;
+      documentos: Array<{
+        tipo: string;
+        rotulo?: string;
+        url: string;
+        urlAssinado?: string;
+        rejeicao?: { nome: string; em: string; justificativa: string };
+        prazoProrrogadoAte?: string;
+      }>;
     }> = [];
     for (const s of sols) {
       const meta = (s.metadados ?? {}) as Record<string, unknown>;
@@ -2380,7 +3560,9 @@ export class AuditoriaService {
             tipo: d.tipo,
             rotulo: d.rotulo,
             url: d.url,
-            urlAssinado: d.urlAssinado
+            urlAssinado: d.urlAssinado,
+            rejeicao: d.rejeicao,
+            prazoProrrogadoAte: d.prazoProrrogadoAte
           }))
         });
       }
@@ -2439,7 +3621,13 @@ export class AuditoriaService {
         arquivoBase64: d.arquivoBase64,
         mimeType: d.mimeType
       });
-      documentos.push({ tipo, rotulo, nome: d.nomeArquivo?.trim() || null, url });
+      documentos.push({
+        tipo,
+        rotulo,
+        nome: d.nomeArquivo?.trim() || null,
+        url,
+        enviadoEm: new Date().toISOString()
+      } as unknown as (typeof documentos)[number]);
     }
     const obsFinal = observacao || "Documentos do período de férias enviados para assinatura.";
     const rodada: RodadaFeriasMeta = {
@@ -2473,6 +3661,108 @@ export class AuditoriaService {
               `O RH enviou ${lista} do ${ordem}º período de férias ` +
                 `(${fmtDataBr(periodo.inicio)} a ${fmtDataBr(periodo.fim)}) para a sua assinatura.\n\n` +
                 "Assine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH.",
+              [dest]
+            )
+          : undefined
+      )
+      .catch((e) => this.logger.error(`Falha ao notificar FERIAS_RODADA_ASSINAR: ${e}`));
+    return atualizada;
+  }
+
+  /** RH envia (ou reenvia) UM documento (Aviso, Recibo ou outro) do 2º/3º período, sem mexer nos demais. */
+  async rhEnviarDocumentoRodadaFerias(
+    id: string,
+    ordem: number,
+    entrada: DocumentoFeriasEntrada,
+    observacao: string,
+    keycloakSub: string
+  ) {
+    const solicitacao = await this.prisma.solicitacao.findUniqueOrThrow({ where: { id } });
+    await this.assertNaoEhProprioPorSub(
+      solicitacao.funcionarioId,
+      keycloakSub,
+      "Você não pode dar andamento à sua própria solicitação. Outro membro do RH deve tratá-la."
+    );
+    if (solicitacao.tipo !== "FERIAS" || solicitacao.status !== "APROVADA") {
+      throw new BadRequestException("Só férias aprovadas têm rodadas de Aviso e Recibo.");
+    }
+    const meta = (solicitacao.metadados ?? {}) as Record<string, unknown>;
+    const periodo = periodosComRodada(meta, hojeBrasiliaISO()).find((p) => p.ordem === ordem);
+    if (!periodo) {
+      throw new BadRequestException(
+        "Este período não existe, é o 1º (já tem seus documentos) ou já começou."
+      );
+    }
+    if (typeof entrada?.arquivoBase64 !== "string" || !entrada.arquivoBase64) {
+      throw new BadRequestException("Anexe o arquivo do documento (PDF, JPG ou PNG).");
+    }
+    const atual = rodadasDe(meta)[String(ordem)];
+    if (atual?.situacao === "CONCLUIDA") {
+      throw new BadRequestException("Os documentos deste período já foram assinados.");
+    }
+    const tipo = ["AVISO", "RECIBO", "OUTROS"].includes(entrada.tipo) ? entrada.tipo : "OUTROS";
+    const docs = [...(atual?.documentos ?? [])] as unknown as Array<Record<string, unknown>>;
+    const idx = tipo === "OUTROS" ? -1 : docs.findIndex((d) => d.tipo === tipo);
+    if (idx >= 0 && docs[idx].urlAssinado) {
+      throw new BadRequestException(
+        `${tipo === "AVISO" ? "O Aviso" : "O Recibo"} deste período já foi assinado.`
+      );
+    }
+    const ROTULO: Record<string, string> = { AVISO: "Aviso de Férias", RECIBO: "Recibo de Férias" };
+    const rotulo = (ROTULO[tipo] ?? (entrada.rotulo ?? "").trim()) || "Outro documento";
+    const posicao = idx >= 0 ? idx : docs.length;
+    const url = await this.documentoService.salvarDocumentoFerias({
+      solicitacaoId: id,
+      ordem: ordemArquivoRodada(ordem, posicao),
+      tipo,
+      arquivoBase64: entrada.arquivoBase64,
+      mimeType: entrada.mimeType
+    });
+    const novoDoc: Record<string, unknown> = {
+      tipo,
+      rotulo,
+      nome: entrada.nomeArquivo?.trim() || null,
+      url,
+      enviadoEm: new Date().toISOString(),
+      ...(idx >= 0 && docs[idx].prazoProrrogadoAte
+        ? { prazoProrrogadoAte: docs[idx].prazoProrrogadoAte }
+        : {})
+    };
+    const novos = idx >= 0 ? docs.map((d, i) => (i === idx ? novoDoc : d)) : [...docs, novoDoc];
+    const obsFinal = observacao || `${rotulo} do ${ordem}º período enviado para assinatura.`;
+    const rodada: RodadaFeriasMeta = {
+      ordem,
+      inicio: periodo.inicio,
+      fim: periodo.fim,
+      avisoRhEm: atual?.avisoRhEm,
+      documentos: novos as unknown as RodadaFeriasMeta["documentos"],
+      observacao: obsFinal,
+      enviadaEm: new Date().toISOString(),
+      situacao: situacaoDaRodada(
+        novos as Array<{ tipo: string; urlAssinado?: string; rejeicao?: unknown }>
+      )
+    };
+    const atualizada = await this.prisma.solicitacao.update({
+      where: { id },
+      data: {
+        metadados: {
+          ...meta,
+          rodadasFerias: { ...rodadasDe(meta), [String(ordem)]: rodada }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+    const prazo = prazoDocumento(tipo, periodo);
+    this.notificacaoService
+      .getFuncionarioDestinatario(atualizada.funcionarioId)
+      .then((dest) =>
+        dest
+          ? this.notificacaoService.dispararEvento(
+              "FERIAS_RODADA_ASSINAR",
+              `Assine o ${rotulo} do ${ordem}º período das suas férias`,
+              `O RH enviou o ${rotulo} do ${ordem}º período de férias ` +
+                `(${fmtDataBr(periodo.inicio)} a ${fmtDataBr(periodo.fim)}) para a sua assinatura.` +
+                (prazo ? ` Prazo: ${fmtDataBr(prazo)}.` : "") +
+                "\n\nAssine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH.",
               [dest]
             )
           : undefined
@@ -2527,6 +3817,154 @@ export class AuditoriaService {
     } catch (e) {
       this.logger.error(`Falha ao avisar rodadas de férias pendentes: ${(e as Error).message}`);
     }
+  }
+
+  /**
+   * Lembrete diário (07:30, Brasília) dos documentos de férias aguardando a assinatura: o funcionário recebe e-mail e
+   * aviso no sistema uma vez por semana e, nos últimos 4 dias do prazo, todos os dias. Documento vencido: para de
+   * cobrar o funcionário e o RH é alertado (a cada 7 dias).
+   */
+  @Cron("30 7 * * *", { timeZone: "America/Sao_Paulo" })
+  async lembrarAssinaturaDocumentosFerias() {
+    try {
+      const hoje = hojeBrasiliaISO();
+      const sols = await this.prisma.solicitacao.findMany({
+        where: {
+          tipo: "FERIAS",
+          status: { in: ["AGUARDANDO_RH", "AGUARDANDO_DOCUMENTO_FUNCIONARIO", "APROVADA"] },
+          funcionario: { ativo: true }
+        },
+        select: {
+          id: true,
+          funcionarioId: true,
+          metadados: true,
+          funcionario: { select: { user: { select: { name: true } } } }
+        }
+      });
+      const rh = await this.notificacaoService.getUsuariosRh();
+      for (const sol of sols) {
+        const resultado = this.calcularLembretesDocumentosFerias(
+          (sol.metadados ?? {}) as Record<string, unknown>,
+          hoje
+        );
+        if (!resultado.lembrar.length && !resultado.vencidos.length) continue;
+        const nome = sol.funcionario?.user?.name ?? "Funcionário";
+        if (resultado.lembrar.length) {
+          const dest = await this.notificacaoService.getFuncionarioDestinatario(sol.funcionarioId);
+          if (dest) {
+            const linhas = resultado.lembrar
+              .map((l) => {
+                const dias = diasParaPrazo(l.prazo, hoje);
+                return `• ${l.rotulo}${l.periodo ? ` (${l.periodo})` : ""} — prazo ${fmtDataBr(l.prazo)} (${
+                  dias === 0 ? "vence hoje" : dias === 1 ? "falta 1 dia" : `faltam ${dias} dias`
+                })`;
+              })
+              .join("\n");
+            await this.notificacaoService.dispararEvento(
+              "FERIAS_DOCUMENTO_ASSINAR",
+              "Documento de férias pendente de assinatura",
+              `Você tem documento(s) de férias aguardando a sua assinatura:\n${linhas}\n\n` +
+                "Assine pelo sistema em Solicitações → Férias ou em Minhas Requisições do RH. " +
+                "O Aviso de Férias deve ser assinado até o 1º dia de gozo; o Recibo, até o fim do mês do término do gozo.",
+              [dest]
+            );
+          }
+        }
+        if (resultado.vencidos.length && rh.length) {
+          const linhas = resultado.vencidos
+            .map(
+              (l) =>
+                `• ${l.rotulo}${l.periodo ? ` (${l.periodo})` : ""} — prazo ${fmtDataBr(l.prazo)}`
+            )
+            .join("\n");
+          await this.notificacaoService.dispararEvento(
+            "FERIAS_DOCUMENTO_VENCIDO",
+            `Documento de férias vencido — ${nome}`,
+            `O prazo de assinatura venceu para ${nome}:\n${linhas}\n\n` +
+              "Verifique em Auditoria → Funcionário → Férias (reagendar, alterar ou reenviar).",
+            rh
+          );
+        }
+        await this.prisma.solicitacao.update({
+          where: { id: sol.id },
+          data: { metadados: resultado.metaAtualizada as unknown as Prisma.InputJsonValue }
+        });
+      }
+    } catch (e) {
+      this.logger.error(`Falha nos lembretes de documentos de férias: ${(e as Error).message}`);
+    }
+  }
+
+  /** Quais documentos (Aviso/Recibo do 1º período e das rodadas) pedem lembrete ou alerta hoje; devolve os metadados marcados. */
+  calcularLembretesDocumentosFerias(meta: Record<string, unknown>, hoje: string) {
+    const periodos = periodosOrdenadosFerias(meta);
+    const lembrar: Array<{ rotulo: string; prazo: string; periodo: string | null }> = [];
+    const vencidos: Array<{ rotulo: string; prazo: string; periodo: string | null }> = [];
+    const agora = new Date().toISOString();
+    const nomePeriodo = (p?: { ordem: number }, total = periodos.length) =>
+      p && total > 1 ? `${p.ordem}º período` : null;
+
+    const marcar = <T extends Record<string, unknown>>(
+      docs: T[],
+      periodo: { ordem: number; inicio: string; fim: string } | undefined
+    ): T[] =>
+      docs.map((d) => {
+        const prazo = periodo
+          ? prazoDocumento(
+              String(d.tipo),
+              periodo,
+              (d as { prazoProrrogadoAte?: string }).prazoProrrogadoAte
+            )
+          : null;
+        const base = d as unknown as {
+          tipo: string;
+          urlAssinado?: string;
+          rejeicao?: unknown;
+          enviadoEm?: string;
+          ultimoLembreteEm?: string;
+          ultimoAlertaRhEm?: string;
+          rotulo?: string;
+        };
+        const rotulo =
+          base.rotulo ?? (base.tipo === "AVISO" ? "Aviso de Férias" : "Recibo de Férias");
+        if (prazo && precisaLembrete(base, prazo, hoje)) {
+          lembrar.push({ rotulo, prazo, periodo: nomePeriodo(periodo) });
+          return { ...d, ultimoLembreteEm: agora };
+        }
+        if (prazo && precisaAlertaVencidoRh(base, prazo, hoje)) {
+          vencidos.push({ rotulo, prazo, periodo: nomePeriodo(periodo) });
+          return { ...d, ultimoAlertaRhEm: agora };
+        }
+        return d;
+      });
+
+    const principal = Array.isArray(meta.documentosFerias)
+      ? (meta.documentosFerias as Array<Record<string, unknown>>)
+      : [];
+    const novoPrincipal = marcar(principal, periodos[0]);
+    const rodadas = rodadasDe(meta);
+    const novasRodadas: Record<string, RodadaFeriasMeta> = { ...rodadas };
+    for (const [ordem, r] of Object.entries(rodadas)) {
+      if (r.situacao === "CONCLUIDA" || !r.documentos?.length) continue;
+      const per = periodos.find((p) => p.ordem === Number(ordem)) ?? {
+        ordem: Number(ordem),
+        inicio: r.inicio,
+        fim: r.fim
+      };
+      novasRodadas[ordem] = {
+        ...r,
+        documentos: marcar(
+          r.documentos as unknown as Array<Record<string, unknown>>,
+          per
+        ) as unknown as RodadaFeriasMeta["documentos"]
+      };
+    }
+    const metaAtualizada = {
+      ...meta,
+      ...(principal.length ? { documentosFerias: novoPrincipal } : {}),
+      ...(Object.keys(rodadas).length ? { rodadasFerias: novasRodadas } : {})
+    };
+    return { lembrar, vencidos, metaAtualizada };
   }
 
   async getSaldoFeriasFuncionario(funcionarioId: string) {
@@ -3084,7 +4522,7 @@ export class AuditoriaService {
         });
       }
     }
-    /* HORA_EXTRA / ENVIO_DOCUMENTO_RH: aprovação registrada no status; sem efeito adicional no banco */
+    /* HORA_EXTRA / ENVIO_DOCUMENTO_RH / DOCUMENTO_VIA_CHEFE: aprovação registrada no status; sem efeito adicional no banco */
 
     if (["FERIAS", "ATESTADO", "LICENCA", "ABONO"].includes(tipo)) {
       this.notificarAfastamentoRegistrado(funcId, tipo, ref, fim).catch((e) =>
@@ -3102,6 +4540,12 @@ export class AuditoriaService {
     dataInicio?: string;
     dataFim?: string;
     ativo?: boolean;
+    /** Só afastamentos lançados sem solicitação (legado/manual). */
+    semSolicitacao?: boolean;
+    /** Busca sem acento por nome, matrícula, cargo, setor, tipo e justificativa. */
+    busca?: string;
+    /** "nome": ordem alfabética do funcionário (mais recentes primeiro dentro de cada um). */
+    ordem?: string;
     page?: number;
     limit?: number;
   }) {
@@ -3112,6 +4556,7 @@ export class AuditoriaService {
     const where: Record<string, unknown> = {};
     if (filtros.funcionarioId) where.funcionarioId = filtros.funcionarioId;
     if (filtros.tipo) where.tipo = filtros.tipo;
+    if (filtros.semSolicitacao) where.solicitacaoId = null;
     if (filtros.gerenciaId) {
       where.funcionario = { gerenciaId: filtros.gerenciaId };
     }
@@ -3126,27 +4571,95 @@ export class AuditoriaService {
       };
     }
 
-    const [total, afastamentosRaw] = await Promise.all([
-      this.prisma.afastamento.count({ where }),
-      this.prisma.afastamento.findMany({
+    const incluirFuncionario = {
+      funcionario: {
+        select: {
+          id: true,
+          matricula: true,
+          cargo: true,
+          fotoPerfilUrl: true,
+          user: { select: { name: true, email: true } },
+          gerencia: { select: { nome: true, sigla: true } }
+        }
+      }
+    } as const;
+    const busca = (filtros.busca ?? "").trim();
+    const porNome = filtros.ordem === "nome";
+
+    let total: number;
+    let afastamentosRaw;
+    if (busca) {
+      const termos = this.semAcento(busca).split(/\s+/).filter(Boolean);
+      const candidatos = await this.prisma.afastamento.findMany({
         where,
         orderBy: { dataInicio: "desc" },
-        skip,
-        take: limit,
-        include: {
+        take: 8000,
+        select: {
+          id: true,
+          tipo: true,
+          rotulo: true,
+          justificativa: true,
+          dataInicio: true,
           funcionario: {
             select: {
-              id: true,
               matricula: true,
               cargo: true,
-              fotoPerfilUrl: true,
-              user: { select: { name: true, email: true } },
+              user: { select: { name: true } },
               gerencia: { select: { nome: true, sigla: true } }
             }
           }
         }
-      })
-    ]);
+      });
+      const achados = candidatos.filter((c) => {
+        const texto = this.semAcento(
+          [
+            c.funcionario.user?.name,
+            c.funcionario.matricula,
+            c.funcionario.cargo,
+            c.funcionario.gerencia?.nome,
+            c.funcionario.gerencia?.sigla,
+            c.rotulo,
+            AuditoriaService.LABEL_AFASTAMENTO[c.tipo] ?? c.tipo,
+            c.justificativa
+          ]
+            .filter(Boolean)
+            .join(" ")
+        );
+        return termos.every((t) => texto.includes(t));
+      });
+      if (porNome) {
+        achados.sort(
+          (a, b) =>
+            (a.funcionario.user?.name ?? "").localeCompare(
+              b.funcionario.user?.name ?? "",
+              "pt-BR"
+            ) || b.dataInicio.getTime() - a.dataInicio.getTime()
+        );
+      }
+      total = achados.length;
+      const ids = achados.slice(skip, skip + limit).map((c) => c.id);
+      const carregados = await this.prisma.afastamento.findMany({
+        where: { id: { in: ids } },
+        include: incluirFuncionario
+      });
+      const porId = new Map(carregados.map((r) => [r.id, r]));
+      afastamentosRaw = ids
+        .map((id) => porId.get(id))
+        .filter((r): r is NonNullable<typeof r> => !!r);
+    } else {
+      [total, afastamentosRaw] = await Promise.all([
+        this.prisma.afastamento.count({ where }),
+        this.prisma.afastamento.findMany({
+          where,
+          orderBy: porNome
+            ? [{ funcionario: { user: { name: "asc" } } }, { dataInicio: "desc" }]
+            : { dataInicio: "desc" },
+          skip,
+          take: limit,
+          include: incluirFuncionario
+        })
+      ]);
+    }
 
     let afastamentos = afastamentosRaw;
     if (filtros.funcionarioId) {
@@ -3696,6 +5209,13 @@ export class AuditoriaService {
     else if (filtros.status === "NEGATIVO") itens = itens.filter((i) => i.saldoAtualMinutos < 0);
     else if (filtros.status === "EXCEDIDO") itens = itens.filter((i) => i.excedeLimite);
 
+    /* Do pior saldo (mais negativo) para o melhor, antes de paginar; empate por nome. */
+    itens.sort(
+      (x, y) =>
+        x.saldoAtualMinutos - y.saldoAtualMinutos ||
+        x.funcionario.nome.localeCompare(y.funcionario.nome, "pt-BR")
+    );
+
     const total = itens.length;
     const skip = (page - 1) * limit;
 
@@ -3933,7 +5453,7 @@ export class AuditoriaService {
         orderBy: { createdAt: "desc" }
       }),
       this.prisma.solicitacao.findMany({
-        where: { funcionarioId, tipo: "ENVIO_DOCUMENTO_RH" },
+        where: { funcionarioId, tipo: { in: ["ENVIO_DOCUMENTO_RH", "DOCUMENTO_VIA_CHEFE"] } },
         orderBy: { createdAt: "desc" },
         select: {
           id: true,
@@ -4375,6 +5895,7 @@ export class AuditoriaService {
       diasVendidos,
       totalDiasGozo,
       totalDias,
+      adiantamento13: typeof entrada.adiantamento13 === "boolean" ? entrada.adiantamento13 : null,
       ignorouVedacao: !!entrada.ignorarVedacao
     };
   }
@@ -4407,6 +5928,7 @@ export class AuditoriaService {
         dias: p.dias
       })),
       diasVendidos: v.diasVendidos,
+      ...(v.adiantamento13 !== null ? { adiantamento13: v.adiantamento13 } : {}),
       totalDiasGozo: v.totalDiasGozo,
       totalDias: v.totalDias,
       cicloNumero: extra.cicloNumero,
@@ -4895,6 +6417,25 @@ export class AuditoriaService {
     }
   }
 
+  private static readonly LABEL_AFASTAMENTO: Record<string, string> = {
+    FERIAS: "Férias",
+    LICENCA_MEDICA: "Licença médica",
+    ATESTADO: "Atestado",
+    LICENCA_MATERNIDADE: "Licença maternidade",
+    LICENCA_PATERNIDADE: "Licença paternidade",
+    FALTA_JUSTIFICADA: "Falta justificada",
+    FALTA_INJUSTIFICADA: "Falta injustificada",
+    ABONO: "Abono"
+  };
+
+  /** Minúsculo e sem acento, para buscas que ignoram acentuação. */
+  private semAcento(texto: string): string {
+    return texto
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+  }
+
   private readonly TIPO_LABEL: Record<string, string> = {
     FERIAS: "Férias",
     ATESTADO: "Atestado",
@@ -4904,16 +6445,22 @@ export class AuditoriaService {
     ABONO: "Abono",
     BANCO_HORAS: "Banco de Horas",
     DAY_OFF: "Day Off de Aniversário",
-    ENVIO_DOCUMENTO_RH: "Envio de documento ao RH"
+    ENVIO_DOCUMENTO_RH: "Envio de documento ao RH",
+    DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
   };
 
   private async notificarSolicitacaoFuncionario(
     funcionarioId: string,
-    decisao: "APROVADA" | "RECUSADA",
+    decisao: "APROVADA" | "RECUSADA" | "DEVOLVIDA",
     tipo: string,
     observacao: string
   ) {
-    const eventoId = decisao === "APROVADA" ? "SOLICITACAO_APROVADA" : "SOLICITACAO_RECUSADA";
+    const eventoId =
+      decisao === "APROVADA"
+        ? "SOLICITACAO_APROVADA"
+        : decisao === "DEVOLVIDA"
+          ? "SOLICITACAO_DEVOLVIDA"
+          : "SOLICITACAO_RECUSADA";
     const [emailAtivo, sistemaAtivo] = await Promise.all([
       this.notificacaoService.isEmailAtivoParaEvento(eventoId),
       this.notificacaoService.isSistemaAtivoParaEvento(eventoId)
@@ -4930,11 +6477,15 @@ export class AuditoriaService {
     const titulo =
       decisao === "APROVADA"
         ? `Solicitação de ${tipoLabel} aprovada`
-        : `Solicitação de ${tipoLabel} recusada`;
+        : decisao === "DEVOLVIDA"
+          ? `Solicitação de ${tipoLabel} devolvida para correção`
+          : `Solicitação de ${tipoLabel} recusada`;
     const corpo =
       decisao === "APROVADA"
         ? `Sua solicitação de ${tipoLabel} foi aprovada.${observacao ? `\n\nObservação: ${observacao}` : ""}`
-        : `Sua solicitação de ${tipoLabel} foi recusada.${observacao ? `\n\nJustificativa: ${observacao}` : ""}`;
+        : decisao === "DEVOLVIDA"
+          ? `Seu chefe devolveu sua solicitação de ${tipoLabel} para correção.${observacao ? `\n\nMotivo: ${observacao}` : ""}\n\nAcesse Solicitações para corrigir e reenviar.`
+          : `Sua solicitação de ${tipoLabel} foi recusada.${observacao ? `\n\nJustificativa: ${observacao}` : ""}`;
 
     const email = func.user.emailReal ?? func.user.email;
     if (emailAtivo && email) {

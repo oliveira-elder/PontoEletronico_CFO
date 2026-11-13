@@ -23,6 +23,7 @@ const DEFAULTS = {
   tipoAtivoDayOff: true,
   tipoAtivoHoraExtra: true,
   tipoAtivoEnvioDocumentoRh: true,
+  tipoAtivoDocumentoViaChefe: true,
   abonoAlemLimiteLiberadoRh: true,
   abonoCotaDiasDoisCiclos: 0,
   atestadoCidModo: "OBRIGATORIO" as string

@@ -205,6 +205,7 @@ type VigenciaLotacaoUI = {
   cargo: string;
   gerenciaId: string | null;
   subsecao: string | null;
+  observacao?: string | null;
   vigenciaDesde: string;
   vigenciaAte: string | null;
   gerencia?: { id: string; nome: string; sigla: string } | null;
@@ -214,6 +215,8 @@ export type LinhaLotacaoValor = {
   cargo: string;
   gerenciaId: string;
   subsecao: string;
+  /** Observação da movimentação (só na edição de funcionário já cadastrado). */
+  observacao?: string;
   vigenciaDesde: string;
   vigenciaAte: string;
 };
@@ -236,11 +239,10 @@ function hojeLocalIso() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function colunasLotacao(comCargo: boolean, comEmpregado = false) {
-  const base = comCargo
-    ? "minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1.2fr) 140px 140px 76px"
-    : "minmax(0,1.6fr) minmax(0,1.3fr) 140px 140px 76px";
-  return comEmpregado ? `minmax(0,1.4fr) 130px ${base}` : base;
+function colunasLotacao(comCargo: boolean) {
+  return comCargo
+    ? "minmax(0,1.1fr) minmax(0,1.3fr) minmax(0,1fr) 130px 130px minmax(0,1.2fr) 76px"
+    : "minmax(0,1.3fr) minmax(0,1.1fr) 130px 130px minmax(0,1.3fr) 76px";
 }
 
 /** Cargo e nível do efetivo: valem para o funcionário (não por período de lotação) e
@@ -349,8 +351,7 @@ function LinhaLotacaoCampos({
   isMobile,
   comRotulos,
   acoes,
-  colunaEmpregado,
-  efetivo
+  comObservacao
 }: {
   valor: LinhaLotacaoValor;
   onChange: (v: LinhaLotacaoValor) => void;
@@ -363,9 +364,8 @@ function LinhaLotacaoCampos({
   /** Mostra o rótulo acima de cada campo (sem a linha de cabeçalho da lista). */
   comRotulos?: boolean;
   acoes?: React.ReactNode;
-  /** Reserva as colunas Cargo/Nível do efetivo (preenchidas só se `efetivo` vier). */
-  colunaEmpregado?: boolean;
-  efetivo?: CamposEmpregado;
+  /** Campo Observações da movimentação (linha própria, abaixo dos demais). */
+  comObservacao?: boolean;
 }) {
   const subsecoes = subsecoesDaGerencia(funcionarios, valor.gerenciaId);
   const set = (p: Partial<LinhaLotacaoValor>) => onChange({ ...valor, ...p });
@@ -377,14 +377,13 @@ function LinhaLotacaoCampos({
         gridTemplateColumns: isMobile
           ? "1fr"
           : acoes
-            ? colunasLotacao(comCargo, colunaEmpregado)
-            : colunasLotacao(comCargo, colunaEmpregado).replace(/ 76px$/, ""),
+            ? colunasLotacao(comCargo)
+            : colunasLotacao(comCargo).replace(/ 76px$/, ""),
         gap: isMobile ? 10 : 8,
         alignItems: "end",
         padding: "8px 0"
       }}
     >
-      {colunaEmpregado && <CelulasEmpregado efetivo={efetivo} rotulos={isMobile || comRotulos} />}
       {comCargo && (
         <div>
           {rotulo("Cargo")}
@@ -466,6 +465,19 @@ function LinhaLotacaoCampos({
           />
         )}
       </div>
+      {comObservacao && (
+        <div>
+          {rotulo("Observações")}
+          <input
+            type="text"
+            value={valor.observacao ?? ""}
+            maxLength={500}
+            placeholder="Opcional"
+            onChange={(e) => set({ observacao: e.target.value })}
+            style={fieldStyle}
+          />
+        </div>
+      )}
       {acoes && <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>{acoes}</div>}
     </div>
   );
@@ -483,8 +495,7 @@ function LotacaoLinhas({
   funcionarios,
   isMobile,
   onSincronizado,
-  somenteLeitura = false,
-  efetivo
+  somenteLeitura = false
 }: {
   funcionarioId: string;
   comCargo: boolean;
@@ -494,8 +505,6 @@ function LotacaoLinhas({
   onSincronizado: (f: Funcionario) => void;
   /** Perfil do RH sem a função "Lotação": só consulta. */
   somenteLeitura?: boolean;
-  /** Cargo e nível do efetivo, na mesma linha da lotação vigente. */
-  efetivo?: CamposEmpregado;
 }) {
   const [linhas, setLinhas] = useState<VigenciaLotacaoUI[] | null>(null);
   const [editando, setEditando] = useState<string | null>(null); // id | "nova"
@@ -520,11 +529,6 @@ function LotacaoLinhas({
   const hoje = hojeLocalIso();
   const lista = linhas ?? [];
   const ultima = lista[lista.length - 1];
-  const colunaEmpregado = !!efetivo;
-  const vigenteId = (
-    lista.find((l) => l.vigenciaDesde <= hoje && (!l.vigenciaAte || l.vigenciaAte >= hoje)) ??
-    ultima
-  )?.id;
 
   function iniciarEdicao(l: VigenciaLotacaoUI) {
     setErro("");
@@ -533,6 +537,7 @@ function LotacaoLinhas({
       cargo: l.cargo ?? "",
       gerenciaId: l.gerenciaId ?? "",
       subsecao: l.subsecao ?? "",
+      observacao: l.observacao ?? "",
       vigenciaDesde: l.vigenciaDesde,
       vigenciaAte: l.vigenciaAte ?? ""
     });
@@ -545,6 +550,7 @@ function LotacaoLinhas({
       cargo: ultima?.cargo ?? "",
       gerenciaId: "",
       subsecao: "",
+      observacao: "",
       vigenciaDesde: hoje,
       vigenciaAte: ""
     });
@@ -584,6 +590,7 @@ function LotacaoLinhas({
       ...(comCargo ? { cargo: rascunho.cargo.trim() || CARGO_A_DEFINIR } : {}),
       gerenciaId: rascunho.gerenciaId,
       subsecao: rascunho.subsecao || null,
+      observacao: rascunho.observacao?.trim() || null,
       vigenciaDesde: rascunho.vigenciaDesde,
       ...(eUltima ? { vigenciaAte: rascunho.vigenciaAte || null } : {})
     };
@@ -621,19 +628,18 @@ function LotacaoLinhas({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: colunasLotacao(comCargo, colunaEmpregado),
+            gridTemplateColumns: colunasLotacao(comCargo),
             gap: 8,
             paddingBottom: 6,
             borderBottom: "1px solid rgba(122,30,38,0.10)"
           }}
         >
-          {colunaEmpregado && cabecalho("Cargo")}
-          {colunaEmpregado && cabecalho("Nível do cargo")}
           {comCargo && cabecalho("Cargo")}
           {cabecalho("Departamento")}
           {cabecalho("Coordenação")}
           {cabecalho("Início")}
           {cabecalho("Fim")}
+          {cabecalho("Observações")}
           <span />
         </div>
       )}
@@ -651,8 +657,7 @@ function LotacaoLinhas({
                 comCargo={comCargo}
                 fimEditavel={l.id === ultima?.id}
                 fimCalculado={l.vigenciaAte}
-                colunaEmpregado={colunaEmpregado}
-                efetivo={l.id === vigenteId ? efetivo : undefined}
+                comObservacao
                 gerencias={gerencias}
                 funcionarios={funcionarios}
                 isMobile={isMobile}
@@ -667,9 +672,7 @@ function LotacaoLinhas({
               key={l.id}
               style={{
                 display: "grid",
-                gridTemplateColumns: isMobile
-                  ? "1fr auto"
-                  : colunasLotacao(comCargo, colunaEmpregado),
+                gridTemplateColumns: isMobile ? "1fr auto" : colunasLotacao(comCargo),
                 gap: 8,
                 alignItems: "center",
                 padding: "10px 0",
@@ -692,9 +695,6 @@ function LotacaoLinhas({
                 </div>
               ) : (
                 <>
-                  {colunaEmpregado && (
-                    <CelulasEmpregado efetivo={l.id === vigenteId ? efetivo : undefined} />
-                  )}
                   {comCargo && <span>{l.cargo || "—"}</span>}
                   <span>
                     {departamento}
@@ -703,6 +703,12 @@ function LotacaoLinhas({
                   <span>{l.subsecao ? slugLabel(l.subsecao) : "—"}</span>
                   <span>{fmtData(l.vigenciaDesde)}</span>
                   <span>{fmtData(l.vigenciaAte)}</span>
+                  <span
+                    title={l.observacao ?? undefined}
+                    style={{ color: "var(--ink-600)", fontSize: 12.5, overflowWrap: "anywhere" }}
+                  >
+                    {l.observacao || "—"}
+                  </span>
                 </>
               )}
               {somenteLeitura ? (
@@ -726,6 +732,11 @@ function LotacaoLinhas({
                   </BotaoAcao>
                 </div>
               )}
+              {isMobile && l.observacao && (
+                <div style={{ gridColumn: "1 / -1", fontSize: 12, color: "var(--ink-500)" }}>
+                  Observações: {l.observacao}
+                </div>
+              )}
             </div>
           );
         })
@@ -737,7 +748,7 @@ function LotacaoLinhas({
           onChange={setRascunho}
           comCargo={comCargo}
           fimEditavel
-          colunaEmpregado={colunaEmpregado}
+          comObservacao
           gerencias={gerencias}
           funcionarios={funcionarios}
           isMobile={isMobile}
@@ -1153,6 +1164,289 @@ function CessaoLinhas({
           }}
         >
           <PlusIcon size={13} /> Nova cessão
+        </button>
+      )}
+    </div>
+  );
+}
+
+type PeriodoAssessorUI = {
+  id: string;
+  nivel: number;
+  vigenciaDesde: string;
+  vigenciaAte: string | null;
+};
+
+const NIVEIS_ASSESSOR = Array.from({ length: 15 }, (_, i) => i + 1);
+
+/** 1 a 15 em algarismos romanos (I a XV). */
+function nivelRomano(n: number): string {
+  const t: Array<[number, string]> = [
+    [10, "X"],
+    [9, "IX"],
+    [5, "V"],
+    [4, "IV"],
+    [1, "I"]
+  ];
+  let r = "";
+  let resto = n;
+  for (const [v, sim] of t) {
+    while (resto >= v) {
+      r += sim;
+      resto -= v;
+    }
+  }
+  return r;
+}
+
+/**
+ * Nível (I a XV) e período em que o funcionário exerce a função de assessor. Só registro: não altera
+ * a isenção de ponto. Cada ação grava na hora, como nas linhas de lotação.
+ */
+function AssessorLinhas({
+  funcionarioId,
+  somenteLeitura,
+  isMobile
+}: {
+  funcionarioId: string;
+  somenteLeitura: boolean;
+  isMobile: boolean;
+}) {
+  const [linhas, setLinhas] = useState<PeriodoAssessorUI[] | null>(null);
+  const [editando, setEditando] = useState<string | null>(null); // id | "novo"
+  const [rascunho, setRascunho] = useState({ nivel: "", vigenciaDesde: "", vigenciaAte: "" });
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState("");
+  const base = `/ponto/gestao/funcionarios/${funcionarioId}/assessor-historico`;
+  const ordenar = (l: PeriodoAssessorUI[]) =>
+    [...l].sort((a, b) => a.vigenciaDesde.localeCompare(b.vigenciaDesde));
+
+  useEffect(() => {
+    let cancel = false;
+    api
+      .get<PeriodoAssessorUI[]>(base)
+      .then((l) => !cancel && setLinhas(ordenar(l ?? [])))
+      .catch(() => !cancel && setLinhas([]));
+    return () => {
+      cancel = true;
+    };
+  }, [base]);
+
+  const colunas = isMobile ? "1fr" : "minmax(0,1fr) 150px 150px 76px";
+  const lista = linhas ?? [];
+
+  function iniciar(l?: PeriodoAssessorUI) {
+    setErro("");
+    setEditando(l ? l.id : "novo");
+    setRascunho(
+      l
+        ? {
+            nivel: String(l.nivel),
+            vigenciaDesde: l.vigenciaDesde,
+            vigenciaAte: l.vigenciaAte ?? ""
+          }
+        : { nivel: "", vigenciaDesde: hojeLocalIso(), vigenciaAte: "" }
+    );
+  }
+  function cancelar() {
+    setEditando(null);
+    setErro("");
+  }
+  async function executar(req: () => Promise<PeriodoAssessorUI[]>) {
+    setSalvando(true);
+    setErro("");
+    try {
+      setLinhas(ordenar((await req()) ?? []));
+      cancelar();
+    } catch (e) {
+      setErro((e as Error)?.message ?? "Erro ao salvar o período de assessor.");
+    } finally {
+      setSalvando(false);
+    }
+  }
+  function confirmar() {
+    if (!rascunho.nivel || !rascunho.vigenciaDesde) {
+      setErro("Informe o nível e a data de início.");
+      return;
+    }
+    const body = {
+      nivel: Number(rascunho.nivel),
+      vigenciaDesde: rascunho.vigenciaDesde,
+      vigenciaAte: rascunho.vigenciaAte || null
+    };
+    void executar(() =>
+      editando === "novo" ? api.post(base, body) : api.patch(`${base}/${editando}`, body)
+    );
+  }
+  function remover(l: PeriodoAssessorUI) {
+    if (!window.confirm("Remover este período de assessor?")) return;
+    void executar(() => api.delete(`${base}/${l.id}`));
+  }
+
+  const camposEdicao = (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: colunas,
+        gap: isMobile ? 10 : 8,
+        alignItems: "end",
+        padding: "8px 0"
+      }}
+    >
+      <div>
+        <FieldLabel>Nível</FieldLabel>
+        <SelectWrap>
+          <select
+            value={rascunho.nivel}
+            onChange={(e) => setRascunho((r) => ({ ...r, nivel: e.target.value }))}
+            style={{
+              ...selectStyleBase,
+              color: rascunho.nivel ? "var(--ink-900)" : "var(--ink-500)"
+            }}
+          >
+            <option value="">Selecione…</option>
+            {NIVEIS_ASSESSOR.map((n) => (
+              <option key={n} value={n}>
+                {nivelRomano(n)}
+              </option>
+            ))}
+          </select>
+        </SelectWrap>
+      </div>
+      <div>
+        <FieldLabel>Data início *</FieldLabel>
+        <input
+          type="date"
+          value={rascunho.vigenciaDesde}
+          onChange={(e) => setRascunho((r) => ({ ...r, vigenciaDesde: e.target.value }))}
+          style={fieldStyle}
+        />
+      </div>
+      <div>
+        <FieldLabel>Data fim</FieldLabel>
+        <input
+          type="date"
+          value={rascunho.vigenciaAte}
+          onChange={(e) => setRascunho((r) => ({ ...r, vigenciaAte: e.target.value }))}
+          style={fieldStyle}
+        />
+      </div>
+      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+        <BotaoAcao titulo="Confirmar" onClick={confirmar} disabled={salvando}>
+          <CheckIcon size={14} />
+        </BotaoAcao>
+        <BotaoAcao titulo="Cancelar" onClick={cancelar} disabled={salvando} perigo>
+          <XIcon size={14} />
+        </BotaoAcao>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {!isMobile && lista.length > 0 && editando === null && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: colunas,
+            gap: 8,
+            paddingBottom: 6,
+            borderBottom: "1px solid rgba(122,30,38,0.10)"
+          }}
+        >
+          <span style={{ ...labelStyle, marginBottom: 0, fontSize: 11 }}>Nível</span>
+          <span style={{ ...labelStyle, marginBottom: 0, fontSize: 11 }}>Data início</span>
+          <span style={{ ...labelStyle, marginBottom: 0, fontSize: 11 }}>Data fim</span>
+          <span />
+        </div>
+      )}
+      {linhas === null ? (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", padding: "10px 0" }}>Carregando…</p>
+      ) : (
+        lista.map((l, i) =>
+          editando === l.id ? (
+            <React.Fragment key={l.id}>{camposEdicao}</React.Fragment>
+          ) : (
+            <div
+              key={l.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile ? "1fr auto" : colunas,
+                gap: 8,
+                alignItems: "center",
+                padding: "10px 0",
+                borderBottom: i < lista.length - 1 ? "1px solid rgba(122,30,38,0.08)" : undefined,
+                fontSize: 13.5,
+                color: "var(--ink-900)"
+              }}
+            >
+              {isMobile ? (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>Nível {nivelRomano(l.nivel)}</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-500)", marginTop: 2 }}>
+                    {fmtData(l.vigenciaDesde)} – {l.vigenciaAte ? fmtData(l.vigenciaAte) : "atual"}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <span style={{ fontWeight: 600 }}>{nivelRomano(l.nivel)}</span>
+                  <span>{fmtData(l.vigenciaDesde)}</span>
+                  <span>{fmtData(l.vigenciaAte)}</span>
+                </>
+              )}
+              {somenteLeitura ? (
+                <span />
+              ) : (
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <BotaoAcao
+                    titulo="Editar"
+                    onClick={() => iniciar(l)}
+                    disabled={salvando || editando !== null}
+                  >
+                    <PencilIcon size={14} />
+                  </BotaoAcao>
+                  <BotaoAcao
+                    titulo="Remover"
+                    onClick={() => remover(l)}
+                    disabled={salvando || editando !== null}
+                    perigo
+                  >
+                    <MinusIcon size={14} />
+                  </BotaoAcao>
+                </div>
+              )}
+            </div>
+          )
+        )
+      )}
+      {editando === "novo" && camposEdicao}
+      {linhas !== null && lista.length === 0 && editando === null && (
+        <p style={{ fontSize: 12, color: "var(--ink-500)", margin: "4px 0 8px" }}>
+          Nenhum período de assessor registrado.
+        </p>
+      )}
+      {erro && <p style={{ color: "var(--red)", fontSize: 12, margin: "6px 0 0" }}>{erro}</p>}
+      {editando === null && linhas !== null && !somenteLeitura && (
+        <button
+          type="button"
+          onClick={() => iniciar()}
+          disabled={salvando}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginTop: 6,
+            padding: "7px 12px",
+            borderRadius: "var(--radius-md)",
+            border: "1px dashed rgba(122,30,38,0.30)",
+            background: "transparent",
+            color: "var(--burgundy-600)",
+            fontSize: 12.5,
+            fontWeight: 600,
+            cursor: "pointer"
+          }}
+        >
+          <PlusIcon size={13} /> Adicionar período de assessor
         </button>
       )}
     </div>
@@ -2396,7 +2690,12 @@ export function FuncionarioFormPage() {
         {/* ══════════════════ IDENTIFICAÇÃO ══════════════════ */}
         <SectionTitle>Identificação</SectionTitle>
         <div
-          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+          style={{
+            display: "grid",
+            gridTemplateColumns: gridCols(catAltaAdm ? 2 : 3),
+            gap: 16,
+            marginBottom: 16
+          }}
         >
           <div>
             <FieldLabel>Nome e último nome *</FieldLabel>
@@ -2513,54 +2812,57 @@ export function FuncionarioFormPage() {
           </div>
         </div>
 
-        <div
-          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
-        >
-          <div>
-            <FieldLabel>Data de Nascimento</FieldLabel>
-            <input
-              type="date"
-              value={form.dataNascimento}
-              onChange={(e) => setForm((f) => ({ ...f, dataNascimento: e.target.value }))}
-              style={fieldStyle}
-            />
-            <Hint>Necessário para liberar o Day Off de Aniversário.</Hint>
+        {/* Alta Administração: sem nascimento, raça e gênero. */}
+        {!catAltaAdm && (
+          <div
+            style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
+          >
+            <div>
+              <FieldLabel>Data de Nascimento</FieldLabel>
+              <input
+                type="date"
+                value={form.dataNascimento}
+                onChange={(e) => setForm((f) => ({ ...f, dataNascimento: e.target.value }))}
+                style={fieldStyle}
+              />
+              <Hint>Necessário para liberar o Day Off de Aniversário.</Hint>
+            </div>
+            <div>
+              <FieldLabel>Raça</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.raca}
+                  onChange={(e) => setForm((f) => ({ ...f, raca: e.target.value }))}
+                  style={selectStyle}
+                >
+                  <option value="">Não informado</option>
+                  {RACA_OPCOES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
+            </div>
+            <div>
+              <FieldLabel>Gênero</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.genero}
+                  onChange={(e) => setForm((f) => ({ ...f, genero: e.target.value }))}
+                  style={selectStyle}
+                >
+                  <option value="">Não informado</option>
+                  {GENERO_OPCOES.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
+            </div>
           </div>
-          <div>
-            <FieldLabel>Raça</FieldLabel>
-            <SelectWrap>
-              <select
-                value={form.raca}
-                onChange={(e) => setForm((f) => ({ ...f, raca: e.target.value }))}
-                style={selectStyle}
-              >
-                <option value="">Não informado</option>
-                {RACA_OPCOES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </SelectWrap>
-          </div>
-          <div>
-            <FieldLabel>Gênero</FieldLabel>
-            <SelectWrap>
-              <select
-                value={form.genero}
-                onChange={(e) => setForm((f) => ({ ...f, genero: e.target.value }))}
-                style={selectStyle}
-              >
-                <option value="">Não informado</option>
-                {GENERO_OPCOES.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-            </SelectWrap>
-          </div>
-        </div>
+        )}
 
         <div
           style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 8 }}
@@ -2601,9 +2903,7 @@ export function FuncionarioFormPage() {
           </div>
         </div>
 
-        {(form.categoria === "CONCURSADO" ||
-          form.categoria === "ASSESSOR" ||
-          form.categoria === "ALTA_ADMINISTRACAO") && (
+        {(form.categoria === "CONCURSADO" || form.categoria === "ASSESSOR") && (
           <div style={{ marginBottom: 20 }}>
             {cabecalhoComRequerimento("Dependentes (Filhos)", "DEPENDENTES")}
             {form.dependentes.length > 0 && (
@@ -2718,8 +3018,64 @@ export function FuncionarioFormPage() {
         )}
 
         {/* ══════════════════ CARGO E LOTAÇÃO ══════════════════ */}
-        <SectionTitle>Cargo e Lotação</SectionTitle>
-        {/* Cargo e nível do efetivo ficam na mesma linha da lotação. */}
+        {/* Alta Administração mantém a estrutura reduzida (Cargo e Lotação + Jornada com admissão/desligamento). */}
+        {!catAltaAdm && (
+          <>
+            <SectionTitle>{catEmpregado ? "Cargo" : "Vínculo"}</SectionTitle>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: isMobile
+                  ? "1fr"
+                  : `repeat(${(catEmpregado ? 2 : 0) + (isRhOuAdmin ? 1 : 0) + 1}, minmax(0, 1fr)) minmax(0, 1.4fr)`,
+                gap: 16,
+                alignItems: "end",
+                marginBottom: 4
+              }}
+            >
+              {catEmpregado && <CelulasEmpregado efetivo={empregadoCampos} rotulos />}
+              {isRhOuAdmin && (
+                <div>
+                  <FieldLabel>Admissão</FieldLabel>
+                  <input
+                    type="date"
+                    value={form.dataAdmissao}
+                    onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
+                    style={fieldStyle}
+                  />
+                </div>
+              )}
+              <div>
+                <FieldLabel>Desligamento</FieldLabel>
+                <input
+                  type="date"
+                  value={form.dataDesligamento}
+                  onChange={(e) => setForm((f) => ({ ...f, dataDesligamento: e.target.value }))}
+                  style={fieldStyle}
+                />
+              </div>
+              <div>
+                <FieldLabel>Observações</FieldLabel>
+                <input
+                  type="text"
+                  value={form.observacaoCargo}
+                  maxLength={500}
+                  placeholder="Opcional"
+                  onChange={(e) => setForm((f) => ({ ...f, observacaoCargo: e.target.value }))}
+                  style={fieldStyle}
+                />
+              </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              {isRhOuAdmin && <Hint>A admissão é usada para calcular os ciclos de férias.</Hint>}
+              <Hint>
+                Desligamento preenchido (hoje ou no passado) desativa o funcionário na hora; no
+                futuro, desativa sozinho na data.
+              </Hint>
+            </div>
+          </>
+        )}
+        <SectionTitle>{catAltaAdm ? "Cargo e Lotação" : "Lotação"}</SectionTitle>
         {isNovo || !id ? (
           /* Cadastro novo: uma única linha ligada ao formulário; o histórico nasce ao salvar. */
           <LinhaLotacaoCampos
@@ -2741,8 +3097,6 @@ export function FuncionarioFormPage() {
               }))
             }
             comCargo={catComissionado}
-            colunaEmpregado={catEmpregado}
-            efetivo={empregadoCampos}
             fimEditavel
             comRotulos
             gerencias={gerencias}
@@ -2753,7 +3107,6 @@ export function FuncionarioFormPage() {
           <LotacaoLinhas
             funcionarioId={id}
             somenteLeitura={!podeLotacao}
-            efetivo={empregadoCampos}
             comCargo={catComissionado}
             gerencias={gerencias}
             funcionarios={funcionarios}
@@ -2792,116 +3145,160 @@ export function FuncionarioFormPage() {
 
         {/* ══════════════════ JORNADA ══════════════════ */}
         <SectionTitle>Jornada</SectionTitle>
-        <div
-          style={{ display: "grid", gridTemplateColumns: gridCols(3), gap: 16, marginBottom: 16 }}
-        >
-          {isRhOuAdmin && (
+        {catAltaAdm ? (
+          /* Alta Administração: Jornada só tem admissão, desligamento e atividade. */
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: gridCols(3),
+              gap: 16,
+              marginBottom: 16
+            }}
+          >
+            {isRhOuAdmin && (
+              <div>
+                <FieldLabel>Data de Admissão</FieldLabel>
+                <input
+                  type="date"
+                  value={form.dataAdmissao}
+                  onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
+                  style={fieldStyle}
+                />
+                <Hint>Usada para calcular os ciclos de férias do funcionário.</Hint>
+              </div>
+            )}
             <div>
-              <FieldLabel>Data de Admissão</FieldLabel>
+              <FieldLabel>Data de Desligamento</FieldLabel>
               <input
                 type="date"
-                value={form.dataAdmissao}
-                onChange={(e) => setForm((f) => ({ ...f, dataAdmissao: e.target.value }))}
+                value={form.dataDesligamento}
+                onChange={(e) => setForm((f) => ({ ...f, dataDesligamento: e.target.value }))}
                 style={fieldStyle}
               />
-              <Hint>Usada para calcular os ciclos de férias do funcionário.</Hint>
-            </div>
-          )}
-          <div>
-            <FieldLabel>Data de Desligamento</FieldLabel>
-            <input
-              type="date"
-              value={form.dataDesligamento}
-              onChange={(e) => setForm((f) => ({ ...f, dataDesligamento: e.target.value }))}
-              style={fieldStyle}
-            />
-            <Hint>
-              Preenchida (hoje ou no passado) desativa o funcionário na hora; no futuro, desativa
-              sozinho na data.
-            </Hint>
-          </div>
-          <div>
-            <FieldLabel>Atividade</FieldLabel>
-            <SelectWrap>
-              <select
-                value={form.atividade}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, atividade: e.target.value as typeof f.atividade }))
-                }
-                style={selectStyle}
-              >
-                <option value="">Não informado</option>
-                {ATIVIDADE_OPCOES.map((a) => (
-                  <option key={a.value} value={a.value}>
-                    {a.label}
-                  </option>
-                ))}
-              </select>
-            </SelectWrap>
-          </div>
-        </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: gridCols(catEmpregado ? 3 : 2),
-            gap: 16,
-            marginBottom: 8
-          }}
-        >
-          {catEmpregado && (
-            <div>
-              <FieldLabel>É assessor?</FieldLabel>
-              <div style={{ paddingTop: 8 }}>
-                <Toggle
-                  checked={form.isFiscal}
-                  onChange={(v) => setForm((f) => ({ ...f, isFiscal: v }))}
-                  label="Funcionário é assessor"
-                />
-              </div>
-              <Hint>Assessor fica automaticamente isento de registro de ponto, como o Chefe.</Hint>
-            </div>
-          )}
-          {(catEmpregado || catEstagiario || catJovemAprendiz) && isRhOuAdmin && (
-            <div>
-              <FieldLabel>Registro de Ponto</FieldLabel>
-              <SelectWrap>
-                <select
-                  value={form.jornadaPeriodoId}
-                  onChange={(e) => setForm((f) => ({ ...f, jornadaPeriodoId: e.target.value }))}
-                  style={selectStyle}
-                >
-                  <option value="">Usar jornada padrão do sistema</option>
-                  {jornadasDisponiveis
-                    .filter((j) => j)
-                    .map((j) => (
-                      <option key={j.id} value={j.id}>
-                        {j.nome}
-                        {j.ePadrao ? " (Padrão)" : ""}
-                      </option>
-                    ))}
-                </select>
-              </SelectWrap>
               <Hint>
-                Jornadas configuradas em{" "}
-                <a href="/ponto/configuracoes" style={{ color: "var(--burgundy-600)" }}>
-                  Configurações → Períodos
-                </a>
-                .
+                Preenchida (hoje ou no passado) desativa o funcionário na hora; no futuro, desativa
+                sozinho na data.
               </Hint>
             </div>
-          )}
-          <div>
-            <FieldLabel>Vale-transporte</FieldLabel>
-            <div style={{ paddingTop: 8 }}>
-              <Toggle
-                checked={form.valeTransporte}
-                onChange={(v) => setForm((f) => ({ ...f, valeTransporte: v }))}
-                label="Recebe vale-transporte"
-              />
+            <div>
+              <FieldLabel>Atividade</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.atividade}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, atividade: e.target.value as typeof f.atividade }))
+                  }
+                  style={selectStyle}
+                >
+                  <option value="">Não informado</option>
+                  {ATIVIDADE_OPCOES.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
             </div>
           </div>
-        </div>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: gridCols(
+                (catEmpregado || catEstagiario || catJovemAprendiz) && isRhOuAdmin ? 3 : 2
+              ),
+              gap: 16,
+              alignItems: "start",
+              marginBottom: 8
+            }}
+          >
+            {(catEmpregado || catEstagiario || catJovemAprendiz) && isRhOuAdmin && (
+              <div>
+                <FieldLabel>Jornada diária</FieldLabel>
+                <SelectWrap>
+                  <select
+                    value={form.jornadaPeriodoId}
+                    onChange={(e) => setForm((f) => ({ ...f, jornadaPeriodoId: e.target.value }))}
+                    style={selectStyle}
+                  >
+                    <option value="">Usar jornada padrão do sistema</option>
+                    {jornadasDisponiveis
+                      .filter((j) => j)
+                      .map((j) => (
+                        <option key={j.id} value={j.id}>
+                          {j.nome}
+                          {j.ePadrao ? " (Padrão)" : ""}
+                        </option>
+                      ))}
+                  </select>
+                </SelectWrap>
+                <Hint>
+                  Jornadas configuradas em{" "}
+                  <a href="/ponto/configuracoes" style={{ color: "var(--burgundy-600)" }}>
+                    Configurações → Períodos
+                  </a>
+                  .
+                </Hint>
+              </div>
+            )}
+            <div>
+              <FieldLabel>Atividade</FieldLabel>
+              <SelectWrap>
+                <select
+                  value={form.atividade}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, atividade: e.target.value as typeof f.atividade }))
+                  }
+                  style={selectStyle}
+                >
+                  <option value="">Não informado</option>
+                  {ATIVIDADE_OPCOES.map((a) => (
+                    <option key={a.value} value={a.value}>
+                      {a.label}
+                    </option>
+                  ))}
+                </select>
+              </SelectWrap>
+            </div>
+            <div>
+              <FieldLabel>Vale-transporte</FieldLabel>
+              <div style={{ paddingTop: 8 }}>
+                <Toggle
+                  checked={form.valeTransporte}
+                  onChange={(v) => setForm((f) => ({ ...f, valeTransporte: v }))}
+                  label="Recebe vale-transporte"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* É assessor?: interruptor + nível e período (só registro; a isenção de ponto vem do interruptor). */}
+        {catEmpregado && (
+          <div style={{ marginTop: 16, marginBottom: 8 }}>
+            <FieldLabel>É assessor?</FieldLabel>
+            <div style={{ paddingTop: 8 }}>
+              <Toggle
+                checked={form.isFiscal}
+                onChange={(v) => setForm((f) => ({ ...f, isFiscal: v }))}
+                label="Funcionário é assessor"
+              />
+            </div>
+            <Hint>Assessor fica automaticamente isento de registro de ponto, como o Chefe.</Hint>
+            {form.isFiscal &&
+              (id && !isNovo && funcionarioAtual?.isFiscal ? (
+                <div style={{ marginTop: 10 }}>
+                  <AssessorLinhas
+                    funcionarioId={id}
+                    somenteLeitura={!podeLotacao}
+                    isMobile={isMobile}
+                  />
+                </div>
+              ) : (
+                <Hint>Salve o cadastro para registrar o nível e o período do assessor.</Hint>
+              ))}
+          </div>
+        )}
 
         {/* Estagiário, Jovem Aprendiz e Comissionado não têm tolerância individual (vale a geral). */}
         {id &&
@@ -3001,7 +3398,7 @@ export function FuncionarioFormPage() {
         )}
 
         {/* ══════════════════ CAPACITAÇÃO ══════════════════ */}
-        {(catEmpregado || catComissionado || catAltaAdm) && (
+        {(catEmpregado || catComissionado) && (
           <>
             <SectionTitle>Capacitação</SectionTitle>
 

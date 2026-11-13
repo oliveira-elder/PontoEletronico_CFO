@@ -132,10 +132,20 @@ export class DocumentoService {
       const filePath = join(dirPath, filename);
       const sharp = tryLoadSharp();
       if (sharp) {
-        await sharp(buffer)
-          .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality: 90 })
-          .toFile(filePath);
+        try {
+          await sharp(buffer)
+            .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 90 })
+            .toFile(filePath);
+        } catch (e) {
+          /* Arquivo que não é imagem (ex.: .docx): resposta clara em vez de erro 500. */
+          this.logger.warn(
+            `Arquivo recusado (não é imagem/PDF): ${e instanceof Error ? e.message : e}`
+          );
+          throw new BadRequestException(
+            "Formato de arquivo não aceito. Envie um PDF ou uma imagem (JPG, PNG). Documentos Word (.docx) devem ser salvos como PDF."
+          );
+        }
       } else {
         await writeFile(filePath, buffer);
       }
@@ -275,10 +285,20 @@ export class DocumentoService {
     } else {
       const sharp = tryLoadSharp();
       if (sharp) {
-        await sharp(buffer)
-          .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
-          .jpeg({ quality: 90 })
-          .toFile(filePath);
+        try {
+          await sharp(buffer)
+            .resize({ width: 1600, height: 2400, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 90 })
+            .toFile(filePath);
+        } catch (e) {
+          /* Arquivo que não é imagem (ex.: .docx): resposta clara em vez de erro 500. */
+          this.logger.warn(
+            `Arquivo recusado (não é imagem/PDF): ${e instanceof Error ? e.message : e}`
+          );
+          throw new BadRequestException(
+            "Formato de arquivo não aceito. Envie um PDF ou uma imagem (JPG, PNG). Documentos Word (.docx) devem ser salvos como PDF."
+          );
+        }
       } else {
         await writeFile(filePath, buffer);
       }

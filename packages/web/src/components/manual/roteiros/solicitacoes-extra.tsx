@@ -8,7 +8,7 @@ import { BotaoEnviar, Cartao, Pagina, Seletor } from "./solicitacoes";
  * Fábrica das animações de "Nova solicitação": abre o modal, escolhe o tipo, preenche o formulário
  * (passos específicos), envia e mostra o cartão na lista.
  */
-function solicitacao(o: {
+export function solicitacao(o: {
   id: string;
   titulo: string;
   tipo: string;

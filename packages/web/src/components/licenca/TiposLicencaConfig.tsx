@@ -20,6 +20,7 @@ interface TipoLicenca {
   permiteParcial: boolean;
   exigeDocumento: boolean;
   orientacao: string | null;
+  somenteRh: boolean;
   efeito: "AFASTAMENTO" | "REDUCAO_JORNADA";
   reducaoMaxPct: number | null;
 }
@@ -65,6 +66,7 @@ const FORM_VAZIO: FormTipo = {
   permiteParcial: false,
   exigeDocumento: false,
   orientacao: "",
+  somenteRh: false,
   efeito: "AFASTAMENTO",
   reducaoMaxPct: ""
 };
@@ -166,6 +168,7 @@ export function TiposLicencaConfig({ podeEditar }: { podeEditar: boolean }) {
             permiteParcial: t.permiteParcial,
             exigeDocumento: t.exigeDocumento,
             orientacao: t.orientacao ?? "",
+            somenteRh: !!t.somenteRh,
             efeito: t.efeito,
             reducaoMaxPct: numTxt(t.reducaoMaxPct)
           }
@@ -271,6 +274,7 @@ export function TiposLicencaConfig({ podeEditar }: { podeEditar: boolean }) {
                   ? ` · só ${t.categorias.map((c) => CATEGORIAS.find((x) => x.v === c)?.l ?? c).join(", ")}`
                   : ""}
                 {t.exigeDocumento ? " · documento obrigatório" : ""}
+                {t.somenteRh ? " · somente RH" : ""}
               </div>
             </div>
             {podeEditar && (
@@ -478,6 +482,14 @@ export function TiposLicencaConfig({ podeEditar }: { podeEditar: boolean }) {
                   onChange={(e) => set("exigeDocumento", e.target.checked)}
                 />{" "}
                 Documento obrigatório
+              </label>
+              <label title="O funcionário não vê este tipo em Solicitações; só o RH registra, em Auditoria, na área do funcionário.">
+                <input
+                  type="checkbox"
+                  checked={form.somenteRh}
+                  onChange={(e) => set("somenteRh", e.target.checked)}
+                />{" "}
+                Somente RH (Auditoria)
               </label>
               <label>
                 <input

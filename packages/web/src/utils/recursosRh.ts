@@ -177,6 +177,14 @@ export const ABAS_RH: AbaRh[] = [
     ]
   },
 
+  /* ── Férias — controle geral (aba da Auditoria) ── */
+  {
+    chave: "ferias.controle",
+    pagina: "auditoria",
+    rotulo: "Férias (controle geral)",
+    funcoes: []
+  },
+
   /* ── Auditoria ── */
   {
     chave: "auditoria.funcionarios",

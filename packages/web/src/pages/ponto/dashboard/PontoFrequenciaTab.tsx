@@ -29,6 +29,7 @@ import {
   RankingHorizontalChart,
   abbreviarNome
 } from "../../../components/dashboard/RankingHorizontalChart";
+import { useDetalheDashboard } from "../../../components/dashboard/DashboardDetalheModal";
 import type { AuditoriaDashboardData } from "./types";
 
 const statValueStyle: React.CSSProperties = {
@@ -69,10 +70,13 @@ function agregarPorHora(datas: Array<string | Date>) {
 /** Gráfico "Registros por horário/dia" com drill-down no clique de um dia. */
 function RegistrosPorHorarioChart({
   data,
-  token
+  token,
+  onDetalheHora
 }: {
   data: AuditoriaDashboardData;
   token: string;
+  /** Clique numa hora do gráfico mais interno: abre o modal com os registros daquela hora. */
+  onDetalheHora: (dia: string, hora: string) => void;
 }) {
   const [diaDetalhe, setDiaDetalhe] = useState<string | null>(null);
   const [serieDetalhe, setSerieDetalhe] = useState<
@@ -265,6 +269,11 @@ function RegistrosPorHorarioChart({
           Clique no ponto de um dia para ver a quantidade de registros por hora.
         </p>
       )}
+      {diaDetalhe && !horaLoading && serieDetalhe.length > 0 && (
+        <p style={{ fontSize: 11, color: "var(--ink-400)", margin: "0 0 8px" }}>
+          Clique numa hora para ver quem registrou.
+        </p>
+      )}
       {horaErro && <p style={{ fontSize: 12, color: "#b91c1c", margin: "0 0 8px" }}>{horaErro}</p>}
       <div style={{ width: "100%", height: 280 }}>
         {horaLoading ? (
@@ -278,7 +287,17 @@ function RegistrosPorHorarioChart({
             </p>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={serieDetalhe} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+              <LineChart
+                data={serieDetalhe}
+                margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+                style={{ cursor: "pointer" }}
+                onClick={(state: { activeLabel?: string | number }) => {
+                  const label = state?.activeLabel;
+                  if (diaDetalhe && typeof label === "string" && /^\d{2}h$/.test(label)) {
+                    onDetalheHora(diaDetalhe, label.slice(0, 2));
+                  }
+                }}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10, fill: "#6b7280" }} interval={0} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#6b7280" }} width={36} />
@@ -381,6 +400,7 @@ export function PontoFrequenciaTab({
   const navigate = useNavigate();
   const [modoPontualidade, setModoPontualidade] = useState<"atrasados" | "adiantados">("atrasados");
   const [modoBanco, setModoBanco] = useState<"negativo" | "positivo">("negativo");
+  const { abrir, modal } = useDetalheDashboard(data.filtro);
 
   const isoHoje = hojeBrasiliaISO();
   const maxEntradas = Math.max(...(data.registrosPorDia ?? []).map((d) => d.entradas), 1);
@@ -391,12 +411,14 @@ export function PontoFrequenciaTab({
   const rankingBanco =
     modoBanco === "negativo" ? (data.topBancoNegativo ?? []) : (data.topBancoPositivo ?? []);
   const chartPont = rankingPont.map((r) => ({
+    funcionarioId: r.funcionarioId,
     nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     minutos: r.minutos,
     label: r.minutosFormatado
   }));
   const chartBanco = rankingBanco.map((r) => ({
+    funcionarioId: r.funcionarioId,
     nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     minutos: r.minutos,
@@ -405,7 +427,8 @@ export function PontoFrequenciaTab({
 
   const barAtrasoPorGerencia = (data.atrasoMedioPorGerencia ?? []).map((g) => ({
     name: g.nome,
-    value: g.minutos
+    value: g.minutos,
+    key: g.gerenciaId
   }));
   const registrosAjustados = data.registrosAjustados;
 
@@ -434,6 +457,7 @@ export function PontoFrequenciaTab({
           sub="pausa ativa"
           color={CHART_PALETTE[3]}
           icon={<ClockIcon size={16} />}
+          onClick={() => abrir("intervalo", undefined, "Em intervalo")}
         />
         <StatCard
           label="Pausados"
@@ -441,6 +465,7 @@ export function PontoFrequenciaTab({
           sub="expediente interrompido"
           color={CHART_PALETTE[4]}
           icon={<ClockIcon size={16} />}
+          onClick={() => abrir("pausados", undefined, "Expediente interrompido")}
         />
         <StatCard
           label="Registros hoje"
@@ -448,6 +473,7 @@ export function PontoFrequenciaTab({
           sub="todos os tipos"
           color={CHART_PALETTE[2]}
           icon={<BarChart2Icon size={16} />}
+          onClick={() => abrir("registros-hoje", undefined, "Registros de hoje")}
         />
         <StatCard
           label="Sol. pendentes"
@@ -455,6 +481,7 @@ export function PontoFrequenciaTab({
           sub="aguardando revisão"
           color={data.solicitacoesPendentes > 0 ? CHART_PALETTE[3] : undefined}
           icon={<InboxIcon size={16} />}
+          onClick={() => abrir("sol-pendentes", undefined, "Solicitações pendentes")}
         />
         <StatCard
           label="Afastamentos"
@@ -462,6 +489,7 @@ export function PontoFrequenciaTab({
           sub="ativos hoje"
           color="var(--red)"
           icon={<CalendarIcon size={16} />}
+          onClick={() => abrir("afastamentos-ativos", undefined, "Afastamentos ativos hoje")}
         />
         <StatCard
           label="Períodos abertos"
@@ -469,6 +497,7 @@ export function PontoFrequenciaTab({
           sub={`${data.periodosFechados} fechados · ${data.periodosAprovados} aprovados`}
           color={CHART_PALETTE[0]}
           icon={<BarChart2Icon size={16} />}
+          onClick={() => abrir("periodos", "ABERTO", "Períodos de ponto abertos")}
         />
       </div>
 
@@ -479,8 +508,8 @@ export function PontoFrequenciaTab({
             borderRadius: "var(--radius-lg)",
             border: "1px solid rgba(122,30,38,0.08)",
             padding: "18px 20px",
-            height: 130,
-            boxSizing: "border-box"
+            boxSizing: "border-box",
+            minWidth: 0
           }}
         >
           <p
@@ -495,22 +524,36 @@ export function PontoFrequenciaTab({
           >
             Entradas no período
           </p>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+          {/* Grade que quebra em linhas conforme a largura (30 dias = 2 linhas em tela larga): cada coluna tem
+              largura mínima para o rótulo "Ter. 06/11" ficar legível, com o dia/mês ao lado do nome do dia. */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(68px, 1fr))",
+              gap: "20px 8px"
+            }}
+          >
             {data.registrosPorDia.map((d) => {
               const pct = maxEntradas > 0 ? (d.entradas / maxEntradas) * 100 : 0;
               const dt = new Date(d.data + "T12:00:00");
               const dayName = dt.toLocaleDateString("pt-BR", { weekday: "short" });
+              const diaMes = dt.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
               const eHoje = d.data === isoHoje;
               return (
                 <div
                   key={d.data}
+                  role="button"
+                  tabIndex={0}
+                  title="Ver quem registrou entrada neste dia"
+                  onClick={() => abrir("entradas-dia", d.data)}
+                  onKeyDown={(e) => e.key === "Enter" && abrir("entradas-dia", d.data)}
                   style={{
-                    flex: 1,
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "center",
-                    gap: 4,
-                    minWidth: 0
+                    gap: 6,
+                    minWidth: 0,
+                    cursor: "pointer"
                   }}
                 >
                   <span
@@ -523,7 +566,7 @@ export function PontoFrequenciaTab({
                   </span>
                   <div
                     style={{
-                      width: "100%",
+                      width: "70%",
                       height: `${Math.max(pct, 4)}%`,
                       background: eHoje ? "var(--burgundy-600)" : "var(--burgundy-200)",
                       borderRadius: "3px 3px 0 0",
@@ -531,9 +574,15 @@ export function PontoFrequenciaTab({
                     }}
                   />
                   <span
-                    style={{ fontSize: 9, color: "var(--ink-400)", textTransform: "capitalize" }}
+                    style={{
+                      fontSize: 11.5,
+                      fontWeight: eHoje ? 700 : 500,
+                      color: eHoje ? "var(--burgundy-600)" : "var(--ink-500)",
+                      textTransform: "capitalize",
+                      whiteSpace: "nowrap"
+                    }}
                   >
-                    {dayName}
+                    {dayName} {diaMes}
                   </span>
                 </div>
               );
@@ -578,7 +627,8 @@ export function PontoFrequenciaTab({
             </p>
           ) : (
             <MiniDonut
-              data={data.origens.map((o) => ({ name: o.origem, value: o.total }))}
+              data={data.origens.map((o) => ({ name: o.origem, value: o.total, key: o.origem }))}
+              onItemClick={(i) => i.key && abrir("origem-hoje", i.key, `Origem ${i.name}`)}
               height={190}
             />
           )}
@@ -613,16 +663,21 @@ export function PontoFrequenciaTab({
           </p>
           <MiniDonut
             data={[
-              { name: "Mobile", value: uc.mobile },
-              { name: "Desktop", value: uc.desktop }
+              { name: "Mobile", value: uc.mobile, key: "MOBILE" },
+              { name: "Desktop", value: uc.desktop, key: "DESKTOP" }
             ]}
+            onItemClick={(i) => i.key && abrir("canal", i.key, `Canal ${i.name}`)}
             colors={[CHART_PALETTE[6], CHART_PALETTE[2]]}
             height={190}
           />
         </div>
       </div>
 
-      <RegistrosPorHorarioChart data={data} token={token} />
+      <RegistrosPorHorarioChart
+        data={data}
+        token={token}
+        onDetalheHora={(dia, hora) => abrir("registros-hora", dia, undefined, hora)}
+      />
 
       <div className="dashboard-grid-2">
         <div
@@ -683,6 +738,10 @@ export function PontoFrequenciaTab({
               corPositiva="var(--red)"
               corNegativa="var(--green)"
               modoNegativo={modoPontualidade !== "atrasados"}
+              onItemClick={(i) =>
+                typeof i.funcionarioId === "string" &&
+                abrir(modoPontualidade === "atrasados" ? "atraso" : "adiantado", i.funcionarioId)
+              }
             />
           </div>
         </div>
@@ -743,6 +802,9 @@ export function PontoFrequenciaTab({
               corPositiva="var(--green)"
               corNegativa="var(--red)"
               modoNegativo={modoBanco === "negativo"}
+              onItemClick={(i) =>
+                typeof i.funcionarioId === "string" && abrir("banco", i.funcionarioId)
+              }
             />
           </div>
         </div>
@@ -750,7 +812,13 @@ export function PontoFrequenciaTab({
 
       <div className="dashboard-grid-side">
         <DashboardPanel title="Atraso Médio por Gerência (top 10)">
-          <MiniBarChart data={barAtrasoPorGerencia} color={CHART_PALETTE[7]} />
+          <MiniBarChart
+            data={barAtrasoPorGerencia}
+            color={CHART_PALETTE[7]}
+            onItemClick={(i) =>
+              i.key && abrir("atraso-gerencia", i.key, `Atraso médio — ${i.name}`)
+            }
+          />
         </DashboardPanel>
         <DashboardPanel title="Registros Ajustados">
           {!registrosAjustados || registrosAjustados.total === 0 ? (
@@ -777,6 +845,9 @@ export function PontoFrequenciaTab({
                   }
                 ]}
                 colors={[CHART_PALETTE[3], CHART_PALETTE[2]]}
+                onItemClick={(i) =>
+                  abrir("ajustados", i.name === "Ajustados" ? "ajustado" : "original")
+                }
                 height={190}
               />
               <p
@@ -794,6 +865,7 @@ export function PontoFrequenciaTab({
           )}
         </DashboardPanel>
       </div>
+      {modal}
     </div>
   );
 }

@@ -336,6 +336,7 @@ enum StatusSolicitacao {
   REJEITADA // legado: rejeitada sem distinção de etapa
   REJEITADA_GESTOR // gestor rejeitou
   REJEITADA_RH // RH rejeitou
+  DEVOLVIDA // chefe devolveu ao funcionário para correção (Envio de Documento ao RH via chefe)
   CANCELADA // substituída por uma solicitação de alteração aprovada
 }
 
@@ -854,7 +855,9 @@ model Funcionario {
   diasSemana      String?
 
   /// Observações livres do RH sobre o funcionário (seção Geral do cadastro).
-  observacoes String?
+  observacoes     String?
+  /// Observações do RH sobre o cargo (seção Cargo do cadastro).
+  observacaoCargo String?
 
   // ── Cessão de Empregado (só CONCURSADO) ──────────────────────────────
   /// Marcação explícita de cessão — base para estatísticas/gráficos de cedidos.
@@ -870,6 +873,7 @@ model Funcionario {
   substituicoesComoSubstituto GerenteSubstituicao[]           @relation("SubstituicaoSubstituto")
   categoriasHistorico         FuncionarioCategoriaHistorico[]
   lotacaoHistorico            FuncionarioLotacaoHistorico[]
+  assessorHistorico           FuncionarioAssessorHistorico[]
   cessoesHistorico            FuncionarioCessaoHistorico[]
   assinaturasCicloBancoHoras  AssinaturaCicloBancoHoras[]
   FechamentoSituacao          FechamentoSituacao[]
@@ -936,6 +940,24 @@ model FuncionarioLotacaoHistorico {
   vigenciaAte   DateTime?   @db.Date
   funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   gerencia      Gerencia?   @relation(fields: [gerenciaId], references: [id], onDelete: SetNull)
+  /// Observação livre do RH sobre esta movimentação (ex.: motivo da mudança).
+  observacao    String?
+  createdAt     DateTime    @default(now())
+
+  @@index([funcionarioId, vigenciaDesde])
+}
+
+/// Nível e período em que o funcionário (com "É assessor?" ligado) exerceu a função de assessor.
+/// Só registro: não altera a isenção de ponto nem o banco de horas (isso segue isFiscal/categoria).
+model FuncionarioAssessorHistorico {
+  id            String      @id @default(cuid())
+  funcionarioId String
+  /// 1 a 15 (exibido em algarismos romanos, I a XV).
+  nivel         Int
+  vigenciaDesde DateTime    @db.Date
+  /// null = em aberto
+  vigenciaAte   DateTime?   @db.Date
+  funcionario   Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
   createdAt     DateTime    @default(now())
 
   @@index([funcionarioId, vigenciaDesde])
@@ -1142,6 +1164,8 @@ model TipoLicenca {
   permiteParcial  Boolean  @default(false)
   exigeDocumento  Boolean  @default(false)
   orientacao      String?
+  /// true = só o RH registra (Auditoria → funcionário); o funcionário não vê nem pede em Solicitações.
+  somenteRh       Boolean  @default(false)
   /// AFASTAMENTO | REDUCAO_JORNADA
   efeito          String   @default("AFASTAMENTO")
   reducaoMaxPct   Int?
@@ -1161,7 +1185,7 @@ model ExameOcupacional {
   situacao                 String      @default("AGUARDANDO_CONFERENCIA")
   /// APTO | INAPTO; registros antigos podem ter APTO_COM_RESTRICAO (preenchido na confirmação)
   resultado                String?
-  /// ADMISSIONAL | PERIODICO | RETORNO_AO_TRABALHO
+  /// ADMISSIONAL | PERIODICO | RETORNO_AO_TRABALHO | MUDANCA_DE_RISCO
   tipo                     String      @default("PERIODICO")
   medico                   String?
   clinica                  String?
@@ -1182,6 +1206,10 @@ model ExameOcupacional {
   conferidoEm              DateTime?
   avisoAVencerEm           DateTime?
   avisoVencidoEm           DateTime?
+  /// Exclusão lógica (usuários do RH): o exame some das telas e do cálculo de vencimento, mas fica guardado.
+  excluidoEm               DateTime?
+  excluidoPorNome          String?
+  excluidoPorUserId        String?
   createdAt                DateTime    @default(now())
   updatedAt                DateTime    @updatedAt
   funcionario              Funcionario @relation(fields: [funcionarioId], references: [id], onDelete: Cascade)
@@ -1291,6 +1319,7 @@ model ConfiguracaoSolicitacoes {
   tipoAtivoDayOff             Boolean  @default(true)
   tipoAtivoHoraExtra          Boolean  @default(true)
   tipoAtivoEnvioDocumentoRh   Boolean  @default(true)
+  tipoAtivoDocumentoViaChefe  Boolean  @default(true)
   /// Abono livre: ligado = funcionário pede abono sem depender do tempo liberado pelo RH (que, se houver, é usado primeiro);
   /// desligado = só pede abono com tempo liberado pelo RH, dentro do limite.
   abonoAlemLimiteLiberadoRh   Boolean  @default(true)

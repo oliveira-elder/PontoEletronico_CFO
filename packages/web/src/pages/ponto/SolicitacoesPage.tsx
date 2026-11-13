@@ -59,7 +59,8 @@ type TipoSolicitacao =
   | "ABONO"
   | "DAY_OFF"
   | "HORA_EXTRA"
-  | "ENVIO_DOCUMENTO_RH";
+  | "ENVIO_DOCUMENTO_RH"
+  | "DOCUMENTO_VIA_CHEFE";
 type StatusSolicitacao =
   | "PENDENTE"
   | "AGUARDANDO_RH"
@@ -68,6 +69,8 @@ type StatusSolicitacao =
   | "REJEITADA"
   | "REJEITADA_GESTOR"
   | "REJEITADA_RH"
+  | "DEVOLVIDA"
+  | "AGUARDANDO_GESTOR_RH"
   | "CANCELADA";
 
 interface Solicitacao {
@@ -122,6 +125,9 @@ interface ConfigSolicitacoes {
   tipoAtivoDayOff?: boolean;
   tipoAtivoHoraExtra?: boolean;
   tipoAtivoEnvioDocumentoRh?: boolean;
+  tipoAtivoDocumentoViaChefe?: boolean;
+  /** O usuário logado está em home office (libera o Envio de Documento - Home Office). */
+  usuarioHomeOffice?: boolean;
   /** Grupo do CID no atestado: OBRIGATORIO | OPCIONAL | DESATIVADO. */
   atestadoCidModo?: "OBRIGATORIO" | "OPCIONAL" | "DESATIVADO";
 }
@@ -134,7 +140,8 @@ const TIPO_LABEL: Record<TipoSolicitacao, string> = {
   ABONO: "Abono",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
-  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH",
+  DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
 };
 
 const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
@@ -145,7 +152,8 @@ const TIPO_EMOJI: Record<TipoSolicitacao, string> = {
   ABONO: "📆",
   DAY_OFF: "🎂",
   HORA_EXTRA: "⏱️",
-  ENVIO_DOCUMENTO_RH: "📎"
+  ENVIO_DOCUMENTO_RH: "📎",
+  DOCUMENTO_VIA_CHEFE: "🗂️"
 };
 
 /* Status que encerram a análise — a partir daqui, documentos anexados pelo
@@ -213,24 +221,213 @@ function mensagemStatusCorrecaoPonto(status: StatusSolicitacao): string {
       return "Aprovada pelo chefe, mas rejeitada pelo RH na análise final. Confira o motivo abaixo.";
     case "REJEITADA":
       return "Solicitação rejeitada. Confira as observações abaixo.";
+    case "DEVOLVIDA":
+      return "Devolvida pelo chefe para correção. Confira o motivo, corrija e reenvie.";
     default:
       return "";
   }
 }
 
-function StatusBadge({ status }: { status: StatusSolicitacao }) {
+function StatusBadge({
+  status,
+  canceladaPorMim = false
+}: {
+  status: StatusSolicitacao;
+  /** Cancelada pelo próprio funcionário (e não substituída por uma alteração). */
+  canceladaPorMim?: boolean;
+}) {
   const map: Record<StatusSolicitacao, { label: string; cls: string }> = {
     PENDENTE: { label: "Aguardando Chefe", cls: "badge-amber" },
     AGUARDANDO_RH: { label: "Aguardando RH", cls: "badge-blue" },
     AGUARDANDO_DOCUMENTO_FUNCIONARIO: { label: "Aguardando seu documento", cls: "badge-amber" },
+    AGUARDANDO_GESTOR_RH: { label: "Aguardando Gerente de RH", cls: "badge-amber" },
     APROVADA: { label: "Aprovada", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     REJEITADA_GESTOR: { label: "Rejeitada pelo Chefe", cls: "badge-red" },
     REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" },
+    DEVOLVIDA: { label: "Devolvida para correção", cls: "badge-amber" },
     CANCELADA: { label: "Cancelada (substituída)", cls: "badge-amber" }
   };
-  const { label, cls } = map[status] ?? { label: status, cls: "badge-amber" };
+  const { label, cls } =
+    status === "CANCELADA" && canceladaPorMim
+      ? { label: "Cancelada por você", cls: "badge-gray" }
+      : (map[status] ?? { label: status, cls: "badge-amber" });
   return <span className={`badge ${cls}`}>{label}</span>;
+}
+
+/** Cancelar a própria solicitação, enquanto o chefe ainda não a decidiu (ou após ser devolvida). */
+function CancelarSolicitacao({ s, onAtualizado }: { s: Solicitacao; onAtualizado: () => void }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+
+  const cancelar = async () => {
+    setEnviando(true);
+    setErro("");
+    try {
+      await api.patch(`/ponto/solicitacoes/${s.id}/cancelar`, {});
+      onAtualizado();
+    } catch (e) {
+      setErro((e as Error).message || "Não foi possível cancelar.");
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <div
+      data-alvo={`cancelar-${s.id}`}
+      style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}
+    >
+      {!confirmando ? (
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ color: "var(--red)" }}
+          onClick={() => setConfirmando(true)}
+        >
+          ✖ Cancelar solicitação
+        </button>
+      ) : (
+        <>
+          <span style={{ fontSize: 12.5, color: "var(--ink-700)" }}>
+            Cancelar esta solicitação? Seu chefe não a verá mais.
+          </span>
+          <button
+            className="btn btn-sm"
+            style={{ background: "var(--red)", color: "#fff" }}
+            disabled={enviando}
+            onClick={() => void cancelar()}
+          >
+            {enviando ? "Cancelando…" : "Sim, cancelar"}
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={enviando}
+            onClick={() => setConfirmando(false)}
+          >
+            Voltar
+          </button>
+        </>
+      )}
+      {erro && <span style={{ fontSize: 12, color: "var(--red)" }}>⚠ {erro}</span>}
+    </div>
+  );
+}
+
+/** Funcionário corrige e reenvia o documento devolvido pelo chefe ("Envio de Documento - Home Office"). */
+function ReenvioDocumentoSection({
+  s,
+  onAtualizado
+}: {
+  s: Solicitacao;
+  onAtualizado: () => void;
+}) {
+  const [descricao, setDescricao] = useState(s.descricao ?? "");
+  const [arquivo, setArquivo] = useState<{ base64: string; mime: string; nome: string } | null>(
+    null
+  );
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState("");
+  const devolucoes = Array.isArray(s.metadados?.devolucoes)
+    ? (s.metadados.devolucoes as Array<{ porNome?: string; motivo?: string; em?: string }>)
+    : [];
+  const ultima = devolucoes[devolucoes.length - 1];
+
+  const escolher = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) =>
+      setArquivo({ base64: ev.target?.result as string, mime: file.type, nome: file.name });
+    reader.readAsDataURL(file);
+  };
+
+  const reenviar = async () => {
+    setErro("");
+    if (descricao.trim().length < 3)
+      return setErro("Informe uma descrição com pelo menos 3 caracteres.");
+    setEnviando(true);
+    try {
+      await api.patch(`/ponto/solicitacoes/${s.id}/reenviar`, {
+        descricao: descricao.trim(),
+        ...(arquivo
+          ? {
+              documentoBase64: arquivo.base64,
+              documentoMime: arquivo.mime,
+              nomeArquivo: arquivo.nome
+            }
+          : {})
+      });
+      onAtualizado();
+    } catch (e) {
+      setErro((e as Error).message || "Não foi possível reenviar.");
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: "10px 12px",
+        borderRadius: "var(--radius-md)",
+        border: "1px solid rgba(217,119,6,0.35)",
+        background: "rgba(217,119,6,0.06)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
+      }}
+    >
+      <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: "#92400e" }}>
+        ↩ Devolvida para correção{ultima?.porNome ? ` por ${ultima.porNome}` : ""}
+      </p>
+      {ultima?.motivo && (
+        <p style={{ margin: 0, fontSize: 12.5, color: "var(--ink-800)" }}>
+          Motivo: {ultima.motivo}
+        </p>
+      )}
+      <textarea
+        rows={2}
+        value={descricao}
+        onChange={(e) => setDescricao(e.target.value)}
+        style={{
+          width: "100%",
+          padding: "8px 10px",
+          border: "1px solid rgba(122,30,38,0.14)",
+          borderRadius: "var(--radius-md)",
+          fontSize: 13,
+          boxSizing: "border-box",
+          resize: "vertical"
+        }}
+      />
+      <label style={{ fontSize: 12.5, color: "var(--ink-700)", cursor: "pointer" }}>
+        📎 {arquivo ? arquivo.nome : "Trocar o arquivo (opcional)"}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp,application/pdf"
+          style={{ display: "none" }}
+          onChange={escolher}
+        />
+      </label>
+      {erro && <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>⚠ {erro}</p>}
+      <div>
+        <button
+          className="btn btn-primary btn-sm"
+          disabled={enviando}
+          onClick={() => void reenviar()}
+        >
+          {enviando ? "Reenviando…" : "Corrigir e reenviar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Documentos anexados aceitam só PDF ou imagem (um .docx derrubava o envio com erro do servidor). */
+const MSG_ARQUIVO_NAO_ACEITO =
+  "Formato de arquivo não aceito. Envie um PDF ou uma imagem (JPG, PNG). Documentos Word (.docx) devem ser salvos como PDF.";
+function arquivoAceito(file: File): boolean {
+  return file.type === "application/pdf" || file.type.startsWith("image/");
 }
 
 /* ══════════════════════════════════════════
@@ -245,7 +442,8 @@ const TIPO_FLAG: Record<TipoSolicitacao, keyof ConfigSolicitacoes> = {
   ABONO: "tipoAtivoAbono",
   DAY_OFF: "tipoAtivoDayOff",
   HORA_EXTRA: "tipoAtivoHoraExtra",
-  ENVIO_DOCUMENTO_RH: "tipoAtivoEnvioDocumentoRh"
+  ENVIO_DOCUMENTO_RH: "tipoAtivoEnvioDocumentoRh",
+  DOCUMENTO_VIA_CHEFE: "tipoAtivoDocumentoViaChefe"
 };
 
 function TipoSeletor({
@@ -261,6 +459,8 @@ function TipoSeletor({
   const tipos = (Object.keys(TIPO_LABEL) as TipoSolicitacao[]).filter((t) => {
     if (excluir?.includes(t)) return false;
     if (excluir) return true; /* RH: mostra todos; o servidor confere ou exige a dispensa */
+    /* Envio de Documento - Home Office: só aparece para quem está em home office. */
+    if (t === "DOCUMENTO_VIA_CHEFE" && config?.usuarioHomeOffice !== true) return false;
     const flag = TIPO_FLAG[t];
     const val = config?.[flag];
     return val === undefined || val === true;
@@ -925,6 +1125,7 @@ function FormAtestado({
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
 }) {
+  const [erroArquivo, setErroArquivo] = useState("");
   const [dataInicio, setDataInicio] = useState("");
   const [dataFim, setDataFim] = useState("");
   const [horaInicio, setHoraInicio] = useState("");
@@ -967,6 +1168,12 @@ function FormAtestado({
   const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!arquivoAceito(file)) {
+      setErroArquivo(MSG_ARQUIVO_NAO_ACEITO);
+      e.target.value = "";
+      return;
+    }
+    setErroArquivo("");
     setNomeArquivo(file.name);
     setDocumentoMime(file.type);
     const reader = new FileReader();
@@ -1234,6 +1441,16 @@ function FormAtestado({
                   <span style={{ fontSize: 12, color: "var(--ink-500)" }}>✓ {nomeArquivo}</span>
                 )}
               </div>
+              <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "var(--ink-500)" }}>
+                Formatos aceitos: PDF, JPG ou PNG (documentos Word devem ser salvos como PDF).
+              </p>
+              {erroArquivo && (
+                <p
+                  style={{ margin: "4px 0 0", fontSize: 12, color: "var(--red)", fontWeight: 600 }}
+                >
+                  ⚠ {erroArquivo}
+                </p>
+              )}
               {documentoBase64 && documentoMime.startsWith("image/") && (
                 <img
                   src={documentoBase64}
@@ -1423,6 +1640,7 @@ function FormFerias({
     slotsPeriodosIniciais(cfg.feriasMaxPeriodos)
   );
   const [diasVenda, setDiasVenda] = useState(0);
+  const [adiantamento13, setAdiantamento13] = useState(false);
   const [descricao, setDescricao] = useState("");
   const [erros, setErros] = useState<string[]>([]);
   const calendarioFerias = useCalendarioFerias(periodos.map((p) => p.dataInicio));
@@ -1709,6 +1927,7 @@ function FormFerias({
           dias: p.dias
         })),
         diasVendidos: diasVendaEfetivo,
+        adiantamento13,
         totalDiasGozo: totalDiasGozo,
         totalDias: totalDiasUtilizados,
         diasDisponiveis: diasDisponiveisCiclo,
@@ -1898,15 +2117,45 @@ function FormFerias({
             ))}
           </div>
           {saldo.ciclos.length > 0 && (
-            <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 8, marginBottom: 0 }}>
-              Ciclo(s) ativo(s):{" "}
-              {saldo.ciclos
-                .map(
-                  (c) =>
-                    `${fmtPeriodoCurto(c.inicio)} – ${fmtPeriodoCurto(c.fim)} (${c.diasDisponiveis}d disp.)`
-                )
-                .join(" | ")}
-            </p>
+            <div style={{ marginTop: 12 }}>
+              <p
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  color: "var(--ink-500)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  margin: "0 0 6px"
+                }}
+              >
+                Ciclo(s) ativo(s)
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {saldo.ciclos.map((c) => (
+                  <div
+                    key={`${c.inicio}-${c.fim}`}
+                    style={{
+                      display: "flex",
+                      alignItems: "baseline",
+                      flexWrap: "wrap",
+                      gap: "4px 10px",
+                      padding: "8px 14px",
+                      background: "rgba(47,125,79,0.08)",
+                      border: "1px solid rgba(47,125,79,0.28)",
+                      borderRadius: "var(--radius-md)"
+                    }}
+                  >
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#166534" }}>
+                      {fmtPeriodoCurto(c.inicio)} – {fmtPeriodoCurto(c.fim)}
+                    </span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#2f7d4f" }}>
+                      {c.diasDisponiveis}{" "}
+                      {c.diasDisponiveis === 1 ? "dia disponível" : "dias disponíveis"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       ) : (
@@ -1959,10 +2208,11 @@ function FormFerias({
             </>
           ) : (
             <>
-              Configurando <strong>ciclo {cicloAtual.numero}</strong> ({diasDisponiveisCiclo} dias a
-              programar). Na primeira solicitação, informe todos os períodos até Restam = 0.
+              <strong>Ciclo {cicloAtual.numero}:</strong> {diasDisponiveisCiclo} dias a programar.
+              Na primeira solicitação, informe todos os períodos (com ou sem venda) até que o campo
+              Restam chegue a 0.
               {cicloAtual.liberaEm
-                ? ` Você já pode marcar, mas só poderá usufruir a partir de ${cicloAtual.liberaEm.split("-").reverse().join("/")} (fim do período aquisitivo).`
+                ? ` Você já pode marcar, mas só poderá usufruir a partir de ${cicloAtual.liberaEm.split("-").reverse().join("/")}, fim do período aquisitivo.`
                 : ""}
             </>
           )}
@@ -1991,13 +2241,14 @@ function FormFerias({
           </>
         ) : (
           <>
-            <strong>Regras:</strong> até {cfg.feriasMaxPeriodos} períodos de gozo · todos os
-            períodos mín. {cfg.feriasMinimoOutrosPeriodos} dias · ao menos 1 período deve ter ≥{" "}
-            {cfg.feriasMinimoGrandePeriodo} dias · venda equivale a 1 período (máx.{" "}
-            {cfg.feriasMaxPeriodos - 1} períodos de gozo com venda) · venda máx.{" "}
-            {cfg.feriasMaxDiasVenda} dias · antecedência mín. {cfg.feriasAntecedenciaMinDias} dias ·
-            na primeira solicitação preencha os períodos (com ou sem venda) até Restam = 0 ·
-            alterações posteriores com antecedência por período · cada ciclo se configura à parte.
+            <strong>Regras:</strong> as férias podem ser divididas em até {cfg.feriasMaxPeriodos}{" "}
+            períodos de gozo, todos com no mínimo {cfg.feriasMinimoOutrosPeriodos} dias e ao menos
+            um com {cfg.feriasMinimoGrandePeriodo} dias ou mais. A venda de até{" "}
+            {cfg.feriasMaxDiasVenda} dias (abono pecuniário) equivale a um período, então, com
+            venda, o gozo fica limitado a {cfg.feriasMaxPeriodos - 1} períodos. Cada período deve
+            ser marcado com pelo menos {cfg.feriasAntecedenciaMinDias} dias de antecedência, e as
+            alterações posteriores seguem essa mesma antecedência. Cada ciclo é configurado
+            separadamente.
           </>
         )}
       </div>
@@ -2005,23 +2256,33 @@ function FormFerias({
       {/* Venda de dias — oculto para estagiários */}
       {!isEstagiario && (
         <div>
-          <label style={labelBase}>Dias a vender (abono pecuniário) — máx. {maxVenda}</label>
-          <input
-            type="number"
-            style={{ ...input, maxWidth: 120 }}
-            min={0}
-            max={maxVenda}
+          <label style={labelBase}>Dias a vender (abono pecuniário)</label>
+          <select
+            style={{ ...input, maxWidth: 220 }}
             value={diasVenda}
-            onChange={(e) =>
-              setDiasVenda(Math.min(maxVenda, Math.max(0, parseInt(e.target.value) || 0)))
-            }
-          />
+            onChange={(e) => setDiasVenda(Number(e.target.value))}
+          >
+            <option value={0}>Não vender (0 dia)</option>
+            {maxVenda > 0 && <option value={maxVenda}>Vender {maxVenda} dias</option>}
+          </select>
           {diasVenda > 0 && (
             <p style={{ fontSize: 11.5, color: "var(--ink-500)", marginTop: 4 }}>
               {diasVenda} dia(s) serão convertidos em pagamento (contam como 1 período).
             </p>
           )}
         </div>
+      )}
+
+      {/* Adiantamento da 1ª parcela do 13º (Lei 4.749): pode ser pedido junto às férias — oculto para estagiários */}
+      {!isEstagiario && (
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={adiantamento13}
+            onChange={(e) => setAdiantamento13(e.target.checked)}
+          />
+          Solicitar o adiantamento da 1ª parcela do 13º salário junto com as férias
+        </label>
       )}
 
       {/* Períodos — CLT: 3 pré-exibidos; estagiário: 1 obrigatório + N via botão */}
@@ -2535,6 +2796,9 @@ function FormFeriasAlteracao({
           dias: p.dias
         })),
         diasVendidos: diasVendaOriginal,
+        ...(typeof metaOriginal?.adiantamento13 === "boolean"
+          ? { adiantamento13: metaOriginal.adiantamento13 }
+          : {}),
         totalDiasGozo,
         totalDias: totalDiasGozo + diasVendaOriginal,
         alteracaoDeId: solicitacaoOriginal.id,
@@ -2806,6 +3070,7 @@ function FormAbono({
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
 }) {
+  const [erroArquivo, setErroArquivo] = useState("");
   const [linhas, setLinhas] = useState<LinhaAbono[]>([linhaAbonoVazia()]);
   const [descricao, setDescricao] = useState("");
   const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
@@ -2942,6 +3207,12 @@ function FormAbono({
   const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!arquivoAceito(file)) {
+      setErroArquivo(MSG_ARQUIVO_NAO_ACEITO);
+      e.target.value = "";
+      return;
+    }
+    setErroArquivo("");
     setNomeArquivo(file.name);
     setDocumentoMime(file.type);
     const reader = new FileReader();
@@ -3379,6 +3650,11 @@ function FormAbono({
           >
             📎 Anexar documento (imagem ou PDF)
           </label>
+          {erroArquivo && (
+            <span style={{ fontSize: 12, color: "var(--red)", fontWeight: 600 }}>
+              ⚠ {erroArquivo}
+            </span>
+          )}
           {nomeArquivo && (
             <>
               <span style={{ fontSize: 12, color: "var(--ink-500)" }}>✓ {nomeArquivo}</span>
@@ -3816,10 +4092,13 @@ function FormHoraExtra({
 
 function FormEnvioDocumentoRh({
   onSubmit,
-  enviando
+  enviando,
+  viaChefe = false
 }: {
   onSubmit: (data: Record<string, unknown>) => void;
   enviando: boolean;
+  /** "Via chefe": o chefe imediato vê o documento antes do RH. */
+  viaChefe?: boolean;
 }) {
   const [descricao, setDescricao] = useState("");
   const [documentoBase64, setDocumentoBase64] = useState<string | null>(null);
@@ -3846,6 +4125,11 @@ function FormEnvioDocumentoRh({
   const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!arquivoAceito(file)) {
+      setErroLocal(MSG_ARQUIVO_NAO_ACEITO);
+      e.target.value = "";
+      return;
+    }
     setNomeArquivo(file.name);
     setDocumentoMime(file.type || "application/octet-stream");
     setErroLocal("");
@@ -3865,7 +4149,7 @@ function FormEnvioDocumentoRh({
     }
     const agora = new Date();
     onSubmit({
-      tipo: "ENVIO_DOCUMENTO_RH",
+      tipo: viaChefe ? "DOCUMENTO_VIA_CHEFE" : "ENVIO_DOCUMENTO_RH",
       dataReferencia: agora.toISOString(),
       descricao: descricao.trim(),
       metadados: {
@@ -3879,8 +4163,15 @@ function FormEnvioDocumentoRh({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <p style={{ fontSize: 13, color: "var(--ink-500)", margin: 0, lineHeight: 1.5 }}>
-        Envie documentos ao setor de RH com uma breve descrição (comprovantes, declarações, etc.). A
-        solicitação vai direto para análise do RH.
+        Envie documentos ao setor de RH com uma breve descrição (comprovantes, declarações, etc.).{" "}
+        {viaChefe ? (
+          <>
+            <strong>Seu chefe imediato verá este documento antes do RH</strong> e poderá encaminhar,
+            recusar ou devolver para correção. Sem chefe imediato, vai direto ao RH.
+          </>
+        ) : (
+          "A solicitação vai direto para análise do RH."
+        )}
       </p>
 
       <div>
@@ -3932,6 +4223,10 @@ function FormEnvioDocumentoRh({
         </label>
       </div>
 
+      <p style={{ fontSize: 11.5, color: "var(--ink-500)", margin: 0 }}>
+        Formatos aceitos: PDF, JPG, PNG ou WebP, até 10 MB (documentos Word devem ser salvos como
+        PDF).
+      </p>
       {erroLocal && <p style={{ fontSize: 12, color: "var(--red)", margin: 0 }}>⚠️ {erroLocal}</p>}
 
       <button
@@ -3939,7 +4234,7 @@ function FormEnvioDocumentoRh({
         disabled={enviando || !descricao.trim() || !documentoBase64}
         onClick={handleSubmit}
       >
-        {enviando ? "Enviando…" : "Enviar ao RH"}
+        {enviando ? "Enviando…" : viaChefe ? "Enviar ao chefe e ao RH" : "Enviar ao RH"}
       </button>
     </div>
   );
@@ -4192,7 +4487,9 @@ export function NovaModal({
                   ? `Aberta pelo RH em nome de ${rhFuncionario.nome}. O funcionário e o chefe foram avisados.`
                   : tipo === "ENVIO_DOCUMENTO_RH"
                     ? "Documento encaminhado ao RH para análise."
-                    : "Aguardando análise do chefe."}
+                    : tipo === "DOCUMENTO_VIA_CHEFE"
+                      ? "Documento enviado. Seu chefe confere e depois encaminha ao RH (sem chefe, vai direto ao RH)."
+                      : "Aguardando análise do chefe."}
               </p>
             </div>
           ) : (
@@ -4330,6 +4627,9 @@ export function NovaModal({
                 )}
                 {tipo === "ENVIO_DOCUMENTO_RH" && (
                   <FormEnvioDocumentoRh onSubmit={handleSubmit} enviando={enviando} />
+                )}
+                {tipo === "DOCUMENTO_VIA_CHEFE" && (
+                  <FormEnvioDocumentoRh onSubmit={handleSubmit} enviando={enviando} viaChefe />
                 )}
               </div>
             </>
@@ -4549,10 +4849,13 @@ function AtestadoGuiaSection({
 
 function DocumentoAnexadoSection({
   s,
-  onAtualizado
+  onAtualizado,
+  semTroca = false
 }: {
   s: Solicitacao;
   onAtualizado: () => void;
+  /** Só visualização (o arquivo não pode ser trocado por aqui). */
+  semTroca?: boolean;
 }) {
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
@@ -4560,7 +4863,7 @@ function DocumentoAnexadoSection({
   const documentoUrl = s.metadados?.documentoUrl as string | undefined;
   if (!documentoUrl) return null;
 
-  const editavel = !STATUS_FINALIZADOS.includes(s.status);
+  const editavel = !semTroca && !STATUS_FINALIZADOS.includes(s.status);
 
   const handleArquivo = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -4656,6 +4959,8 @@ function SolicitacaoCard({
       REJEITADA: "var(--red)",
       REJEITADA_GESTOR: "var(--red)",
       REJEITADA_RH: "var(--red)",
+      DEVOLVIDA: "var(--amber)",
+      AGUARDANDO_GESTOR_RH: "var(--amber)",
       AGUARDANDO_RH: "#2563eb",
       AGUARDANDO_DOCUMENTO_FUNCIONARIO: "var(--amber)",
       PENDENTE: "var(--amber)",
@@ -4690,7 +4995,7 @@ function SolicitacaoCard({
         {isAuto ? " · gerada automaticamente" : ""}
       </span>
     );
-  } else if (tipo === "ENVIO_DOCUMENTO_RH") {
+  } else if (tipo === "ENVIO_DOCUMENTO_RH" || tipo === "DOCUMENTO_VIA_CHEFE") {
     subInfo = (
       <span>
         Enviado em {fmtDateTime(s.createdAt)}
@@ -4809,7 +5114,7 @@ function SolicitacaoCard({
             </p>
           </div>
         </div>
-        <StatusBadge status={s.status} />
+        <StatusBadge status={s.status} canceladaPorMim={!!s.metadados?.canceladaPeloFuncionario} />
       </div>
 
       {s.apenasInformativo && (
@@ -4879,13 +5184,27 @@ function SolicitacaoCard({
       {tipo === "ENVIO_DOCUMENTO_RH" && (
         <DocumentoAnexadoSection s={s} onAtualizado={onAtualizado} />
       )}
+      {tipo === "DOCUMENTO_VIA_CHEFE" && (
+        <>
+          <DocumentoAnexadoSection s={s} onAtualizado={onAtualizado} semTroca />
+          {s.status === "DEVOLVIDA" && (
+            <ReenvioDocumentoSection s={s} onAtualizado={onAtualizado} />
+          )}
+        </>
+      )}
 
       {tipo === "ATESTADO" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} />}
 
       {tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
-      {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
-        tipo
-      ) && <AbonoDetalheBlock meta={s.metadados} />}
+      {[
+        "ABONO",
+        "LICENCA",
+        "ATESTADO",
+        "DAY_OFF",
+        "HORA_EXTRA",
+        "ENVIO_DOCUMENTO_RH",
+        "DOCUMENTO_VIA_CHEFE"
+      ].includes(tipo) && <AbonoDetalheBlock meta={s.metadados} />}
       {tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
       {tipo === "FERIAS" && <AtestadoGuiaSection s={s} onAtualizado={onAtualizado} tipo="FERIAS" />}
@@ -4950,6 +5269,13 @@ function SolicitacaoCard({
               }
             }}
           />
+        )}
+
+      {(s.status === "PENDENTE" || (s.status === "DEVOLVIDA" && tipo === "DOCUMENTO_VIA_CHEFE")) &&
+        s.metadados?.origem !== "RH" &&
+        !s.metadados?.criadaPorRh &&
+        s.metadados?.automatica !== true && (
+          <CancelarSolicitacao s={s} onAtualizado={onAtualizado} />
         )}
 
       {(s.gestorObservacao || s.rhObservacao || s.observacaoGestor) && (
@@ -5064,6 +5390,7 @@ export function SolicitacoesPage() {
     { v: "PENDENTE", l: "Pendentes" },
     { v: "AGUARDANDO_RH", l: "Aguardando RH" },
     { v: "AGUARDANDO_DOCUMENTO_FUNCIONARIO", l: "Aguardando seu documento" },
+    { v: "DEVOLVIDA", l: "Devolvidas" },
     { v: "APROVADA", l: "Aprovadas" },
     { v: "REJEITADA_GESTOR", l: "Rej. Chefe" },
     { v: "REJEITADA_RH", l: "Rej. RH" }

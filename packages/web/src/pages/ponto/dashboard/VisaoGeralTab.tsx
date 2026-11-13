@@ -207,21 +207,125 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
     });
   }
 
+  const fmtDia = (iso: string | null | undefined) =>
+    iso ? iso.split("-").reverse().join("/") : "—";
+  const inativosItens = (): EmployeeListItem[] =>
+    (stats.inativosFuncionarios ?? []).map((f) => ({
+      nome: f.nome,
+      matricula: f.matricula,
+      categoria: f.categoria,
+      extra: `${f.lotacao ?? "—"} · desligamento ${fmtDia(f.dataDesligamento)}`
+    }));
+  const comSituacao = (funcs: DetalheFuncionario[]): EmployeeListItem[] =>
+    funcs.map((f) => ({
+      nome: f.nome,
+      matricula: f.matricula,
+      categoria: f.categoria,
+      extra: f.lotacao
+    }));
+
+  function abrirTotal(quais: "total" | "ativos" | "inativos") {
+    const ativos = comSituacao(stats.detalheFuncionarios).map((i) => ({
+      ...i,
+      extra: quais === "total" ? `${i.extra ?? "—"} · ativo` : i.extra
+    }));
+    setModal({
+      title:
+        quais === "total" ? "Total de funcionários" : quais === "ativos" ? "Ativos" : "Inativos",
+      subtitle: "Funcionários",
+      itens:
+        quais === "ativos"
+          ? ativos
+          : quais === "inativos"
+            ? inativosItens()
+            : [...ativos, ...inativosItens().map((i) => ({ ...i, extra: `${i.extra} · inativo` }))]
+    });
+  }
+
+  function abrirChefes() {
+    setModal({
+      title: "Chefes",
+      subtitle: "Funcionários marcados como chefe",
+      itens: paraItens(stats.detalheFuncionarios.filter((f) => f.chefe))
+    });
+  }
+
+  function abrirSemChefe() {
+    const nomes = new Set(semChefe.map((g) => g.nome));
+    setModal({
+      title: "Lotações sem chefe",
+      subtitle: `${semChefe.map((g) => g.nome).join(", ") || "Nenhuma"} — funcionários dessas lotações`,
+      itens: paraItens(stats.detalheFuncionarios.filter((f) => f.lotacao && nomes.has(f.lotacao)))
+    });
+  }
+
+  function abrirDependentes() {
+    setModal({
+      title: "Funcionários com dependentes",
+      subtitle: `${stats.totalDependentes} dependente(s) no total`,
+      itens: stats.detalheFuncionarios
+        .filter((f) => (f.dependentes ?? 0) > 0)
+        .map((f) => ({
+          nome: f.nome,
+          matricula: f.matricula,
+          categoria: f.categoria,
+          extra: `${f.lotacao ?? "—"} · ${f.dependentes} dependente(s)`
+        }))
+    });
+  }
+
+  function abrirMes(chave: string) {
+    const eventos = (stats.eventosMeses ?? []).filter((e) => e.data.slice(0, 7) === chave);
+    setModal({
+      title: mesLabelDeChave(chave),
+      subtitle: "Admissões × Desligamentos",
+      itens: eventos
+        .sort((a, b) => a.data.localeCompare(b.data))
+        .map((e) => ({
+          nome: e.nome,
+          matricula: e.matricula,
+          categoria: e.categoria,
+          extra: `${e.tipo === "ADMISSAO" ? "Admissão" : "Desligamento"} em ${fmtDia(e.data)}${e.lotacao ? ` · ${e.lotacao}` : ""}`
+        }))
+    });
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "nowrap", alignItems: "stretch" }}>
         <StatGroup>
-          <StatCard label="Total" value={stats.totais.total} color="var(--burgundy-600)" />
-          <StatCard label="Ativos" value={stats.totais.ativos} color="var(--green)" />
-          <StatCard label="Inativos" value={stats.totais.inativos} color="var(--ink-500)" />
+          <StatCard
+            label="Total"
+            value={stats.totais.total}
+            color="var(--burgundy-600)"
+            onClick={() => abrirTotal("total")}
+          />
+          <StatCard
+            label="Ativos"
+            value={stats.totais.ativos}
+            color="var(--green)"
+            onClick={() => abrirTotal("ativos")}
+          />
+          <StatCard
+            label="Inativos"
+            value={stats.totais.inativos}
+            color="var(--ink-500)"
+            onClick={() => abrirTotal("inativos")}
+          />
         </StatGroup>
         <StatDivider />
         <StatGroup>
-          <StatCard label="Chefes" value={stats.totais.chefes} color="var(--burgundy-600)" />
+          <StatCard
+            label="Chefes"
+            value={stats.totais.chefes}
+            color="var(--burgundy-600)"
+            onClick={abrirChefes}
+          />
           <StatCard
             label="Lotações sem chefe"
             value={semChefe.length}
             color={semChefe.length > 0 ? "#c67f00" : "var(--green)"}
+            onClick={abrirSemChefe}
           />
         </StatGroup>
         <StatDivider />
@@ -247,11 +351,13 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
             label="Total de Dependentes"
             value={stats.totalDependentes}
             color={PALETTE[4]}
+            onClick={abrirDependentes}
           />
           <StatCard
             label="Dependentes / func."
             value={stats.dependentesMedia.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}
             color={PALETTE[4]}
+            onClick={abrirDependentes}
           />
         </StatGroup>
       </div>
@@ -302,6 +408,14 @@ export function VisaoGeralTab({ stats }: { stats: GestaoDashboardStats }) {
                 ...m,
                 mes: mesLabelDeChave(m.chave)
               }))}
+              style={{ cursor: "pointer" }}
+              onClick={(state: { activeTooltipIndex?: number | string | null }) => {
+                const idx = Number(state?.activeTooltipIndex);
+                const chave = Number.isInteger(idx)
+                  ? stats.admissoesDesligamentos[idx]?.chave
+                  : undefined;
+                if (chave) abrirMes(chave);
+              }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(122,30,38,0.08)" />
               <XAxis dataKey="mes" tick={{ fontSize: 11 }} />

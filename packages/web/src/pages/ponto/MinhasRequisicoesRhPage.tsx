@@ -490,8 +490,13 @@ export function MinhasRequisicoesRhPage() {
         (sols ?? []).filter(
           (x) =>
             x.tipo === "FERIAS" &&
-            ((x.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" &&
-              Array.isArray(x.metadados?.documentosFerias)) ||
+            (((x.status === "AGUARDANDO_DOCUMENTO_FUNCIONARIO" ||
+              x.status === "AGUARDANDO_RH" ||
+              x.status === "APROVADA") &&
+              Array.isArray(x.metadados?.documentosFerias) &&
+              (
+                x.metadados!.documentosFerias as Array<{ urlAssinado?: string; rejeicao?: unknown }>
+              ).some((d) => !d.urlAssinado && !d.rejeicao)) ||
               /* Período futuro (2º/3º) com Aviso/Recibo enviados e ainda sem assinatura. */
               (x.status === "APROVADA" &&
                 Object.values(

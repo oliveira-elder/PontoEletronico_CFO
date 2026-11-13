@@ -63,6 +63,7 @@ export function FormLicenca({
   enviando: boolean;
 }) {
   const [tipos, setTipos] = useState<TipoLicencaFuncionario[] | null>(null);
+  const [erroTipos, setErroTipos] = useState<string | null>(null);
   const [tipoId, setTipoId] = useState("");
   const [linhas, setLinhas] = useState<Linha[]>([linhaVazia()]);
   const [comProrrogacao, setComProrrogacao] = useState(false);
@@ -75,8 +76,17 @@ export function FormLicenca({
   useEffect(() => {
     apiSol
       .get<TipoLicencaFuncionario[]>("/ponto/licenca/tipos")
-      .then((l) => setTipos(l ?? []))
-      .catch(() => setTipos([]));
+      .then((l) =>
+        setTipos(
+          [...(l ?? [])].sort((a, b) =>
+            a.nome.localeCompare(b.nome, "pt-BR", { sensitivity: "base" })
+          )
+        )
+      )
+      .catch((e: unknown) => {
+        setErroTipos(e instanceof Error ? e.message : null);
+        setTipos([]);
+      });
   }, [apiSol]);
 
   const tipo = useMemo(() => tipos?.find((t) => t.id === tipoId) ?? null, [tipos, tipoId]);
@@ -253,8 +263,14 @@ export function FormLicenca({
           ))}
         </select>
         {tipos && tipos.length === 0 && (
-          <p style={{ fontSize: 12, color: "var(--ink-500)", margin: "4px 0 0" }}>
-            Nenhum tipo de licença disponível para a sua categoria. Procure o RH.
+          <p
+            style={{
+              fontSize: 12,
+              color: erroTipos ? "var(--red)" : "var(--ink-500)",
+              margin: "4px 0 0"
+            }}
+          >
+            {erroTipos ?? "Nenhum tipo de licença disponível para a sua categoria. Procure o RH."}
           </p>
         )}
       </div>

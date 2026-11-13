@@ -190,6 +190,7 @@ export interface HistoricoApiResponse {
   >;
   /** Dias OK batidos em casa: "Home Office" ou "Híbrido" (status "OK - …"). */
   rotuloModalidadePorDia?: Record<string, string>;
+  localModalidadePorDia?: Record<string, "HOME_OFFICE" | "PRESENCIAL">;
   /** Dias em casa que exigem o ciclo completo de batidas (status OK só com ele). */
   cicloCompletoEmCasa?: { desde: string | null; dias: string[] };
   /** Ponto presencial: dias que exigem o ciclo, com o tipo de intervalo e o tempo mínimo. */

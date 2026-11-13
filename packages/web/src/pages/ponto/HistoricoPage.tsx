@@ -46,6 +46,7 @@ import {
   categoriaSemVisibilidadeBancoHoras
 } from "../../utils/categoriaPonto";
 import { IconePeriodoPonto, LegendaPeriodosPonto } from "../../components/ponto/IconePeriodoPonto";
+import { BadgeLocalDia } from "../../components/ponto/BadgeLocalDia";
 import {
   PendenciasAssinatura,
   estiloLinhaPendente,
@@ -1502,7 +1503,9 @@ export function HistoricoPage() {
   const [periodoTeste, setPeriodoTeste] = useState(false);
   const [bancoPorDia, setBancoPorDia] = useState<HistoricoApiResponse["bancoPorDia"]>({});
   const [interjornadaPorDia, setInterjornadaPorDia] = useState<Record<string, InterjornadaDia>>({});
-  const [rotuloModalidadePorDia, setRotuloModalidadePorDia] = useState<Record<string, string>>({});
+  const [localModalidadePorDia, setLocalModalidadePorDia] = useState<
+    Record<string, "HOME_OFFICE" | "PRESENCIAL">
+  >({});
   const [saldoMesBanco, setSaldoMesBanco] = useState(0);
   const [saldoAcumuladoMesAnterior, setSaldoAcumuladoMesAnterior] = useState(0);
   const [saldoAcumuladoMesFim, setSaldoAcumuladoMesFim] = useState(0);
@@ -1564,7 +1567,7 @@ export function HistoricoPage() {
           setPeriodoTeste(!!data?.periodoTeste);
           setBancoPorDia(data?.bancoPorDia ?? {});
           setInterjornadaPorDia(data?.interjornadaPorDia ?? {});
-          setRotuloModalidadePorDia(data?.rotuloModalidadePorDia ?? {});
+          setLocalModalidadePorDia(data?.localModalidadePorDia ?? {});
           setSaldoMesBanco(data?.saldoMesBanco ?? 0);
           setSaldoAcumuladoMesAnterior(data?.saldoAcumuladoMesAnterior ?? 0);
           setSaldoAcumuladoMesFim(data?.saldoAcumuladoMes ?? 0);
@@ -2366,8 +2369,8 @@ export function HistoricoPage() {
                             atestadoParcial={r.atestadoParcial}
                             atestadoParcialHorario={r.atestadoParcialHorario}
                             onClickAtestado={() => setModalAtestado({ data: isoKey })}
-                            modalidade={rotuloModalidadePorDia[isoKey]}
                           />
+                          <BadgeLocalDia local={localModalidadePorDia[isoKey]} status={r.status} />
                           {r.apenasInformativo && (
                             <span
                               title={MSG_SOLICITACAO_APENAS_INFORMATIVA}

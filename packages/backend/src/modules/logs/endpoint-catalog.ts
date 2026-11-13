@@ -100,6 +100,21 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
   },
   {
     method: "PATCH",
+    pathPattern: "/ponto/solicitacoes/:id/cancelar",
+    titulo: "Cancelar a própria solicitação",
+    descricao: "O funcionário cancela a solicitação enquanto o chefe ainda não a decidiu.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/solicitacoes/:id/reenviar",
+    titulo: "Reenviar documento devolvido pelo chefe",
+    descricao:
+      "O funcionário corrige e reenvia o Envio de Documento - Home Office devolvido para correção.",
+    categoria: "Ponto — Autoatendimento"
+  },
+  {
+    method: "PATCH",
     pathPattern: "/ponto/solicitacoes/:id/documento",
     titulo: "Anexar documento à solicitação",
     descricao: "Anexa/atualiza o documento (ex.: atestado médico) de uma solicitação existente.",
@@ -398,7 +413,7 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     method: "POST",
     pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico",
     titulo: "Registrar lotação",
-    descricao: "Cria uma vigência de lotação para o funcionário.",
+    descricao: "Cria uma vigência de lotação (com observação opcional) para o funcionário.",
     categoria: "Ponto — Gestão"
   },
   {
@@ -412,7 +427,35 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     method: "PATCH",
     pathPattern: "/ponto/gestao/funcionarios/:id/lotacao-historico/:vigenciaId",
     titulo: "Editar vigência de lotação",
-    descricao: "Altera datas ou gerência de uma vigência de lotação.",
+    descricao: "Altera datas, gerência ou observação de uma vigência de lotação.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/gestao/funcionarios/:id/assessor-historico",
+    titulo: "Histórico de assessor",
+    descricao: "Lista o nível e os períodos em que o funcionário foi assessor (só registro).",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "POST",
+    pathPattern: "/ponto/gestao/funcionarios/:id/assessor-historico",
+    titulo: "Registrar período de assessor",
+    descricao: "Registra nível e período de assessor do funcionário.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/ponto/gestao/funcionarios/:id/assessor-historico/:periodoId",
+    titulo: "Editar período de assessor",
+    descricao: "Altera nível ou datas de um período de assessor.",
+    categoria: "Ponto — Gestão"
+  },
+  {
+    method: "DELETE",
+    pathPattern: "/ponto/gestao/funcionarios/:id/assessor-historico/:periodoId",
+    titulo: "Excluir período de assessor",
+    descricao: "Remove um período de assessor do histórico.",
     categoria: "Ponto — Gestão"
   },
   {
@@ -785,6 +828,36 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     pathPattern: "/auditoria/dashboard",
     titulo: "Dashboard de auditoria",
     descricao: "Indicadores gerais de ponto/frequência para o RH (visão consolidada).",
+    categoria: "Auditoria de Ponto"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/auditoria/rh/solicitacoes/:id/ferias/rodadas/:ordem/documentos/:tipo",
+    titulo: "Enviar documento de férias (2º/3º período)",
+    descricao: "RH envia ou reenvia o Aviso ou o Recibo de um período futuro das férias divididas.",
+    categoria: "Auditoria de Ponto"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/auditoria/rh/solicitacoes/:id/ferias/documentos/:tipo/prazo",
+    titulo: "Prorrogar prazo de documento de férias",
+    descricao: "RH prorroga a data limite de assinatura do Aviso ou do Recibo de férias.",
+    categoria: "Auditoria de Ponto"
+  },
+  {
+    method: "PATCH",
+    pathPattern: "/auditoria/rh/solicitacoes/:id/ferias/documentos/:tipo",
+    titulo: "Enviar documento de férias",
+    descricao:
+      "RH envia ou reenvia o Aviso de Férias, o Recibo de Férias ou outro documento ao funcionário.",
+    categoria: "Auditoria de Ponto"
+  },
+  {
+    method: "GET",
+    pathPattern: "/auditoria/dashboard/detalhe",
+    titulo: "Detalhamento de gráfico do dashboard",
+    descricao:
+      "Lista por trás de uma barra, fatia ou ponto de um gráfico do dashboard de auditoria (modal).",
     categoria: "Auditoria de Ponto"
   },
   {
@@ -1223,6 +1296,14 @@ export const ENDPOINT_CATALOG: EndpointCatalogEntry[] = [
     descricao:
       "RH consulta as contagens e listas das demandas em aberto (aprovações, folhas, exames, requisições, contratos e cadastro).",
     categoria: "Dashboard"
+  },
+  {
+    method: "GET",
+    pathPattern: "/ponto/ferias-controle/painel",
+    titulo: "Controle geral de férias",
+    descricao:
+      "RH consulta ciclos, gozo, agendamento e vencimento das férias de todos os funcionários.",
+    categoria: "Férias"
   },
   {
     method: "GET",

@@ -359,6 +359,7 @@ interface ConfigSolicitacoes {
   tipoAtivoDayOff: boolean;
   tipoAtivoHoraExtra: boolean;
   tipoAtivoEnvioDocumentoRh: boolean;
+  tipoAtivoDocumentoViaChefe: boolean;
   abonoAlemLimiteLiberadoRh: boolean;
   abonoCotaDiasDoisCiclos: number;
   atestadoCidModo: "OBRIGATORIO" | "OPCIONAL" | "DESATIVADO";
@@ -6284,6 +6285,12 @@ export function ConfiguracoesPage() {
                     emoji: "📎",
                     label: "Envio de Documento ao RH",
                     desc: "Envio de documentos (comprovantes, declarações, etc.) diretamente ao RH"
+                  },
+                  {
+                    key: "tipoAtivoDocumentoViaChefe",
+                    emoji: "🗂️",
+                    label: "Envio de Documento - Home Office",
+                    desc: "Só aparece em Solicitações para quem está em home office: o chefe imediato confere (encaminha, recusa ou devolve para correção) antes do RH"
                   }
                 ] as { key: keyof ConfigSolicitacoes; emoji: string; label: string; desc: string }[]
               ).map(({ key, emoji, label, desc }) => (

@@ -32,6 +32,7 @@ import {
   ensureCategoriaHistorico,
   registrarMudancaSituacao
 } from "../../utils/categoria-historico";
+import { validarPeriodoAssessor, type PeriodoAssessor } from "../../utils/assessor-historico";
 import {
   adicionarVigenciaLotacao,
   atualizarVigenciaLotacao,
@@ -80,9 +81,18 @@ export type LinhaLotacaoBody = {
   cargo?: string;
   gerenciaId: string | null;
   subsecao: string | null;
+  observacao?: string | null;
   vigenciaDesde: string;
   vigenciaAte?: string | null;
 };
+
+export type PeriodoAssessorBody = {
+  nivel: number;
+  vigenciaDesde: string;
+  vigenciaAte?: string | null;
+};
+
+const OBSERVACAO_LOTACAO_MAX = 500;
 
 /** Campos "simples" de RH — sem efeito colateral em vigência/histórico, só passthrough. */
 export type CamposSimplesFuncionario = Partial<{
@@ -110,6 +120,7 @@ export type CamposSimplesFuncionario = Partial<{
   cargaHoraria: string | null;
   diasSemana: string | null;
   observacoes: string | null;
+  observacaoCargo: string | null;
   cedido: boolean;
   cessaoInicio: string | null;
   cessaoFim: string | null;
@@ -130,7 +141,8 @@ const CAMPOS_TEXTO_SIMPLES = [
   "diasSemana",
   "cessaoOrgaoOrigem",
   "cessaoOrgaoDestino",
-  "observacoes"
+  "observacoes",
+  "observacaoCargo"
 ] as const;
 
 const CAMPOS_DATA_SIMPLES = [
@@ -1664,16 +1676,41 @@ export class GestaoService {
       meses.push({ chave: `${a}-${String(m).padStart(2, "0")}`, admissoes: 0, desligamentos: 0 });
     }
     const mesIndex = new Map(meses.map((m, i) => [m.chave, i]));
+    /* Quem está por trás de cada barra de Admissões × Desligamentos (modal de detalhamento). */
+    const eventosMeses: {
+      id: string;
+      nome: string;
+      matricula: string | null;
+      categoria: string;
+      lotacao: string | null;
+      cargo: string | null;
+      tipo: "ADMISSAO" | "DESLIGAMENTO";
+      data: string;
+    }[] = [];
+    const eventoBase = (f: (typeof funcionarios)[number]) => ({
+      id: f.id,
+      nome: f.user?.name ?? f.matricula ?? f.id,
+      matricula: f.matricula,
+      categoria: f.categoria,
+      lotacao: f.gerencia?.nome ?? null,
+      cargo: cargoNome(f.cargo ?? "")
+    });
     for (const f of funcionarios) {
       if (f.dataAdmissao) {
-        const chave = dataCivilISO(f.dataAdmissao).slice(0, 7);
-        const idx = mesIndex.get(chave);
-        if (idx !== undefined) meses[idx].admissoes += 1;
+        const dia = dataCivilISO(f.dataAdmissao);
+        const idx = mesIndex.get(dia.slice(0, 7));
+        if (idx !== undefined) {
+          meses[idx].admissoes += 1;
+          eventosMeses.push({ ...eventoBase(f), tipo: "ADMISSAO", data: dia });
+        }
       }
       if (f.dataDesligamento) {
-        const chave = dataCivilISO(f.dataDesligamento).slice(0, 7);
-        const idx = mesIndex.get(chave);
-        if (idx !== undefined) meses[idx].desligamentos += 1;
+        const dia = dataCivilISO(f.dataDesligamento);
+        const idx = mesIndex.get(dia.slice(0, 7));
+        if (idx !== undefined) {
+          meses[idx].desligamentos += 1;
+          eventosMeses.push({ ...eventoBase(f), tipo: "DESLIGAMENTO", data: dia });
+        }
       }
     }
 
@@ -1771,8 +1808,18 @@ export class GestaoService {
       faixaEtaria: faixaEtariaDe(f.dataNascimento),
       modalidade: f.modoHomeOffice ? "homeOffice" : f.modoHibridoLocal ? "hibrido" : "presencial",
       valeTransporte: f.valeTransporte,
-      isentoRegistroPonto: funcionarioSemRegistroPonto(f)
+      isentoRegistroPonto: funcionarioSemRegistroPonto(f),
+      dependentes: f.dependentes.length
     }));
+
+    /* Inativos (KPI Inativos/Total): fora das estatísticas, só para o modal de detalhamento. */
+    const inativosFuncionarios = funcionarios
+      .filter((f) => !f.ativo)
+      .map((f) => ({
+        ...eventoBase(f),
+        dataAdmissao: f.dataAdmissao ? dataCivilISO(f.dataAdmissao) : null,
+        dataDesligamento: f.dataDesligamento ? dataCivilISO(f.dataDesligamento) : null
+      }));
 
     return {
       totais,
@@ -1794,7 +1841,9 @@ export class GestaoService {
       totalDependentes,
       dependentesMedia: Math.round(dependentesMedia * 100) / 100,
       tenurePorCategoria,
-      detalheFuncionarios
+      detalheFuncionarios,
+      eventosMeses,
+      inativosFuncionarios
     };
   }
 
@@ -1808,6 +1857,51 @@ export class GestaoService {
   }
 
   /** Dados de uma linha de lotação vindos da tela (cargo só para Comissionado). */
+  /** Data civil AAAA-MM-DD existente (ano de 4 dígitos): uma data inválida derrubava a gravação com erro 500. */
+  private validarDataLotacao(valor: string | null | undefined, rotulo: string) {
+    if (valor === undefined || valor === null || valor === "") return;
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(valor);
+    const d = m ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))) : null;
+    const ok =
+      !!m &&
+      !!d &&
+      d.getUTCFullYear() === Number(m[1]) &&
+      d.getUTCMonth() === Number(m[2]) - 1 &&
+      d.getUTCDate() === Number(m[3]) &&
+      Number(m[1]) >= 1900 &&
+      Number(m[1]) <= 2100;
+    if (!ok) throw new BadRequestException(`${rotulo}: informe uma data válida (dia/mês/ano).`);
+  }
+
+  private async validarLinhaLotacao(data: LinhaLotacaoBody) {
+    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início.");
+    this.validarDataLotacao(data.vigenciaDesde, "Início");
+    this.validarDataLotacao(data.vigenciaAte, "Fim");
+    if (data.gerenciaId) {
+      const g = await this.prisma.gerencia.findUnique({
+        where: { id: data.gerenciaId },
+        select: { id: true }
+      });
+      if (!g)
+        throw new BadRequestException("A lotação informada não existe mais. Atualize a página.");
+    }
+    if (
+      typeof data.observacao === "string" &&
+      data.observacao.trim().length > OBSERVACAO_LOTACAO_MAX
+    ) {
+      throw new BadRequestException(
+        `A observação da lotação pode ter no máximo ${OBSERVACAO_LOTACAO_MAX} caracteres.`
+      );
+    }
+  }
+
+  /** Observação opcional da linha: texto aparado, vazio = null; undefined = não alterar. */
+  private observacaoLotacao(valor: string | null | undefined): string | null | undefined {
+    if (valor === undefined) return undefined;
+    const t = typeof valor === "string" ? valor.trim() : "";
+    return t || null;
+  }
+
   private async alterarLotacao(
     funcionarioId: string,
     operacao: (tx: Prisma.TransactionClient, cargoAtual: string) => Promise<void>
@@ -1824,6 +1918,18 @@ export class GestaoService {
     } catch (e) {
       const msg = e instanceof Error ? ERROS_LOTACAO[e.message] : undefined;
       if (msg) throw new BadRequestException(msg);
+      /* Erros do banco/validação do Prisma viram resposta clara (e ficam no log), e não um 500 genérico. */
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError ||
+        e instanceof Prisma.PrismaClientValidationError
+      ) {
+        this.logger.error(
+          `Falha ao gravar lotação do funcionário ${funcionarioId}: ${e instanceof Error ? e.message : String(e)}`
+        );
+        throw new BadRequestException(
+          "Não foi possível gravar a lotação: confira as datas e a lotação escolhidas e tente novamente."
+        );
+      }
       throw e;
     }
     return {
@@ -1833,13 +1939,14 @@ export class GestaoService {
   }
 
   async adicionarLotacao(funcionarioId: string, data: LinhaLotacaoBody) {
-    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início.");
+    await this.validarLinhaLotacao(data);
     return this.alterarLotacao(funcionarioId, (tx, cargoAtual) =>
       adicionarVigenciaLotacao(tx, funcionarioId, {
         /* Cargo é opcional — telas sem cargo na linha mantêm o valor já vigente. */
         cargo: data.cargo?.trim() || cargoAtual,
         gerenciaId: data.gerenciaId || null,
         subsecao: data.subsecao || null,
+        observacao: this.observacaoLotacao(data.observacao) ?? null,
         vigenciaDesde: data.vigenciaDesde,
         vigenciaAte: data.vigenciaAte || null
       })
@@ -1847,12 +1954,13 @@ export class GestaoService {
   }
 
   async atualizarLotacao(funcionarioId: string, vigenciaId: string, data: LinhaLotacaoBody) {
-    if (!data.vigenciaDesde) throw new BadRequestException("Informe a data de início.");
+    await this.validarLinhaLotacao(data);
     return this.alterarLotacao(funcionarioId, (tx) =>
       atualizarVigenciaLotacao(tx, funcionarioId, vigenciaId, {
         cargo: data.cargo?.trim() || undefined,
         gerenciaId: data.gerenciaId || null,
         subsecao: data.subsecao || null,
+        observacao: this.observacaoLotacao(data.observacao),
         vigenciaDesde: data.vigenciaDesde,
         vigenciaAte: data.vigenciaAte === undefined ? undefined : data.vigenciaAte || null
       })
@@ -1863,6 +1971,94 @@ export class GestaoService {
     return this.alterarLotacao(funcionarioId, (tx) =>
       removerVigenciaLotacao(tx, funcionarioId, vigenciaId)
     );
+  }
+
+  /* ─── Nível e período do assessor (só registro) ─── */
+
+  private async periodosAssessor(funcionarioId: string): Promise<PeriodoAssessor[]> {
+    const rows = await this.prisma.funcionarioAssessorHistorico.findMany({
+      where: { funcionarioId },
+      orderBy: { vigenciaDesde: "desc" }
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      nivel: r.nivel,
+      vigenciaDesde: dataCivilISO(r.vigenciaDesde),
+      vigenciaAte: r.vigenciaAte ? dataCivilISO(r.vigenciaAte) : null
+    }));
+  }
+
+  async getAssessorHistorico(funcionarioId: string) {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { id: true }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    return this.periodosAssessor(funcionarioId);
+  }
+
+  private async validarAssessor(
+    funcionarioId: string,
+    body: PeriodoAssessorBody,
+    ignorarId?: string
+  ) {
+    const func = await this.prisma.funcionario.findUnique({
+      where: { id: funcionarioId },
+      select: { id: true, isFiscal: true }
+    });
+    if (!func) throw new NotFoundException("Funcionário não encontrado");
+    if (!func.isFiscal) {
+      throw new BadRequestException(
+        'Marque "Funcionário é assessor", salve o cadastro e depois registre o nível e o período.'
+      );
+    }
+    const erro = validarPeriodoAssessor(
+      body ?? {},
+      await this.periodosAssessor(funcionarioId),
+      ignorarId
+    );
+    if (erro) throw new BadRequestException(erro);
+  }
+
+  private dadosAssessor(body: PeriodoAssessorBody) {
+    const civil = (iso: string) => new Date(`${iso}T12:00:00-03:00`);
+    return {
+      nivel: Number(body.nivel),
+      vigenciaDesde: civil(body.vigenciaDesde),
+      vigenciaAte: body.vigenciaAte ? civil(body.vigenciaAte) : null
+    };
+  }
+
+  async adicionarAssessor(funcionarioId: string, body: PeriodoAssessorBody) {
+    await this.validarAssessor(funcionarioId, body);
+    await this.prisma.funcionarioAssessorHistorico.create({
+      data: { funcionarioId, ...this.dadosAssessor(body) }
+    });
+    return this.periodosAssessor(funcionarioId);
+  }
+
+  async atualizarAssessor(funcionarioId: string, periodoId: string, body: PeriodoAssessorBody) {
+    const atual = await this.prisma.funcionarioAssessorHistorico.findFirst({
+      where: { id: periodoId, funcionarioId },
+      select: { id: true }
+    });
+    if (!atual) throw new BadRequestException("Período de assessor não encontrado.");
+    await this.validarAssessor(funcionarioId, body, periodoId);
+    await this.prisma.funcionarioAssessorHistorico.update({
+      where: { id: periodoId },
+      data: this.dadosAssessor(body)
+    });
+    return this.periodosAssessor(funcionarioId);
+  }
+
+  async removerAssessor(funcionarioId: string, periodoId: string) {
+    const atual = await this.prisma.funcionarioAssessorHistorico.findFirst({
+      where: { id: periodoId, funcionarioId },
+      select: { id: true }
+    });
+    if (!atual) throw new BadRequestException("Período de assessor não encontrado.");
+    await this.prisma.funcionarioAssessorHistorico.delete({ where: { id: periodoId } });
+    return this.periodosAssessor(funcionarioId);
   }
 
   /* ─── Histórico de cessão (Efetivo) ─── */

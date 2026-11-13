@@ -12,7 +12,8 @@ export const TIPOS: [string, string, string][] = [
   ["ABONO", "📆", "Abono"],
   ["DAY_OFF", "🎂", "Day Off de Aniversário"],
   ["HORA_EXTRA", "⏱️", "Hora Extra"],
-  ["ENVIO_DOCUMENTO_RH", "📎", "Envio de Documento ao RH"]
+  ["ENVIO_DOCUMENTO_RH", "📎", "Envio de Documento ao RH"],
+  ["DOCUMENTO_VIA_CHEFE", "🗂️", "Envio de Documento - Home Office"]
 ];
 
 export const FILTROS = [

@@ -22,6 +22,31 @@ export interface DetalheFuncionario {
   modalidade: "presencial" | "homeOffice" | "hibrido";
   valeTransporte: boolean;
   isentoRegistroPonto: boolean;
+  dependentes?: number;
+}
+
+/** Admissão ou desligamento (barra do mês em Admissões × Desligamentos). */
+export interface EventoMes {
+  id: string;
+  nome: string;
+  matricula: string | null;
+  categoria: string;
+  lotacao: string | null;
+  cargo: string | null;
+  tipo: "ADMISSAO" | "DESLIGAMENTO";
+  /** YYYY-MM-DD */
+  data: string;
+}
+
+export interface InativoFuncionario {
+  id: string;
+  nome: string;
+  matricula: string | null;
+  categoria: string;
+  lotacao: string | null;
+  cargo: string | null;
+  dataAdmissao: string | null;
+  dataDesligamento: string | null;
 }
 
 export interface GestaoDashboardStats {
@@ -51,6 +76,8 @@ export interface GestaoDashboardStats {
   dependentesMedia: number;
   tenurePorCategoria: { chave: string; mediaAnos: number }[];
   detalheFuncionarios: DetalheFuncionario[];
+  eventosMeses?: EventoMes[];
+  inativosFuncionarios?: InativoFuncionario[];
 }
 
 /* ─── Tipos do dashboard de Auditoria (filtrável por período) ─── */
@@ -147,6 +174,7 @@ export const LABEL_STATUS_SOLICITACAO: Record<string, string> = {
   REJEITADA: "Rejeitada",
   REJEITADA_GESTOR: "Rejeitada (Gestor)",
   REJEITADA_RH: "Rejeitada (RH)",
+  DEVOLVIDA: "Devolvida p/ correção",
   CANCELADA: "Cancelada"
 };
 
@@ -158,7 +186,8 @@ export const LABEL_TIPO_SOLICITACAO: Record<string, string> = {
   ABONO: "Abono",
   DAY_OFF: "Day Off",
   HORA_EXTRA: "Hora Extra",
-  ENVIO_DOCUMENTO_RH: "Envio Documento RH"
+  ENVIO_DOCUMENTO_RH: "Envio Documento RH",
+  DOCUMENTO_VIA_CHEFE: "Doc. Home Office"
 };
 
 export const LABEL_STATUS_ASSINATURA: Record<string, string> = {

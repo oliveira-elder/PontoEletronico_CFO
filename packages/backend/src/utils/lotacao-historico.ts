@@ -10,6 +10,7 @@ export type MovimentacaoLotacao = {
   subsecao: string | null;
   situacaoAtiva: boolean;
   data: string | null; // YYYY-MM-DD — data do ato/portaria
+  observacao: string | null;
   vigenciaDesde: string; // YYYY-MM-DD
 };
 
@@ -27,6 +28,7 @@ function toVigencia(
     subsecao: string | null;
     situacaoAtiva: boolean;
     data: Date | null;
+    observacao?: string | null;
     vigenciaDesde: Date;
     vigenciaAte: Date | null;
     gerencia?: { id: string; nome: string; sigla: string } | null;
@@ -39,6 +41,7 @@ function toVigencia(
     subsecao: r.subsecao,
     situacaoAtiva: r.situacaoAtiva,
     data: r.data ? dataCivilISO(r.data) : null,
+    observacao: r.observacao ?? null,
     vigenciaDesde: dataCivilISO(r.vigenciaDesde),
     vigenciaAte: r.vigenciaAte ? dataCivilISO(r.vigenciaAte) : null,
     gerencia: r.gerencia ?? null
@@ -131,6 +134,7 @@ export async function atualizarVigenciaLotacao(
     cargo?: string;
     gerenciaId: string | null;
     subsecao: string | null;
+    observacao?: string | null;
     vigenciaDesde: string;
     vigenciaAte?: string | null;
   }
@@ -158,6 +162,7 @@ export async function atualizarVigenciaLotacao(
       ...(dados.cargo !== undefined ? { cargo: dados.cargo } : {}),
       gerenciaId: dados.gerenciaId,
       subsecao: dados.subsecao,
+      ...(dados.observacao !== undefined ? { observacao: dados.observacao } : {}),
       vigenciaDesde: dataCivil(dados.vigenciaDesde),
       ...(ultima && dados.vigenciaAte !== undefined
         ? { vigenciaAte: dados.vigenciaAte ? dataCivil(dados.vigenciaAte) : null }
@@ -238,6 +243,7 @@ export async function adicionarVigenciaLotacao(
     cargo: string;
     gerenciaId: string | null;
     subsecao: string | null;
+    observacao?: string | null;
     vigenciaDesde: string;
     vigenciaAte?: string | null;
   }
@@ -266,6 +272,7 @@ export async function adicionarVigenciaLotacao(
       cargo: nova.cargo,
       gerenciaId: nova.gerenciaId,
       subsecao: nova.subsecao,
+      observacao: nova.observacao ?? null,
       situacaoAtiva: ultima?.situacaoAtiva ?? true,
       data: null,
       vigenciaDesde: dataCivil(nova.vigenciaDesde),

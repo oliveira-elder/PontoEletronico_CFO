@@ -36,7 +36,8 @@ const ROTULO_TIPO: Record<string, [string, string]> = {
   ABONO: ["abono", "abonos"],
   DAY_OFF: ["day off", "day offs"],
   HORA_EXTRA: ["hora extra", "horas extras"],
-  ENVIO_DOCUMENTO_RH: ["documento", "documentos"]
+  ENVIO_DOCUMENTO_RH: ["documento", "documentos"],
+  DOCUMENTO_VIA_CHEFE: ["documento home office", "documentos home office"]
 };
 
 function nivelPor(total: number, urgenteAcima = Infinity): NivelDemanda {

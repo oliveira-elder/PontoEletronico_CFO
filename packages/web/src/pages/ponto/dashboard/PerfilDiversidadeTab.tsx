@@ -7,6 +7,7 @@ import {
   type EmployeeListItem
 } from "../../../components/dashboard/EmployeeListModal";
 import { CHART_PALETTE as PALETTE } from "../../../utils/chartPalette";
+import { hojeBrasiliaISO } from "../../../utils/horario-brasilia";
 import { categoriaFuncLabel, type GestaoDashboardStats, type DetalheFuncionario } from "./types";
 import type { ChartDatum } from "../../../components/dashboard/chartTypes";
 
@@ -60,6 +61,28 @@ export function PerfilDiversidadeTab({ stats }: { stats: GestaoDashboardStats })
     });
   }
 
+  function abrirTempoDeCasa(item: ChartDatum) {
+    const chave = item.key ?? item.name;
+    const hoje = Date.parse(`${hojeBrasiliaISO()}T12:00:00-03:00`);
+    setModal({
+      title: categoriaFuncLabel(chave),
+      subtitle: "Tempo de casa",
+      itens: stats.detalheFuncionarios
+        .filter((f) => f.categoria === chave && f.dataAdmissao)
+        .sort((a, b) => (a.dataAdmissao ?? "").localeCompare(b.dataAdmissao ?? ""))
+        .map((f) => {
+          const anos =
+            (hoje - Date.parse(`${f.dataAdmissao}T12:00:00-03:00`)) / (365.25 * 86400000);
+          return {
+            nome: f.nome,
+            matricula: f.matricula,
+            categoria: f.categoria,
+            extra: `${f.lotacao ?? "—"} · admissão ${(f.dataAdmissao ?? "").split("-").reverse().join("/")} · ${anos.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} anos`
+          };
+        })
+    });
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div className="dashboard-grid-2">
@@ -103,8 +126,10 @@ export function PerfilDiversidadeTab({ stats }: { stats: GestaoDashboardStats })
         <MiniBarChart
           data={stats.tenurePorCategoria.map((t) => ({
             name: categoriaFuncLabel(t.chave),
-            value: t.mediaAnos
+            value: t.mediaAnos,
+            key: t.chave
           }))}
+          onItemClick={abrirTempoDeCasa}
           color={PALETTE[5]}
         />
       </DashboardPanel>

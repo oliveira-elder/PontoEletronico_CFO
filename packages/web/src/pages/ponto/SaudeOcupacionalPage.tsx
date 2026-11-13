@@ -66,19 +66,22 @@ const soNumero = (v: string) => v.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
 function RegistrarModal({
   funcionarioId,
   nome,
+  exame,
   onClose,
   onSalvo
 }: {
   funcionarioId: string;
   nome: string;
+  /** Preenchido = edição de um exame já registrado. */
+  exame?: ExameOcupacional | null;
   onClose: () => void;
   onSalvo: () => void;
 }) {
-  const [data, setData] = useState("");
-  const [tipo, setTipo] = useState("");
-  const [resultado, setResultado] = useState("");
-  const [clinica, setClinica] = useState("");
-  const [obs, setObs] = useState("");
+  const [data, setData] = useState(exame?.dataRealizacao ?? "");
+  const [tipo, setTipo] = useState(exame?.tipo ?? "");
+  const [resultado, setResultado] = useState(exame?.resultado ?? "");
+  const [clinica, setClinica] = useState(exame?.clinica ?? "");
+  const [obs, setObs] = useState(exame?.observacao ?? "");
   const [arq, setArq] = useState<{ base64: string; nome: string } | null>(null);
   const [erro, setErro] = useState("");
   const [salvando, setSalvando] = useState(false);
@@ -90,15 +93,17 @@ function RegistrarModal({
     if (!resultado) return setErro("Informe o resultado do ASO.");
     setSalvando(true);
     try {
-      await api.post(`/ponto/saude-ocupacional/funcionarios/${funcionarioId}/exames`, {
+      const corpo = {
         dataRealizacao: data,
         tipo,
         resultado,
-        clinica: clinica || undefined,
-        observacao: obs || undefined,
+        clinica: exame ? clinica : clinica || undefined,
+        observacao: exame ? obs : obs || undefined,
         arquivoBase64: arq?.base64,
         nomeArquivo: arq?.nome
-      });
+      };
+      if (exame) await api.put(`/ponto/saude-ocupacional/exames/${exame.id}`, corpo);
+      else await api.post(`/ponto/saude-ocupacional/funcionarios/${funcionarioId}/exames`, corpo);
       onSalvo();
     } catch (e) {
       setErro((e as Error).message);
@@ -110,7 +115,7 @@ function RegistrarModal({
   return (
     <Modal
       eyebrow="Saúde Ocupacional"
-      title="Registrar exame ocupacional"
+      title={exame ? "Editar exame ocupacional" : "Registrar exame ocupacional"}
       subtitle={nome}
       onClose={() => !salvando && onClose()}
       maxWidth={900}
@@ -181,7 +186,7 @@ function RegistrarModal({
               title={arq?.nome ?? "Anexar o ASO"}
             >
               <span style={{ fontWeight: 600, flexShrink: 0 }}>
-                {arq ? "Trocar arquivo" : "Escolher arquivo"}
+                {arq || exame?.temArquivo ? "Trocar arquivo" : "Escolher arquivo"}
               </span>
               <span
                 style={{
@@ -190,7 +195,8 @@ function RegistrarModal({
                   textOverflow: "ellipsis"
                 }}
               >
-                {arq?.nome ?? "Nenhum arquivo"}
+                {arq?.nome ??
+                  (exame?.temArquivo ? (exame.nomeArquivo ?? "ASO anexado") : "Nenhum arquivo")}
               </span>
               <input
                 type="file"
@@ -222,7 +228,7 @@ function RegistrarModal({
             onClick={() => void salvar()}
             disabled={salvando}
           >
-            {salvando ? "Salvando…" : "Registrar exame"}
+            {salvando ? "Salvando…" : exame ? "Salvar alterações" : "Registrar exame"}
           </button>
         </div>
       </div>
@@ -383,16 +389,22 @@ function HistoricoModal({
   funcionarioId,
   nome,
   podeExcluir,
+  podeEditar,
+  superUsuario = false,
   onClose,
   onMudou
 }: {
   funcionarioId: string;
   nome: string;
   podeExcluir: boolean;
+  podeEditar: boolean;
+  /** Super administrador: exclui definitivamente e vê os exames excluídos logicamente pelo RH. */
+  superUsuario?: boolean;
   onClose: () => void;
   onMudou: () => void;
 }) {
   const [lista, setLista] = useState<ExameOcupacional[] | null>(null);
+  const [editando, setEditando] = useState<ExameOcupacional | null>(null);
   const carregar = useCallback(() => {
     api
       .get<ExameOcupacional[]>(`/ponto/saude-ocupacional/funcionarios/${funcionarioId}/exames`)
@@ -402,7 +414,7 @@ function HistoricoModal({
   useEffect(carregar, [carregar]);
   const sitLabel = (e: ExameOcupacional) =>
     e.situacao === "CONFIRMADO"
-      ? `Confirmado${e.resultado ? ` · ${RESULTADO_LABEL[e.resultado]}` : ""} · ${TIPO_EXAME_LABEL[e.tipo] ?? "Periódico"}`
+      ? `${e.resultado ? `${RESULTADO_LABEL[e.resultado]} · ` : ""}${TIPO_EXAME_LABEL[e.tipo] ?? "Periódico"}`
       : e.situacao === "AGUARDANDO_CONFERENCIA"
         ? "Aguardando conferência"
         : `Devolvido: ${e.motivoDevolucao ?? ""}`;
@@ -436,6 +448,21 @@ function HistoricoModal({
               }}
             >
               <strong>{fmtDataBr(e.dataRealizacao)}</strong>
+              {e.excluidoEm && (
+                <span
+                  title="Exclusão lógica pelo RH: o exame não aparece mais nas telas nem conta no vencimento."
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    color: "#7f1d1d",
+                    background: "rgba(220,38,38,0.12)"
+                  }}
+                >
+                  Excluído por {e.excluidoPorNome ?? "RH"} em {fmtDataBr(e.excluidoEm.slice(0, 10))}
+                </span>
+              )}
               <span>{sitLabel(e)}</span>
               {e.proximoVencimento && (
                 <span style={{ color: "var(--ink-500)" }}>
@@ -451,12 +478,20 @@ function HistoricoModal({
                   Ver ASO
                 </button>
               )}
+              {podeEditar && !e.excluidoEm && (
+                <button className="btn btn-ghost btn-sm" onClick={() => setEditando(e)}>
+                  Editar
+                </button>
+              )}
               {podeExcluir && (
                 <button
                   className="btn btn-ghost btn-sm"
                   style={{ color: "var(--red)" }}
                   onClick={() => {
-                    if (window.confirm("Excluir definitivamente este exame?")) {
+                    const msg = superUsuario
+                      ? "Excluir DEFINITIVAMENTE este exame (e o arquivo do ASO)? Não dá para desfazer."
+                      : "Excluir este exame? Ele deixa de aparecer e de contar no vencimento (a exclusão fica registrada).";
+                    if (window.confirm(msg)) {
                       api
                         .delete(`/ponto/saude-ocupacional/exames/${e.id}`)
                         .then(() => {
@@ -467,12 +502,25 @@ function HistoricoModal({
                     }
                   }}
                 >
-                  Excluir
+                  {superUsuario ? "Excluir definitivamente" : "Excluir"}
                 </button>
               )}
             </div>
           ))}
         </div>
+      )}
+      {editando && (
+        <RegistrarModal
+          funcionarioId={funcionarioId}
+          nome={nome}
+          exame={editando}
+          onClose={() => setEditando(null)}
+          onSalvo={() => {
+            setEditando(null);
+            carregar();
+            onMudou();
+          }}
+        />
       )}
     </Modal>
   );
@@ -1133,7 +1181,9 @@ export function SaudeOcupacionalPage({ embutida = false }: { embutida?: boolean 
         <HistoricoModal
           funcionarioId={historico.funcionarioId}
           nome={historico.nome}
-          podeExcluir={superUsuario}
+          podeExcluir={superUsuario || podeRegistrar}
+          podeEditar={superUsuario || podeRegistrar}
+          superUsuario={superUsuario}
           onClose={() => setHistorico(null)}
           onMudou={() => void carregar()}
         />

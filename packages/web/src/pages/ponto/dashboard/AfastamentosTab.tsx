@@ -8,14 +8,17 @@ import {
   RankingHorizontalChart,
   abbreviarNome
 } from "../../../components/dashboard/RankingHorizontalChart";
+import { useDetalheDashboard } from "../../../components/dashboard/DashboardDetalheModal";
 import { LABEL_TIPO_AFASTAMENTO, LABEL_CATEGORIA_FUNC, type AuditoriaDashboardData } from "./types";
 
 export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
   const [modoAtestado, setModoAtestado] = useState<"mais" | "menos">("mais");
+  const { abrir, modal } = useDetalheDashboard(data.filtro);
 
   const rankingAtestado =
     modoAtestado === "mais" ? (data.topMaisAtestados ?? []) : (data.topMenosAtestados ?? []);
   const chartAtestado = rankingAtestado.map((r) => ({
+    funcionarioId: r.funcionarioId,
     nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     quantidade: r.quantidade,
@@ -24,11 +27,13 @@ export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
 
   const donutAfastamentosPorTipo = (data.afastamentosPorTipo ?? []).map((a) => ({
     name: LABEL_TIPO_AFASTAMENTO[a.tipo] ?? a.tipo,
-    value: a.total
+    value: a.total,
+    key: a.tipo
   }));
   const barAfastamentosPorCategoria = (data.afastamentosPorCategoria ?? []).map((a) => ({
     name: LABEL_CATEGORIA_FUNC[a.categoria] ?? a.categoria,
-    value: a.total
+    value: a.total,
+    key: a.categoria
   }));
 
   return (
@@ -88,6 +93,9 @@ export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
             corPositiva="var(--red)"
             corNegativa="var(--green)"
             modoNegativo={modoAtestado !== "mais"}
+            onItemClick={(i) =>
+              typeof i.funcionarioId === "string" && abrir("atestados", i.funcionarioId)
+            }
           />
         </div>
       </div>
@@ -127,6 +135,12 @@ export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
                   name="Atestados"
                   fill={CHART_PALETTE[0]}
                   radius={[4, 4, 0, 0]}
+                  style={{ cursor: "pointer" }}
+                  onClick={(entry: unknown) => {
+                    const mes = (entry as { payload?: { mes?: string }; mes?: string }).payload
+                      ?.mes;
+                    if (mes) abrir("atestados-mes", mes);
+                  }}
                 />
               </BarChart>
             </ResponsiveContainer>
@@ -136,19 +150,32 @@ export function AfastamentosTab({ data }: { data: AuditoriaDashboardData }) {
 
       <DashboardPanel title="Férias por mês (sazonalidade)">
         <MiniBarChart
-          data={(data.feriasPorMes ?? []).map((m) => ({ name: m.label, value: m.total }))}
+          data={(data.feriasPorMes ?? []).map((m) => ({
+            name: m.label,
+            value: m.total,
+            key: m.mes
+          }))}
+          onItemClick={(i) => i.key && abrir("ferias-mes", i.key)}
           color={CHART_PALETTE[2]}
         />
       </DashboardPanel>
 
       <div className="dashboard-grid-2">
         <DashboardPanel title="Afastamentos por Tipo">
-          <MiniDonut data={donutAfastamentosPorTipo} />
+          <MiniDonut
+            data={donutAfastamentosPorTipo}
+            onItemClick={(i) => i.key && abrir("afastamento-tipo", i.key)}
+          />
         </DashboardPanel>
         <DashboardPanel title="Afastamentos por Categoria do Funcionário">
-          <MiniBarChart data={barAfastamentosPorCategoria} color={CHART_PALETTE[5]} />
+          <MiniBarChart
+            data={barAfastamentosPorCategoria}
+            color={CHART_PALETTE[5]}
+            onItemClick={(i) => i.key && abrir("afastamento-categoria", i.key)}
+          />
         </DashboardPanel>
       </div>
+      {modal}
     </div>
   );
 }

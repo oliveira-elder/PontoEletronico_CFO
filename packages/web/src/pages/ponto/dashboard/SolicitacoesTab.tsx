@@ -7,6 +7,7 @@ import {
   RankingHorizontalChart,
   abbreviarNome
 } from "../../../components/dashboard/RankingHorizontalChart";
+import { useDetalheDashboard } from "../../../components/dashboard/DashboardDetalheModal";
 import {
   LABEL_STATUS_SOLICITACAO,
   LABEL_TIPO_SOLICITACAO,
@@ -16,10 +17,12 @@ import {
 
 export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
   const [modoAbono, setModoAbono] = useState<"mais" | "menos">("mais");
+  const { abrir, modal } = useDetalheDashboard(data.filtro);
 
   const rankingAbono =
     modoAbono === "mais" ? (data.topMaisAbonos ?? []) : (data.topMenosAbonos ?? []);
   const chartAbono = rankingAbono.map((r) => ({
+    funcionarioId: r.funcionarioId,
     nome: abbreviarNome(r.nome),
     nomeCompleto: r.nome,
     quantidade: r.quantidade,
@@ -28,15 +31,18 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
 
   const donutSolicitacoesPorStatus = (data.solicitacoesPorStatus ?? []).map((s) => ({
     name: LABEL_STATUS_SOLICITACAO[s.status] ?? s.status,
-    value: s.total
+    value: s.total,
+    key: s.status
   }));
   const barSolicitacoesPorTipo = (data.solicitacoesPorTipo ?? []).map((s) => ({
     name: LABEL_TIPO_SOLICITACAO[s.tipo] ?? s.tipo,
-    value: s.total
+    value: s.total,
+    key: s.tipo
   }));
   const donutAssinaturaPorStatus = (data.assinaturaPorStatus ?? []).map((a) => ({
     name: LABEL_STATUS_ASSINATURA[a.status] ?? a.status,
-    value: a.total
+    value: a.total,
+    key: a.status
   }));
   const tempoAprovacao = data.tempoMedioAprovacao;
 
@@ -98,16 +104,26 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
             corPositiva="var(--red)"
             corNegativa="var(--green)"
             modoNegativo={modoAbono !== "mais"}
+            onItemClick={(i) =>
+              typeof i.funcionarioId === "string" && abrir("abonos", i.funcionarioId)
+            }
           />
         </div>
       </div>
 
       <div className="dashboard-grid-2">
         <DashboardPanel title="Solicitações por Status">
-          <MiniDonut data={donutSolicitacoesPorStatus} />
+          <MiniDonut
+            data={donutSolicitacoesPorStatus}
+            onItemClick={(i) => i.key && abrir("sol-status", i.key)}
+          />
         </DashboardPanel>
         <DashboardPanel title="Solicitações por Tipo">
-          <MiniBarChart data={barSolicitacoesPorTipo} color={CHART_PALETTE[1]} />
+          <MiniBarChart
+            data={barSolicitacoesPorTipo}
+            color={CHART_PALETTE[1]}
+            onItemClick={(i) => i.key && abrir("sol-tipo", i.key)}
+          />
         </DashboardPanel>
       </div>
 
@@ -133,10 +149,16 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
                 data={[
                   {
                     name: `Gestor (${tempoAprovacao.amostraGestor})`,
-                    value: tempoAprovacao.gestorHoras
+                    value: tempoAprovacao.gestorHoras,
+                    key: "gestor"
                   },
-                  { name: `RH (${tempoAprovacao.amostraRh})`, value: tempoAprovacao.rhHoras }
+                  {
+                    name: `RH (${tempoAprovacao.amostraRh})`,
+                    value: tempoAprovacao.rhHoras,
+                    key: "rh"
+                  }
                 ]}
+                onItemClick={(i) => i.key && abrir("tempo-aprovacao", i.key)}
                 color={CHART_PALETTE[6]}
                 height={190}
               />
@@ -156,10 +178,12 @@ export function SolicitacoesTab({ data }: { data: AuditoriaDashboardData }) {
         <DashboardPanel title="Assinatura do Quadro de Ponto">
           <MiniDonut
             data={donutAssinaturaPorStatus}
+            onItemClick={(i) => i.key && abrir("assinatura-status", i.key)}
             colors={[CHART_PALETTE[3], CHART_PALETTE[1], CHART_PALETTE[2], CHART_PALETTE[7]]}
           />
         </DashboardPanel>
       </div>
+      {modal}
     </div>
   );
 }

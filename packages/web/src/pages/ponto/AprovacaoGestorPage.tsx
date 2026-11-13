@@ -48,7 +48,8 @@ type StatusSolicitacao =
   | "APROVADA"
   | "REJEITADA"
   | "REJEITADA_GESTOR"
-  | "REJEITADA_RH";
+  | "REJEITADA_RH"
+  | "DEVOLVIDA";
 
 interface Solicitacao {
   id: string;
@@ -96,7 +97,8 @@ const TIPO_LABEL: Record<string, string> = {
   ABONO: "Abono de Falta",
   DAY_OFF: "Day Off de Aniversário",
   HORA_EXTRA: "Hora Extra",
-  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH"
+  ENVIO_DOCUMENTO_RH: "Envio de Documento ao RH",
+  DOCUMENTO_VIA_CHEFE: "Envio de Documento - Home Office"
 };
 
 function fmtDate(iso: string) {
@@ -206,7 +208,8 @@ function StatusBadge({ status, tipo }: { status: StatusSolicitacao; tipo?: strin
     APROVADA: { label: "Aprovada pelo RH", cls: "badge-green" },
     REJEITADA: { label: "Rejeitada", cls: "badge-red" },
     REJEITADA_GESTOR: { label: "Rejeitada pelo Chefe", cls: "badge-red" },
-    REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" }
+    REJEITADA_RH: { label: "Rejeitada pelo RH", cls: "badge-red" },
+    DEVOLVIDA: { label: "Devolvida para correção", cls: "badge-amber" }
   };
   const { label, cls } = map[status] ?? { label: status, cls: "badge-amber" };
   return <span className={`badge ${cls}`}>{label}</span>;
@@ -225,7 +228,7 @@ function ModalDecisao({
   loading
 }: {
   solicitacao: Solicitacao;
-  decisao: "APROVAR" | "REJEITAR";
+  decisao: "APROVAR" | "REJEITAR" | "DEVOLVER";
   resumo: string;
   onConfirm: (observacao: string) => void;
   onClose: () => void;
@@ -234,24 +237,40 @@ function ModalDecisao({
   const [obs, setObs] = useState("");
 
   const isAprovar = decisao === "APROVAR";
+  const isDevolver = decisao === "DEVOLVER";
+  const motivoInvalido = !isAprovar && (isDevolver ? obs.trim().length < 10 : !obs.trim());
   const isCienciaAtestado = isAprovar && solicitacao.tipo === "ATESTADO";
-  const corAcao = isCienciaAtestado ? "#6B0F1A" : isAprovar ? "#16a34a" : "#dc2626";
+  const corAcao = isCienciaAtestado
+    ? "#6B0F1A"
+    : isAprovar
+      ? "#16a34a"
+      : isDevolver
+        ? "#b45309"
+        : "#dc2626";
   const corAcaoClaro = isCienciaAtestado
     ? "rgba(107,15,26,0.07)"
     : isAprovar
       ? "rgba(22,163,74,0.08)"
-      : "rgba(220,38,38,0.06)";
+      : isDevolver
+        ? "rgba(217,119,6,0.10)"
+        : "rgba(220,38,38,0.06)";
   const corBorda = isCienciaAtestado
     ? "rgba(107,15,26,0.22)"
     : isAprovar
       ? "rgba(22,163,74,0.25)"
-      : "rgba(220,38,38,0.25)";
-  const emoji = isCienciaAtestado ? "✍️" : isAprovar ? "✅" : "❌";
+      : isDevolver
+        ? "rgba(217,119,6,0.35)"
+        : "rgba(220,38,38,0.25)";
+  const emoji = isCienciaAtestado ? "✍️" : isAprovar ? "✅" : isDevolver ? "↩️" : "❌";
   const titulo = isCienciaAtestado
     ? "Ter Ciência — Assinatura Digital"
     : isAprovar
-      ? "Confirmar Aprovação"
-      : "Confirmar Rejeição";
+      ? solicitacao.tipo === "DOCUMENTO_VIA_CHEFE"
+        ? "Encaminhar ao RH"
+        : "Confirmar Aprovação"
+      : isDevolver
+        ? "Devolver para correção"
+        : "Confirmar Rejeição";
 
   return (
     <div
@@ -341,7 +360,8 @@ function ModalDecisao({
               "ATESTADO",
               "DAY_OFF",
               "HORA_EXTRA",
-              "ENVIO_DOCUMENTO_RH"
+              "ENVIO_DOCUMENTO_RH",
+              "DOCUMENTO_VIA_CHEFE"
             ].includes(solicitacao.tipo) && <AbonoDetalheBlock meta={solicitacao.metadados} />}
             {solicitacao.tipo === "CORRECAO_PONTO" && (
               <AvisoInterjornadaBlock meta={solicitacao.metadados} />
@@ -435,7 +455,11 @@ function ModalDecisao({
                 color: "var(--ink-700)"
               }}
             >
-              {isAprovar ? "Observação para o RH (opcional)" : "Motivo da rejeição (obrigatório)"}
+              {isAprovar
+                ? "Observação para o RH (opcional)"
+                : isDevolver
+                  ? "Motivo da devolução (obrigatório, mínimo de 10 caracteres)"
+                  : "Motivo da rejeição (obrigatório)"}
             </label>
             <textarea
               value={obs}
@@ -443,13 +467,15 @@ function ModalDecisao({
               placeholder={
                 isAprovar
                   ? "Deixe uma observação para o analista de RH, se necessário..."
-                  : "Informe o motivo da rejeição ao funcionário..."
+                  : isDevolver
+                    ? "Explique o que o funcionário precisa corrigir (ex.: documento ilegível, falta o verso)..."
+                    : "Informe o motivo da rejeição ao funcionário..."
               }
               rows={3}
               autoFocus
               style={{
                 width: "100%",
-                border: `1px solid ${obs.trim() || isAprovar ? "rgba(0,0,0,0.15)" : "rgba(220,38,38,0.40)"}`,
+                border: `1px solid ${!motivoInvalido ? "rgba(0,0,0,0.15)" : "rgba(220,38,38,0.40)"}`,
                 borderRadius: "var(--radius-md)",
                 padding: "9px 11px",
                 fontSize: 13,
@@ -458,9 +484,11 @@ function ModalDecisao({
                 outline: "none"
               }}
             />
-            {!isAprovar && !obs.trim() && (
+            {motivoInvalido && (
               <p style={{ margin: "4px 0 0", fontSize: 11.5, color: "#dc2626" }}>
-                O motivo da rejeição é obrigatório.
+                {isDevolver
+                  ? "Informe o motivo da devolução (mínimo de 10 caracteres)."
+                  : "O motivo da rejeição é obrigatório."}
               </p>
             )}
           </div>
@@ -485,14 +513,14 @@ function ModalDecisao({
             </button>
             <button
               onClick={() => onConfirm(obs)}
-              disabled={loading || (!isAprovar && !obs.trim())}
+              disabled={loading || motivoInvalido}
               style={{
                 padding: "10px 24px",
                 border: "none",
                 borderRadius: "var(--radius-md)",
-                background: loading || (!isAprovar && !obs.trim()) ? "#9ca3af" : corAcao,
+                background: loading || motivoInvalido ? "#9ca3af" : corAcao,
                 color: "#fff",
-                cursor: loading || (!isAprovar && !obs.trim()) ? "not-allowed" : "pointer",
+                cursor: loading || motivoInvalido ? "not-allowed" : "pointer",
                 fontSize: 13,
                 fontWeight: 700,
                 display: "flex",
@@ -531,7 +559,7 @@ function SolicitacaoCard({
 }: {
   s: Solicitacao;
   mostrarAcoes: boolean;
-  onDecidir: (s: Solicitacao, decisao: "APROVAR" | "REJEITAR") => void;
+  onDecidir: (s: Solicitacao, decisao: "APROVAR" | "REJEITAR" | "DEVOLVER") => void;
 }) {
   const email = s.funcionario.user.emailReal || s.funcionario.user.email;
   const resumo = textoResumo(s);
@@ -642,9 +670,15 @@ function SolicitacaoCard({
         </div>
 
         {s.tipo === "FERIAS" && <FeriasDetalheBlock meta={s.metadados} />}
-        {["ABONO", "LICENCA", "ATESTADO", "DAY_OFF", "HORA_EXTRA", "ENVIO_DOCUMENTO_RH"].includes(
-          s.tipo
-        ) && <AbonoDetalheBlock meta={s.metadados} />}
+        {[
+          "ABONO",
+          "LICENCA",
+          "ATESTADO",
+          "DAY_OFF",
+          "HORA_EXTRA",
+          "ENVIO_DOCUMENTO_RH",
+          "DOCUMENTO_VIA_CHEFE"
+        ].includes(s.tipo) && <AbonoDetalheBlock meta={s.metadados} />}
         {s.tipo === "CORRECAO_PONTO" && <AvisoInterjornadaBlock meta={s.metadados} />}
 
         {/* ── Justificativa do funcionário (secundária) ── */}
@@ -674,7 +708,9 @@ function SolicitacaoCard({
           />
         )}
 
-        {(s.tipo === "ENVIO_DOCUMENTO_RH" || s.tipo === "ABONO") &&
+        {(s.tipo === "ENVIO_DOCUMENTO_RH" ||
+          s.tipo === "DOCUMENTO_VIA_CHEFE" ||
+          s.tipo === "ABONO") &&
           typeof s.metadados?.documentoUrl === "string" && (
             <LinkDocumentoAnexado
               href={s.metadados.documentoUrl as string}
@@ -713,12 +749,36 @@ function SolicitacaoCard({
               <>
                 <Edit2Icon size={14} /> Ter Ciência
               </>
+            ) : s.tipo === "DOCUMENTO_VIA_CHEFE" ? (
+              <>
+                <CheckCircleIcon size={14} /> Encaminhar ao RH
+              </>
             ) : (
               <>
                 <CheckCircleIcon size={14} /> Aprovar
               </>
             )}
           </button>
+          {s.tipo === "DOCUMENTO_VIA_CHEFE" && (
+            <button
+              onClick={() => onDecidir(s, "DEVOLVER")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "7px 14px",
+                border: "none",
+                borderRadius: "var(--radius-md)",
+                background: "#b45309",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                fontWeight: 600
+              }}
+            >
+              ↩ Devolver
+            </button>
+          )}
           <button
             onClick={() => onDecidir(s, "REJEITAR")}
             style={{
@@ -896,7 +956,7 @@ export function AprovacaoGestorPage() {
 
   // Modal de decisão — gestor
   const [modalSol, setModalSol] = useState<Solicitacao | null>(null);
-  const [modalDecisao, setModalDecisao] = useState<"APROVAR" | "REJEITAR">("APROVAR");
+  const [modalDecisao, setModalDecisao] = useState<"APROVAR" | "REJEITAR" | "DEVOLVER">("APROVAR");
   const [modalLoading, setModalLoading] = useState(false);
   // Modal de decisão — RH
   const [modalRhSol, setModalRhSol] = useState<Solicitacao | null>(null);
@@ -1076,7 +1136,7 @@ export function AprovacaoGestorPage() {
     void carregar();
   }, [carregar]);
 
-  function abrirModal(s: Solicitacao, decisao: "APROVAR" | "REJEITAR") {
+  function abrirModal(s: Solicitacao, decisao: "APROVAR" | "REJEITAR" | "DEVOLVER") {
     setModalSol(s);
     setModalDecisao(decisao);
     setFeedbackMsg("");
@@ -1097,7 +1157,9 @@ export function AprovacaoGestorPage() {
           ? tipoSol === "ATESTADO"
             ? "Ciência registrada com assinatura digital. Atestado encaminhado ao RH."
             : "Solicitação aprovada e encaminhada ao RH."
-          : "Solicitação rejeitada."
+          : modalDecisao === "DEVOLVER"
+            ? "Solicitação devolvida ao funcionário para correção."
+            : "Solicitação rejeitada."
       );
       await Promise.all([carregar(), carregarStats()]);
     } catch (e) {
@@ -2281,6 +2343,7 @@ export function AprovacaoGestorPage() {
                         onDecidir={abrirModalRH}
                         onEnviarGuia={abrirModalGuia}
                         onEnviarFolhaFerias={abrirModalFolha}
+                        onAtualizado={() => void carregar()}
                       />
                     )
                   ) : etapa === "rh" ? (
@@ -2290,6 +2353,7 @@ export function AprovacaoGestorPage() {
                       onDecidir={abrirModalRH}
                       onEnviarGuia={abrirModalGuia}
                       onEnviarFolhaFerias={abrirModalFolha}
+                      onAtualizado={() => void carregar()}
                     />
                   ) : (
                     <SolicitacaoCard

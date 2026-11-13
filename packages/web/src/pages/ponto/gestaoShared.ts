@@ -198,6 +198,7 @@ export interface Funcionario {
   diasSemana?: string | null;
 
   observacoes?: string | null;
+  observacaoCargo?: string | null;
 
   // ── Cessão de Efetivo ──
   cedido?: boolean;
@@ -483,6 +484,7 @@ export const FORM_VAZIO = {
   diasSemana: "",
 
   observacoes: "",
+  observacaoCargo: "",
 
   // Cessão de Efetivo
   cedido: false,
@@ -574,6 +576,7 @@ export function formFromFuncionario(f: Funcionario): FuncionarioFormState {
     diasSemana: f.diasSemana ?? "",
 
     observacoes: f.observacoes ?? "",
+    observacaoCargo: f.observacaoCargo ?? "",
     cedido: f.cedido ?? false,
     cessaoInicio: dataOuVazio(f.cessaoInicio),
     cessaoFim: dataOuVazio(f.cessaoFim),

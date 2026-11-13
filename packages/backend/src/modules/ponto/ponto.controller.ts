@@ -215,6 +215,26 @@ export class PontoController {
     );
   }
 
+  @Patch("solicitacoes/:id/cancelar")
+  cancelarSolicitacao(@Req() req: { user: { sub: string } }, @Param("id") id: string) {
+    return this.pontoService.cancelarSolicitacaoPeloFuncionario(req.user.sub, id);
+  }
+
+  @Patch("solicitacoes/:id/reenviar")
+  reenviarDocumento(
+    @Req() req: { user: { sub: string } },
+    @Param("id") id: string,
+    @Body()
+    body: {
+      descricao?: string;
+      documentoBase64?: string;
+      documentoMime?: string;
+      nomeArquivo?: string;
+    }
+  ) {
+    return this.pontoService.reenviarDocumentoViaChefe(req.user.sub, id, body);
+  }
+
   @Patch("solicitacoes/:id/documento")
   editarDocumento(
     @Req() req: { user: { sub: string } },

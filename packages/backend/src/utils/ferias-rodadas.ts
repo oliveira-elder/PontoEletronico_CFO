@@ -15,6 +15,8 @@ export interface DocumentoRodadaFerias {
   urlAssinado?: string;
   assinatura?: Record<string, unknown>;
   rejeicao?: { nome: string; em: string; justificativa: string };
+  /** Prorrogação do prazo feita pelo RH (data civil). */
+  prazoProrrogadoAte?: string;
 }
 
 export interface RodadaFeriasMeta {
@@ -54,6 +56,19 @@ export function periodosComRodada(
     .sort((a, b) => (a.inicio < b.inicio ? -1 : 1))
     .map((p, i) => ({ ordem: i + 1, ...p }))
     .filter((p) => p.ordem >= 2 && p.inicio >= hojeIso);
+}
+
+/**
+ * Situação da rodada a partir dos documentos já enviados (Aviso e Recibo independentes):
+ * concluída só com Aviso e Recibo assinados; com algum rejeitado o RH precisa corrigir; senão, aguarda assinatura.
+ */
+export function situacaoDaRodada(
+  docs: Array<{ tipo: string; urlAssinado?: string; rejeicao?: unknown }>
+): SituacaoRodadaFerias {
+  const assinado = (t: string) => docs.some((d) => d.tipo === t && !!d.urlAssinado);
+  if (assinado("AVISO") && assinado("RECIBO")) return "CONCLUIDA";
+  if (docs.some((d) => d.rejeicao && !d.urlAssinado)) return "REJEITADA";
+  return "AGUARDANDO_ASSINATURA";
 }
 
 export function rodadasDe(

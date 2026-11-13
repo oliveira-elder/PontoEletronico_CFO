@@ -44,6 +44,51 @@ export interface AfastamentoHistorico {
   horarioInicio?: string | null;
   horarioFim?: string | null;
   tipo?: string;
+  /** Rótulo cadastrado no afastamento (tem prioridade sobre o rótulo do tipo). */
+  rotulo?: string | null;
+}
+
+const ROTULO_TIPO_AFASTAMENTO: Record<string, string> = {
+  FERIAS: "Férias",
+  ATESTADO: "Atestado médico",
+  LICENCA_MEDICA: "Licença",
+  LICENCA_MATERNIDADE: "Licença maternidade",
+  LICENCA_PATERNIDADE: "Licença paternidade",
+  FALTA_JUSTIFICADA: "Falta justificada",
+  FALTA_INJUSTIFICADA: "Falta injustificada",
+  ABONO: "Abono"
+};
+
+/** Texto do afastamento integral (mesmo da tela): rótulo cadastrado, senão o do tipo. */
+export function rotuloAfastamentoIntegral(a: { tipo?: string; rotulo?: string | null }): string {
+  return (
+    a.rotulo?.trim() ||
+    (a.tipo ? ROTULO_TIPO_AFASTAMENTO[a.tipo] : undefined) ||
+    "Afastamento justificado"
+  );
+}
+
+/**
+ * Por que o dia está Inconsistente, em texto (mesmas mensagens da tela). Ciclo em casa/presencial usa o
+ * texto já calculado; os demais casos derivam das batidas do dia.
+ */
+export function motivoInconsistencia(d: {
+  statusInterno: string;
+  entrada: string | null;
+  inicioIntervalo: string | null;
+  fimIntervalo: string | null;
+  saida: string | null;
+  pausas: Array<{ fim: string | null }>;
+  cicloIncompleto?: string;
+}): string | null {
+  if (d.statusInterno !== "INCONSISTENTE") return null;
+  if (d.cicloIncompleto) return d.cicloIncompleto;
+  if (!d.entrada) return "Registro sem entrada";
+  if (d.saida) return null;
+  if (d.pausas.some((p) => !p.fim)) return "Pausa sem retorno — saldo até o interromper expediente";
+  if (d.inicioIntervalo && !d.fimIntervalo)
+    return "Intervalo sem retorno — saldo até o início do intervalo";
+  return "Apenas a entrada foi registrada — registro incompleto";
 }
 
 export interface FeriadoHistorico {
@@ -438,7 +483,7 @@ export function montarRelatorioQuadro(
         horasFormatado: "—",
         saldoMin: null,
         saldoFormatado: "—",
-        status: "Afastamento",
+        status: rotuloAfastamentoIntegral(afastamentoIntegral),
         statusInterno: "AFASTAMENTO",
         /* Falta injustificada não é remunerada. */
         remunerado: diaUtilRemunerado && afastamentoIntegral.tipo !== "FALTA_INJUSTIFICADA"

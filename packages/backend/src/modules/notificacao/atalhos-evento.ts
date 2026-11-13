@@ -49,6 +49,11 @@ export const ATALHOS_EVENTO: Record<string, AtalhoEvento> = {
     label: "Minhas solicitações",
     caminho: "Solicitações → Minhas solicitações"
   },
+  SOLICITACAO_DEVOLVIDA: {
+    path: "/ponto/solicitacoes",
+    label: "Minhas solicitações",
+    caminho: "Solicitações → Minhas solicitações"
+  },
   BANCO_HORAS_VENCIMENTO: {
     path: "/ponto/banco-horas",
     label: "Banco de Horas",
@@ -68,6 +73,16 @@ export const ATALHOS_EVENTO: Record<string, AtalhoEvento> = {
     path: "/ponto/documentos-rh",
     label: "Documentos do RH",
     caminho: "Documentos do RH"
+  },
+  FERIAS_DOCUMENTO_ASSINAR: {
+    path: "/ponto/solicitacoes",
+    label: "Solicitações — Férias",
+    caminho: "Solicitações → Férias (assinar documentos)"
+  },
+  FERIAS_DOCUMENTO_VENCIDO: {
+    path: "/ponto/auditoria",
+    label: "Auditoria — Férias",
+    caminho: "Auditoria → Funcionário → Férias"
   },
   FERIAS_RODADA_ASSINAR: {
     path: "/ponto/solicitacoes",
